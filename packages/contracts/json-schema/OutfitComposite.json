@@ -1,0 +1,274 @@
+{
+  "$id": "https://garderobe.invalid/contracts/2026-10-01/OutfitComposite.json",
+  "title": "OutfitComposite",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "2026-10-01"
+    },
+    "manifest": {
+      "type": "object",
+      "properties": {
+        "layoutVersion": {
+          "type": "string",
+          "const": "outfit-layout/1"
+        },
+        "template": {
+          "type": "string",
+          "enum": [
+            "separates",
+            "separates_layered",
+            "separates_long_coat",
+            "one_piece"
+          ]
+        },
+        "canvas": {
+          "type": "object",
+          "properties": {
+            "width": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "height": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "background": {
+              "type": "string",
+              "const": "#FFFFFF"
+            }
+          },
+          "required": [
+            "width",
+            "height",
+            "background"
+          ],
+          "additionalProperties": false
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "garmentId": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 80,
+                "pattern": "^[a-z]{1,6}_[A-Za-z0-9_-]+$"
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "base_top",
+                  "mid_layer",
+                  "outer_layer",
+                  "bottom",
+                  "one_piece",
+                  "footwear",
+                  "socks",
+                  "belt",
+                  "accessory",
+                  "underwear",
+                  "indoor"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "assetId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 80,
+                    "pattern": "^[a-z]{1,6}_[A-Za-z0-9_-]+$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "renditionKind": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "source",
+                      "cutout",
+                      "catalogue",
+                      "mask",
+                      "thumbnail",
+                      "composite"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "renditionSha256": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "assetClass": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "exact_product_photo",
+                      "owner_photo",
+                      "edited_rendition",
+                      "illustration",
+                      "demo_placeholder",
+                      "imagined_rendering",
+                      "composite"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "placeholder": {
+                "type": "boolean"
+              },
+              "x": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "y": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "width": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "height": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "z": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "alternativeGroup": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "garmentId",
+              "role",
+              "name",
+              "assetId",
+              "renditionKind",
+              "renditionSha256",
+              "assetClass",
+              "label",
+              "placeholder",
+              "x",
+              "y",
+              "width",
+              "height",
+              "z",
+              "alternativeGroup"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "imagined": {
+          "type": "boolean",
+          "const": false
+        }
+      },
+      "required": [
+        "layoutVersion",
+        "template",
+        "canvas",
+        "items",
+        "labels",
+        "imagined"
+      ],
+      "additionalProperties": false
+    },
+    "manifestHash": {
+      "type": "string"
+    },
+    "previewAssetId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 80,
+          "pattern": "^[a-z]{1,6}_[A-Za-z0-9_-]+$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "previewUrl": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "assetUrls": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "urlsExpireAt": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "manifest",
+    "manifestHash",
+    "previewAssetId",
+    "previewUrl",
+    "assetUrls",
+    "urlsExpireAt"
+  ],
+  "additionalProperties": false
+}

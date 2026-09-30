@@ -1,0 +1,63 @@
+{
+  "name": "@garderobe/backend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Garderobe Cloudflare Worker: domain command service, D1 schema, API/MCP/assistant host",
+  "exports": {
+    ".": "./src/index.ts",
+    "./domain": "./src/domain/index.ts",
+    "./import": "./src/import/index.ts",
+    "./assistant": "./src/assistant/index.ts",
+    "./models": "./src/models/index.ts",
+    "./recall": "./src/recall/index.ts",
+    "./connectors": "./src/connectors/index.ts",
+    "./research": "./src/research/index.ts",
+    "./intake": "./src/intake/index.ts",
+    "./lifecycle": "./src/lifecycle/index.ts",
+    "./export": "./src/export/index.ts",
+    "./recommend": "./src/recommend/index.ts",
+    "./daily": "./src/daily/index.ts",
+    "./weather": "./src/weather/index.ts",
+    "./calendar": "./src/calendar/index.ts",
+    "./trips": "./src/trips/index.ts",
+    "./media": "./src/media/index.ts",
+    "./studio": "./src/studio/index.ts",
+    "./visual": "./src/visual/index.ts"
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "dev:local": "wrangler dev --local --port 8787",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "reconcile": "tsx scripts/write-reconciliation.ts",
+    "smoke:weather": "tsx scripts/live-weather-smoke.ts",
+    "dev:auth": "tsx scripts/dev-auth.ts",
+    "mcp:smoke": "tsx scripts/mcp-smoke.ts",
+    "types": "wrangler types --include-runtime false"
+  },
+  "dependencies": {
+    "@ai-sdk/provider": "4.0.19",
+    "@cloudflare/think": "0.19.0",
+    "@cloudflare/workers-oauth-provider": "1.2.1",
+    "@garderobe/contracts": "*",
+    "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/server": "2.2.0",
+    "agents": "0.24.0",
+    "ai": "7.0.122",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.22.0",
+    "@cloudflare/workers-types": "5.20260929.1",
+    "@garderobe/demo": "*",
+    "@modelcontextprotocol/client-v2-2": "npm:@modelcontextprotocol/client@2.2.0",
+    "@types/node": "^22.0.0",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11",
+    "wrangler": "4.143.0"
+  }
+}

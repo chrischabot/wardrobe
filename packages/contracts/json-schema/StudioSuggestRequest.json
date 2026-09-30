@@ -1,0 +1,96 @@
+{
+  "$id": "https://garderobe.invalid/contracts/2026-10-01/StudioSuggestRequest.json",
+  "title": "StudioSuggestRequest",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "mode": {
+      "type": "string",
+      "enum": [
+        "today",
+        "explore"
+      ]
+    },
+    "date": {
+      "type": "string",
+      "format": "date",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$"
+    },
+    "locked": {
+      "maxItems": 12,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "garmentId": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 80,
+            "pattern": "^[a-z]{1,6}_[A-Za-z0-9_-]+$"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "base_top",
+              "mid_layer",
+              "outer_layer",
+              "bottom",
+              "one_piece",
+              "footwear",
+              "socks",
+              "belt",
+              "accessory",
+              "underwear",
+              "indoor"
+            ]
+          },
+          "alternativeGroup": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "garmentId",
+          "role"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "roles": {
+      "minItems": 1,
+      "maxItems": 11,
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "base_top",
+          "mid_layer",
+          "outer_layer",
+          "bottom",
+          "one_piece",
+          "footwear",
+          "socks",
+          "belt",
+          "accessory",
+          "underwear",
+          "indoor"
+        ]
+      }
+    }
+  },
+  "required": [
+    "mode",
+    "date",
+    "locked",
+    "roles"
+  ],
+  "additionalProperties": false
+}

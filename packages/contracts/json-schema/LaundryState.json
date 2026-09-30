@@ -1,0 +1,302 @@
+{
+  "$id": "https://garderobe.invalid/contracts/2026-10-01/LaundryState.json",
+  "title": "LaundryState",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "2026-10-01"
+    },
+    "asOf": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+    },
+    "service": {
+      "type": "object",
+      "properties": {
+        "hamper": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "garmentId": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 80,
+                "pattern": "^[a-z]{1,6}_[A-Za-z0-9_-]+$"
+              },
+              "name": {
+                "type": "string"
+              },
+              "quantity": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "tracking": {
+                "type": "string",
+                "enum": [
+                  "unit",
+                  "anonymous_quantity"
+                ]
+              }
+            },
+            "required": [
+              "garmentId",
+              "name",
+              "quantity",
+              "tracking"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "batches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "batchId": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 80,
+                "pattern": "^[a-z]{1,6}_[A-Za-z0-9_-]+$"
+              },
+              "channel": {
+                "type": "string",
+                "const": "service"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "collected",
+                  "partially_returned",
+                  "returned",
+                  "voided"
+                ]
+              },
+              "collectedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+              },
+              "returnedAt": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "format": "date-time",
+                    "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "garmentId": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 80,
+                      "pattern": "^[a-z]{1,6}_[A-Za-z0-9_-]+$"
+                    },
+                    "lotId": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 80,
+                      "pattern": "^[a-z]{1,6}_[A-Za-z0-9_-]+$"
+                    },
+                    "quantity": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "returnedQuantity": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "away",
+                        "returned",
+                        "missing"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "garmentId",
+                    "lotId",
+                    "quantity",
+                    "returnedQuantity",
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "version": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "names": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "batchId",
+              "channel",
+              "status",
+              "collectedAt",
+              "returnedAt",
+              "items",
+              "version",
+              "names"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "nextCollectionAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "hamper",
+        "batches",
+        "nextCollectionAt"
+      ],
+      "additionalProperties": false
+    },
+    "handWash": {
+      "type": "object",
+      "properties": {
+        "hamper": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "garmentId": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 80,
+                "pattern": "^[a-z]{1,6}_[A-Za-z0-9_-]+$"
+              },
+              "name": {
+                "type": "string"
+              },
+              "quantity": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "maximum": 9007199254740991
+              },
+              "tracking": {
+                "type": "string",
+                "enum": [
+                  "unit",
+                  "anonymous_quantity"
+                ]
+              }
+            },
+            "required": [
+              "garmentId",
+              "name",
+              "quantity",
+              "tracking"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "hamper"
+      ],
+      "additionalProperties": false
+    },
+    "openExceptions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "exceptionId": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 80,
+            "pattern": "^[a-z]{1,6}_[A-Za-z0-9_-]+$"
+          },
+          "garmentId": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 80,
+            "pattern": "^[a-z]{1,6}_[A-Za-z0-9_-]+$"
+          },
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "quantity": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "batchId": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 80,
+                "pattern": "^[a-z]{1,6}_[A-Za-z0-9_-]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "occurredAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          }
+        },
+        "required": [
+          "exceptionId",
+          "garmentId",
+          "name",
+          "kind",
+          "quantity",
+          "batchId",
+          "occurredAt"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "asOf",
+    "service",
+    "handWash"
+  ],
+  "additionalProperties": false
+}

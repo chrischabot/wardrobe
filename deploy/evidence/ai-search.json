@@ -1,0 +1,83 @@
+{
+  "instance": "garderobe-dev-recall",
+  "document": "deploy-probe/heliotrope-lantern-1790693024.md",
+  "indexedMs": 80060,
+  "searchMs": 2219,
+  "item": {
+    "id": "8c275438d5244fea9582eb0dc2a62582",
+    "key": "deploy-probe/heliotrope-lantern-1790693024.md",
+    "status": "completed",
+    "next_action": null,
+    "checksum": "0",
+    "chunks_count": 1,
+    "file_size": 244,
+    "metadata": {
+      "filename": "heliotrope-lantern-1790693024.md",
+      "folder": "deploy-probe/",
+      "timestamp": 1790692980000
+    },
+    "source_id": "builtin",
+    "schema_version": 2,
+    "last_seen_at": "2026-09-29 14:43:48",
+    "created_at": "2026-09-29 14:43:48",
+    "error": null
+  },
+  "search": {
+    "chunks": 3,
+    "markerFound": true,
+    "topScore": 1,
+    "topKey": "deploy-probe/heliotrope-lantern-1790693024.md"
+  },
+  "info": {
+    "id": "garderobe-dev-recall",
+    "engine_version": 3,
+    "enable": true,
+    "type": null,
+    "source": null,
+    "source_params": null,
+    "ai_gateway_id": "garderobe-dev",
+    "cache": true,
+    "cache_threshold": "close_enough",
+    "cache_ttl": 172800,
+    "summarization": false,
+    "rewrite_query": false,
+    "reranking": false,
+    "index_method": {
+      "vector": true,
+      "keyword": true
+    },
+    "hybrid_search_enabled": true,
+    "fusion_method": "rrf",
+    "indexing_options": {
+      "keyword_tokenizer": "porter",
+      "use_ocr": false
+    },
+    "retrieval_options": {
+      "keyword_match_mode": "and"
+    },
+    "summarization_model": "",
+    "embedding_model": "@cf/qwen/qwen3-embedding-0.6b",
+    "rewrite_model": "",
+    "ai_search_model": "",
+    "reranking_model": "",
+    "system_prompt_ai_search": null,
+    "system_prompt_index_summarization": null,
+    "system_prompt_rewrite_query": null,
+    "chunk": true,
+    "chunk_size": 1024,
+    "chunk_overlap": 10,
+    "score_threshold": 0.4,
+    "max_num_results": 10,
+    "public_endpoint_id": null,
+    "public_endpoint_params": null,
+    "paused": false,
+    "status": "index_source",
+    "metadata": null,
+    "custom_metadata": null,
+    "sync_interval": 21600,
+    "created_at": "2026-09-29T14:01:04.000Z",
+    "modified_at": "2026-09-29T14:01:32.000Z",
+    "last_activity": "2026-09-29T14:01:11.000Z",
+    "namespace": "default"
+  }
+}

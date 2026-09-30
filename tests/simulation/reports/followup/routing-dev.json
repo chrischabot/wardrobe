@@ -1,0 +1,138 @@
+{
+  "target": "dev",
+  "startedAt": "2026-09-30T01:21:46.121Z",
+  "simulationOwner": "usr_8d83502b0bbd4363a4f6a6137d77069b",
+  "simulatedAt": "2026-10-06T06:05:00.000Z",
+  "turns": [
+    {
+      "label": "design_review_routine",
+      "text": "I have \"Design review\" today. Which of this morning’s outfits would you pick, and why? Two sentences.",
+      "expected": "routine",
+      "clientTurnId": "routing-munf6iwq-design_review_routine",
+      "status": "answered",
+      "answer": "No board is published this morning; I’d pick the laurel lightweight oxford, cream Akita slub five-pockets, brown Anderson’s belt, deep forest green merino socks and olive/cream NB 990v4s, without a jacket. The green against cream looks considered without becoming business dress, while the slub adds texture and the socks echo the shirt—enough interest for the design review, comfortable for the free day afterwards.",
+      "models": [
+        {
+          "task": "chat",
+          "profileId": "chat.gpt-6-1-sol",
+          "model": "gpt-6.1-sol",
+          "inputTokens": 17076,
+          "outputTokens": 339,
+          "costUsd": 0.037542,
+          "status": "succeeded"
+        },
+        {
+          "task": "chat",
+          "profileId": "chat.gpt-6-1-sol",
+          "model": "gpt-6.1-sol",
+          "inputTokens": 17907,
+          "outputTokens": 228,
+          "costUsd": 0.038094,
+          "status": "succeeded"
+        },
+        {
+          "task": "chat",
+          "profileId": "chat.gpt-6-1-sol",
+          "model": "gpt-6.1-sol",
+          "inputTokens": 18544,
+          "outputTokens": 95,
+          "costUsd": 0.038038,
+          "status": "succeeded"
+        }
+      ],
+      "routedDepth": "routine",
+      "pass": true
+    },
+    {
+      "label": "review_this_jacket",
+      "text": "Can you review this jacket: the Drake’s Waxed Chasseur? Two sentences.",
+      "expected": "deep",
+      "clientTurnId": "routing-munf6iwq-review_this_jacket",
+      "status": "answered",
+      "answer": "The Chasseur passes on origin: it's a dusty-green waxed-cotton hunting jacket that really could go back to the field, and nothing about it is branding or costume. Two things count against it: wax is a sealed surface, which your profile lists among the fabrics you dislike, and the ledger has it as a Drake's 44 when your Drake's jacket size is 46, so check it isn't tight across the chest before relying on it (it also isn't for today, since its 10–22 °C range stops below the 23.3 °C peak).",
+      "models": [
+        {
+          "task": "research",
+          "profileId": "chat.opus-5-5-medium",
+          "model": "claude-opus-5-5",
+          "inputTokens": 30327,
+          "outputTokens": 176,
+          "costUsd": 0.124828,
+          "status": "succeeded"
+        },
+        {
+          "task": "research",
+          "profileId": "chat.opus-5-5-medium",
+          "model": "claude-opus-5-5",
+          "inputTokens": 31082,
+          "outputTokens": 310,
+          "costUsd": 0.130528,
+          "status": "succeeded"
+        }
+      ],
+      "routedDepth": "deep",
+      "pass": true
+    },
+    {
+      "label": "paraboot_reviews",
+      "text": "Paraboot reviews: what do people generally say? Two sentences.",
+      "expected": "deep",
+      "clientTurnId": "routing-munf6iwq-paraboot_reviews",
+      "status": "answered",
+      "answer": "Going on general knowledge rather than fresh research: people praise Paraboot for its Norwegian-welted build, its own rubber soles, oiled Lisse leather that shrugs off rain, and its comfort over distance once broken in. The usual complaints are that they're heavy, stiff at first, bulky in profile, sized inconsistently between models, and pricier now than they used to be. None of that matters for now, since your whole Paraboot fleet stays out until you tell me your feet have healed.",
+      "models": [
+        {
+          "task": "research",
+          "profileId": "chat.opus-5-5-medium",
+          "model": "claude-opus-5-5",
+          "inputTokens": 31200,
+          "outputTokens": 236,
+          "costUsd": 0.12952,
+          "status": "succeeded"
+        }
+      ],
+      "routedDepth": "deep",
+      "pass": true
+    }
+  ],
+  "paraboot": {
+    "phrase": "Paraboot boots",
+    "resolution": {
+      "status": "ambiguous",
+      "phrase": "Paraboot boots",
+      "candidates": [
+        {
+          "garmentId": "g_093142e0cfe74e3ca83f57cbe90bebee",
+          "name": "Paraboot Michael Cerf",
+          "distinguishing": "Marron, Paraboot, size UK 8.5, shoes"
+        },
+        {
+          "garmentId": "g_fb5849864ba04f0ead87e505a5bf22a6",
+          "name": "Paraboot Reims — noir (black)",
+          "distinguishing": "Noir (black), Paraboot, size UK 8.5, shoes"
+        },
+        {
+          "garmentId": "g_d46a2dc1e4fb4106a276ff54d03d4e0d",
+          "name": "Paraboot Reims — café/marron",
+          "distinguishing": "Café/Marron, Paraboot, size UK 8.5, shoes"
+        },
+        {
+          "garmentId": "g_1037a5119b8f49529baeb9f120fe9c54",
+          "name": "Paraboot Norwegian split-toe",
+          "distinguishing": "Paraboot, shoes"
+        }
+      ]
+    },
+    "pass": true
+  },
+  "spendCap": {
+    "configured": "50",
+    "parsed": {
+      "microUsd": 50000000,
+      "windowDays": 30
+    },
+    "deploymentSpentMicroUsd": 13838487
+  },
+  "ownerSpendUsd": 0.49855,
+  "finishedAt": "2026-09-30T01:22:55.140Z"
+}

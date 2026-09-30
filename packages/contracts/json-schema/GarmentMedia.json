@@ -1,0 +1,117 @@
+{
+  "$id": "https://garderobe.invalid/contracts/2026-10-01/GarmentMedia.json",
+  "title": "GarmentMedia",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "thumbnailUrl": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "catalogueImageUrl": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "aspectRatio": {
+      "anyOf": [
+        {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "photos": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "caption": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "url",
+          "caption"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "verified": {
+      "type": "boolean"
+    },
+    "catalogueAssetId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 80,
+          "pattern": "^[a-z]{1,6}_[A-Za-z0-9_-]+$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "assetClass": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "exact_product_photo",
+            "owner_photo",
+            "edited_rendition",
+            "illustration",
+            "demo_placeholder",
+            "imagined_rendering",
+            "composite"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "label": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "photosNeeded": {
+      "type": "boolean"
+    },
+    "urlsExpireAt": {
+      "anyOf": [
+        {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "thumbnailUrl",
+    "catalogueImageUrl",
+    "aspectRatio",
+    "photos",
+    "verified"
+  ],
+  "additionalProperties": false
+}

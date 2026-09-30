@@ -1,0 +1,37 @@
+{
+  "label": "Owner wardrobe before scenario overlays: May 2026 CSV + owner-asserted additions of 2026-09-29",
+  "garments": 144,
+  "units": 161,
+  "additions": 17,
+  "restricted": [
+    "Drake's Clifford boot",
+    "Paraboot Michael Cerf",
+    "Paraboot Reims — noir (black)",
+    "Paraboot Reims — café/marron",
+    "NB 990v6",
+    "Paraboot Norwegian split-toe"
+  ],
+  "additionsRestricted": [
+    "NB 990v6",
+    "Paraboot Norwegian split-toe"
+  ],
+  "additionGarmentIds": [
+    "g_369682d9c79e32fd7e2a",
+    "g_a47834097849319bf72b",
+    "g_de2ad3c95c5563fe4473",
+    "g_328bee14f79c3890fce2",
+    "g_0e6eb1eddf5290227048",
+    "g_56907743280bc0bc3595",
+    "g_6d8e5dbfae32e163fa31",
+    "g_579bac0198f9b9ee71d9",
+    "g_adbb1e668d79c6bdb410",
+    "g_9bcdc2d93657ee991745",
+    "g_ecef8c84a81fd81d6e62",
+    "g_f4be48f8aefdc2193427",
+    "g_7ccfb3a1fa510035b4ba",
+    "g_f84085354dc723b0aa30",
+    "g_38f2c6304d830b01d676",
+    "g_3aae7aaf3332c8fcf399",
+    "g_b69fbe0553e30d258bf6"
+  ]
+}

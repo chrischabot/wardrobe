@@ -1,0 +1,54 @@
+{
+  "$id": "https://garderobe.invalid/contracts/2026-10-01/GarmentAlias.json",
+  "title": "GarmentAlias",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "aliasId": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 80,
+      "pattern": "^[a-z]{1,6}_[A-Za-z0-9_-]+$"
+    },
+    "garmentId": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 80,
+      "pattern": "^[a-z]{1,6}_[A-Za-z0-9_-]+$"
+    },
+    "phrase": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "owner_phrase",
+        "maker_name",
+        "maker_code",
+        "sku",
+        "import_ref"
+      ]
+    },
+    "source": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 200
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "aliasId",
+    "garmentId",
+    "phrase",
+    "kind",
+    "source"
+  ],
+  "additionalProperties": false
+}

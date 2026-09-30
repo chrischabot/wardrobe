@@ -1,0 +1,44 @@
+{
+  "schemaVersion": "2026-10-01",
+  "messages": [
+    {
+      "messageId": "msg_june1",
+      "clientTurnId": null,
+      "role": "user",
+      "createdAt": "2026-06-02T08:15:00.000Z",
+      "sourceChannel": "app",
+      "status": "complete",
+      "parts": [
+        {
+          "type": "text",
+          "text": "DEMO FIXTURE: Is the navy Mk.IV too close to a City blazer?"
+        }
+      ]
+    },
+    {
+      "messageId": "msg_june2",
+      "clientTurnId": null,
+      "role": "assistant",
+      "createdAt": "2026-06-02T08:15:40.000Z",
+      "sourceChannel": "app",
+      "status": "complete",
+      "parts": [
+        {
+          "type": "text",
+          "text": "No. Cotton-linen with a soft shoulder reads games, not boardroom; keep it away from a white shirt and black shoes."
+        },
+        {
+          "type": "result_card",
+          "kind": "verdict",
+          "title": "DEMO FIXTURE: Navy Mk.IV — keep",
+          "summary": "Reads games, not boardroom; pair with texture, not a white shirt.",
+          "jobRef": "run_demojune"
+        }
+      ],
+      "runId": "run_demojune"
+    }
+  ],
+  "before": null,
+  "hasMore": false,
+  "activeRunId": null
+}

@@ -1,0 +1,12 @@
+node_modules/
+.wrangler/
+dist/
+*.log
+.dev.vars
+# Dev deployment: service token secret, MCP test grants and generated configs never leave the machine.
+deploy/.state/
+deploy/.generated/
+
+# Personal wardrobe data is kept out of this public repository.
+data/owner-*
+data/wardrobe-inventory-*.csv

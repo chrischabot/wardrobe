@@ -1,0 +1,142 @@
+{
+  "$id": "https://garderobe.invalid/contracts/2026-10-01/StyleRuleCatalogue.json",
+  "title": "StyleRuleCatalogue",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "documentSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "documentTitle": {
+      "type": "string"
+    },
+    "rules": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ruleKey": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 80,
+            "pattern": "^[a-z][a-z0-9_.]+$"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "hard_rule",
+              "standing_direction"
+            ]
+          },
+          "strength": {
+            "type": "string",
+            "enum": [
+              "hard",
+              "soft"
+            ]
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "socks",
+              "footwear",
+              "thermal",
+              "variety",
+              "swap",
+              "naming",
+              "colour",
+              "register",
+              "filter",
+              "accessories",
+              "fabric",
+              "construction",
+              "size",
+              "advice",
+              "board_format",
+              "day_brief",
+              "comfort"
+            ]
+          },
+          "statement": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "interpretation": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "machine": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "exceptionPolicy": {
+            "default": "owner_scoped",
+            "type": "string",
+            "enum": [
+              "none",
+              "owner_scoped",
+              "restriction_lift_only"
+            ]
+          },
+          "passage": {
+            "type": "object",
+            "properties": {
+              "section": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "quote": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000
+              }
+            },
+            "required": [
+              "section",
+              "quote"
+            ],
+            "additionalProperties": false
+          },
+          "status": {
+            "default": "active",
+            "type": "string",
+            "enum": [
+              "active",
+              "pending_activation",
+              "retired"
+            ]
+          },
+          "restrictionSourceId": {
+            "type": "string",
+            "maxLength": 120
+          }
+        },
+        "required": [
+          "ruleKey",
+          "kind",
+          "strength",
+          "category",
+          "statement",
+          "interpretation",
+          "passage"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "documentSha256",
+    "documentTitle",
+    "rules"
+  ],
+  "additionalProperties": false
+}

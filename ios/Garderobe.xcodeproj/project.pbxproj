@@ -1,0 +1,469 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		65EF40A1BA6E54B24F182910 /* GarderobeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AAB516A20784A26690FC65E /* GarderobeUITests.swift */; };
+		6BA5417ECD2926527E064B42 /* GarderobeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C36DEF10C63CBEDE78F563A /* GarderobeApp.swift */; };
+		6D838C9567E58D4D7FD32EB1 /* GarderobeKit in Frameworks */ = {isa = PBXBuildFile; productRef = E102653777E266CD2F6DCC5A /* GarderobeKit */; };
+		9DEFF93F29B966CF0284FE16 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 9B3D2AD989012E001E1CADFC /* Assets.xcassets */; };
+		A90D98D082570A1A12CE1840 /* GarderobeUI in Frameworks */ = {isa = PBXBuildFile; productRef = E62C437B841B2C8083999E21 /* GarderobeUI */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		B05AAE3228A29FC1D95C9C38 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 70B152936BAC17A95E82BED2 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = F30F7BF37FCEBF28A71B09C0;
+			remoteInfo = Garderobe;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		40B0C547774E8A437BB56692 /* GarderobeUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = GarderobeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		41B0060661DBF31E902B4E8C /* ios */ = {isa = PBXFileReference; lastKnownFileType = folder; name = ios; path = .; sourceTree = SOURCE_ROOT; };
+		5C36DEF10C63CBEDE78F563A /* GarderobeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GarderobeApp.swift; sourceTree = "<group>"; };
+		719CECA36ED79C432D560931 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		910F5AE88C7B72C039880FC1 /* Garderobe.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Garderobe.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		9AAB516A20784A26690FC65E /* GarderobeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GarderobeUITests.swift; sourceTree = "<group>"; };
+		9B3D2AD989012E001E1CADFC /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		BA373DA21539D5261B64A1EC /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6D838C9567E58D4D7FD32EB1 /* GarderobeKit in Frameworks */,
+				A90D98D082570A1A12CE1840 /* GarderobeUI in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		044B9DA471DEAD981584CFCC /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				910F5AE88C7B72C039880FC1 /* Garderobe.app */,
+				40B0C547774E8A437BB56692 /* GarderobeUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		36DA7DEF1A82831D4D779104 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				41B0060661DBF31E902B4E8C /* ios */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		5F4CAB63E1E5AE47ADD329B6 /* UITests */ = {
+			isa = PBXGroup;
+			children = (
+				9AAB516A20784A26690FC65E /* GarderobeUITests.swift */,
+			);
+			path = UITests;
+			sourceTree = "<group>";
+		};
+		6E107D32940331657C2E4E90 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				9B3D2AD989012E001E1CADFC /* Assets.xcassets */,
+				5C36DEF10C63CBEDE78F563A /* GarderobeApp.swift */,
+				719CECA36ED79C432D560931 /* Info.plist */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		CC8BB98AC91432DE42D197A7 = {
+			isa = PBXGroup;
+			children = (
+				6E107D32940331657C2E4E90 /* App */,
+				36DA7DEF1A82831D4D779104 /* Packages */,
+				5F4CAB63E1E5AE47ADD329B6 /* UITests */,
+				044B9DA471DEAD981584CFCC /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		54A3486AB80203AD810437C7 /* GarderobeUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 859459469DD7080B6CE955E3 /* Build configuration list for PBXNativeTarget "GarderobeUITests" */;
+			buildPhases = (
+				71F3A386D3E46A26443A7F48 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				42BA20F483C39B4F84571BCF /* PBXTargetDependency */,
+			);
+			name = GarderobeUITests;
+			packageProductDependencies = (
+			);
+			productName = GarderobeUITests;
+			productReference = 40B0C547774E8A437BB56692 /* GarderobeUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		F30F7BF37FCEBF28A71B09C0 /* Garderobe */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C7F34C87C163AEE623E2CB6F /* Build configuration list for PBXNativeTarget "Garderobe" */;
+			buildPhases = (
+				E0CBA09DEBAF665F581C8853 /* Sources */,
+				CA45272D316F0A872CBB9BBD /* Resources */,
+				BA373DA21539D5261B64A1EC /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Garderobe;
+			packageProductDependencies = (
+				E102653777E266CD2F6DCC5A /* GarderobeKit */,
+				E62C437B841B2C8083999E21 /* GarderobeUI */,
+			);
+			productName = Garderobe;
+			productReference = 910F5AE88C7B72C039880FC1 /* Garderobe.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		70B152936BAC17A95E82BED2 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					54A3486AB80203AD810437C7 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+						TestTargetID = F30F7BF37FCEBF28A71B09C0;
+					};
+					F30F7BF37FCEBF28A71B09C0 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = E48120B07517BF27B3B97624 /* Build configuration list for PBXProject "Garderobe" */;
+			developmentRegion = "en-GB";
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				"en-GB",
+			);
+			mainGroup = CC8BB98AC91432DE42D197A7;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				6F5C0EBAFD5D1D342EA92A31 /* XCLocalSwiftPackageReference "." */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 044B9DA471DEAD981584CFCC /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				F30F7BF37FCEBF28A71B09C0 /* Garderobe */,
+				54A3486AB80203AD810437C7 /* GarderobeUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		CA45272D316F0A872CBB9BBD /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9DEFF93F29B966CF0284FE16 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		71F3A386D3E46A26443A7F48 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				65EF40A1BA6E54B24F182910 /* GarderobeUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E0CBA09DEBAF665F581C8853 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6BA5417ECD2926527E064B42 /* GarderobeApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		42BA20F483C39B4F84571BCF /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = F30F7BF37FCEBF28A71B09C0 /* Garderobe */;
+			targetProxy = B05AAE3228A29FC1D95C9C38 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		3C9427B1BAA7BD121DFE3278 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = app.garderobe.ios.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Garderobe;
+			};
+			name = Release;
+		};
+		67CC8678F53F58394009226E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = app.garderobe.ios.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Garderobe;
+			};
+			name = Debug;
+		};
+		87A0E5AE387B160E406AB3D1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = app.garderobe.ios;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		8FBE1EED33DD91704B3D00BF /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GARDEROBE_API_BASE_URL = "";
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		A96D25A7238C6BF6038AFA0C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = app.garderobe.ios;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		DF28C1BF8C3A4ACD2AA5E79E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GARDEROBE_API_BASE_URL = "";
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		859459469DD7080B6CE955E3 /* Build configuration list for PBXNativeTarget "GarderobeUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				67CC8678F53F58394009226E /* Debug */,
+				3C9427B1BAA7BD121DFE3278 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		C7F34C87C163AEE623E2CB6F /* Build configuration list for PBXNativeTarget "Garderobe" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				87A0E5AE387B160E406AB3D1 /* Debug */,
+				A96D25A7238C6BF6038AFA0C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		E48120B07517BF27B3B97624 /* Build configuration list for PBXProject "Garderobe" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DF28C1BF8C3A4ACD2AA5E79E /* Debug */,
+				8FBE1EED33DD91704B3D00BF /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		6F5C0EBAFD5D1D342EA92A31 /* XCLocalSwiftPackageReference "." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = .;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		E102653777E266CD2F6DCC5A /* GarderobeKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = GarderobeKit;
+		};
+		E62C437B841B2C8083999E21 /* GarderobeUI */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = GarderobeUI;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 70B152936BAC17A95E82BED2 /* Project object */;
+}

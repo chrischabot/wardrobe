@@ -1,0 +1,1248 @@
+{
+  "$id": "https://garderobe.invalid/contracts/2026-10-01/ImportDataset.json",
+  "title": "ImportDataset",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "format": {
+      "type": "string",
+      "const": "garderobe-neutral-export"
+    },
+    "version": {
+      "type": "number",
+      "const": 1
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "system": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "exportedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+        },
+        "label": {
+          "type": "string",
+          "maxLength": 200
+        }
+      },
+      "required": [
+        "system",
+        "exportedAt"
+      ],
+      "additionalProperties": false
+    },
+    "owner": {
+      "type": "object",
+      "properties": {
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "homeLocationLabel": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "homeLatitude": {
+          "type": "number",
+          "minimum": -90,
+          "maximum": 90
+        },
+        "homeLongitude": {
+          "type": "number",
+          "minimum": -180,
+          "maximum": 180
+        },
+        "timezone": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z_]+(?:\\/[A-Za-z0-9_+\\-]+)*$|^UTC$"
+        },
+        "deliveryTime": {
+          "default": "07:00",
+          "type": "string",
+          "pattern": "^\\d{2}:\\d{2}$"
+        },
+        "dailyOptionCount": {
+          "default": 5,
+          "type": "integer",
+          "minimum": 3,
+          "maximum": 5
+        },
+        "laundryRoutine": {
+          "type": "object",
+          "properties": {
+            "service": {
+              "type": "object",
+              "properties": {
+                "collectDow": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 6
+                },
+                "collectTime": {
+                  "type": "string",
+                  "pattern": "^\\d{2}:\\d{2}$"
+                },
+                "returnDow": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 6
+                },
+                "baselineDow": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 6
+                },
+                "baselineTime": {
+                  "type": "string",
+                  "pattern": "^\\d{2}:\\d{2}$"
+                }
+              },
+              "required": [
+                "collectDow",
+                "collectTime",
+                "returnDow",
+                "baselineDow",
+                "baselineTime"
+              ],
+              "additionalProperties": false
+            },
+            "handWash": {
+              "type": "object",
+              "properties": {
+                "baselineDow": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 6
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "baselineTime": {
+                  "type": "string",
+                  "pattern": "^\\d{2}:\\d{2}$"
+                }
+              },
+              "required": [
+                "baselineDow",
+                "baselineTime"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "service",
+            "handWash"
+          ],
+          "additionalProperties": false
+        },
+        "wearLoggingSince": {
+          "type": "string",
+          "format": "date",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$"
+        },
+        "estimatorParameters": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "displayName",
+        "homeLocationLabel",
+        "timezone",
+        "wearLoggingSince"
+      ],
+      "additionalProperties": false
+    },
+    "styleDocuments": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sourceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1
+          },
+          "isDemo": {
+            "type": "boolean"
+          },
+          "source": {
+            "default": "import",
+            "type": "string",
+            "enum": [
+              "owner_supplied",
+              "import",
+              "synthetic_test"
+            ]
+          },
+          "authoredOn": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$"
+          },
+          "expectedSha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "rules": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "ruleKey": {
+                  "type": "string",
+                  "minLength": 3,
+                  "maxLength": 80,
+                  "pattern": "^[a-z][a-z0-9_.]+$"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "hard_rule",
+                    "standing_direction"
+                  ]
+                },
+                "strength": {
+                  "type": "string",
+                  "enum": [
+                    "hard",
+                    "soft"
+                  ]
+                },
+                "category": {
+                  "type": "string",
+                  "enum": [
+                    "socks",
+                    "footwear",
+                    "thermal",
+                    "variety",
+                    "swap",
+                    "naming",
+                    "colour",
+                    "register",
+                    "filter",
+                    "accessories",
+                    "fabric",
+                    "construction",
+                    "size",
+                    "advice",
+                    "board_format",
+                    "day_brief",
+                    "comfort"
+                  ]
+                },
+                "statement": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1000
+                },
+                "interpretation": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2000
+                },
+                "machine": {
+                  "default": {},
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {}
+                },
+                "exceptionPolicy": {
+                  "default": "owner_scoped",
+                  "type": "string",
+                  "enum": [
+                    "none",
+                    "owner_scoped",
+                    "restriction_lift_only"
+                  ]
+                },
+                "passage": {
+                  "type": "object",
+                  "properties": {
+                    "section": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "quote": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 2000
+                    }
+                  },
+                  "required": [
+                    "section",
+                    "quote"
+                  ],
+                  "additionalProperties": false
+                },
+                "status": {
+                  "default": "active",
+                  "type": "string",
+                  "enum": [
+                    "active",
+                    "pending_activation",
+                    "retired"
+                  ]
+                },
+                "restrictionSourceId": {
+                  "type": "string",
+                  "maxLength": 120
+                }
+              },
+              "required": [
+                "ruleKey",
+                "kind",
+                "strength",
+                "category",
+                "statement",
+                "interpretation",
+                "passage"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "sourceId",
+          "title",
+          "body",
+          "isDemo",
+          "authoredOn"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "garments": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sourceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "shirt",
+              "tshirt",
+              "polo",
+              "knitwear",
+              "sweatshirt",
+              "trousers",
+              "jeans",
+              "shorts",
+              "blazer",
+              "jacket",
+              "coat",
+              "overshirt",
+              "shoes",
+              "sneakers",
+              "boots",
+              "socks",
+              "underwear",
+              "belt",
+              "scarf",
+              "hat",
+              "gloves",
+              "bag",
+              "tie",
+              "accessory",
+              "indoor"
+            ]
+          },
+          "roles": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "base_top",
+                "mid_layer",
+                "outer_layer",
+                "bottom",
+                "one_piece",
+                "footwear",
+                "socks",
+                "belt",
+                "accessory",
+                "underwear",
+                "indoor"
+              ]
+            }
+          },
+          "maker": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "productName": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "productCode": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "fabric": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "color": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "colorFamily": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "pattern": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "sizeLabel": {
+            "type": "string",
+            "maxLength": 60
+          },
+          "careChannel": {
+            "type": "string",
+            "enum": [
+              "service",
+              "hand_wash",
+              "dry_clean",
+              "none"
+            ]
+          },
+          "laundryPolicy": {
+            "type": "string",
+            "enum": [
+              "per_wear",
+              "single_wear_day",
+              "multi_wear",
+              "never"
+            ]
+          },
+          "tracking": {
+            "default": "unit",
+            "type": "string",
+            "enum": [
+              "unit",
+              "anonymous_quantity"
+            ]
+          },
+          "acquisition": {
+            "type": "string",
+            "enum": [
+              "incoming",
+              "owned",
+              "disposed"
+            ]
+          },
+          "disposalReason": {
+            "type": "string",
+            "enum": [
+              "sold",
+              "donated",
+              "discarded",
+              "returned",
+              "lost",
+              "fabricated_entry"
+            ]
+          },
+          "planningPolicy": {
+            "default": "normal",
+            "type": "string",
+            "enum": [
+              "normal",
+              "occasional",
+              "excluded"
+            ]
+          },
+          "condition": {
+            "default": "good",
+            "type": "string",
+            "enum": [
+              "good",
+              "worn",
+              "needs_repair",
+              "damaged",
+              "unknown"
+            ]
+          },
+          "location": {
+            "default": "home",
+            "type": "string",
+            "enum": [
+              "home",
+              "storage",
+              "tailor",
+              "repair",
+              "trip",
+              "consignment",
+              "in_transit",
+              "unknown"
+            ]
+          },
+          "locationDetail": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "attributes": {
+            "default": {},
+            "type": "object",
+            "properties": {
+              "construction": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "fabricClass": {
+                "type": "string",
+                "maxLength": 60
+              },
+              "weight": {
+                "type": "string",
+                "enum": [
+                  "light",
+                  "mid",
+                  "heavy"
+                ]
+              },
+              "minTempC": {
+                "type": "number",
+                "minimum": -40,
+                "maximum": 50
+              },
+              "maxTempC": {
+                "type": "number",
+                "minimum": -40,
+                "maximum": 50
+              },
+              "indoorOnly": {
+                "type": "boolean"
+              },
+              "season": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "spring",
+                    "summer",
+                    "autumn",
+                    "winter"
+                  ]
+                }
+              },
+              "tags": {
+                "maxItems": 30,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "maxLength": 40
+                }
+              }
+            },
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              ]
+            }
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "stock": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "enum": [
+                "clean",
+                "worn",
+                "hamper",
+                "laundry",
+                "storage",
+                "away",
+                "retired"
+              ]
+            },
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "aliases": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "phrase": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "kind": {
+                  "default": "owner_phrase",
+                  "type": "string",
+                  "enum": [
+                    "owner_phrase",
+                    "maker_name",
+                    "maker_code",
+                    "sku",
+                    "import_ref"
+                  ]
+                }
+              },
+              "required": [
+                "phrase"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "facts": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "field": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "value": {},
+                "sourceKind": {
+                  "default": "import",
+                  "type": "string",
+                  "enum": [
+                    "owner_statement",
+                    "receipt",
+                    "maker_spec",
+                    "photograph",
+                    "measurement",
+                    "research",
+                    "import",
+                    "model_inference"
+                  ]
+                },
+                "sourceRef": {
+                  "type": "string",
+                  "maxLength": 500
+                },
+                "observedAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                },
+                "confidence": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              },
+              "required": [
+                "field",
+                "value",
+                "sourceRef",
+                "observedAt"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "sourceRows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "sourceId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                },
+                "row": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "rowSha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "disposition": {
+                  "type": "string",
+                  "enum": [
+                    "imported",
+                    "merged"
+                  ]
+                },
+                "note": {
+                  "type": "string",
+                  "maxLength": 500
+                }
+              },
+              "required": [
+                "sourceId",
+                "disposition"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "sourceId",
+          "name",
+          "category",
+          "roles",
+          "careChannel",
+          "laundryPolicy",
+          "acquisition"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "restrictions": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sourceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "healing",
+              "occasional_use",
+              "repair",
+              "return_pending",
+              "for_sale",
+              "care",
+              "custom"
+            ]
+          },
+          "scope": {
+            "type": "object",
+            "properties": {
+              "garmentSourceIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                }
+              },
+              "categories": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "shirt",
+                    "tshirt",
+                    "polo",
+                    "knitwear",
+                    "sweatshirt",
+                    "trousers",
+                    "jeans",
+                    "shorts",
+                    "blazer",
+                    "jacket",
+                    "coat",
+                    "overshirt",
+                    "shoes",
+                    "sneakers",
+                    "boots",
+                    "socks",
+                    "underwear",
+                    "belt",
+                    "scarf",
+                    "hat",
+                    "gloves",
+                    "bag",
+                    "tie",
+                    "accessory",
+                    "indoor"
+                  ]
+                }
+              },
+              "roles": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "base_top",
+                    "mid_layer",
+                    "outer_layer",
+                    "bottom",
+                    "one_piece",
+                    "footwear",
+                    "socks",
+                    "belt",
+                    "accessory",
+                    "underwear",
+                    "indoor"
+                  ]
+                }
+              },
+              "attributes": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "startsAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          },
+          "expectedEnd": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$"
+          },
+          "requiredEvidence": {
+            "default": "owner_statement",
+            "type": "string",
+            "enum": [
+              "owner_statement",
+              "receipt",
+              "tailor_return",
+              "any_owner_command"
+            ]
+          }
+        },
+        "required": [
+          "sourceId",
+          "kind",
+          "scope",
+          "reason",
+          "startsAt"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "orders": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sourceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "merchant": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "merchantOrderNumber": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "orderedAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+          },
+          "currency": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 3
+          },
+          "lines": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "externalLineId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                },
+                "garmentSourceId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                },
+                "description": {
+                  "type": "string",
+                  "maxLength": 500
+                },
+                "quantity": {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "unitPriceMinor": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "arrivalEstimate": {
+                  "type": "string",
+                  "format": "date",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$"
+                },
+                "arrivedQuantity": {
+                  "default": 0,
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "returnDeadline": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "request",
+                        "post",
+                        "retailer_receipt"
+                      ]
+                    },
+                    "deadline": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    },
+                    "timezone": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 64,
+                      "pattern": "^[A-Za-z_]+(?:\\/[A-Za-z0-9_+\\-]+)*$|^UTC$"
+                    },
+                    "termsSource": {
+                      "type": "string",
+                      "maxLength": 500
+                    },
+                    "checkedAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z|([+-](?:[01]\\d|2[0-3]):[0-5]\\d)))$"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "deadline",
+                    "timezone",
+                    "termsSource",
+                    "checkedAt"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "externalLineId",
+                "description",
+                "quantity",
+                "unitPriceMinor"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "sourceId",
+          "merchant",
+          "merchantOrderNumber",
+          "orderedAt",
+          "currency",
+          "lines"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "measurements": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sourceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "subject": {
+            "type": "string",
+            "enum": [
+              "body",
+              "garment"
+            ]
+          },
+          "garmentSourceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "value": {
+            "type": "number"
+          },
+          "unit": {
+            "type": "string",
+            "enum": [
+              "cm",
+              "in",
+              "mm",
+              "kg",
+              "eu",
+              "uk",
+              "us"
+            ]
+          },
+          "convention": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "measuredOn": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$"
+          },
+          "source": {
+            "type": "string",
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "sourceId",
+          "subject",
+          "name",
+          "value",
+          "unit",
+          "measuredOn",
+          "source"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "lifecycleProjects": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sourceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "tailoring",
+              "return",
+              "storage",
+              "sale",
+              "consignment",
+              "repair"
+            ]
+          },
+          "garmentSourceIds": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
+            }
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 40
+          },
+          "details": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "expectedReturn": {
+            "type": "string",
+            "format": "date",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$"
+          }
+        },
+        "required": [
+          "sourceId",
+          "kind",
+          "garmentSourceIds",
+          "status"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "heldRows": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sourceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "row": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 9007199254740991
+          },
+          "rowSha256": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "sourceId",
+          "reason"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "issues": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "issueKey": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 200
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60
+          },
+          "severity": {
+            "default": "review",
+            "type": "string",
+            "enum": [
+              "info",
+              "review",
+              "conflict"
+            ]
+          },
+          "garmentSourceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "sourceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "detail": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "evidence": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          }
+        },
+        "required": [
+          "issueKey",
+          "kind",
+          "detail"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "format",
+    "version",
+    "source",
+    "owner",
+    "garments"
+  ],
+  "additionalProperties": false
+}

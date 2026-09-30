@@ -1,0 +1,15 @@
+{
+  "note": "Direct probes of anthropic/claude-fable-5-1 through garderobe-dev compat (Unified Billing) from the sandbox, max_tokens 8",
+  "attempts": [
+    {
+      "at": "2026-09-29T14:36:20.476Z",
+      "status": 404,
+      "message": "{\"code\":\"not_found_error\",\"message\":\"model: claude-fable-5-1\",\"type\":\"invalid_request_error\",\"param\":null}"
+    },
+    {
+      "at": "2026-09-29T14:38:27.158Z",
+      "status": 200,
+      "message": "ok: ok"
+    }
+  ]
+}

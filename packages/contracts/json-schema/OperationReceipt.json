@@ -1,0 +1,34 @@
+{
+  "$id": "https://garderobe.invalid/contracts/2026-10-01/OperationReceipt.json",
+  "title": "OperationReceipt",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "operation": {
+      "type": "string"
+    },
+    "idempotencyKey": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "replayed": {
+      "type": "boolean"
+    },
+    "result": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {}
+    }
+  },
+  "required": [
+    "operation",
+    "idempotencyKey",
+    "replayed",
+    "result"
+  ],
+  "additionalProperties": false
+}

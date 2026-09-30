@@ -1,0 +1,36 @@
+{
+  "signed": {
+    "status": 200,
+    "type": "image/svg+xml",
+    "bytes": 960,
+    "cache": "private, max-age=300"
+  },
+  "tampered": {
+    "status": 404,
+    "type": "application/json",
+    "bytes": 85,
+    "cache": "no-store"
+  },
+  "noTokenOwnerSession": {
+    "status": 200,
+    "type": "image/svg+xml",
+    "bytes": 960,
+    "cache": "private, no-cache"
+  },
+  "noTokenOtherOwner": {
+    "status": 404,
+    "type": "application/json",
+    "bytes": 85,
+    "cache": "no-store"
+  },
+  "signedFromOtherOwnerSession": {
+    "status": 200,
+    "type": "image/svg+xml",
+    "bytes": 960,
+    "cache": "private, max-age=300"
+  },
+  "withoutAccess": {
+    "status": 302,
+    "redirectsToAccess": true
+  }
+}

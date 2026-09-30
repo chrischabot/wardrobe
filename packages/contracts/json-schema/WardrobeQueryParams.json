@@ -1,0 +1,93 @@
+{
+  "$id": "https://garderobe.invalid/contracts/2026-10-01/WardrobeQueryParams.json",
+  "title": "WardrobeQueryParams",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "q": {
+      "type": "string",
+      "maxLength": 200
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "shirt",
+        "tshirt",
+        "polo",
+        "knitwear",
+        "sweatshirt",
+        "trousers",
+        "jeans",
+        "shorts",
+        "blazer",
+        "jacket",
+        "coat",
+        "overshirt",
+        "shoes",
+        "sneakers",
+        "boots",
+        "socks",
+        "underwear",
+        "belt",
+        "scarf",
+        "hat",
+        "gloves",
+        "bag",
+        "tie",
+        "accessory",
+        "indoor"
+      ]
+    },
+    "availability": {
+      "type": "string",
+      "enum": [
+        "available",
+        "unavailable",
+        "incoming",
+        "retired",
+        "any"
+      ]
+    },
+    "colorFamily": {
+      "type": "string",
+      "maxLength": 40
+    },
+    "season": {
+      "type": "string",
+      "enum": [
+        "spring",
+        "summer",
+        "autumn",
+        "winter"
+      ]
+    },
+    "location": {
+      "type": "string",
+      "enum": [
+        "home",
+        "storage",
+        "tailor",
+        "repair",
+        "trip",
+        "consignment",
+        "in_transit",
+        "unknown"
+      ]
+    },
+    "lastWornBefore": {
+      "type": "string",
+      "format": "date",
+      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))$"
+    },
+    "cursor": {
+      "type": "string",
+      "maxLength": 40
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 500
+    }
+  },
+  "additionalProperties": false
+}

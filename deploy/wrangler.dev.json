@@ -1,0 +1,116 @@
+{
+  "$schema": "../node_modules/wrangler/config-schema.json",
+  "name": "garderobe-dev",
+  "main": "src/dev-entry.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "global_fetch_strictly_public"
+  ],
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "garderobe-dev.chabot.dev",
+      "custom_domain": true
+    },
+    {
+      "pattern": "garderobe-dev-mcp.chabot.dev",
+      "custom_domain": true
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "garderobe-dev",
+      "database_id": "92c5c5a7-5dd3-4868-826b-506787647eeb",
+      "migrations_dir": "../backend/migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA",
+      "bucket_name": "garderobe-dev-media"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "d806114bc626445d800d0e92f61efbec"
+    },
+    {
+      "binding": "CACHE_KV",
+      "id": "20def4c0a3ca4b53af022047498042f1"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "INDEX_QUEUE",
+        "queue": "garderobe-index-dev"
+      },
+      {
+        "binding": "MEDIA_QUEUE",
+        "queue": "garderobe-media-dev"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "garderobe-media-dev",
+        "max_batch_size": 5,
+        "max_batch_timeout": 5,
+        "max_retries": 3
+      }
+    ]
+  },
+  "workflows": [
+    {
+      "name": "garderobe-daily-service-dev",
+      "binding": "DAILY_SERVICE_WORKFLOW",
+      "class_name": "DailyServiceWorkflow"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ASSISTANT",
+        "class_name": "GarderobeAssistant"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "GarderobeAssistant"
+      ]
+    }
+  ],
+  "ai": {
+    "binding": "AI"
+  },
+  "vars": {
+    "ENVIRONMENT": "dev",
+    "AI_GATEWAY_ID": "garderobe-dev",
+    "DEFAULT_TIMEZONE": "Europe/London",
+    "ACCESS_TEAM_DOMAIN": "https://raspy-fire-6cac.cloudflareaccess.com",
+    "ACCESS_AUD": "54d337d8c9233cf8960667404f0a10d5fdea0938a40255c4997c806b9a75dca6,143f5976c4b9ee0ed71d41566fbdad4de923242f8750b75173846ec976d45e3f",
+    "APP_HOSTNAMES": "garderobe-dev.chabot.dev",
+    "APP_ORIGIN": "https://garderobe-dev.chabot.dev",
+    "MCP_ORIGIN": "https://garderobe-dev-mcp.chabot.dev",
+    "NATIVE_REDIRECT_URIS": "garderobe://auth/callback",
+    "WEATHER_PROVIDER": "open-meteo",
+    "MODEL_SPEND_CAP_USD": "50",
+    "MODEL_PROBES": "{\"chat.deepseek-flash\":{\"status\":\"failed\",\"checkedAt\":\"2026-09-29T20:01:53.496Z\",\"gatewayId\":\"garderobe-dev\",\"reason\":\"Authentication Fails (governor)\"},\"chat.gpt-6-1-sol\":{\"status\":\"passed\",\"checkedAt\":\"2026-09-29T20:01:53.496Z\",\"gatewayId\":\"garderobe-dev\"},\"chat.opus-5-5-medium\":{\"status\":\"passed\",\"checkedAt\":\"2026-09-29T20:01:53.496Z\",\"gatewayId\":\"garderobe-dev\"},\"compaction.workers-ai\":{\"status\":\"passed\",\"checkedAt\":\"2026-09-29T20:01:53.496Z\",\"gatewayId\":\"garderobe-dev\"},\"embeddings.workers-ai\":{\"status\":\"passed\",\"checkedAt\":\"2026-09-29T20:01:53.496Z\",\"gatewayId\":\"garderobe-dev\"}}"
+  },
+  "ai_search": [
+    {
+      "binding": "AI_SEARCH_PROBE",
+      "instance_name": "garderobe-dev-recall"
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+PASS [auth] app hostname without credentials is sent to the Access login {"status":302}
+PASS [auth] a forged Cf-Access-Jwt-Assertion without Access sign-in never reaches the API {"status":302}
+PASS [auth] a forged assertion added next to a valid service token cannot change who the caller is {"status":200,"displayName":"Synthetic Test Owner B","code":null}
+PASS [auth] the MCP hostname (outside Access except /authorize) refuses app routes even with a self-made assertion {"status":403,"code":"host_not_protected"}
+PASS [auth] /authorize on the MCP hostname is behind Access {"status":302}
+PASS [auth] /mcp, /.well-known and /oauth are outside Access; /mcp without a bearer is 401 with resource metadata {"mcp":401,"wwwAuthenticateHasResourceMetadata":true,"authorizationServerMetadata":200,"protectedResourceMetadata":200,"issuer":"https://garderobe-dev-mcp.chabot.dev"}
+PASS [auth] an Access service token alone is not an MCP credential {"status":401}
+PASS [auth] no workers.dev route serves the dev Worker {"status":404}
+PASS [auth] unlinking a service token turns it into unknown_identity; relinking restores it (audited) {"unlinked":{"status":403,"code":"unknown_identity"},"relinked":200}
+PASS [oauth] Claude write grant end to end (register, Access consent, PKCE S256, token) {"steps":{"register":201,"consentPage":200,"approve":302,"token":200},"scope":"wardrobe:read wardrobe:write","expiresIn":900,"refreshToken":true}
+PASS [oauth] ChatGPT read-only grant: the owner approves less than requested {"steps":{"register":201,"consentPage":200,"approve":302,"token":200},"scope":"wardrobe:read"}
+PASS [oauth] test owner B gets its own grant through its own Access identity {"steps":{"register":201,"consentPage":200,"approve":302,"token":200},"scope":"wardrobe:read wardrobe:write"}
+PASS [oauth] refresh rotates; replaying the used refresh token is refused {"refresh":200,"rotated":true,"secondRefresh":200,"replayOfFirstRefreshToken":{"status":400,"error":"invalid_grant"}}
+PASS [oauth] an MCP access token is not accepted by the app API {"status":401,"code":"invalid_token"}
+PASS [isolation] owner B cannot read the owner's item and sees only its own wardrobe (app API) {"ownerReadsOwnItem":200,"itemStatusForB":404,"ownerTotal":145,"ownerBTotal":10,"overlap":false}
+PASS [isolation] owner B's MCP grant cannot resolve the owner's garment and counts only its own {"ownerBTotal":10,"itemFound":false,"isError":true}
+PASS [isolation] a forged owner field in an MCP command is refused {"isError":true,"outcome":null,"code":null}
+PASS [idempotency] app surface: same key replays, same key with a different body is 409; Undo works {"first":201,"replay":{"status":200,"replayed":true},"reusedKey":{"status":409,"code":"idempotency_key_reused"},"undo":{"status":201,"outcome":"committed"}}
+PASS [idempotency] MCP garderobe_command: a retry with the same key returns the original receipt {"first":"committed","retry":{"replayed":true,"sameCommand":true}}
+PASS [scopes] a read-only grant gets a proposal and changes nothing {"status":"proposal","newestReceiptUnchanged":true}
+PASS [profile] the verbatim profile on dev is the spec profile (SHA-256) {"status":200,"matchesSpec":true}
+PASS [profile] section 8 hard constraints on the deployed board for 2026-09-29 {"options":5,"peakC":26.3,"departureC":18,"wornLastSevenDays":13,"violations":0}
+PASS [profile] section 8 hard constraints on the deployed board for 2026-09-30 {"options":5,"peakC":23.7,"departureC":21.6,"wornLastSevenDays":8,"violations":0}
+PASS [oauth] disconnecting a grant in Garderobe stops its MCP calls at once {"beforeDisconnect":"ok","disconnect":200,"afterDisconnect":"refused: Unauthorized"}
+PASS [web] the private web board renders for the signed-in owner: HTML, no script, framing denied {"status":200,"contentType":"text/html; charset=utf-8","scriptTags":0,"xFrameOptions":"DENY","csp":true,"withoutAccess":302,"bytes":16514}
+PASS [mcp] MCP SDK client over HTTPS, all seven tools (negotiated 2026-07-28) {"exitCode":0,"protocol":"2026-07-28","tools":"7 tools:","askRunStatus":"answered"}
+PASS [mcp] MCP SDK client over HTTPS, all seven tools (2025-11-25 adapter) {"exitCode":0,"protocol":"2025-11-25","tools":"7 tools:","askRunStatus":"answered"}
+27/27 checks passed.

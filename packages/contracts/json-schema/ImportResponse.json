@@ -1,0 +1,43 @@
+{
+  "$id": "https://garderobe.invalid/contracts/2026-10-01/ImportResponse.json",
+  "title": "ImportResponse",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "2026-10-01"
+    },
+    "imported": {
+      "type": "boolean",
+      "const": true
+    },
+    "tables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "name",
+          "rows"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "imported",
+    "tables"
+  ],
+  "additionalProperties": false
+}

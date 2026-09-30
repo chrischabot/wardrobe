@@ -1,0 +1,191 @@
+{
+  "gatewayId": "garderobe-dev",
+  "checkedAt": "2026-09-29T20:01:53.496Z",
+  "results": [
+    {
+      "label": "chat reference (Workers AI via binding)",
+      "via": "ai.run",
+      "model": "@cf/meta/llama-3.1-8b-instruct-fast",
+      "ok": true,
+      "latencyMs": 922,
+      "output": "ok",
+      "usage": {
+        "prompt_tokens": 42,
+        "completion_tokens": 2,
+        "total_tokens": 44,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "neurons": 0.2427152693271637
+      },
+      "shape": [
+        "choices",
+        "created",
+        "ec_transfer_params",
+        "id",
+        "kv_transfer_params",
+        "metrics",
+        "model",
+        "object",
+        "prompt_logprobs",
+        "prompt_text",
+        "prompt_token_ids",
+        "response",
+        "service_tier",
+        "tool_calls",
+        "usage"
+      ]
+    },
+    {
+      "label": "compaction.workers-ai candidate (binding)",
+      "via": "ai.run",
+      "model": "@cf/moonshotai/kimi-k2.7-code",
+      "ok": true,
+      "latencyMs": 1087,
+      "output": "ok",
+      "usage": {
+        "prompt_tokens": 15,
+        "completion_tokens": 32,
+        "total_tokens": 47,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "neurons": 12.931818008422852
+      },
+      "shape": [
+        "choices",
+        "created",
+        "id",
+        "model",
+        "object",
+        "usage"
+      ]
+    },
+    {
+      "label": "embeddings.workers-ai candidate (binding)",
+      "via": "embed",
+      "model": "@cf/baai/bge-m3",
+      "ok": true,
+      "latencyMs": 241,
+      "dimensions": 1024,
+      "shape": [
+        1,
+        1024
+      ]
+    },
+    {
+      "label": "AI Search default embedding (binding)",
+      "via": "embed",
+      "model": "@cf/qwen/qwen3-embedding-0.6b",
+      "ok": true,
+      "latencyMs": 722,
+      "dimensions": 1024,
+      "shape": [
+        1,
+        1024
+      ]
+    },
+    {
+      "label": "chat.deepseek-flash candidate (binding gateway().run compat)",
+      "via": "gateway.run",
+      "model": "deepseek/deepseek-flash",
+      "ok": false,
+      "status": 401,
+      "latencyMs": 468,
+      "providerModel": null,
+      "output": null,
+      "usage": null,
+      "error": "Authentication Fails (governor)"
+    },
+    {
+      "label": "chat reference (binding gateway().run compat)",
+      "via": "gateway.run",
+      "model": "workers-ai/@cf/meta/llama-3.1-8b-instruct-fast",
+      "ok": true,
+      "status": 200,
+      "latencyMs": 317,
+      "providerModel": "@cf/meta/llama-3.1-8b-instruct-fast",
+      "output": "ok",
+      "usage": {
+        "prompt_tokens": 42,
+        "completion_tokens": 2,
+        "total_tokens": 44,
+        "prompt_tokens_details": {
+          "cached_tokens": 0
+        },
+        "neurons": 0.2427152693271637
+      },
+      "error": null
+    },
+    {
+      "label": "chat.deepseek-flash candidate (product compat route, token)",
+      "via": "compat-fetch",
+      "model": "deepseek/deepseek-flash",
+      "ok": false,
+      "status": 401,
+      "latencyMs": 550,
+      "providerModel": null,
+      "output": null,
+      "usage": null,
+      "error": "Authentication Fails (governor)"
+    },
+    {
+      "label": "chat.gpt-6-1-sol (product transport, OpenAI Responses route, with a tool)",
+      "via": "profile",
+      "profileId": "chat.gpt-6-1-sol",
+      "model": "gpt-6.1-sol",
+      "ok": true,
+      "latencyMs": 1286,
+      "route": "gateway-openai-responses",
+      "providerModel": "gpt-6.1-sol",
+      "usage": {
+        "inputTokens": 42,
+        "outputTokens": 5
+      },
+      "output": "ok"
+    },
+    {
+      "label": "chat.opus-5-5-medium (product transport, Anthropic route, with a tool)",
+      "via": "profile",
+      "profileId": "chat.opus-5-5-medium",
+      "model": "claude-opus-5-5",
+      "ok": true,
+      "latencyMs": 2278,
+      "route": "gateway-anthropic",
+      "providerModel": "claude-opus-5-5",
+      "usage": {
+        "inputTokens": 363,
+        "outputTokens": 4
+      },
+      "output": "ok"
+    }
+  ],
+  "recordedProbes": {
+    "chat.deepseek-flash": {
+      "status": "failed",
+      "checkedAt": "2026-09-29T20:01:53.496Z",
+      "gatewayId": "garderobe-dev",
+      "reason": "Authentication Fails (governor)"
+    },
+    "chat.gpt-6-1-sol": {
+      "status": "passed",
+      "checkedAt": "2026-09-29T20:01:53.496Z",
+      "gatewayId": "garderobe-dev"
+    },
+    "chat.opus-5-5-medium": {
+      "status": "passed",
+      "checkedAt": "2026-09-29T20:01:53.496Z",
+      "gatewayId": "garderobe-dev"
+    },
+    "compaction.workers-ai": {
+      "status": "passed",
+      "checkedAt": "2026-09-29T20:01:53.496Z",
+      "gatewayId": "garderobe-dev"
+    },
+    "embeddings.workers-ai": {
+      "status": "passed",
+      "checkedAt": "2026-09-29T20:01:53.496Z",
+      "gatewayId": "garderobe-dev"
+    }
+  }
+}

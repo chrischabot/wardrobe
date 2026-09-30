@@ -1,0 +1,67 @@
+{
+  "accountLabel": "the owner's Cloudflare account (CLOUDFLARE_ACCOUNT_ID)",
+  "d1": {
+    "name": "garderobe-dev",
+    "id": "92c5c5a7-5dd3-4868-826b-506787647eeb"
+  },
+  "r2": {
+    "name": "garderobe-dev-media"
+  },
+  "kv": {
+    "oauth": {
+      "title": "garderobe-dev-oauth",
+      "id": "d806114bc626445d800d0e92f61efbec"
+    },
+    "cache": {
+      "title": "garderobe-dev-cache",
+      "id": "20def4c0a3ca4b53af022047498042f1"
+    }
+  },
+  "queues": [
+    {
+      "name": "garderobe-media-dev",
+      "id": "cd1963bfc506410eb244f7c0d7599909"
+    },
+    {
+      "name": "garderobe-index-dev",
+      "id": "3c71ab9178204e83a1741c2d06187d38"
+    }
+  ],
+  "aiSearch": {
+    "name": "garderobe-dev-recall",
+    "status": "exists"
+  },
+  "access": {
+    "teamDomain": "https://raspy-fire-6cac.cloudflareaccess.com",
+    "serviceToken": {
+      "name": "garderobe-dev-automation",
+      "id": "83ab818f-28b2-4f35-a6ab-f41dbf688f4a",
+      "clientId": "(in deploy/.state only)",
+      "expiresAt": "2027-09-29T14:01:05Z"
+    },
+    "serviceTokenB": {
+      "name": "garderobe-dev-automation-owner-b",
+      "id": "65f34aae-b64a-4958-9d06-7cf99c39a149",
+      "clientId": "(in deploy/.state only)",
+      "expiresAt": "2027-09-29T14:10:24Z"
+    },
+    "serviceTokenPolicy": {
+      "name": "Garderobe dev automation (service token)",
+      "id": "35e89f37-a18a-49bc-b420-99c72961f0a9"
+    },
+    "ownerPolicyId": "bbccddd2-7526-4e94-8b22-a9db7de420b2",
+    "appApplication": {
+      "name": "Garderobe dev (app and web board)",
+      "id": "1c97bc78-596d-4810-bf45-ae862fcaaca1",
+      "domain": "garderobe-dev.chabot.dev",
+      "aud": "54d337d8c9233cf8960667404f0a10d5fdea0938a40255c4997c806b9a75dca6"
+    },
+    "mcpConsentApplication": {
+      "name": "Garderobe dev (MCP consent /authorize)",
+      "id": "c9be4003-bcbf-4d50-93ae-4614fe9da79b",
+      "domain": "garderobe-dev-mcp.chabot.dev/authorize",
+      "aud": "143f5976c4b9ee0ed71d41566fbdad4de923242f8750b75173846ec976d45e3f"
+    }
+  },
+  "updatedAt": "2026-09-30T01:14:41.794Z"
+}

@@ -1,0 +1,55 @@
+{
+  "$id": "https://garderobe.invalid/contracts/2026-10-01/RegisterConnectionRequest.json",
+  "title": "RegisterConnectionRequest",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "endpoint": {
+      "type": "string",
+      "maxLength": 2000,
+      "format": "uri"
+    },
+    "allowedEffects": {
+      "default": [
+        "read"
+      ],
+      "minItems": 1,
+      "maxItems": 2,
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "read",
+          "write"
+        ]
+      }
+    },
+    "credentialSecretName": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]{2,63}$"
+    },
+    "expectedIssuer": {
+      "type": "string",
+      "maxLength": 2000,
+      "format": "uri"
+    },
+    "dataClasses": {
+      "maxItems": 10,
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 40
+      }
+    }
+  },
+  "required": [
+    "name",
+    "endpoint"
+  ],
+  "additionalProperties": false
+}

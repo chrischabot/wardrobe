@@ -1,0 +1,81 @@
+{
+  "schemaVersion": "2026-10-01",
+  "messages": [
+    {
+      "messageId": "msg_july1",
+      "clientTurnId": null,
+      "role": "user",
+      "createdAt": "2026-07-14T18:02:00.000Z",
+      "sourceChannel": "app",
+      "status": "complete",
+      "parts": [
+        {
+          "type": "text",
+          "text": "DEMO FIXTURE: Those rust suede sneakers in the window on Lower Marsh were good. Not today, though."
+        }
+      ]
+    },
+    {
+      "messageId": "msg_july2",
+      "clientTurnId": null,
+      "role": "assistant",
+      "createdAt": "2026-07-14T18:02:20.000Z",
+      "sourceChannel": "app",
+      "status": "complete",
+      "parts": [
+        {
+          "type": "text",
+          "text": "Noted as a liking, not a plan. Rust would echo the Sedona plaid and the rust knit tie from below."
+        }
+      ]
+    },
+    {
+      "messageId": "msg_oct1",
+      "clientTurnId": "turn_demo0001",
+      "role": "user",
+      "createdAt": "2026-10-05T19:40:00.000Z",
+      "sourceChannel": "app",
+      "status": "complete",
+      "parts": [
+        {
+          "type": "text",
+          "text": "DEMO FIXTURE: Dinner in Borough tomorrow; nothing formal."
+        }
+      ]
+    },
+    {
+      "messageId": "msg_oct2",
+      "clientTurnId": null,
+      "role": "assistant",
+      "createdAt": "2026-10-05T19:40:30.000Z",
+      "sourceChannel": "mcp",
+      "status": "complete",
+      "parts": [
+        {
+          "type": "text",
+          "text": "Then the board can carry you from the office to the table without a change. Option three is the one I would argue for."
+        },
+        {
+          "type": "outfit_card",
+          "boardId": "brd_5aaffe0e9279d094d421",
+          "optionId": "opt_96c8f8df3888500b71be",
+          "boardRevision": 2,
+          "garmentIds": [
+            "g_6343a0440cbcc5a055b4",
+            "g_bcdd08900d43efac6a53",
+            "g_933ae4de7e7cb1357f6f",
+            "g_02c50bc6a2b8bcdef9cc",
+            "g_08e680bed1b66a4beb5b",
+            "g_09880904ee74cb444193",
+            "g_6847e2256335884e0c27"
+          ],
+          "explanation": "Sprezzatura on a quiet day: a washed pink oxford under a burgundy knit tie, one red carried at three depths down to the sock, and the navy sneaker answering the blazer.",
+          "validated": true
+        }
+      ]
+    }
+  ],
+  "before": "cur_older0001",
+  "hasMore": true,
+  "activeRunId": null
+}

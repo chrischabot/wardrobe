@@ -1,0 +1,1722 @@
+{
+  "measuredAt": "2026-09-29T20:05:32.197Z",
+  "window": {
+    "since": "2026-09-29T13:00:00.000Z",
+    "until": "2026-09-29T20:05:32.197Z"
+  },
+  "source": {
+    "perRequest": "Workers Observability events (garderobe-dev)",
+    "totals": "GraphQL Analytics API"
+  },
+  "invocationsObserved": 879,
+  "perRoute": [
+    {
+      "route": "mcp POST /mcp",
+      "cpuMs": {
+        "n": 186,
+        "p50": 45,
+        "p95": 221,
+        "max": 699,
+        "total": 12932
+      },
+      "wallMs": {
+        "n": 186,
+        "p50": 568,
+        "p95": 5422,
+        "max": 25309,
+        "total": 369136
+      },
+      "nonOkOutcomes": 1
+    },
+    {
+      "route": "app POST /__dev/probe/import-race",
+      "cpuMs": {
+        "n": 15,
+        "p50": 510,
+        "p95": 581,
+        "max": 1293,
+        "total": 8337
+      },
+      "wallMs": {
+        "n": 15,
+        "p50": 112991,
+        "p95": 119224,
+        "max": 300078,
+        "total": 1882814
+      },
+      "nonOkOutcomes": 1
+    },
+    {
+      "route": "DO alarm",
+      "cpuMs": {
+        "n": 33,
+        "p50": 0,
+        "p95": 371,
+        "max": 458,
+        "total": 4841
+      },
+      "wallMs": {
+        "n": 33,
+        "p50": 65,
+        "p95": 21702,
+        "max": 32114,
+        "total": 254230
+      },
+      "nonOkOutcomes": 17
+    },
+    {
+      "route": "app POST /__dev/probe/d1",
+      "cpuMs": {
+        "n": 7,
+        "p50": 234,
+        "p95": 239,
+        "max": 437,
+        "total": 1809
+      },
+      "wallMs": {
+        "n": 7,
+        "p50": 14953,
+        "p95": 15387,
+        "max": 16307,
+        "total": 105967
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "app GET /v1/wardrobe",
+      "cpuMs": {
+        "n": 17,
+        "p50": 70,
+        "p95": 148,
+        "max": 163,
+        "total": 1170
+      },
+      "wallMs": {
+        "n": 17,
+        "p50": 4418,
+        "p95": 5032,
+        "max": 5668,
+        "total": 72728
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "DO jsrpc",
+      "cpuMs": {
+        "n": 56,
+        "p50": 13,
+        "p95": 48,
+        "max": 93,
+        "total": 1018
+      },
+      "wallMs": {
+        "n": 56,
+        "p50": 57,
+        "p95": 642,
+        "max": 1296,
+        "total": 12380
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "jsrpc",
+      "cpuMs": {
+        "n": 3,
+        "p50": 270,
+        "p95": 270,
+        "max": 691,
+        "total": 979
+      },
+      "wallMs": {
+        "n": 3,
+        "p50": 9487,
+        "p95": 9487,
+        "max": 17722,
+        "total": 29609
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "app GET /v1/runs/:run",
+      "cpuMs": {
+        "n": 66,
+        "p50": 6,
+        "p95": 15,
+        "max": 16,
+        "total": 493
+      },
+      "wallMs": {
+        "n": 66,
+        "p50": 1283,
+        "p95": 1799,
+        "max": 1956,
+        "total": 86316
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "app GET /v1/today",
+      "cpuMs": {
+        "n": 23,
+        "p50": 21,
+        "p95": 27,
+        "max": 37,
+        "total": 459
+      },
+      "wallMs": {
+        "n": 23,
+        "p50": 1857,
+        "p95": 1933,
+        "max": 2066,
+        "total": 41307
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "app GET /v1/items/:g",
+      "cpuMs": {
+        "n": 6,
+        "p50": 45,
+        "p95": 66,
+        "max": 73,
+        "total": 322
+      },
+      "wallMs": {
+        "n": 6,
+        "p50": 4016,
+        "p95": 6464,
+        "max": 6606,
+        "total": 31182
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "app POST /v1/commands",
+      "cpuMs": {
+        "n": 24,
+        "p50": 11,
+        "p95": 22,
+        "max": 28,
+        "total": 302
+      },
+      "wallMs": {
+        "n": 24,
+        "p50": 692,
+        "p95": 1156,
+        "max": 1266,
+        "total": 18034
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "app POST /__dev/probe/models",
+      "cpuMs": {
+        "n": 15,
+        "p50": 20,
+        "p95": 27,
+        "max": 30,
+        "total": 291
+      },
+      "wallMs": {
+        "n": 15,
+        "p50": 9047,
+        "p95": 16557,
+        "max": 19791,
+        "total": 147581
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "app POST /v1/today/prepare",
+      "cpuMs": {
+        "n": 1,
+        "p50": 279,
+        "p95": 279,
+        "max": 279,
+        "total": 279
+      },
+      "wallMs": {
+        "n": 1,
+        "p50": 6672,
+        "p95": 6672,
+        "max": 6672,
+        "total": 6672
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp POST /authorize",
+      "cpuMs": {
+        "n": 28,
+        "p50": 7,
+        "p95": 16,
+        "max": 23,
+        "total": 261
+      },
+      "wallMs": {
+        "n": 28,
+        "p50": 1138,
+        "p95": 1385,
+        "max": 1661,
+        "total": 32810
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp POST /oauth/token",
+      "cpuMs": {
+        "n": 46,
+        "p50": 3,
+        "p95": 10,
+        "max": 14,
+        "total": 209
+      },
+      "wallMs": {
+        "n": 46,
+        "p50": 644,
+        "p95": 911,
+        "max": 1163,
+        "total": 28899
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /authorize",
+      "cpuMs": {
+        "n": 29,
+        "p50": 3,
+        "p95": 13,
+        "max": 22,
+        "total": 176
+      },
+      "wallMs": {
+        "n": 29,
+        "p50": 481,
+        "p95": 571,
+        "max": 599,
+        "total": 13831
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /",
+      "cpuMs": {
+        "n": 31,
+        "p50": 4,
+        "p95": 6,
+        "max": 18,
+        "total": 138
+      },
+      "wallMs": {
+        "n": 31,
+        "p50": 4,
+        "p95": 8,
+        "max": 25,
+        "total": 161
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "app POST /v1/conversation/turns",
+      "cpuMs": {
+        "n": 11,
+        "p50": 14,
+        "p95": 16,
+        "max": 20,
+        "total": 130
+      },
+      "wallMs": {
+        "n": 11,
+        "p50": 1313,
+        "p95": 2829,
+        "max": 2844,
+        "total": 17480
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "app GET /v1/auth/session",
+      "cpuMs": {
+        "n": 26,
+        "p50": 4,
+        "p95": 10,
+        "max": 13,
+        "total": 124
+      },
+      "wallMs": {
+        "n": 26,
+        "p50": 202,
+        "p95": 448,
+        "max": 499,
+        "total": 5102
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "app GET /v1/conversation/messages",
+      "cpuMs": {
+        "n": 8,
+        "p50": 9,
+        "p95": 19,
+        "max": 21,
+        "total": 88
+      },
+      "wallMs": {
+        "n": 8,
+        "p50": 631,
+        "p95": 1725,
+        "max": 2141,
+        "total": 7883
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "app GET /board",
+      "cpuMs": {
+        "n": 5,
+        "p50": 13,
+        "p95": 21,
+        "max": 25,
+        "total": 84
+      },
+      "wallMs": {
+        "n": 5,
+        "p50": 1834,
+        "p95": 1852,
+        "max": 1854,
+        "total": 9128
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "app GET /health",
+      "cpuMs": {
+        "n": 21,
+        "p50": 4,
+        "p95": 5,
+        "max": 6,
+        "total": 77
+      },
+      "wallMs": {
+        "n": 21,
+        "p50": 4,
+        "p95": 7,
+        "max": 8,
+        "total": 92
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /.well-known/oauth-protected-resource/mcp",
+      "cpuMs": {
+        "n": 26,
+        "p50": 3,
+        "p95": 6,
+        "max": 6,
+        "total": 69
+      },
+      "wallMs": {
+        "n": 26,
+        "p50": 3,
+        "p95": 6,
+        "max": 7,
+        "total": 82
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp POST /oauth/register",
+      "cpuMs": {
+        "n": 29,
+        "p50": 1,
+        "p95": 7,
+        "max": 8,
+        "total": 60
+      },
+      "wallMs": {
+        "n": 29,
+        "p50": 233,
+        "p95": 295,
+        "max": 2107,
+        "total": 8761
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "queue",
+      "cpuMs": {
+        "n": 2,
+        "p50": 27,
+        "p95": 27,
+        "max": 28,
+        "total": 55
+      },
+      "wallMs": {
+        "n": 2,
+        "p50": 2633,
+        "p95": 2633,
+        "max": 7775,
+        "total": 10408
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "app GET /v1/receipts",
+      "cpuMs": {
+        "n": 12,
+        "p50": 3,
+        "p95": 7,
+        "max": 10,
+        "total": 51
+      },
+      "wallMs": {
+        "n": 12,
+        "p50": 429,
+        "p95": 459,
+        "max": 482,
+        "total": 5162
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "app GET /v1/style/current",
+      "cpuMs": {
+        "n": 6,
+        "p50": 5,
+        "p95": 7,
+        "max": 7,
+        "total": 33
+      },
+      "wallMs": {
+        "n": 6,
+        "p50": 448,
+        "p95": 508,
+        "max": 635,
+        "total": 2906
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "app GET /v1/connections",
+      "cpuMs": {
+        "n": 6,
+        "p50": 4,
+        "p95": 7,
+        "max": 8,
+        "total": 29
+      },
+      "wallMs": {
+        "n": 6,
+        "p50": 418,
+        "p95": 422,
+        "max": 642,
+        "total": 2720
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "app POST /v1/connections/:mgr/disconnect",
+      "cpuMs": {
+        "n": 6,
+        "p50": 4,
+        "p95": 6,
+        "max": 6,
+        "total": 27
+      },
+      "wallMs": {
+        "n": 6,
+        "p50": 989,
+        "p95": 1059,
+        "max": 1064,
+        "total": 6013
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "app GET /__dev/probe/workflow",
+      "cpuMs": {
+        "n": 13,
+        "p50": 2,
+        "p95": 2,
+        "max": 2,
+        "total": 25
+      },
+      "wallMs": {
+        "n": 13,
+        "p50": 323,
+        "p95": 1023,
+        "max": 1536,
+        "total": 7073
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "app GET /__dev/probe/queue",
+      "cpuMs": {
+        "n": 13,
+        "p50": 1,
+        "p95": 2,
+        "max": 4,
+        "total": 21
+      },
+      "wallMs": {
+        "n": 13,
+        "p50": 309,
+        "p95": 323,
+        "max": 333,
+        "total": 4038
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /v1/auth/session",
+      "cpuMs": {
+        "n": 6,
+        "p50": 3,
+        "p95": 4,
+        "max": 5,
+        "total": 21
+      },
+      "wallMs": {
+        "n": 6,
+        "p50": 4,
+        "p95": 5,
+        "max": 6,
+        "total": 25
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "app GET /v1/media/med_af1d3fd6a2f446bd974724b0410bb334",
+      "cpuMs": {
+        "n": 10,
+        "p50": 2,
+        "p95": 2,
+        "max": 4,
+        "total": 16
+      },
+      "wallMs": {
+        "n": 10,
+        "p50": 312,
+        "p95": 507,
+        "max": 653,
+        "total": 3020
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /mcp",
+      "cpuMs": {
+        "n": 4,
+        "p50": 3,
+        "p95": 3,
+        "max": 6,
+        "total": 15
+      },
+      "wallMs": {
+        "n": 4,
+        "p50": 418,
+        "p95": 435,
+        "max": 442,
+        "total": 1704
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "app POST /__dev/probe/workflow",
+      "cpuMs": {
+        "n": 3,
+        "p50": 5,
+        "p95": 5,
+        "max": 7,
+        "total": 14
+      },
+      "wallMs": {
+        "n": 3,
+        "p50": 1504,
+        "p95": 1504,
+        "max": 1607,
+        "total": 4582
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /robots.txt",
+      "cpuMs": {
+        "n": 3,
+        "p50": 4,
+        "p95": 4,
+        "max": 7,
+        "total": 13
+      },
+      "wallMs": {
+        "n": 3,
+        "p50": 4,
+        "p95": 4,
+        "max": 8,
+        "total": 15
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /favicon.ico",
+      "cpuMs": {
+        "n": 6,
+        "p50": 0,
+        "p95": 4,
+        "max": 9,
+        "total": 13
+      },
+      "wallMs": {
+        "n": 6,
+        "p50": 1,
+        "p95": 5,
+        "max": 10,
+        "total": 17
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "app GET /v1/items/undefined",
+      "cpuMs": {
+        "n": 3,
+        "p50": 4,
+        "p95": 4,
+        "max": 8,
+        "total": 12
+      },
+      "wallMs": {
+        "n": 3,
+        "p50": 4,
+        "p95": 4,
+        "max": 9,
+        "total": 14
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp HEAD /.env",
+      "cpuMs": {
+        "n": 5,
+        "p50": 0,
+        "p95": 5,
+        "max": 6,
+        "total": 11
+      },
+      "wallMs": {
+        "n": 5,
+        "p50": 1,
+        "p95": 5,
+        "max": 7,
+        "total": 14
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "app POST /__dev/probe/ai-search",
+      "cpuMs": {
+        "n": 3,
+        "p50": 3,
+        "p95": 3,
+        "max": 6,
+        "total": 11
+      },
+      "wallMs": {
+        "n": 3,
+        "p50": 82465,
+        "p95": 82465,
+        "max": 96624,
+        "total": 223288
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /.env",
+      "cpuMs": {
+        "n": 2,
+        "p50": 5,
+        "p95": 5,
+        "max": 5,
+        "total": 10
+      },
+      "wallMs": {
+        "n": 2,
+        "p50": 6,
+        "p95": 6,
+        "max": 6,
+        "total": 12
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "app POST /__dev/probe/queue",
+      "cpuMs": {
+        "n": 2,
+        "p50": 4,
+        "p95": 4,
+        "max": 5,
+        "total": 9
+      },
+      "wallMs": {
+        "n": 2,
+        "p50": 1105,
+        "p95": 1105,
+        "max": 1247,
+        "total": 2352
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "app GET /__dev/whoami",
+      "cpuMs": {
+        "n": 3,
+        "p50": 2,
+        "p95": 2,
+        "max": 5,
+        "total": 8
+      },
+      "wallMs": {
+        "n": 3,
+        "p50": 219,
+        "p95": 219,
+        "max": 273,
+        "total": 698
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /api/.env",
+      "cpuMs": {
+        "n": 2,
+        "p50": 1,
+        "p95": 1,
+        "max": 6,
+        "total": 7
+      },
+      "wallMs": {
+        "n": 2,
+        "p50": 2,
+        "p95": 2,
+        "max": 7,
+        "total": 9
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /sitemap.xml",
+      "cpuMs": {
+        "n": 1,
+        "p50": 3,
+        "p95": 3,
+        "max": 3,
+        "total": 3
+      },
+      "wallMs": {
+        "n": 1,
+        "p50": 4,
+        "p95": 4,
+        "max": 4,
+        "total": 4
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp HEAD /",
+      "cpuMs": {
+        "n": 1,
+        "p50": 3,
+        "p95": 3,
+        "max": 3,
+        "total": 3
+      },
+      "wallMs": {
+        "n": 1,
+        "p50": 3,
+        "p95": 3,
+        "max": 3,
+        "total": 3
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /config/.env",
+      "cpuMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 3,
+        "total": 3
+      },
+      "wallMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 4,
+        "total": 4
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp HEAD /.env.prod",
+      "cpuMs": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "max": 1,
+        "total": 1
+      },
+      "wallMs": {
+        "n": 5,
+        "p50": 1,
+        "p95": 1,
+        "max": 1,
+        "total": 4
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /.env.staging",
+      "cpuMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 1,
+        "total": 1
+      },
+      "wallMs": {
+        "n": 2,
+        "p50": 1,
+        "p95": 1,
+        "max": 1,
+        "total": 2
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /.env.save",
+      "cpuMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 1,
+        "total": 1
+      },
+      "wallMs": {
+        "n": 2,
+        "p50": 1,
+        "p95": 1,
+        "max": 1,
+        "total": 2
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /.env.old",
+      "cpuMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 1,
+        "total": 1
+      },
+      "wallMs": {
+        "n": 2,
+        "p50": 1,
+        "p95": 1,
+        "max": 3,
+        "total": 4
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /.env.backup",
+      "cpuMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 1,
+        "total": 1
+      },
+      "wallMs": {
+        "n": 2,
+        "p50": 1,
+        "p95": 1,
+        "max": 2,
+        "total": 3
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp HEAD /.env.dev",
+      "cpuMs": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "max": 0,
+        "total": 0
+      },
+      "wallMs": {
+        "n": 5,
+        "p50": 1,
+        "p95": 1,
+        "max": 1,
+        "total": 3
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp HEAD /.env.local",
+      "cpuMs": {
+        "n": 5,
+        "p50": 0,
+        "p95": 0,
+        "max": 0,
+        "total": 0
+      },
+      "wallMs": {
+        "n": 5,
+        "p50": 1,
+        "p95": 1,
+        "max": 1,
+        "total": 3
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /.well-known/oauth-authorization-server",
+      "cpuMs": {
+        "n": 6,
+        "p50": 0,
+        "p95": 0,
+        "max": 0,
+        "total": 0
+      },
+      "wallMs": {
+        "n": 6,
+        "p50": 1,
+        "p95": 1,
+        "max": 1,
+        "total": 4
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /functions/.env",
+      "cpuMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 0,
+        "total": 0
+      },
+      "wallMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 1,
+        "total": 1
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /application/.env",
+      "cpuMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 0,
+        "total": 0
+      },
+      "wallMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 1,
+        "total": 1
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /backend/.env",
+      "cpuMs": {
+        "n": 1,
+        "p50": 0,
+        "p95": 0,
+        "max": 0,
+        "total": 0
+      },
+      "wallMs": {
+        "n": 1,
+        "p50": 0,
+        "p95": 0,
+        "max": 0,
+        "total": 0
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /app/.env",
+      "cpuMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 0,
+        "total": 0
+      },
+      "wallMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 1,
+        "total": 1
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /env",
+      "cpuMs": {
+        "n": 1,
+        "p50": 0,
+        "p95": 0,
+        "max": 0,
+        "total": 0
+      },
+      "wallMs": {
+        "n": 1,
+        "p50": 0,
+        "p95": 0,
+        "max": 0,
+        "total": 0
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /.env.stage",
+      "cpuMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 0,
+        "total": 0
+      },
+      "wallMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 1,
+        "total": 1
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /.env.dev",
+      "cpuMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 0,
+        "total": 0
+      },
+      "wallMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 1,
+        "total": 1
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /.env.live",
+      "cpuMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 0,
+        "total": 0
+      },
+      "wallMs": {
+        "n": 2,
+        "p50": 1,
+        "p95": 1,
+        "max": 1,
+        "total": 2
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /.env.local",
+      "cpuMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 0,
+        "total": 0
+      },
+      "wallMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 1,
+        "total": 1
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /.env.production",
+      "cpuMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 0,
+        "total": 0
+      },
+      "wallMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 1,
+        "total": 1
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /.env.prod",
+      "cpuMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 0,
+        "total": 0
+      },
+      "wallMs": {
+        "n": 2,
+        "p50": 1,
+        "p95": 1,
+        "max": 1,
+        "total": 2
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /.env.bak",
+      "cpuMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 0,
+        "total": 0
+      },
+      "wallMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 2,
+        "total": 2
+      },
+      "nonOkOutcomes": 0
+    },
+    {
+      "route": "mcp GET /.git/HEAD",
+      "cpuMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 0,
+        "total": 0
+      },
+      "wallMs": {
+        "n": 2,
+        "p50": 0,
+        "p95": 0,
+        "max": 1,
+        "total": 1
+      },
+      "nonOkOutcomes": 0
+    }
+  ],
+  "workers": {
+    "viewer": {
+      "accounts": [
+        {
+          "workersInvocationsAdaptive": [
+            {
+              "dimensions": {
+                "status": "success"
+              },
+              "quantiles": {
+                "cpuTimeP50": 6481,
+                "cpuTimeP99": 520518,
+                "wallTimeP50": 521388,
+                "wallTimeP99": 112779680
+              },
+              "sum": {
+                "errors": 0,
+                "requests": 784,
+                "subrequests": 282,
+                "wallTime": 2797477830
+              }
+            },
+            {
+              "dimensions": {
+                "status": "clientDisconnected"
+              },
+              "quantiles": {
+                "cpuTimeP50": 94764,
+                "cpuTimeP99": 1293660,
+                "wallTimeP50": 9187431,
+                "wallTimeP99": 300084000
+              },
+              "sum": {
+                "errors": 0,
+                "requests": 2,
+                "subrequests": 3,
+                "wallTime": 309271438
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "durableObjects": {
+    "viewer": {
+      "accounts": [
+        {
+          "durableObjectsInvocationsAdaptiveGroups": [
+            {
+              "quantiles": {
+                "cpuTimeP50": 13717,
+                "cpuTimeP99": 458041,
+                "wallTimeP50": 61150,
+                "wallTimeP99": 32114360
+              },
+              "sum": {
+                "errors": 18,
+                "requests": 91,
+                "wallTime": 275050990
+              }
+            }
+          ],
+          "durableObjectsPeriodicGroups": [
+            {
+              "sum": {
+                "activeTime": 271881628,
+                "cpuTime": 6118055,
+                "duration": 34.800848384,
+                "exceededCpuErrors": 0,
+                "rowsRead": 12911,
+                "rowsWritten": 1008,
+                "storageDeletes": 0,
+                "storageReadUnits": 0,
+                "storageWriteUnits": 0
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "d1": {
+    "viewer": {
+      "accounts": [
+        {
+          "d1AnalyticsAdaptiveGroups": [
+            {
+              "quantiles": {
+                "queryBatchTimeMsP50": 0.32,
+                "queryBatchTimeMsP90": 0.69
+              },
+              "sum": {
+                "queryBatchResponseBytes": 55528494,
+                "readQueries": 28009,
+                "rowsRead": 427695,
+                "rowsWritten": 21175,
+                "writeQueries": 8278
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "r2": {
+    "viewer": {
+      "accounts": [
+        {
+          "r2OperationsAdaptiveGroups": [
+            {
+              "dimensions": {
+                "actionType": "HeadBucket"
+              },
+              "sum": {
+                "requests": 78
+              }
+            },
+            {
+              "dimensions": {
+                "actionType": "PutBucket"
+              },
+              "sum": {
+                "requests": 1
+              }
+            },
+            {
+              "dimensions": {
+                "actionType": "PutObject"
+              },
+              "sum": {
+                "requests": 199
+              }
+            },
+            {
+              "dimensions": {
+                "actionType": "DeleteObject"
+              },
+              "sum": {
+                "requests": 18
+              }
+            },
+            {
+              "dimensions": {
+                "actionType": "GetObject"
+              },
+              "sum": {
+                "requests": 49
+              }
+            }
+          ],
+          "r2StorageAdaptiveGroups": [
+            {
+              "max": {
+                "metadataSize": 18882,
+                "objectCount": 174,
+                "payloadSize": 838950
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "queues": {
+    "viewer": {
+      "accounts": [
+        {
+          "queueMessageOperationsAdaptiveGroups": [
+            {
+              "count": 2,
+              "dimensions": {
+                "actionType": "WriteMessage",
+                "queueId": "cd1963bfc506410eb244f7c0d7599909"
+              },
+              "sum": {
+                "billableOperations": 2,
+                "bytes": 204
+              }
+            },
+            {
+              "count": 2,
+              "dimensions": {
+                "actionType": "ReadMessage",
+                "queueId": "cd1963bfc506410eb244f7c0d7599909"
+              },
+              "sum": {
+                "billableOperations": 2,
+                "bytes": 204
+              }
+            },
+            {
+              "count": 2,
+              "dimensions": {
+                "actionType": "DeleteMessage",
+                "queueId": "cd1963bfc506410eb244f7c0d7599909"
+              },
+              "sum": {
+                "billableOperations": 2,
+                "bytes": 204
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "aiGateway": {
+    "viewer": {
+      "accounts": [
+        {
+          "aiGatewayRequestsAdaptiveGroups": [
+            {
+              "count": 17,
+              "dimensions": {
+                "model": "@cf/meta/llama-3.1-8b-instruct-fast",
+                "provider": "workers-ai"
+              },
+              "sum": {
+                "cachedRequests": 0,
+                "cost": 0.00004538775536417961,
+                "erroredRequests": 0,
+                "uncachedTokensIn": 714,
+                "uncachedTokensOut": 34
+              }
+            },
+            {
+              "count": 1,
+              "dimensions": {
+                "model": "deepseek-chat",
+                "provider": "deepseek"
+              },
+              "sum": {
+                "cachedRequests": 0,
+                "cost": 0,
+                "erroredRequests": 1,
+                "uncachedTokensIn": 0,
+                "uncachedTokensOut": 0
+              }
+            },
+            {
+              "count": 17,
+              "dimensions": {
+                "model": "@cf/moonshotai/kimi-k2.7-code",
+                "provider": "workers-ai"
+              },
+              "sum": {
+                "cachedRequests": 0,
+                "cost": 0.0019262500276565554,
+                "erroredRequests": 0,
+                "uncachedTokensIn": 255,
+                "uncachedTokensOut": 421
+              }
+            },
+            {
+              "count": 1,
+              "dimensions": {
+                "model": "gemini-2.5-flash",
+                "provider": "google-ai-studio"
+              },
+              "sum": {
+                "cachedRequests": 0,
+                "cost": 0.0000012,
+                "erroredRequests": 0,
+                "uncachedTokensIn": 8,
+                "uncachedTokensOut": 0
+              }
+            },
+            {
+              "count": 1,
+              "dimensions": {
+                "model": "claude-sonnet-4-5",
+                "provider": "anthropic"
+              },
+              "sum": {
+                "cachedRequests": 0,
+                "cost": 0,
+                "erroredRequests": 1,
+                "uncachedTokensIn": 0,
+                "uncachedTokensOut": 0
+              }
+            },
+            {
+              "count": 15,
+              "dimensions": {
+                "model": "@cf/baai/bge-m3",
+                "provider": "workers-ai"
+              },
+              "sum": {
+                "cachedRequests": 0,
+                "cost": 0.00000143,
+                "erroredRequests": 2,
+                "uncachedTokensIn": 0,
+                "uncachedTokensOut": 0
+              }
+            },
+            {
+              "count": 18,
+              "dimensions": {
+                "model": "deepseek-flash",
+                "provider": "deepseek"
+              },
+              "sum": {
+                "cachedRequests": 0,
+                "cost": 0,
+                "erroredRequests": 18,
+                "uncachedTokensIn": 0,
+                "uncachedTokensOut": 0
+              }
+            },
+            {
+              "count": 1,
+              "dimensions": {
+                "model": "gpt-4o-mini-2024-07-18",
+                "provider": "openai"
+              },
+              "sum": {
+                "cachedRequests": 0,
+                "cost": 0.0000013500000000000002,
+                "erroredRequests": 0,
+                "uncachedTokensIn": 14,
+                "uncachedTokensOut": 1
+              }
+            },
+            {
+              "count": 43,
+              "dimensions": {
+                "model": "claude-fable-5-1",
+                "provider": "anthropic"
+              },
+              "sum": {
+                "cachedRequests": 0,
+                "cost": 4.01382,
+                "erroredRequests": 14,
+                "uncachedTokensIn": 391157,
+                "uncachedTokensOut": 2045
+              }
+            },
+            {
+              "count": 8,
+              "dimensions": {
+                "model": "@cf/qwen/qwen3-embedding-0.6b",
+                "provider": "workers-ai"
+              },
+              "sum": {
+                "cachedRequests": 0,
+                "cost": 8.510735920492189e-7,
+                "erroredRequests": 0,
+                "uncachedTokensIn": 72,
+                "uncachedTokensOut": 0
+              }
+            },
+            {
+              "count": 1,
+              "dimensions": {
+                "model": "gpt-5-mini",
+                "provider": "openai"
+              },
+              "sum": {
+                "cachedRequests": 0,
+                "cost": 0,
+                "erroredRequests": 1,
+                "uncachedTokensIn": 0,
+                "uncachedTokensOut": 0
+              }
+            },
+            {
+              "count": 1,
+              "dimensions": {
+                "model": "deepseek-v4-flash",
+                "provider": "deepseek"
+              },
+              "sum": {
+                "cachedRequests": 0,
+                "cost": 0,
+                "erroredRequests": 1,
+                "uncachedTokensIn": 0,
+                "uncachedTokensOut": 0
+              }
+            },
+            {
+              "count": 15,
+              "dimensions": {
+                "model": "claude-opus-5-5",
+                "provider": "anthropic"
+              },
+              "sum": {
+                "cachedRequests": 0,
+                "cost": 0.429244,
+                "erroredRequests": 1,
+                "uncachedTokensIn": 101646,
+                "uncachedTokensOut": 1133
+              }
+            },
+            {
+              "count": 18,
+              "dimensions": {
+                "model": "gpt-6.1-sol",
+                "provider": "openai"
+              },
+              "sum": {
+                "cachedRequests": 0,
+                "cost": 0,
+                "erroredRequests": 5,
+                "uncachedTokensIn": 21863,
+                "uncachedTokensOut": 244
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "workersAiAccountWide": {
+    "viewer": {
+      "accounts": [
+        {
+          "aiInferenceAdaptiveGroups": [
+            {
+              "count": 8,
+              "dimensions": {
+                "modelId": "@cf/qwen/qwen3-embedding-0.6b"
+              },
+              "sum": {
+                "totalInputTokens": 72,
+                "totalNeurons": 0,
+                "totalOutputTokens": 0
+              }
+            },
+            {
+              "count": 17,
+              "dimensions": {
+                "modelId": "@cf/moonshotai/kimi-k2.7-code"
+              },
+              "sum": {
+                "totalInputTokens": 255,
+                "totalNeurons": 0,
+                "totalOutputTokens": 421
+              }
+            },
+            {
+              "count": 17,
+              "dimensions": {
+                "modelId": "@cf/meta/llama-3.1-8b-instruct-fast"
+              },
+              "sum": {
+                "totalInputTokens": 714,
+                "totalNeurons": 0,
+                "totalOutputTokens": 34
+              }
+            },
+            {
+              "count": 15,
+              "dimensions": {
+                "modelId": "@cf/baai/bge-m3"
+              },
+              "sum": {
+                "totalInputTokens": 149,
+                "totalNeurons": 0,
+                "totalOutputTokens": 0
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "gatewaySettings": {
+    "spendLimits": {
+      "enabled": true,
+      "rules": [
+        {
+          "id": "156ad929",
+          "enabled": true,
+          "limitType": "cost",
+          "limit": 50,
+          "window": 2592000,
+          "technique": "sliding"
+        }
+      ]
+    },
+    "authentication": true,
+    "collectLogs": false
+  }
+}

@@ -1,0 +1,121 @@
+{
+  "probeUserId": "usr_4f5d09677c7b4c98ac319df62d08aaa4",
+  "checkedAt": "2026-09-29T15:33:40.019Z",
+  "passed": true,
+  "checks": [
+    {
+      "name": "same key and body replays the stored receipt; same key with a different body is refused",
+      "pass": true,
+      "observed": {
+        "first": "committed",
+        "second": {
+          "replayed": true,
+          "sameCommand": true
+        },
+        "reused": "idempotency_key_reused",
+        "shirtBHamper": 0
+      },
+      "ms": 1019
+    },
+    {
+      "name": "three concurrent retransmissions with one key commit exactly once",
+      "pass": true,
+      "observed": {
+        "distinctCommands": 1,
+        "replayed": 2,
+        "wearObservations": 1,
+        "socks": {
+          "clean": 3,
+          "hamper": 1,
+          "worn": 0
+        }
+      },
+      "ms": 2346
+    },
+    {
+      "name": "twenty concurrent identical wear reports: one committed, nineteen merged, one counted wear",
+      "pass": true,
+      "observed": {
+        "outcomes": {
+          "merged": 19,
+          "committed": 1
+        },
+        "countedWears": 1,
+        "shirt": {
+          "clean": 0,
+          "hamper": 1,
+          "worn": 0
+        },
+        "trousers": {
+          "clean": 0,
+          "hamper": 0,
+          "worn": 1
+        },
+        "day": {
+          "observation_count": 20,
+          "revision": 1
+        },
+        "shirtMovements": 2,
+        "committedReceiptSummaries": [
+          "Recorded 2026-10-07: counted Probe item, Probe item. (affected 5)"
+        ],
+        "errors": []
+      },
+      "ms": 5030
+    },
+    {
+      "name": "a forced late-statement failure leaves no receipt, partial mutation or effect",
+      "pass": true,
+      "observed": {
+        "error": "D1_ERROR: CHECK constraint failed: clean_qty >= 0: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_CHECK)",
+        "before": {
+          "receipts": 27,
+          "obs": 21,
+          "moves": 9,
+          "effects": 27
+        },
+        "after": {
+          "receipts": 27,
+          "obs": 21,
+          "moves": 9,
+          "effects": 27
+        }
+      },
+      "ms": 2124
+    },
+    {
+      "name": "a bulk wear with one unresolvable target changes nothing",
+      "pass": true,
+      "observed": {
+        "outcome": "rejected",
+        "code": "not_found",
+        "before": 21,
+        "after": 21
+      },
+      "ms": 623
+    },
+    {
+      "name": "racing edits with the same expected version: one committed, one stale conflict",
+      "pass": true,
+      "observed": {
+        "outcomes": [
+          "committed",
+          "conflict"
+        ],
+        "loserCode": "stale_version",
+        "version": 2
+      },
+      "ms": 1140
+    },
+    {
+      "name": "receipts cannot be deleted or rewritten with SQL (immutability triggers)",
+      "pass": true,
+      "observed": {
+        "delete": "command receipts are never deleted: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAI",
+        "rewrite": "command receipts are immutable: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_T",
+        "reassign": "command receipts are immutable: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_T"
+      },
+      "ms": 399
+    }
+  ]
+}
