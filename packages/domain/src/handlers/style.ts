@@ -47,7 +47,18 @@ export const restrictionAdd = define({
       undo: { data: { restrictionId } },
     };
   },
-  async planUndo(ctx, _o, data) {
+  async planUndo(ctx, original, data) {
+    // Undoing the record of a restriction lifts it, so it is held to the same standard as lifting it:
+    // only the owner himself, in the app, withdrawing a restriction he recorded there by mistake. A
+    // restriction that came from the imported profile is never withdrawn this way by anyone; it ends when
+    // the owner says its condition has ended (restriction.resolve).
+    const recorded = await first<{ authorization_basis: string }>(ctx.db, "SELECT authorization_basis FROM commands WHERE user_id = ? AND command_id = ?", ctx.userId, original.commandId);
+    if (!recorded || recorded.authorization_basis === "data_import") {
+      throw new CommandError("forbidden", "an imported restriction is not withdrawn by undo; it ends only when the owner says its condition has ended", { reason: "restriction_not_lifted_by_undo", restrictionId: data.restrictionId });
+    }
+    if (ctx.principal.actor !== "owner" || ctx.principal.channel === "mcp" || ctx.envelope.source.channel === "mcp") {
+      throw new CommandError("forbidden", "undoing the record of a restriction would lift it; only the owner does that, in the Garderobe app", { reason: "restriction_not_lifted_by_undo", restrictionId: data.restrictionId });
+    }
     const r = await first<{ scope_json: string; status: string }>(ctx.db, "SELECT scope_json, status FROM restrictions WHERE user_id = ? AND restriction_id = ?", ctx.userId, data.restrictionId);
     if (!r || r.status !== "active") throw new CommandError("not_undoable", "that restriction is no longer active");
     const covered = await coveredGarmentIds(ctx, json(r.scope_json, {}));
@@ -87,6 +98,13 @@ export const restrictionResolve = define({
     if (r.status !== "active") return { outcome: "noop", summary: "That restriction was already resolved", undo: { unavailableReason: "nothing changed" } };
     if (!(EVIDENCE_ACCEPTED[r.required_evidence] ?? []).includes(p.evidence.kind)) {
       throw new CommandError("forbidden", `this restriction is only lifted by ${r.required_evidence.replace(/_/g, " ")}; '${p.evidence.kind}' does not resolve it`, { requiredEvidence: r.required_evidence });
+    }
+    // The evidence kind is a label the caller writes. Anyone acting for the owner (the assistant, a
+    // connected client) must also point at the statement itself, so the lift can be traced to his words;
+    // the owner's own control in the app is the statement.
+    const actingForOwner = ctx.principal.actor !== "owner" || ctx.principal.channel === "mcp" || ctx.envelope.source.channel === "mcp";
+    if (actingForOwner && !p.evidence.ref?.trim()) {
+      throw new CommandError("forbidden", "lifting a restriction on the owner's behalf needs a reference to the owner's own statement (evidence.ref); a label alone does not lift it", { reason: "evidence_reference_required", requiredEvidence: r.required_evidence });
     }
     const covered = await coveredGarmentIds(ctx, json(r.scope_json, {}));
     return {

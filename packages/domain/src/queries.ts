@@ -418,7 +418,7 @@ export async function getLaundryState(db: Db, principal: Principal): Promise<Lau
     "SELECT g.garment_id, g.name, g.care_channel, b.quantity FROM stock_balances b JOIN garments g ON g.user_id = b.user_id AND g.garment_id = b.garment_id WHERE b.user_id = ? AND b.bucket = 'dirty' AND b.quantity > 0 ORDER BY g.name",
     userId,
   );
-  const batches = await all<any>(db, "SELECT * FROM laundry_batches WHERE user_id = ? ORDER BY picked_up_at DESC LIMIT 12", userId);
+  const batches = await all<any>(db, "SELECT * FROM laundry_batches WHERE user_id = ? AND withdrawn_at IS NULL ORDER BY picked_up_at DESC LIMIT 12", userId);
   const items = batches.length
     ? await allIn<any>(db, "SELECT i.*, g.name FROM laundry_batch_items i JOIN garments g ON g.user_id = i.user_id AND g.garment_id = i.garment_id WHERE i.user_id = ? AND i.batch_id IN (:ids) ORDER BY g.name", [userId], batches.map((b) => b.batch_id))
     : [];

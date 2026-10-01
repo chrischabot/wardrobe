@@ -233,6 +233,38 @@ public struct JSONCodingKey: CodingKey, Hashable, Sendable {
     }
 }
 
+public enum AccessoryKind: String, Codable, Sendable, CaseIterable {
+    case belt
+    case tie
+    case scarf
+    case bandana
+    case pocketSquare = "pocket_square"
+    case hat
+    case gloves
+    case bag
+    case umbrella
+    case watch
+    case jewellery
+    case ring
+    case bracelet
+    case necklace
+    case chain
+    case pendant
+    case earring
+    case brooch
+    case bangle
+    case cufflinks
+    case tieClip = "tie_clip"
+    case other
+    /// A member this client version does not know; the contract requires tolerating it.
+    case unknown
+
+    public init(from decoder: Decoder) throws {
+        let rawValue = try decoder.singleValueContainer().decode(String.self)
+        self = Self(rawValue: rawValue) ?? .unknown
+    }
+}
+
 public struct AccountDeleteRequest: Codable, Sendable, Equatable {
     public var confirmationToken: String?
 
@@ -8130,6 +8162,7 @@ public struct GarmentAlias: Codable, Sendable, Equatable {
 
 public struct GarmentAttributes: Codable, Sendable, Equatable {
     public var footwearKind: FootwearKind?
+    public var accessoryKind: AccessoryKind?
     /// Product model used by selectors, e.g. '990v4'.
     public var model: String?
     public var fabricClass: FabricClass?
@@ -8144,6 +8177,7 @@ public struct GarmentAttributes: Codable, Sendable, Equatable {
 
     public init(
         footwearKind: FootwearKind? = nil,
+        accessoryKind: AccessoryKind? = nil,
         model: String? = nil,
         fabricClass: FabricClass? = nil,
         indoorOnly: Bool? = nil,
@@ -8154,6 +8188,7 @@ public struct GarmentAttributes: Codable, Sendable, Equatable {
         additionalProperties: [String: JSONValue] = [:]
     ) {
         self.footwearKind = footwearKind
+        self.accessoryKind = accessoryKind
         self.model = model
         self.fabricClass = fabricClass
         self.indoorOnly = indoorOnly
@@ -8186,11 +8221,12 @@ public struct GarmentAttributes: Codable, Sendable, Equatable {
         }
     }
 
-    private static let declaredKeys: Set<String> = ["footwearKind", "model", "fabricClass", "indoorOnly", "layeringOnly", "jacketLike", "breakingIn", "fitNote"]
+    private static let declaredKeys: Set<String> = ["footwearKind", "accessoryKind", "model", "fabricClass", "indoorOnly", "layeringOnly", "jacketLike", "breakingIn", "fitNote"]
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: JSONCodingKey.self)
         self.footwearKind = try container.decodeIfPresent(FootwearKind.self, forKey: JSONCodingKey("footwearKind"))
+        self.accessoryKind = try container.decodeIfPresent(AccessoryKind.self, forKey: JSONCodingKey("accessoryKind"))
         self.model = try container.decodeIfPresent(String.self, forKey: JSONCodingKey("model"))
         self.fabricClass = try container.decodeIfPresent(FabricClass.self, forKey: JSONCodingKey("fabricClass"))
         self.indoorOnly = try container.decodeIfPresent(Bool.self, forKey: JSONCodingKey("indoorOnly"))
@@ -8211,6 +8247,7 @@ public struct GarmentAttributes: Codable, Sendable, Equatable {
             try container.encode(value, forKey: JSONCodingKey(key))
         }
         try container.encodeIfPresent(self.footwearKind, forKey: JSONCodingKey("footwearKind"))
+        try container.encodeIfPresent(self.accessoryKind, forKey: JSONCodingKey("accessoryKind"))
         try container.encodeIfPresent(self.model, forKey: JSONCodingKey("model"))
         try container.encodeIfPresent(self.fabricClass, forKey: JSONCodingKey("fabricClass"))
         try container.encodeIfPresent(self.indoorOnly, forKey: JSONCodingKey("indoorOnly"))

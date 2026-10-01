@@ -151,7 +151,7 @@ describe("restrictions", () => {
     await owner.exec("garment.create", { garmentId: "shoe-990v6-grey", name: "grey 990v6", category: "footwear", roles: ["footwear"], careChannel: "none", attributes: { footwearKind: "sneaker", model: "990V6" }, acquisition: "owned", quantity: 1, isSynthetic: true, source: { kind: "owner_statement" } });
     expect((await getAvailability(h.db, owner.principal(), { nowMs: h.clock.now() })).garments.find((g) => g.garmentId === "shoe-990v6-grey")!.reasons).toContain("restricted");
 
-    const resolved = await owner.exec("restriction.resolve", { restrictionId: id, evidence: { kind: "owner_statement", note: "my feet have healed" } }, { actor: "assistant", channel: "conversation", authorization: "owner_statement" });
+    const resolved = await owner.exec("restriction.resolve", { restrictionId: id, evidence: { kind: "owner_statement", ref: "message:synthetic-owner-statement", note: "my feet have healed" } }, { actor: "assistant", channel: "conversation", authorization: "owner_statement" });
     expect((resolved.result.releasedGarmentIds as string[]).sort()).toEqual(["shoe-990v6", "shoe-990v6-grey", "shoe-welted"]);
     expect((await getAvailability(h.db, owner.principal(), { nowMs: h.clock.now() })).garments.find((g) => g.garmentId === "shoe-welted")!.status).toBe("available");
     // Undo reinstates it through a compensating command.
