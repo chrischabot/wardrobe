@@ -61,6 +61,11 @@ struct SignInScreen: View {
             .disabled(!configuration.missing.isEmpty || isSigningIn || app.account.isWorking)
             .accessibilityIdentifier(AXID.signInButton)
 
+            if let notice = app.account.erasedNotice {
+                Label(notice, systemImage: "trash")
+                    .font(.footnote)
+                    .accessibilityElement(children: .combine)
+            }
             SettingsMessageLine(message: app.account.message)
             SettingsMessageLine(message: failureText)
             if app.unsentCount > 0 {

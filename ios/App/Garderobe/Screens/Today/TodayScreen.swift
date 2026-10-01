@@ -94,10 +94,26 @@ struct TodayScreen: View {
         } else if !today.options.isEmpty {
             options
         } else if let statement = today.emptyStatement {
-            // The backend's own reason: paused, being prepared, or no board for today.
+            // The backend's own reason: paused, being prepared, no board, or no complete outfit.
             VStack(alignment: .leading, spacing: Metrics.unit * 3) {
                 Text(statement).font(.title3)
                 Text("Pull down to check again.").font(.subheadline).foregroundStyle(.secondary)
+                if today.canAskForOutfits {
+                    Button { Task { await today.askForOutfits() } } label: { Label("Ask for outfits now", systemImage: "sparkles") }
+                        .secondaryAction()
+                        .controlSize(.large)
+                        .disabled(today.isSubmitting)
+                }
+                switch today.composeState {
+                case .preparing(let activity):
+                    Label(activity ?? "Your outfits are being prepared.", systemImage: "hourglass").font(.subheadline)
+                case .failed(let message):
+                    Label(message, systemImage: "exclamationmark.triangle").font(.subheadline)
+                case .connectionLost:
+                    Label("The connection was lost. Your outfits are still being prepared.", systemImage: "wifi.slash").font(.subheadline)
+                case .idle, .ready:
+                    EmptyView()
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentSurface()

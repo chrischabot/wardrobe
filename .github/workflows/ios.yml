@@ -2,74 +2,116 @@ name: iOS (manual)
 
 # Builds the SwiftUI app and runs the Swift package tests and the UI tests on a macOS runner.
 # Manual trigger only: macOS runner minutes are billed to the repository owner, so this never
-# runs on push, pull request or a schedule. It has not been run from the project that wrote it.
+# runs on push, pull request or a schedule. A newer run on the same branch cancels an older one.
 on:
   workflow_dispatch:
     inputs:
       deployment_target:
-        description: "IPHONEOS_DEPLOYMENT_TARGET override (the project sets 27.0; use 26.0 when the runner has no iOS 27 SDK)"
-        required: false
-        default: ""
-      simulator:
-        description: "Simulator device name (empty: the first available iPhone simulator)"
+        description: "IPHONEOS_DEPLOYMENT_TARGET override (empty: the chosen simulator's iOS version, at most the project's 27.0)"
         required: false
         default: ""
       run_ui_tests:
         description: "Run the UI tests (slower)"
         type: boolean
         default: true
+      run_package_tests:
+        description: "Run the Swift package tests on the macOS host"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ios:
     runs-on: macos-latest
-    timeout-minutes: 60
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
-      - name: Toolchain
+      - name: Select the newest installed Xcode
         run: |
+          newest="$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
+          echo "Selecting $newest"
+          sudo xcode-select -s "$newest"
           xcodebuild -version
           swift --version
-          xcrun simctl list devices available | head -40
+          xcodebuild -showsdks | grep -i simulator || true
 
       - name: Project structure
         run: |
           python3 ios/Tools/generate-xcodeproj.py --check
-          python3 ios/Tools/check-xcodeproj.py
+          python3 ios/Tools/check-xcodeproj.py | tail -3
           python3 ios/Tools/check-app-sources.py
 
-      - name: Swift package tests (macOS host)
-        working-directory: ios/GarderobeKit
-        run: swift test
-
-      - name: Choose a simulator
+      - name: Choose a simulator and deployment target
         id: sim
         run: |
-          name="${{ inputs.simulator }}"
-          if [ -z "$name" ]; then
-            name="$(xcrun simctl list devices available | sed -n 's/^ *\(iPhone[^(]*\) (.*/\1/p' | sed 's/ *$//' | head -1)"
-          fi
-          if [ -z "$name" ]; then echo "No iPhone simulator is available on this runner" >&2; exit 1; fi
-          echo "name=$name" >> "$GITHUB_OUTPUT"
-          echo "Using simulator: $name"
+          xcrun simctl list devices available -j > devices.json
+          python3 - "${{ inputs.deployment_target }}" <<'PY' >> "$GITHUB_OUTPUT"
+          import json, re, sys
+          override = sys.argv[1]
+          best = None
+          for runtime, devices in json.load(open("devices.json"))["devices"].items():
+              m = re.search(r"iOS-(\d+)-(\d+)", runtime)
+              if not m: continue
+              version = (int(m.group(1)), int(m.group(2)))
+              for d in devices:
+                  if d.get("isAvailable") and d["name"].startswith("iPhone"):
+                      if best is None or version > best[0]: best = (version, d["udid"], d["name"])
+          if best is None:
+              sys.stderr.write("No iPhone simulator is available on this runner\n"); sys.exit(1)
+          (major, minor), udid, name = best
+          target = override or "%d.%d" % min((major, minor), (27, 0))
+          sys.stderr.write("Simulator: %s, iOS %d.%d; deployment target %s\n" % (name, major, minor, target))
+          print("udid=" + udid); print("name=" + name); print("target=" + target)
+          PY
 
-      - name: Build the app for the simulator
+      - name: Build the app, share extension and UI tests for the simulator
         run: |
           set -o pipefail
-          args=(-project ios/Garderobe.xcodeproj -scheme Garderobe -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" CODE_SIGNING_ALLOWED=NO)
-          if [ -n "${{ inputs.deployment_target }}" ]; then args+=("IPHONEOS_DEPLOYMENT_TARGET=${{ inputs.deployment_target }}"); fi
-          xcodebuild build-for-testing "${args[@]}" | tee build.log | tail -40
+          status=0
+          xcodebuild build-for-testing -project ios/Garderobe.xcodeproj -scheme Garderobe \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath DerivedData -IDEBuildingContinueBuildingAfterErrors=YES \
+            CODE_SIGNING_ALLOWED=NO IPHONEOS_DEPLOYMENT_TARGET=${{ steps.sim.outputs.target }} > build.log 2>&1 || status=$?
+          # The distinct compiler errors, so the end of this step's log is the list to fix.
+          grep -E "(error|fatal error):" build.log | sed "s#$PWD/##" | sort -u > build-errors.txt || true
+          tail -15 build.log
+          echo "---- distinct errors: $(wc -l < build-errors.txt | tr -d ' ') ----"
+          head -150 build-errors.txt
+          { echo "### Build (exit $status)"; echo '```'; head -150 build-errors.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
 
-      - name: UI tests (demo mode: a recording of the real backend)
-        if: ${{ inputs.run_ui_tests }}
+      - name: UI tests (demo mode, a recording of the real backend)
+        if: ${{ success() && inputs.run_ui_tests }}
         run: |
           set -o pipefail
-          args=(-project ios/Garderobe.xcodeproj -scheme Garderobe -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" CODE_SIGNING_ALLOWED=NO -resultBundlePath TestResults.xcresult)
-          if [ -n "${{ inputs.deployment_target }}" ]; then args+=("IPHONEOS_DEPLOYMENT_TARGET=${{ inputs.deployment_target }}"); fi
-          xcodebuild test-without-building "${args[@]}" | tee test.log | tail -60
+          status=0
+          xcodebuild test-without-building -project ios/Garderobe.xcodeproj -scheme Garderobe \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath DerivedData -resultBundlePath TestResults.xcresult \
+            CODE_SIGNING_ALLOWED=NO IPHONEOS_DEPLOYMENT_TARGET=${{ steps.sim.outputs.target }} > test.log 2>&1 || status=$?
+          grep -E "Test Case .* (passed|failed)|error:|Executed [0-9]+ tests" test.log | sed "s#$PWD/##" > test-summary.txt || true
+          tail -15 test.log
+          echo "---- UI test results ----"
+          tail -120 test-summary.txt
+          { echo "### UI tests (exit $status)"; echo '```'; tail -120 test-summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+
+      - name: Swift package tests (macOS host)
+        if: ${{ !cancelled() && inputs.run_package_tests }}
+        working-directory: ios/GarderobeKit
+        run: |
+          set -o pipefail
+          status=0
+          swift test > ../../package-test.log 2>&1 || status=$?
+          grep -E "error:|✘|Test run with" ../../package-test.log | tail -60
+          exit $status
 
       - name: Keep logs and results
         if: always()
@@ -78,6 +120,10 @@ jobs:
           name: ios-build-and-test
           path: |
             build.log
+            build-errors.txt
             test.log
+            test-summary.txt
+            package-test.log
             TestResults.xcresult
           if-no-files-found: ignore
+          retention-days: 14

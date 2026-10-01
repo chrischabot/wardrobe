@@ -91,28 +91,54 @@ struct OutfitBoardCard: View {
 }
 
 /// What a run recorded. When the full verified receipt is on this phone it is shown as the
-/// receipt card, which carries Undo; otherwise the summary the run reported.
+/// receipt card; otherwise the summary the run reported. Either way a reversible action
+/// offers Undo, also on an old message.
 struct ReceiptRefCard: View {
     @Environment(AppModel.self) private var app
     let ref: RunReceiptRef
+    @State private var isUndoing = false
+    @State private var undoOutcome: SubmissionOutcome?
 
     var body: some View {
-        if let record = app.environment.center.receipts.first(where: { $0.receipt.commandId == ref.commandId }) {
+        let center = app.environment.center
+        if let record = center.receipts.first(where: { $0.receipt.commandId == ref.commandId }) {
             ReceiptCard(record: record)
         } else {
             VStack(alignment: .leading, spacing: Metrics.unit) {
                 Label {
                     Text(ref.summary).font(.subheadline)
                 } icon: {
-                    Image(systemName: "checkmark.seal")
+                    Image(systemName: center.undoState(for: ref) == .undone ? "arrow.uturn.backward.circle" : "checkmark.seal")
                 }
                 Text("Outcome: \(ref.outcome.replacingOccurrences(of: "_", with: " "))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                switch center.undoState(for: ref) {
+                case .available:
+                    Button {
+                        Task {
+                            isUndoing = true
+                            undoOutcome = await center.undo(ref)
+                            isUndoing = false
+                        }
+                    } label: {
+                        Label("Undo", systemImage: "arrow.uturn.backward")
+                    }
+                    .secondaryAction()
+                    .disabled(isUndoing)
+                    .accessibilityHint("Undoes: \(ref.summary)")
+                case .waiting:
+                    Text("Undo is saved on this phone and will be sent when you are back online.").font(.caption).foregroundStyle(.secondary)
+                case .undone:
+                    Text("Undone.").font(.caption).foregroundStyle(.secondary)
+                case .unavailable:
+                    EmptyView()
+                }
+                OutcomeLine(outcome: undoOutcome)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentSurface(padding: Metrics.unit * 3)
-            .accessibilityElement(children: .combine)
+            .accessibilityElement(children: .contain)
         }
     }
 }

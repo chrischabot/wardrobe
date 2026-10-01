@@ -112,14 +112,27 @@ describe("iOS fixture cassettes", () => {
     await rec.get("/v1/laundry");
     await itemReads(rec, second.garments[0].garmentId);
 
-    await rec.command("brief", "style.set_brief", { localDate: after.localDate, text: "Something a little sharper today", source: { kind: "owner_statement" } });
+    const briefSet = await rec.command("brief", "style.set_brief", { localDate: after.localDate, text: "Something a little sharper today", source: { kind: "owner_statement" } });
     const briefed = await rec.get("/v1/today");
     await rec.get("/v1/style");
 
     const current = briefed.board ?? after.board;
     const first = current.options[0];
-    await rec.command("swap-top", "board.swap_slot", { boardId: current.boardId, optionId: first.optionId, role: "top" }, { [`board:${current.boardId}`]: current.revision }, ref(first.optionId));
+    await rec.change("swap-top", "POST", `/v1/boards/${current.boardId}/swap`, { clientRequestId: `fixture-${crypto.randomUUID()}`, optionId: first.optionId, role: "top", expectedRevision: current.revision });
     await rec.get("/v1/today");
+
+    // An explicit request for another outfit (a preview beside the board), then clearing the day's brief.
+    const another = await rec.post("/v1/recommendations", { clientRequestId: `fixture-${crypto.randomUUID()}`, date: after.localDate, brief: "Dinner out", mode: "preview" });
+    expect(another.state).toBe("completed");
+    expect(another.options.length).toBeGreaterThan(0);
+    // GET /v1/style lists the day's briefs with their IDs; the app clears the active one.
+    const styleNow = await rec.get("/v1/style");
+    const activeBrief = styleNow.briefs.find((b: any) => b.localDate === after.localDate && b.status === "active");
+    expect(activeBrief?.briefId).toBe(briefSet.result.briefId);
+    const cleared = await rec.command("clear-brief", "style.retire_brief", { briefId: briefSet.result.briefId });
+    expect(cleared.outcome).toBe("committed");
+    await rec.get("/v1/today");
+    await rec.get("/v1/style");
 
     await expect(rec.render()).toMatchFileSnapshot(`${OUT}/owner-morning.json`);
   });
