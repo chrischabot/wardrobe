@@ -69,7 +69,8 @@ export async function exportMediaData(rt: MediaRuntime, principal: Principal): P
     format: MEDIA_EXPORT_FORMAT,
     exportedAt: toInstant(rt.clock()),
     records: {
-      assets: strip(assets),
+      // upload_id points at an upload authorization, which is not exported; the dangling reference is dropped.
+      assets: strip(assets).map(({ upload_id: _upload, ...a }) => a),
       renditions: strip(renditions).map(({ object_key, ...r }) => ({ ...r, file: object_key })),
       fidelityChecks: strip((await q("SELECT * FROM media_fidelity_checks WHERE user_id = ? ORDER BY created_at, check_id")).filter((f) => live.has(f.asset_id as string))),
       garmentMedia: strip(await q("SELECT * FROM garment_media WHERE user_id = ? ORDER BY garment_id")),
@@ -277,8 +278,9 @@ export async function importMediaData(
   const assets = data.records.assets.filter((a) => assetIds.has(String(a.asset_id)));
   const renditionIds = new Set(usable.map((r) => String(r.rendition_id)));
 
+  // The key names the row set as well as the part: two row sets of one part (combinations and day plans are both "studio") are different requests.
   const run = (part: string, rows: Record<string, Row[]>, index: number) =>
-    rt.service.execute(principal, { type: "media.import_records", payload: { part, rows }, idempotencyKey: `media-import:${u}:${data.exportedAt}:${part}:${index}`, expectedVersions: {}, authorization: "data_import", source: { channel: principal.channel } });
+    rt.service.execute(principal, { type: "media.import_records", payload: { part, rows }, idempotencyKey: `media-import:${u}:${data.exportedAt}:${part}:${Object.keys(rows)[0] ?? "rows"}:${index}`, expectedVersions: {}, authorization: "data_import", source: { channel: principal.channel } });
 
   for (let i = 0, index = 0; i < assets.length; i += 25, index++) {
     const chunk = assets.slice(i, i + 25);
