@@ -50,8 +50,13 @@ export class TestAssistant extends GarderobeAssistantBase {
   protected override now(): number {
     return clock.nowMs ?? Date.now();
   }
+  /**
+   * The ports the composition root configured (`configureAssistant({ ports })`), exactly as in production,
+   * with any port a test set through `setTestPorts` taking precedence. Only the model is replaced by this
+   * class: a Worker-level test therefore has the Worker's real photo, outfit and connection ports.
+   */
   protected override ports(): AssistantPorts {
-    return ports.value;
+    return { ...super.ports(), ...ports.value };
   }
 }
 export * from "./fake-google.ts";

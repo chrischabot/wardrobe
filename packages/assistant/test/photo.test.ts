@@ -10,9 +10,9 @@ import { all, getDailyRecord, listInventory, type Principal } from "@garderobe/d
 import { authorizeUpload, createMediaRuntime, depsFromBindings, finalizeUpload, openAssetImage, receiveUploadContent, registerMedia, type MediaRuntime } from "@garderobe/media";
 import { encodePng } from "@garderobe/media/image";
 import { syntheticShirt } from "@garderobe/media/testing";
-import { AssistantRequestError } from "../src/index.ts";
+import { AssistantRequestError, configureAssistant } from "../src/index.ts";
 import { TEST_GATEWAY_ID, setTestPorts } from "../src/testing/index.ts";
-import { createWorld, submission, type World } from "./helpers.ts";
+import { createWorld, passProbes, submission, type World } from "./helpers.ts";
 
 describe("photo intake through the conversation (REAL media upload and private read; FAKE MODEL; SYNTHETIC images)", () => {
   let w: World;
@@ -145,5 +145,52 @@ describe("photo intake through the conversation (REAL media upload and private r
   it("photo intake is refused outright when the deployment has no image port", async () => {
     setTestPorts({});
     await expect(w.client.runTurn({ submissionId: submission("photo"), text: "identify this", images: [{ assetId: "ast_anything", role: "other" }] })).rejects.toMatchObject({ code: "images_unavailable" });
+  });
+
+  it("a turn with an attached item identity and no photo is served normally when photo intake is not connected", async () => {
+    setTestPorts({}); // no image port at all, as on a deployment without media
+    const coat = await w.garment("oxford");
+    w.model.script({ text: "For ten degrees it wants a layer underneath." });
+    const turn = await w.client.runTurn({ submissionId: submission("ref"), text: "Is this one warm enough for ten degrees?", attachedRefs: [`garment:${coat.garmentId}`] });
+    expect(turn.status).toBe("completed");
+    expect(turn.failure).toBeNull();
+    expect(turn.reply?.text).toBe("For ten degrees it wants a layer underneath.");
+    const seen = w.model.requests.at(-1)!;
+    // The attached identity was resolved by the system and no image was involved.
+    expect(seen.system).toContain("WHAT THE OWNER ATTACHED TO THIS MESSAGE");
+    expect(seen.system).toContain(coat.name);
+    expect(seen.images).toHaveLength(0);
+    expect(seen.system).not.toContain("PHOTOGRAPHS IN THIS MESSAGE");
+    // Pasted text and a capture note are attachments too, and none of them needs the image port.
+    w.model.script({ text: "That is a note, not a photo." });
+    const withText = await w.client.runTurn({ submissionId: submission("ref"), text: "what is this?", attachedRefs: [`garment:${coat.garmentId}`], attachments: [{ kind: "other", source: "capture-sheet", text: "Capture intent selected by the owner: Identify this." }] });
+    expect(withText.status).toBe("completed");
+    // Only an actual photograph is refused there.
+    await expect(w.client.runTurn({ submissionId: submission("ref"), text: "and this?", attachedRefs: [`garment:${coat.garmentId}`], images: [{ assetId: "ast_anything", role: "other" }] })).rejects.toMatchObject({ code: "images_unavailable" });
+  });
+
+  it("the test actor keeps the ports the composition root configured (only the model is replaced); a test port takes precedence", async () => {
+    await passProbes(w.h, w.owner, "deepseek-v41-flash", ["vision"]);
+    const realOpen = async (principal: Principal, assetId: string) => {
+      const opened = await openAssetImage(rt, principal, assetId);
+      return { bytes: new Uint8Array(await new Response(opened.body).arrayBuffer()), contentType: opened.contentType };
+    };
+    const photo = await upload(p(), "selfie");
+    try {
+      // What the Worker does at module load. No test port is set.
+      configureAssistant({ ports: () => ({ openImage: realOpen }) });
+      setTestPorts({});
+      w.model.script({ text: "I can see the photo. Tell me what you had on and I will log it." });
+      const turn = await w.client.runTurn({ submissionId: submission("cfg"), text: "What I wore", images: [{ assetId: photo.assetId, role: "selfie" }] });
+      expect(turn.status).toBe("completed");
+      expect(turn.receipts).toHaveLength(0);
+      expect(w.model.requests.at(-1)!.images).toHaveLength(1);
+      // A port set by a test overrides the configured one.
+      setTestPorts({ openImage: async () => { throw new Error("TEST: image store offline"); } });
+      await expect(w.client.runTurn({ submissionId: submission("cfg"), text: "What I wore", images: [{ assetId: photo.assetId, role: "selfie" }] })).rejects.toMatchObject({ code: "image_not_found" });
+    } finally {
+      configureAssistant({});
+      setTestPorts({});
+    }
   });
 });
