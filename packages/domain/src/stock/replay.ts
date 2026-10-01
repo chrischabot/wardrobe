@@ -54,6 +54,8 @@ export interface ServiceHolding {
   /** Held units are not released by an ordinary weekly reset. */
   held: boolean;
   pickedUpAtMs: number;
+  /** The owner reported these units lost, not merely late: "washed" alone does not bring them back. */
+  lost?: boolean;
 }
 
 export interface StockState {
@@ -305,6 +307,16 @@ export function replayGarment(careChannel: CareChannel, events: StockEvent[]): R
           move("service", "clean", 1, "owner observation: washed, so it is back and clean");
           repair("ledger had this item away at the laundry; the wash observation establishes it is back and clean");
         }
+        if (e.payload.releaseHeld) {
+          // "It is washed", with no count, about a garment with units reported still away or held by a missed
+          // return: those units are evidently back. Units reported lost stay lost while another unit is clean.
+          for (const [ref, h] of [...s.service.entries()]) {
+            if (!h.held || h.lost) continue;
+            s.clean += h.quantity;
+            move("service", "clean", h.quantity, "owner observation: washed, so the unit reported away is back and clean");
+            s.service.delete(ref);
+          }
+        }
         break;
       }
       case "pickup": {
@@ -350,7 +362,7 @@ export function replayGarment(careChannel: CareChannel, events: StockEvent[]): R
           move("dirty", "service", fromDirty, "owner exception: the unit is away, not in the hamper");
         }
         if (got > 0) {
-          const h = s.service.get(ref) ?? { quantity: 0, held: true, pickedUpAtMs: e.occurredAtMs };
+          const h = s.service.get(ref) ?? { quantity: 0, held: true, pickedUpAtMs: e.occurredAtMs, lost: e.payload.kind === "lost" };
           h.quantity += got;
           s.service.set(ref, h);
         }

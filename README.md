@@ -19,7 +19,7 @@ Only data and requirements were migrated; no code from any earlier application i
 | Regenerate JSON Schema and Swift contracts | `npm run generate:contracts` |
 
 Node 22+, TypeScript 7.0.2, zod 4.6.5, vitest 4.1.11 with `@cloudflare/vitest-pool-workers` 0.22.0.
-`npm test` currently runs 91 foundation tests (14 contracts, 77 domain). Domain tests run inside workerd
+`npm run test:foundation` currently runs 111 foundation tests (14 contracts, 97 domain). Domain tests run inside workerd
 against a real local D1 database; nothing mocks the ledger. The bundled
 workerd accepts compatibility dates up to 2026-08-22.
 
@@ -133,6 +133,21 @@ Contract 1.1.0 additions (all additive; older payloads still parse):
   `previewGarmentSelection(db, principal, selector)` and send its `count` as `expectedCount`.
 - **Garment measurements.** `GarmentDetail.measurements` lists the current measurements of the item; an
   empty list means none are recorded.
+
+Ledger rules the other lanes rely on (regression-tested in `packages/domain/test/review-regressions.test.ts`):
+
+- **Lifting a restriction.** `restriction.resolve` from any actor other than `owner`, or on the `mcp`
+  channel, needs a non-blank `evidence.ref` pointing at the owner's statement (`forbidden`, reason
+  `evidence_reference_required` otherwise). `command.undo` of a `restriction.add` is `forbidden` (reason
+  `restriction_not_lifted_by_undo`) for an imported restriction whoever asks, and for anyone but the owner
+  in the app otherwise.
+- **Laundry.** `laundry.return` with no open batch first releases what a reported missed cycle is holding
+  and settles that cycle's exception; `stillAway` items become item exceptions. `care.washed` without a
+  quantity brings back units reported still away (not lost) and settles an exception only when its units
+  actually came back. Undo of `laundry.collect` is refused once the batch has returned; otherwise the
+  batch is marked withdrawn (`laundry_batches.withdrawn_at`, migration 0003), never deleted.
+- **Accessories.** `attributes.accessoryKind` (`AccessoryKind`) classifies a generic accessory; the daily
+  service excludes watches and jewellery by this class and does not offer an unclassified accessory.
 
 ### `@garderobe/domain`
 

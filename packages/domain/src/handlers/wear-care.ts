@@ -333,6 +333,7 @@ export const careWashed = define({
         eventIds.push(planner.add(r.garment_id, "wash", {}, "observed", ctx.occurredAt));
       }
     }
+    const itemIds: string[] = [];
     if (p.items) {
       const loaded = await loadGarments(ctx, p.items.map((i) => i.garmentId));
       for (const item of p.items) {
@@ -341,27 +342,90 @@ export const careWashed = define({
         if (g.care_channel === "none") throw new CommandError("precondition_failed", `${g.name} is never laundered`, { garmentId: g.garment_id });
         names.push(g.name);
         washedIds.push(g.garment_id);
-        eventIds.push(planner.add(g.garment_id, "wash", item.quantity ? { quantity: item.quantity } : {}, "observed", ctx.occurredAt));
-        // An owner report that the item is washed settles any open "still away" exception for it.
-        statements.push(stmt("UPDATE laundry_exceptions SET status = 'resolved', resolved_at = ? WHERE user_id = ? AND garment_id = ? AND status = 'active'", ctx.now, ctx.userId, g.garment_id));
+        itemIds.push(g.garment_id);
+        // Without a count, "it is washed" also brings back units reported still away (never ones reported lost).
+        eventIds.push(planner.add(g.garment_id, "wash", item.quantity ? { quantity: item.quantity } : { releaseHeld: true }, "observed", ctx.occurredAt));
       }
     }
     if (eventIds.length === 0) return { outcome: "noop", summary: "Nothing was awaiting a wash", undo: { unavailableReason: "nothing changed" } };
-    const parts = stockParts(await planner.build());
+    const build = await planner.build();
+    const parts = stockParts(build);
+
+    // An exception is settled only by what actually moved: its row is resolved when the units it held are
+    // no longer away, and reduced when only some of them came back. A unit that stays away keeps its exception.
+    const settled: SettledException[] = [];
+    const open = await allIn<{ exception_id: string; garment_id: string; batch_id: string | null; quantity: number }>(
+      ctx.db,
+      "SELECT exception_id, garment_id, batch_id, quantity FROM laundry_exceptions WHERE user_id = ? AND status = 'active' AND garment_id IN (:ids)",
+      [ctx.userId],
+      itemIds,
+    );
+    for (const x of open) {
+      const g = build.garments.get(x.garment_id);
+      if (!g) continue;
+      const ref = x.batch_id ?? `exception:${x.exception_id}`;
+      const before = g.before.state.service.get(ref)?.quantity ?? 0;
+      const after = g.after.state.service.get(ref)?.quantity ?? 0;
+      if (after > 0 && after >= before) continue;
+      settled.push({ exceptionId: x.exception_id, garmentId: x.garment_id, batchId: x.batch_id, previousQuantity: x.quantity, heldBefore: before, heldAfter: after });
+      if (after === 0) {
+        statements.push(stmt("UPDATE laundry_exceptions SET status = 'resolved', resolved_at = ? WHERE user_id = ? AND exception_id = ? AND status = 'active'", ctx.now, ctx.userId, x.exception_id));
+      } else {
+        statements.push(stmt("UPDATE laundry_exceptions SET quantity = ? WHERE user_id = ? AND exception_id = ? AND status = 'active'", after, ctx.userId, x.exception_id));
+      }
+      if (x.batch_id) {
+        // The batch's own record of what came back follows the observation.
+        statements.push(
+          stmt("UPDATE laundry_batch_items SET returned_quantity = MIN(quantity - ?, returned_quantity + ?), still_away = ? WHERE user_id = ? AND batch_id = ? AND garment_id = ?", after, before - after, after, ctx.userId, x.batch_id, x.garment_id),
+          stmt(
+            `UPDATE laundry_batches SET status = 'returned', returned_at = COALESCE(returned_at, ?), return_basis = 'observed'
+              WHERE user_id = ? AND batch_id = ? AND status = 'partially_returned'
+                AND NOT EXISTS (SELECT 1 FROM laundry_batch_items i WHERE i.user_id = laundry_batches.user_id AND i.batch_id = laundry_batches.batch_id AND i.returned_quantity < i.quantity)`,
+            ctx.occurredAt, ctx.userId, x.batch_id,
+          ),
+        );
+      }
+    }
     return {
       summary: `Washed and clean: ${nameList(names)}`,
       statements: [...parts.statements, ...statements],
       preconditions: parts.preconditions,
       affected: parts.affected,
       repairs: parts.repairs,
-      result: { washed: washedIds },
+      result: { washed: washedIds, exceptionsSettled: settled.filter((x) => x.heldAfter === 0).map((x) => x.exceptionId) },
       changes: { availabilityChanged: parts.availabilityChanged },
       bumpWardrobe: true,
-      undo: { data: { stockEventIds: eventIds } },
+      undo: { data: { stockEventIds: eventIds, settled } },
     };
   },
-  planUndo: (ctx, original, data) => simpleStockUndo(ctx, original, data),
+  async planUndo(ctx, original, data) {
+    // The units go back to where the ledger had them, and so do the exceptions this report settled.
+    const extra: Stmt[] = [];
+    for (const x of (data.settled ?? []) as SettledException[]) {
+      extra.push(stmt("UPDATE laundry_exceptions SET status = 'active', resolved_at = NULL, quantity = ? WHERE user_id = ? AND exception_id = ?", x.previousQuantity, ctx.userId, x.exceptionId));
+      if (!x.batchId) continue;
+      extra.push(
+        stmt("UPDATE laundry_batch_items SET returned_quantity = MAX(0, returned_quantity - ?), still_away = ? WHERE user_id = ? AND batch_id = ? AND garment_id = ?", x.heldBefore - x.heldAfter, x.heldBefore, ctx.userId, x.batchId, x.garmentId),
+        stmt(
+          `UPDATE laundry_batches SET status = 'partially_returned' WHERE user_id = ? AND batch_id = ? AND status = 'returned'
+             AND EXISTS (SELECT 1 FROM laundry_batch_items i WHERE i.user_id = laundry_batches.user_id AND i.batch_id = laundry_batches.batch_id AND i.still_away > 0)`,
+          ctx.userId, x.batchId,
+        ),
+      );
+    }
+    return simpleStockUndo(ctx, original, data, extra);
+  },
 });
+
+/** A laundry exception a wash report settled or reduced, with what undo needs to put it back. */
+interface SettledException {
+  exceptionId: string;
+  garmentId: string;
+  batchId: string | null;
+  previousQuantity: number;
+  heldBefore: number;
+  heldAfter: number;
+}
 
 /* ------------------------------------------------------------------ */
 /* Service laundry                                                      */
@@ -433,10 +497,26 @@ export const laundryCollect = define({
     };
   },
   async planUndo(ctx, original, data) {
-    return simpleStockUndo(ctx, original, data, [
-      stmt("DELETE FROM laundry_batch_items WHERE user_id = ? AND batch_id = ?", ctx.userId, data.batchId),
-      stmt("DELETE FROM laundry_batches WHERE user_id = ? AND batch_id = ? AND status = 'collected'", ctx.userId, data.batchId),
+    // A pickup can be withdrawn only while the batch is still out. Once it has come back (observed, or
+    // inferred by the weekly baseline), withdrawing it would put clothes the owner has back into the hamper.
+    const batch = await first<{ status: string; withdrawn_at: string | null }>(ctx.db, "SELECT status, withdrawn_at FROM laundry_batches WHERE user_id = ? AND batch_id = ?", ctx.userId, data.batchId);
+    if (!batch || batch.withdrawn_at !== null) throw new CommandError("not_undoable", "that pickup is no longer on record as an open batch", { batchId: data.batchId });
+    if (batch.status !== "collected") {
+      throw new CommandError("not_undoable", "that laundry has already come back; report what is wrong with the return instead (an item still away, or mark an item dirty)", { batchId: data.batchId, status: batch.status });
+    }
+    // Compensation, not deletion: the batch and its items stay on record, marked withdrawn by this undo.
+    const plan = await simpleStockUndo(ctx, original, data, [
+      stmt("UPDATE laundry_batches SET withdrawn_at = ?, withdrawn_by_command_id = ? WHERE user_id = ? AND batch_id = ? AND status = 'collected' AND withdrawn_at IS NULL", ctx.now, ctx.commandId, ctx.userId, data.batchId),
     ]);
+    return {
+      ...plan,
+      summary: "Laundry pickup withdrawn; the items are awaiting collection again",
+      preconditions: [
+        ...(plan.preconditions ?? []),
+        { label: "the batch is still out", sql: "(SELECT status FROM laundry_batches WHERE user_id = ? AND batch_id = ? AND withdrawn_at IS NULL) = 'collected'", params: [ctx.userId, data.batchId], class: "state" },
+      ],
+      affected: [...(plan.affected ?? []), { kind: "laundry_batch", id: String(data.batchId), version: 2 }],
+    };
   },
 });
 
@@ -447,14 +527,16 @@ export const laundryReturn = define({
   requiredScope: "write",
   async plan(ctx, p): Promise<CommandPlan> {
     const batch = p.batchId
-      ? await first<{ batch_id: string; status: string }>(ctx.db, "SELECT batch_id, status FROM laundry_batches WHERE user_id = ? AND batch_id = ?", ctx.userId, p.batchId)
-      : await first<{ batch_id: string; status: string }>(ctx.db, "SELECT batch_id, status FROM laundry_batches WHERE user_id = ? AND channel = 'service' AND status IN ('collected', 'partially_returned') ORDER BY picked_up_at ASC LIMIT 1", ctx.userId);
+      ? await first<{ batch_id: string; status: string }>(ctx.db, "SELECT batch_id, status FROM laundry_batches WHERE user_id = ? AND batch_id = ? AND withdrawn_at IS NULL", ctx.userId, p.batchId)
+      : await first<{ batch_id: string; status: string }>(ctx.db, "SELECT batch_id, status FROM laundry_batches WHERE user_id = ? AND channel = 'service' AND status IN ('collected', 'partially_returned') AND withdrawn_at IS NULL ORDER BY picked_up_at ASC LIMIT 1", ctx.userId);
     if (p.batchId && !batch) throw new CommandError("not_found", `no laundry batch '${p.batchId}'`);
     const planner = ctx.stock();
     const eventIds: string[] = [];
     const statements: Stmt[] = [];
 
     if (!batch) {
+      const missed = await planMissedCycleReturn(ctx, p.stillAway);
+      if (missed) return missed;
       // No pickup was ever observed, but the owner says the laundry is back: that is the physical fact.
       // Everything that was awaiting the service (except what is being worn today) is clean.
       const localDate = localDateOf(ctx.occurredAtMs, ctx.settings.timezone);
@@ -529,8 +611,112 @@ export const laundryReturn = define({
       undo: { unavailableReason: "report what is still away instead; the return stays in the record" },
     };
   },
-  planUndo: (ctx, original, data) => simpleStockUndo(ctx, original, data),
+  async planUndo(ctx, original, data) {
+    const extra: Stmt[] = [];
+    // A missed-return exception this report settled is open again, unless a later baseline has since released that cycle.
+    for (const id of (data.reopenExceptionIds ?? []) as string[]) {
+      extra.push(
+        stmt(
+          `UPDATE laundry_exceptions SET status = 'active', resolved_at = NULL WHERE user_id = ? AND exception_id = ?
+             AND NOT EXISTS (SELECT 1 FROM laundry_cycles c WHERE c.user_id = laundry_exceptions.user_id AND c.channel = 'service' AND c.cycle_key > laundry_exceptions.cycle_key)`,
+          ctx.userId, id,
+        ),
+      );
+    }
+    for (const id of (data.withdrawExceptionIds ?? []) as string[]) {
+      extra.push(stmt("UPDATE laundry_exceptions SET status = 'resolved', resolved_at = ? WHERE user_id = ? AND exception_id = ?", ctx.now, ctx.userId, id));
+    }
+    return simpleStockUndo(ctx, original, data, extra);
+  },
 });
+
+/**
+ * "The laundry is back" with no open batch, after the owner reported a cycle's return missed or delayed:
+ * the units that cycle has been holding away are back and clean. This is the owner's observation, so it
+ * stands whatever the weekly baseline inferred; the cycle's exception is settled, and anything he names as
+ * still away becomes its own item exception that only he can clear. Returns null when no missed cycle is
+ * holding anything, so the caller falls back to the hamper.
+ */
+async function planMissedCycleReturn(ctx: CommandContext, stillAway: { garmentId: string; quantity: number }[]): Promise<CommandPlan | null> {
+  const held = await all<{ garment_id: string; name: string; ref: string; quantity: number }>(
+    ctx.db,
+    `SELECT b.garment_id, g.name, b.ref, b.quantity FROM stock_balances b JOIN garments g ON g.user_id = b.user_id AND g.garment_id = b.garment_id
+      WHERE b.user_id = ? AND b.bucket = 'service' AND b.ref LIKE 'cycle:%' AND b.quantity > 0 ORDER BY g.name, b.ref`,
+    ctx.userId,
+  );
+  if (held.length === 0) return null;
+  const byGarment = new Map<string, { name: string; holdings: { ref: string; quantity: number }[]; total: number }>();
+  for (const h of held) {
+    const g = byGarment.get(h.garment_id) ?? { name: h.name, holdings: [], total: 0 };
+    g.holdings.push({ ref: h.ref, quantity: h.quantity });
+    g.total += h.quantity;
+    byGarment.set(h.garment_id, g);
+  }
+  const away = new Map(stillAway.map((s) => [s.garmentId, s.quantity]));
+  for (const id of away.keys()) {
+    if (!byGarment.has(id)) throw new CommandError("precondition_failed", "an item named as still away was not among the laundry that was held back; nothing was written", { garmentId: id });
+  }
+  const planner = ctx.stock();
+  const returnEventIds: string[] = [];
+  const eventIds: string[] = [];
+  const statements: Stmt[] = [];
+  const withdrawExceptionIds: string[] = [];
+  const awayNames: string[] = [];
+  let stillAwayUnits = 0;
+  for (const [garmentId, g] of byGarment) {
+    for (const h of g.holdings) {
+      const id = planner.add(garmentId, "return", { batchId: h.ref, quantity: h.quantity, via: "return_after_missed_cycle" }, "observed", ctx.occurredAt);
+      returnEventIds.push(id);
+      eventIds.push(id);
+    }
+    const stays = Math.min(away.get(garmentId) ?? 0, g.total);
+    if (stays === 0) continue;
+    // Named as still away: held under its own exception, which no weekly baseline releases.
+    const exceptionId = ctx.newId("lex");
+    eventIds.push(planner.add(garmentId, "exception", { exceptionId, quantity: stays, kind: "still_away" }, "observed", ctx.occurredAt));
+    statements.push(
+      stmt(
+        "INSERT INTO laundry_exceptions (user_id, exception_id, kind, garment_id, quantity, occurred_at, reported_at, command_id) VALUES (?, ?, 'still_away', ?, ?, ?, ?, ?)",
+        ctx.userId, exceptionId, garmentId, stays, ctx.occurredAt, ctx.now, ctx.commandId,
+      ),
+    );
+    withdrawExceptionIds.push(exceptionId);
+    awayNames.push(g.name);
+    stillAwayUnits += stays;
+  }
+  const build = await planner.build();
+  // What the receipt claims is what the replay actually moved (a report dated before the baseline moves nothing).
+  let released = 0;
+  for (const g of build.garments.values()) {
+    released += g.after.movements.filter((m) => returnEventIds.includes(m.eventId) && m.from === "service" && m.to === "clean").reduce((n, m) => n + m.quantity, 0);
+  }
+  if (released === 0) return null;
+  const parts = stockParts(build);
+  const cycleKeys = [...new Set(held.map((h) => h.ref.slice("cycle:".length)))].sort();
+  const settled = await all<{ exception_id: string }>(
+    ctx.db,
+    "SELECT exception_id FROM laundry_exceptions WHERE user_id = ? AND status = 'active' AND garment_id IS NULL AND cycle_key IS NOT NULL AND cycle_key <= ?",
+    ctx.userId,
+    cycleKeys[cycleKeys.length - 1]!,
+  );
+  for (const x of settled) {
+    statements.push(stmt("UPDATE laundry_exceptions SET status = 'resolved', resolved_at = ? WHERE user_id = ? AND exception_id = ? AND status = 'active'", ctx.now, ctx.userId, x.exception_id));
+  }
+  const returned = released - stillAwayUnits;
+  return {
+    summary:
+      `Laundry returned: ${returned} item${returned === 1 ? "" : "s"} clean (held back since the missed return of ${cycleKeys.join(", ")})` +
+      (stillAwayUnits > 0 ? `; still away: ${nameList(awayNames)}` : ""),
+    statements: [...parts.statements, ...statements],
+    preconditions: parts.preconditions,
+    affected: parts.affected,
+    repairs: parts.repairs,
+    result: { batchId: null, returned, stillAway: stillAwayUnits, cyclesReturned: cycleKeys, exceptionsSettled: settled.map((x) => x.exception_id) },
+    changes: { availabilityChanged: parts.availabilityChanged },
+    bumpWardrobe: true,
+    undo: { data: { stockEventIds: eventIds, reopenExceptionIds: settled.map((x) => x.exception_id), withdrawExceptionIds } },
+  };
+}
 
 /** The baseline dates (cycle keys) due at `asOf`, newest last, after `lastApplied`. */
 export function dueCycleKeys(todayLocal: string, baselineWeekday: number, lastApplied: string | null, maxCatchUp = 8): string[] {
@@ -588,9 +774,17 @@ export const laundryApplyWeeklyReset = define({
           statements.push(
             stmt(
               `UPDATE laundry_batches SET status = 'inferred_returned', returned_at = ?, return_basis = 'inferred'
-                WHERE user_id = ? AND channel = 'service' AND status = 'collected' AND picked_up_at < ?
+                WHERE user_id = ? AND channel = 'service' AND status = 'collected' AND withdrawn_at IS NULL AND picked_up_at < ?
                   AND NOT EXISTS (SELECT 1 FROM laundry_exceptions x WHERE x.user_id = laundry_batches.user_id AND x.status = 'active' AND (x.batch_id = laundry_batches.batch_id OR x.cycle_key = ?))`,
               toInstant(baselineMs), ctx.userId, toInstant(baselineMs), cycleKey,
+            ),
+            // A baseline that is not itself reported missed releases what earlier missed cycles held, so
+            // their exceptions are settled with it (inferred, like the release itself).
+            stmt(
+              `UPDATE laundry_exceptions SET status = 'resolved', resolved_at = ?
+                WHERE user_id = ? AND status = 'active' AND garment_id IS NULL AND cycle_key IS NOT NULL AND cycle_key < ?
+                  AND NOT EXISTS (SELECT 1 FROM laundry_exceptions y WHERE y.user_id = laundry_exceptions.user_id AND y.status = 'active' AND y.garment_id IS NULL AND y.cycle_key = ?)`,
+              ctx.now, ctx.userId, cycleKey, cycleKey,
             ),
           );
         }

@@ -61,9 +61,23 @@ export const ThermalBound = z.object({
 });
 export type ThermalBound = z.infer<typeof ThermalBound>;
 
+/**
+ * What an accessory is, for rules that apply to a class of accessory rather than to a name (the profile
+ * excludes watches and jewellery by choice). Set it on records in category `accessory`; belts, ties,
+ * scarves and pocket squares already have their own category. A generic accessory without a kind is
+ * unclassified, and the daily service does not offer it.
+ */
+export const AccessoryKind = z.enum([
+  "belt", "tie", "scarf", "bandana", "pocket_square", "hat", "gloves", "bag", "umbrella",
+  "watch", "jewellery", "ring", "bracelet", "necklace", "chain", "pendant", "earring", "brooch", "bangle", "cufflinks", "tie_clip",
+  "other",
+]);
+export type AccessoryKind = z.infer<typeof AccessoryKind>;
+
 export const GarmentAttributes = z
   .object({
     footwearKind: FootwearKind.optional(),
+    accessoryKind: AccessoryKind.optional(),
     model: z.string().optional().describe("Product model used by selectors, e.g. '990v4'."),
     fabricClass: z
       .enum(["lightweight_oxford", "heavy_oxford", "cotton_linen", "pure_linen", "flannel", "wool", "denim", "corduroy", "alpaca", "merino", "twill", "other"])
