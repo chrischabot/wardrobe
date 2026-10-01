@@ -56,6 +56,8 @@ export interface Env {
   GOOGLE_OAUTH_TOKEN_URL?: string;
   GOOGLE_OAUTH_REVOKE_URL?: string;
   GOOGLE_API_BASE_URL?: string;
+  /** Milliseconds a recommendation may take inside its request before it continues as a durable run (default 20000). */
+  RECOMMEND_INLINE_MS?: string;
   /** Universal-link prefix the system browser returns to after a connection flow. */
   APP_RETURN_URL?: string;
 }

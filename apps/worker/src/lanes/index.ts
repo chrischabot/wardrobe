@@ -1,6 +1,6 @@
 import { registerAssistant, configureAssistant, AiSearchIndex } from "@garderobe/assistant";
 import { outfitValidator, registerDaily, validateOutfit } from "@garderobe/daily";
-import { CommandError, createFoundationRegistry, type CommandRegistry, type CommandService, type Db } from "@garderobe/domain";
+import { CommandError, createFoundationRegistry, first, type CommandRegistry, type CommandService, type Db } from "@garderobe/domain";
 import { depsFromBindings, registerMedia, type MediaDeps } from "@garderobe/media";
 import type { Env } from "../env.ts";
 import { connectionAuthorization } from "../connections/service.ts";
@@ -47,6 +47,39 @@ export function mediaDepsFor(env: Env): MediaDeps {
   return mediaDeps;
 }
 
+/**
+ * Surface guard for hard constraints. A restriction (for example "sneakers only until the toe has
+ * healed") is lifted only by the owner: in the app, or in their own conversation where the assistant
+ * workstream checks that the owner's words say the condition has ended. A connected assistant's request
+ * carries no such verified statement (its `owner_statement` label is its own), so on the MCP channel
+ * lifting is refused whichever way it is attempted, and no assistant principal on any channel may undo
+ * the command that recorded a restriction. This sits on the one shared registry, so it holds for
+ * `garderobe_command`, for `garderobe_ask` and `garderobe_run` (the assistant acting for an MCP
+ * connection) and for the assistant in the app alike. The refusal is thrown while planning: nothing is
+ * written and no receipt exists.
+ */
+function guardRestrictionLifts(r: CommandRegistry): void {
+  const resolve = r.get("restriction.resolve");
+  const planResolve = resolve.plan;
+  resolve.plan = async (ctx, payload) => {
+    if (ctx.principal.channel === "mcp" || ctx.envelope.source.channel === "mcp") {
+      throw new CommandError("forbidden", "a connected assistant cannot lift a restriction; the owner lifts it in the Garderobe app or in their own Garderobe conversation", { reason: "owner_statement_not_verified" });
+    }
+    return planResolve.call(resolve, ctx, payload);
+  };
+  const undo = r.get("command.undo");
+  const planUndo = undo.plan;
+  undo.plan = async (ctx, payload) => {
+    if (ctx.principal.actor !== "owner" || ctx.principal.channel === "mcp" || ctx.envelope.source.channel === "mcp") {
+      const target = await first<{ type: string }>(ctx.db, "SELECT type FROM commands WHERE user_id = ? AND command_id = ?", ctx.userId, (payload as { commandId: string }).commandId);
+      if (target?.type === "restriction.add") {
+        throw new CommandError("forbidden", "undoing the record of a restriction would lift it; only the owner lifts a restriction, by saying its condition has ended", { reason: "restriction_not_lifted_by_undo" });
+      }
+    }
+    return planUndo.call(undo, ctx, payload);
+  };
+}
+
 let registry: CommandRegistry | null = null;
 
 /**
@@ -63,6 +96,7 @@ export function composedRegistry(): CommandRegistry {
       if (!bound) throw new CommandError("internal", "the Worker bindings are not available yet");
       return mediaDepsFor(bound);
     });
+    guardRestrictionLifts(r);
     registry = r;
   }
   return registry;

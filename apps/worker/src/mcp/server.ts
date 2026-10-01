@@ -177,7 +177,8 @@ export function buildMcpServer(app: App, caller: McpCaller): McpServer {
     { title: "Recommend outfits", description: "Request validated outfit options for a brief, date and count. Returns only options that passed validation against the current wardrobe; nothing is published or logged.", inputSchema: MCP_TOOL_CONTRACTS.garderobe_recommend.input, outputSchema: McpRecommendOutput, annotations: annotations("garderobe_recommend", "Recommend outfits") },
     async (args) => {
       try {
-        const result = await runRecommendation(app, principal, { clientRequestId: `mcp:${caller.grantId}:${args.clientRequestId}`, ...(args.date ? { date: args.date } : {}), ...(args.brief ? { brief: args.brief } : {}), ...(args.count ? { count: args.count } : {}), lockedGarmentIds: [], occasionOnly: false, mode: "preview" });
+        const result = await runRecommendation(app, principal, { clientRequestId: `mcp:${caller.grantId}:${args.clientRequestId}`, ...(args.date ? { date: args.date } : {}), ...(args.brief ? { brief: args.brief } : {}), ...(args.count ? { count: args.count } : {}), lockedGarmentIds: [], occasionOnly: false, mode: "preview" }, caller.exec);
+        if (result.state === "running") return ok(result, `Still composing for ${result.localDate}. Call garderobe_run with runId ${result.runId} to read the result.`);
         return ok(result, result.options.length > 0 ? `${result.options.length} validated option(s) for ${result.localDate}: ${result.options.map((o) => o.name).join("; ")}${result.note ? `. ${result.note}` : ""}` : `No valid option for ${result.localDate}. ${result.note ?? ""}`);
       } catch (error) {
         return failure(error);

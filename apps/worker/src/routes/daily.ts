@@ -1,11 +1,13 @@
 import { LocalDate } from "@garderobe/contracts";
-import { ClientRequest, RecommendRequest, TemperaturePreviewQuery, TodayQuery, WeatherQuery } from "@garderobe/contracts/ext/api";
+import { ClientRequest, RecommendRequest, SwapSlotRequest, TemperaturePreviewQuery, TodayQuery, WeatherQuery } from "@garderobe/contracts/ext/api";
 import type { TodayView } from "@garderobe/contracts/ext/daily";
 import { getOwnerState, toInstant, type Principal } from "@garderobe/domain";
 import { requireDaily, type App } from "../app.ts";
 import { ApiException } from "../errors.ts";
 import { html, json, readJson, readQuery } from "../http.ts";
 import { owner, type RouteDef } from "../router.ts";
+import { createApiRun, findApiRun, finishApiRun } from "../runs.ts";
+import { afterCommit } from "../app.ts";
 import { readService } from "./core.ts";
 
 type Freshness = { source: "wardrobe" | "style" | "weather" | "calendar" | "board" | "media"; state: "fresh" | "stale" | "unavailable" | "not_connected"; checkedAt: string | null; revision: number | null; detail: string | null };
@@ -35,12 +37,67 @@ export async function readToday(app: App, principal: Principal, query: { date?: 
   return { ...view, status, freshness, runId: null, wardrobeRevision: state.wardrobeRevision };
 }
 
-export async function runRecommendation(app: App, principal: Principal, input: { clientRequestId: string; date?: string; brief?: string; count?: number; lockedGarmentIds: string[]; occasionOnly: boolean; mode: "preview" | "board" }) {
+type RecommendInput = { clientRequestId: string; date?: string; brief?: string; count?: number; lockedGarmentIds: string[]; occasionOnly: boolean; mode: "preview" | "board" };
+
+/** How long a recommendation may take inside its request before it continues as a durable run. */
+export const RECOMMEND_INLINE_MS = 20_000;
+
+/**
+ * `POST /v1/recommendations` and MCP `garderobe_recommend` (specification section 13: "validated
+ * options or a durable run ID"). Composition normally finishes inside the request. When it takes longer
+ * than the inline budget (a slow model), the request answers `running` with a run ID, the work goes on
+ * in the background, and the result is read from the run; nothing depends on the connection staying
+ * open. Repeating the same request ID returns that run's state or result, never a second composition.
+ */
+export async function runRecommendation(app: App, principal: Principal, input: RecommendInput, exec: ExecutionContext, inlineMs?: number) {
   const daily = requireDaily(app, "recommendations");
-  const result = await daily.recommend(principal, input);
-  const state = await getOwnerState(app.db, principal);
-  const localDate = result.board?.localDate ?? input.date ?? (await daily.today(principal, {})).localDate;
-  return { state: "completed" as const, runId: null, localDate, options: result.options, board: result.board, insufficient: result.insufficient, note: result.note, wardrobeRevision: state.wardrobeRevision, readAt: toInstant(app.now()) };
+  const budget = inlineMs ?? (app.env.RECOMMEND_INLINE_MS && /^\d+$/.test(app.env.RECOMMEND_INLINE_MS) ? Number(app.env.RECOMMEND_INLINE_MS) : RECOMMEND_INLINE_MS);
+  const readAt = () => toInstant(app.now());
+  const revision = async () => (await getOwnerState(app.db, principal)).wardrobeRevision;
+  const fallbackDate = async () => input.date ?? (await daily.today(principal, {})).localDate;
+
+  const earlier = await findApiRun(app.db, principal.userId, "recommendation", input.clientRequestId);
+  if (earlier) {
+    if (earlier.state === "failed" || earlier.state === "cancelled") throw new ApiException("precondition_failed", "that recommendation did not finish; ask again with a new request ID", { runId: earlier.runId, state: earlier.state });
+    const stored = (earlier.result ?? {}) as Record<string, unknown>;
+    const done = earlier.state === "completed";
+    return {
+      state: done ? ("completed" as const) : ("running" as const),
+      runId: earlier.runId,
+      localDate: typeof stored.localDate === "string" ? stored.localDate : await fallbackDate(),
+      options: done ? earlier.result!.options : [],
+      board: done ? earlier.result!.board : null,
+      insufficient: stored.insufficient === true,
+      note: done ? ((stored.note as string | null | undefined) ?? null) : "Still composing. Read the run for the result.",
+      wardrobeRevision: await revision(),
+      readAt: readAt(),
+    };
+  }
+
+  const work = daily.recommend(principal, input);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // A budget of zero means "always as a run": the answer is the run handle and the work goes on in the background.
+  const first = budget <= 0 ? ("slow" as const) : await Promise.race([work, new Promise<"slow">((resolve) => (timer = setTimeout(() => resolve("slow"), budget)))]).finally(() => clearTimeout(timer));
+  if (first !== "slow") {
+    const localDate = first.board?.localDate ?? (await fallbackDate());
+    return { state: "completed" as const, runId: null, localDate, options: first.options, board: first.board, insufficient: first.insufficient, note: first.note, wardrobeRevision: await revision(), readAt: readAt() };
+  }
+
+  const localDate = await fallbackDate();
+  const run = await createApiRun(app.db, { userId: principal.userId, kind: "recommendation", clientRequestId: input.clientRequestId, request: input, channel: principal.channel, nowMs: app.now() });
+  exec.waitUntil(
+    work.then(
+      async (result) => {
+        await finishApiRun(app.db, principal.userId, run.runId, { state: "completed", result: { options: result.options, board: result.board, insufficient: result.insufficient, note: result.note, localDate: result.board?.localDate ?? localDate } }, app.now());
+        if (result.board) await afterCommit(app, principal);
+      },
+      async (error) => {
+        console.error("recommendation run failed", String((error as Error)?.message ?? error));
+        await finishApiRun(app.db, principal.userId, run.runId, { state: "failed", error: { code: "internal", message: "The recommendation could not be completed. Ask again.", resumable: false } }, app.now());
+      },
+    ),
+  );
+  return { state: "running" as const, runId: run.runId, localDate, options: [], board: null, insufficient: false, note: "Still composing. Read the run for the result.", wardrobeRevision: await revision(), readAt: readAt() };
 }
 
 export function dailyRoutes(): RouteDef[] {
@@ -51,7 +108,15 @@ export function dailyRoutes(): RouteDef[] {
   return [
     owner("GET", "/v1/today", "read", async ({ app, session, url }) => json(await readToday(app, session.principal, readQuery(url, TodayQuery)))),
 
-    owner("POST", "/v1/recommendations", "write", async ({ app, session, request }) => json(await runRecommendation(app, session.principal, await readJson(request, RecommendRequest)))),
+    owner("POST", "/v1/recommendations", "write", async ({ app, session, request, exec }) => json(await runRecommendation(app, session.principal, await readJson(request, RecommendRequest), exec))),
+
+    // A slot swap goes through the daily service so an old forecast is refreshed before the swap is validated.
+    owner("POST", "/v1/boards/{id}/swap", "write", async ({ app, session, params, request, exec }) => {
+      const body = await readJson(request, SwapSlotRequest);
+      const result = await requireDaily(app, "board edits").swapSlot(session.principal, { boardId: params.id!, optionId: body.optionId, role: body.role, clientRequestId: body.clientRequestId, ...(body.garmentId ? { garmentId: body.garmentId } : {}), ...(body.expectedRevision !== undefined ? { expectedRevision: body.expectedRevision } : {}) });
+      if (!result.receipt.replayed) exec.waitUntil(afterCommit(app, session.principal));
+      return json(result);
+    }),
 
     owner("GET", "/v1/weather", "read", async ({ app, session, url }) => json(await requireDaily(app, "weather").weather(session.principal, readQuery(url, WeatherQuery).date))),
 

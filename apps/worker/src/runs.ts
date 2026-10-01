@@ -127,6 +127,23 @@ export async function createApiRun(db: Db, input: { userId: string; kind: Kind; 
   return row.run_id === runId ? { runId, replayed: false } : check(row);
 }
 
+/** The run this workstream created for a request ID, if any (owner-scoped). */
+export async function findApiRun(db: Db, userId: string, kind: Kind, clientRequestId: string): Promise<ApiRun | null> {
+  const row = await first<RunRow>(db, `SELECT ${RUN_COLUMNS} FROM api_runs WHERE user_id = ? AND kind = ? AND client_request_id = ? AND provider = 'api'`, userId, kind, clientRequestId);
+  return row ? rowToRun(row) : null;
+}
+
+/**
+ * Finish an API-owned run unless something else (a cancel, an earlier finish) already did: the state
+ * change and its event are written only while the run is still running.
+ */
+export async function finishApiRun(db: Db, userId: string, runId: string, patch: RunPatch & { state: ApiRunState }, nowMs: number): Promise<boolean> {
+  const row = await first<{ state: ApiRunState }>(db, "SELECT state FROM api_runs WHERE user_id = ? AND run_id = ?", userId, runId);
+  if (!row || isTerminal(row.state)) return false;
+  await appendRunEvent(db, userId, runId, "run_finished", { state: patch.state }, { activity: null, ...patch }, nowMs);
+  return true;
+}
+
 export interface RunPatch {
   state?: ApiRunState;
   activity?: string | null;

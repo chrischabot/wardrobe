@@ -23,6 +23,7 @@ import { z } from "zod";
 import { GarmentAvailability } from "../availability.ts";
 import { CommandEnvelope, CommandErrorCode, CommandReceipt, GarmentSelector } from "../commands.ts";
 import { GarmentDetail } from "../inventory.ts";
+import { Role } from "../garment.ts";
 import { Channel, Instant, LocalDate, Scope } from "../primitives.ts";
 import { OwnerSettings } from "../settings.ts";
 import { StyleFactConflict } from "../style.ts";
@@ -69,6 +70,7 @@ export const API_ROUTES: readonly RouteSpec[] = [
   // Daily surfaces
   r("GET", "/v1/today", "access", "read", "TodayQuery", "TodayResponse", "Current board and selected outfit with source freshness, revision and eligible options"),
   r("POST", "/v1/recommendations", "access", "write", "RecommendRequest", "RecommendResponse", "Request outfits with a brief, date and count: validated options (or a durable run)"),
+  r("POST", "/v1/boards/{id}/swap", "access", "write", "SwapSlotRequest", "SwapSlotResponse", "Swap one slot of a board option; a forecast past its freshness threshold is refreshed first"),
   r("GET", "/v1/days/{date}", "access", "read", null, "DailyRecord", "What was actually worn on a wearing date"),
   r("GET", "/v1/weather", "access", "read", "WeatherQuery", "WeatherSnapshot", "Weather detail behind the board's weather line"),
   r("GET", "/v1/service", "access", "read", null, "ServiceState", "Pause/resume state of the daily service"),
@@ -376,6 +378,17 @@ export const RecommendResponse = z.object({
   readAt: Instant,
 });
 export type RecommendResponse = z.infer<typeof RecommendResponse>;
+
+/** `POST /v1/boards/{id}/swap`. Without `garmentId` the daily service picks the replacement. */
+export const SwapSlotRequest = z.object({
+  clientRequestId: z.string().min(8).max(128).describe("Stable ID: a retransmission returns the same receipt."),
+  optionId: z.string().min(1),
+  role: Role,
+  garmentId: z.string().optional(),
+  /** The board revision the owner was looking at; a newer revision is a clean conflict. */
+  expectedRevision: z.number().int().positive().optional(),
+});
+export const SwapSlotResponse = z.object({ board: BoardDocument, receipt: CommandReceipt });
 
 export const WeatherQuery = z.object({ date: LocalDate.optional() });
 export const TripList = z.object({ trips: z.array(Trip) });

@@ -44,6 +44,10 @@ export interface DailyPort {
   trip(principal: Principal, tripId: string): Promise<Trip>;
   pause(principal: Principal): Promise<PauseState | null>;
   proposePacking(principal: Principal, input: { tripId: string; clientRequestId: string }): Promise<PackingProposal>;
+  /** Swap one slot of a board option; the weather service is consulted first when the board's forecast is old. */
+  swapSlot(principal: Principal, input: { boardId: string; optionId: string; role: string; garmentId?: string; clientRequestId: string; expectedRevision?: number }): Promise<{ board: BoardDocument; receipt: CommandReceipt }>;
+  /** Mandatory context for an ad hoc outfit question (what is eligible for one slot of this outfit today). */
+  decisionContext(principal: Principal, input: { localDate?: string; outfit: { role: string; garmentId: string }[]; role: string; tripId?: string }): Promise<Record<string, unknown>>;
   temperaturePreview(principal: Principal, temperatureC: number): Promise<TemperaturePreview>;
   weather(principal: Principal, date: string | undefined): Promise<WeatherSnapshot>;
   boardHtml(principal: Principal, input: { date?: string; baseUrl: string }): Promise<string>;

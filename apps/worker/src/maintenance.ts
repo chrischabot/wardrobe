@@ -1,5 +1,9 @@
-import { prepare, stmt, toInstant } from "@garderobe/domain";
+import { prepare, stmt, toInstant, all } from "@garderobe/domain";
 import type { App } from "./app.ts";
+import { finishApiRun } from "./runs.ts";
+
+/** A recommendation run still marked running after this long lost its background work (the isolate ended). */
+const RECOMMENDATION_RUN_LIMIT_MS = 10 * 60_000;
 
 /**
  * Bounded retention of this workstream's own short-lived records: spent or expired one-time state,
@@ -28,5 +32,10 @@ export async function sweepExpired(app: App, nowMs: number): Promise<{ exportsEx
       stmt("UPDATE recovery_transactions SET status = 'expired' WHERE status = 'open' AND expires_at < ?", now),
     ].map((s) => prepare(db, s)),
   );
+  // A run is never left "running" for ever: one whose work was lost is reported as failed, to be asked again.
+  const lost = await all<{ user_id: string; run_id: string }>(db, "SELECT user_id, run_id FROM api_runs WHERE provider = 'api' AND kind = 'recommendation' AND state = 'running' AND updated_at < ? LIMIT 50", toInstant(nowMs - RECOMMENDATION_RUN_LIMIT_MS));
+  for (const run of lost) {
+    await finishApiRun(db, run.user_id, run.run_id, { state: "failed", error: { code: "internal", message: "The recommendation was interrupted before it finished. Ask again.", resumable: false } }, nowMs);
+  }
   return { exportsExpired: expired.results.length };
 }
