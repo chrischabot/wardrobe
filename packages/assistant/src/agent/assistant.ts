@@ -232,18 +232,19 @@ export abstract class GarderobeAssistantBase extends Think<any> {
     return createPrincipal({ userId: this.userId, actor: "assistant", channel: row.channel as "ios" | "web" | "mcp", scopes: json<Scope[]>(row.scopes_json, ["read"]), authRef: `turn:${row.turn_id}` });
   }
 
-  /** Owner text of this turn first, then the most recent earlier owner messages (for confirmations of a prior request). */
-  private ownerTexts(current: UIMessage): string[] {
-    const out: string[] = [];
-    const own = (m: UIMessage) => {
-      const first = (m.parts as { type: string; text?: string }[]).find((p) => p.type === "text");
-      return first?.text ?? "";
-    };
-    out.push(own(current));
-    const messages = this.messages;
-    for (let i = messages.length - 1; i >= 0 && out.length < 4; i--) {
-      const m = messages[i]!;
-      if (m.role === "user" && m.id !== current.id && metaOf(m)?.kind === "owner") out.push(own(m));
+  /**
+   * The owner's words that can authorize a change in this turn: this turn's own text only. An earlier
+   * statement is never reusable later, with one exception: when this turn answers the assistant's question,
+   * the request that question was about stays in view.
+   */
+  private async ownerTexts(current: UIMessage): Promise<string[]> {
+    const own = (m: { parts: unknown }) => (m.parts as { type: string; text?: string }[]).find((p) => p.type === "text")?.text ?? "";
+    const out = [own(current)];
+    const answers = (current.metadata as { garderobe?: { answersTurnId?: string } } | undefined)?.garderobe?.answersTurnId;
+    if (answers) {
+      const asked = await findTurn(this.db, this.userId, answers);
+      const original = asked ? await this.session.getMessage(asked.user_message_id) : null;
+      if (original) out.push(own(original));
     }
     return out.filter((t) => t && t !== FORGOTTEN_TEXT);
   }
@@ -281,7 +282,7 @@ export abstract class GarderobeAssistantBase extends Think<any> {
       readOnly,
       now: () => this.now(),
       localDate: context.localDate,
-      ownerTexts: this.ownerTexts(message),
+      ownerTexts: await this.ownerTexts(message),
       attachedRefs,
       conversationId: userId,
       unindexedSource: () => this.unindexedMessages(),
@@ -514,7 +515,7 @@ export abstract class GarderobeAssistantBase extends Think<any> {
   /* RPC surface (called only by trusted Worker code through client.ts)   */
   /* ------------------------------------------------------------------ */
 
-  private async accept(grantInput: unknown, input: unknown, kind: "conversation" | "research"): Promise<{ row: TurnRow; accepted: boolean; message: UIMessage }> {
+  private async accept(grantInput: unknown, input: unknown, kind: "conversation" | "research", answersTurnId?: string): Promise<{ row: TurnRow; accepted: boolean; message: UIMessage }> {
     const grant = TurnGrant.parse(grantInput);
     const parsed = TurnInput.parse(input);
     // Rejects an unknown or disabled owner before anything is stored.
@@ -535,7 +536,7 @@ export abstract class GarderobeAssistantBase extends Think<any> {
         // Everything that is not the owner's own words travels as delimited, explicitly untrusted data.
         ...attachments.map((a) => ({ type: "text" as const, text: wrapUntrusted(kindMap[a.kind] ?? "document", `${a.kind}${a.source ? `: ${a.source}` : ""}`, a.text) })),
       ],
-      metadata: { garderobe: { turnId: row.turn_id, channel: grant.channel, authoredAt: toInstant(nowMs), kind: "owner", attachedRefs: parsed.attachedRefs } },
+      metadata: { garderobe: { turnId: row.turn_id, channel: grant.channel, authoredAt: toInstant(nowMs), kind: "owner", attachedRefs: parsed.attachedRefs, ...(answersTurnId ? { answersTurnId } : {}) } },
     };
     return { row, accepted, message };
   }
@@ -664,7 +665,9 @@ export abstract class GarderobeAssistantBase extends Think<any> {
       const text = answer.text ?? choice?.label;
       if (!text) throw new RequestError("invalid_request", "the answer names no choice and has no text");
       await updateTurn(this.db, this.userId, turnId, { status: "completed" }, this.now());
-      return this.runOwnerTurn(grant, { submissionId: `clarify:${answer.inputId}`, text, attachedRefs: [] }) as Promise<TurnRecord>;
+      const { row: answerRow, accepted, message } = await this.accept(grant, { submissionId: `clarify:${answer.inputId}`, text, attachedRefs: [] }, "conversation", turnId);
+      if (answerRow.status === "accepted") await this.execute(answerRow.turn_id, message);
+      return toTurnRecord((await findTurn(this.db, this.userId, answerRow.turn_id))!, accepted);
     });
   }
 

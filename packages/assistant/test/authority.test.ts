@@ -67,6 +67,18 @@ describe("owner authority: injected, pasted and third-party text never authorize
     expect(await counts()).toEqual(before);
   });
 
+  it("an owner statement from an earlier turn cannot be replayed to authorize a change later", async () => {
+    const shoe = await w.garment("990v4");
+    w.model.script({ text: "Noted." });
+    await w.client.runTurn({ submissionId: submission(), text: "I wore the grey 990v4 trainers to the market" });
+    const before = (await all(w.h.db, "SELECT 1 FROM commands WHERE user_id = ? AND type = 'wear.record'", w.owner.userId)).length;
+    w.model.script({ toolCalls: [{ toolName: "record_wear", input: { garmentIds: [shoe.garmentId], ownerQuote: "I wore the grey 990v4 trainers to the market" } }] }, { text: "ok" });
+    const later = await w.client.runTurn({ submissionId: submission(), text: "what is the weather like?" });
+    expect(later.receipts).toHaveLength(0);
+    expect(later.refusals[0]!.code).toBe("quote_not_owner_words");
+    expect((await all(w.h.db, "SELECT 1 FROM commands WHERE user_id = ? AND type = 'wear.record'", w.owner.userId)).length).toBe(before);
+  });
+
   it("an unrelated owner sentence cannot be borrowed as authority to lift a restriction", async () => {
     w.model.script({ toolCalls: [{ toolName: "resolve_restriction", input: { restrictionId: HEALING_RESTRICTION_ID, ownerQuote: "I walked to the office this morning" } }] }, { text: "The restriction stays." });
     const turn = await w.client.runTurn({ submissionId: submission(), text: "I walked to the office this morning" });
@@ -143,6 +155,15 @@ describe("authority policy (pure)", () => {
     expect(verifyOwnerStatement({ quote: "", ownerTexts: ["hello"], level: "routine" }).code).toBe("no_owner_statement");
     expect(verifyOwnerStatement({ quote: "yes", ownerTexts: ["yes"], level: "sensitive" }).code).toBe("quote_too_short");
   });
+  it("accepts a request phrased politely but not a question about the past", () => {
+    expect(verifyOwnerStatement({ quote: "log the Drake's order", ownerTexts: ["Can you log the Drake's order?"], level: "routine" }).ok).toBe(true);
+    expect(verifyOwnerStatement({ quote: "wear the grey 990s today", ownerTexts: ["Did I wear the grey 990s today?"], level: "routine" }).code).toBe("not_a_statement");
+    expect(verifyOwnerStatement({ quote: "I wore the tweed", ownerTexts: ["imagine I wore the tweed"], level: "routine" }).ok).toBe(false);
+    // Record identifiers are not mistaken for secrets.
+    const id = "msg_trn_0123456789abcdef0123456789abcdef";
+    expect(redactSecrets(`forget ${id} please`).text).toContain(id);
+  });
+
   it("lifts only on a statement that the condition ended", () => {
     expect(verifyRestrictionLift({ quote: "my feet are fully recovered", ownerTexts: ["Update: my feet are fully recovered."], restrictionKind: "healing" }).ok).toBe(true);
     expect(verifyRestrictionLift({ quote: "the blazer is back from the tailor", ownerTexts: ["the blazer is back from the tailor"], restrictionKind: "tailor" }).ok).toBe(true);

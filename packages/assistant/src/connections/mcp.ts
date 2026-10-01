@@ -61,7 +61,9 @@ export class McpHttpClient {
       const secret = (await this.options.headers?.()) ?? {};
       const response = await this.options.fetch(this.endpoint, {
         method: "POST",
-        redirect: "error", // a redirect could leave the validated origin
+        // Redirects are never followed: a redirect could leave the validated origin. (The Workers runtime accepts
+        // only "follow" and "manual"; a 3xx answer is refused below.)
+        redirect: "manual",
         signal: controller.signal,
         headers: { "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-protocol-version": this.options.protocolVersion, ...(this.sessionId ? { "mcp-session-id": this.sessionId } : {}), ...secret },
         body: JSON.stringify({ jsonrpc: "2.0", ...(notification ? {} : { id: this.nextId++ }), method, params }),
@@ -69,6 +71,7 @@ export class McpHttpClient {
       const session = response.headers.get("mcp-session-id");
       if (session) this.sessionId = session;
       if (notification) return null;
+      if (response.status >= 300 && response.status < 400) throw new ConnectionError("transport", "the service answered with a redirect, which is not followed");
       if (!response.ok) throw new ConnectionError("transport", `the service answered ${response.status}`);
       const body = await response.text();
       if (body.length > MAX_MCP_RESPONSE_BYTES) throw new ConnectionError("too_large", "the service's answer exceeded the size limit");

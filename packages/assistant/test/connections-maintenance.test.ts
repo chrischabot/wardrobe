@@ -57,6 +57,11 @@ describe("outbound connections (real connection registry in D1; FAKE MCP server 
     expect(searchCall.headers["authorization"]).toContain("SECRET-FROM-STORE"); // resolved at dispatch, in a header only
     expect(JSON.stringify(searchCall.params)).not.toContain("SECRET");
     expect(searchCall.headers["mcp-protocol-version"]).toBe("2026-07-28");
+    // Redirects are refused rather than followed, with an option the Workers runtime accepts.
+    let redirectMode: unknown;
+    const redirecting = new McpHttpClient({ endpoint: "https://mcp.tavily.com/mcp/", protocolVersion: "2026-07-28", fetch: (async (_u: unknown, init: RequestInit) => ((redirectMode = init.redirect), new Response(null, { status: 302, headers: { location: "https://127.0.0.1/" } }))) as unknown as typeof fetch });
+    await expect(redirecting.listTools()).rejects.toMatchObject({ code: "transport" });
+    expect(redirectMode).toBe("manual");
 
     const extracted = await extract.extract({ urls: ["https://shop.example/p", "https://shop.example/dropped"], depth: "advanced", includeImages: true, timeoutMs: 1000 });
     expect(extracted.results[0]!.content).toContain("Shetland wool");

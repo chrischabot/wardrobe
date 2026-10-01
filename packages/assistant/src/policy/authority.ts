@@ -74,6 +74,17 @@ function isStatement(sentence: string): boolean {
   return true;
 }
 
+const REQUEST_FORM = /^(please\b|(can|could|would|will) you\b)/;
+
+/** A routine request may be phrased as "can you log ...?"; a genuine question ("did I wear ...?") or a hypothetical is not a request. */
+function isRequestOrStatement(sentence: string): boolean {
+  const s = normalize(sentence);
+  if (HYPOTHETICAL.test(s)) return false;
+  if (REQUEST_FORM.test(s)) return true;
+  if (s.endsWith("?")) return false;
+  return !/^(if|unless)\b/.test(s);
+}
+
 export interface OwnerStatementInput {
   /** The quote the tool call offers as the owner's authorization. */
   quote: string | undefined | null;
@@ -93,7 +104,7 @@ export function verifyOwnerStatement(input: OwnerStatementInput): AuthorityCheck
     for (const sentence of sentences(authored)) {
       const n = normalize(sentence);
       if (!n.includes(quote)) continue;
-      if (input.level === "sensitive" && !isStatement(sentence)) {
+      if (input.level === "sensitive" ? !isStatement(sentence) : !isRequestOrStatement(sentence)) {
         return { ok: false, code: "not_a_statement", message: "the owner asked a question or described a hypothetical; that does not change anything. Answer it, or ask the owner to say so plainly" };
       }
       return { ok: true, sentence };

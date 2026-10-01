@@ -18,7 +18,9 @@ import type { LanguageModel } from "ai";
 import { createWorkersAI } from "workers-ai-provider";
 import { anthropic } from "workers-ai-provider/anthropic";
 import { openai } from "workers-ai-provider/openai";
+import type { CommandService } from "@garderobe/domain";
 import type { ProfileSpec } from "./registry.ts";
+import { ModelService } from "./service.ts";
 
 export class GatewayConfigError extends Error {
   readonly code = "gateway_config";
@@ -45,6 +47,21 @@ export interface GatewayCallMeta {
 /** Only short, non-personal identifiers ever go into Gateway metadata. */
 export function gatewayMetadata(meta: GatewayCallMeta): Record<string, string | number> {
   return { garderobe_run: meta.runId.slice(0, 64), garderobe_task: meta.task, garderobe_attempt: meta.attempt, garderobe_env: meta.environment };
+}
+
+/**
+ * The production model service: every call reserved in D1 and dispatched only through the named Gateway.
+ * For callers outside the conversation actor (the daily service's composition model, background jobs).
+ */
+export function createGatewayModelService(env: { DB: D1Database; AI?: Ai; AI_GATEWAY_ID?: string; ENVIRONMENT?: string }, service: CommandService, clock?: () => number): ModelService {
+  const gatewayId = assertGatewayId(env.AI_GATEWAY_ID);
+  return new ModelService({
+    db: env.DB,
+    service,
+    gatewayId,
+    ...(clock ? { clock } : {}),
+    createLanguageModel: (spec, meta) => createGatewayModel(env, gatewayId, spec, { runId: meta.runId, task: meta.task, attempt: meta.attempt, environment: env.ENVIRONMENT ?? "dev" }) as never,
+  });
 }
 
 export function createGatewayModel(env: { AI?: Ai }, gatewayIdInput: string | undefined, spec: ProfileSpec, meta: GatewayCallMeta, allowed?: readonly string[]): LanguageModel {

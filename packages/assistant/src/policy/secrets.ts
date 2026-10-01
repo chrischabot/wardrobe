@@ -33,8 +33,9 @@ const PATTERNS: Pattern[] = [
   // Key-bearing URL parameters.
   { name: "url_credential", re: /([?&](?:api[_-]?key|apikey|key|token|access_token|auth|secret|signature|tavilyApiKey|exaApiKey)=)([^&\s#]+)/gi, group: 2 },
   { name: "url_userinfo", re: /(\bhttps?:\/\/)([^\s/:@]+:[^\s/@]+)@/gi, group: 2 },
-  // Long opaque tokens (hex or base64-like) that are not ordinary words.
-  { name: "opaque_token", re: /\b(?=[A-Za-z0-9_-]*[0-9])(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{40,}\b/g },
+  // Long opaque tokens (hex or base64-like) that are not ordinary words. The application's own record
+  // identifiers (prefix_hex, for example msg_trn_<hex>) are not secrets and are left intact.
+  { name: "opaque_token", re: /\b(?![a-z]{2,5}_(?:[a-z]{2,5}_)?[0-9a-f]{20,40}\b)(?=[A-Za-z0-9_-]*[0-9])(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{40,}\b/g },
 ];
 
 function luhn(digits: string): boolean {

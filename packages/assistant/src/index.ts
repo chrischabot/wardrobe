@@ -17,7 +17,7 @@ export { exportAssistantData, importAssistantData, type AssistantExport } from "
 
 export { ModelService, BudgetExceededError, NoSelectableProfileError, InferenceFailedError, classifyError, BREAKER_THRESHOLD, type ModelServiceDeps, type RunScope, type ModelCallMeta } from "./inference/service.ts";
 export { PROFILE_SPECS, TASK_SPECS, DEFAULT_DAILY_BUDGETS, profileSpec, selectability, type ProfileSpec, type TaskSpec } from "./inference/registry.ts";
-export { createGatewayModel, assertGatewayId, gatewayMetadata, ALLOWED_GATEWAY_IDS, GatewayConfigError } from "./inference/gateway.ts";
+export { createGatewayModel, createGatewayModelService, assertGatewayId, gatewayMetadata, ALLOWED_GATEWAY_IDS, GatewayConfigError } from "./inference/gateway.ts";
 export { createCompositionModel, parseCandidates, type CompositionRequest, type CompositionCandidate } from "./inference/composition.ts";
 
 export { assembleMandatoryContext, ASSISTANT_POLICY, ASSISTANT_PROMPT_VERSION, estimateTokens, type MandatoryContext } from "./context/mandatory.ts";
