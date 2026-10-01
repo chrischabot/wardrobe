@@ -112,7 +112,7 @@ describe("portable export and clean import of the visual wardrobe", () => {
       read.push(key);
       return fromSource(key);
     });
-    expect(result).toEqual({ imported: { assets: data.records.assets.length, renditions: data.records.renditions.length, files: data.assets.length }, missing: [], mismatched: [] });
+    expect(result).toEqual({ imported: { assets: data.records.assets.length, renditions: data.records.renditions.length, files: data.assets.length }, missing: [], mismatched: [], deletionsApplied: { assetsDeleted: 0, originalsPurged: 0, filesWithheld: 0 } });
     expect(read.sort()).toEqual(data.assets.map((f) => f.r2Key).sort());
 
     // The same asset and rendition identities, now under the importing owner's own prefix.

@@ -26,7 +26,7 @@ export const MEDIA_SYSTEM_COMMAND_TYPES = ["media.record_normalization", "media.
 
 /** Register every media and Studio command, the Studio commit hook and the version resolvers. */
 export function registerMedia(registry: CommandRegistry, deps: MediaDepsSource): void {
-  for (const def of [...uploadCommands(deps), ...assetCommands(deps), ...discoveryCommands(deps), ...compositeCommands(deps), ...studioCommands(deps), ...portabilityCommands()]) registry.register(def);
+  for (const def of [...uploadCommands(deps), ...assetCommands(deps), ...discoveryCommands(deps), ...compositeCommands(deps), ...studioCommands(deps), ...portabilityCommands(deps)]) registry.register(def);
   registerStudioHooks(registry);
   registry.registerVersionResolver("media_asset", (userId, id) => ({ sql: "SELECT version FROM media_assets WHERE user_id = ? AND asset_id = ?", params: [userId, id] }));
   registry.registerVersionResolver("garment_media", (userId, id) => ({ sql: "SELECT version FROM garment_media WHERE user_id = ? AND garment_id = ?", params: [userId, id] }));
@@ -49,5 +49,5 @@ export { createCloudflareImagesTranscoder, createCloudflareImagesBackgroundRemov
 export { createPurchaseLinkProvider, extractProductPage } from "./pipeline/purchase-link.ts";
 export { createSafeImageFetcher, refuseUrl, safeFetch } from "./pipeline/safe-fetch.ts";
 export { evaluateCandidate } from "./pipeline/evaluate.ts";
-export { exportMediaData, importMediaData, type MediaExport } from "./portability.ts";
+export { exportMediaData, importMediaData, listMediaDeletions, replayMediaDeletions, MEDIA_DELETIONS_FORMAT, type MediaDeletionJournal, type MediaExport } from "./portability.ts";
 export { ownerPrefix } from "./keys.ts";

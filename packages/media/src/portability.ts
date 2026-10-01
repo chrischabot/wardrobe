@@ -12,11 +12,29 @@
  * queued, and day plans arrive flagged for re-validation.
  */
 import { z } from "zod";
-import { all, assertPrincipal, CommandError, define, first, requireScope, sha256Hex, stmt, toInstant, type CommandDefinition, type Principal, type Stmt } from "@garderobe/domain";
+import { all, allIn, assertPrincipal, CommandError, define, first, requireScope, sha256Hex, stmt, toInstant, type CommandDefinition, type PlannedOutbox, type Principal, type Stmt } from "@garderobe/domain";
+import { planAssetRemoval } from "./commands/assets.ts";
+import { execAs } from "./exec.ts";
 import { assertOwnedKey, ownerPrefix } from "./keys.ts";
-import type { MediaRuntime } from "./runtime.ts";
+import { limitsOf, resolveDeps, type MediaDepsSource, type MediaRuntime } from "./runtime.ts";
+import { enqueueJob, loadRenditions, type AssetRow } from "./store.ts";
 
 export const MEDIA_EXPORT_FORMAT = "garderobe-media-export-1";
+export const MEDIA_DELETIONS_FORMAT = "garderobe-media-deletions/1";
+
+/**
+ * What was deleted, for backups. A backup taken before a deletion still holds the image until the backup
+ * expires; this journal is kept beside the backups (rebuilt at any time from the rows that remain after a
+ * deletion) and applied whenever a backup is restored, so a deleted image never comes back.
+ */
+export interface MediaDeletionJournal {
+  format: typeof MEDIA_DELETIONS_FORMAT;
+  writtenAt: string;
+  /** Images deleted by the owner, rejected in review or unusable: every file of the asset is gone. */
+  deletedAssets: { assetId: string; deletedAt: string | null; renditionIds: string[]; files: string[] }[];
+  /** Selfies whose full-resolution original was removed under the photo-history setting; the reduced copy remains. */
+  purgedOriginals: { assetId: string; renditionId: string; purgedAt: string; file: string }[];
+}
 
 type Row = Record<string, unknown>;
 
@@ -62,7 +80,9 @@ export async function exportMediaData(rt: MediaRuntime, principal: Principal): P
   const u = principal.userId;
   const q = (sql: string) => all<Row>(rt.db, sql, u);
   const assets = await q("SELECT * FROM media_assets WHERE user_id = ? AND status NOT IN ('deleted', 'rejected') ORDER BY created_at, asset_id");
-  const renditions = await q("SELECT r.* FROM media_renditions r JOIN media_assets a ON a.user_id = r.user_id AND a.asset_id = r.asset_id WHERE r.user_id = ? AND r.status IN ('active', 'superseded') AND a.status NOT IN ('deleted', 'rejected') ORDER BY r.created_at, r.rendition_id");
+  // A selfie original removed under the photo-history setting is exported as a record without a file, so the
+  // reduced copy derived from it keeps its recorded source.
+  const renditions = await q("SELECT r.* FROM media_renditions r JOIN media_assets a ON a.user_id = r.user_id AND a.asset_id = r.asset_id WHERE r.user_id = ? AND (r.status IN ('active', 'superseded') OR (r.status = 'deleted' AND r.kind = 'original')) AND a.status NOT IN ('deleted', 'rejected') ORDER BY r.created_at, r.rendition_id");
   const deleted = await all<{ asset_id: string; deleted_at: string | null }>(rt.db, "SELECT asset_id, deleted_at FROM media_assets WHERE user_id = ? AND status IN ('deleted', 'rejected') ORDER BY asset_id", u);
   const live = new Set(assets.map((a) => a.asset_id as string));
   return {
@@ -83,7 +103,7 @@ export async function exportMediaData(rt: MediaRuntime, principal: Principal): P
       composites: strip(await q("SELECT manifest_hash, manifest_json, template_version, created_at, user_id FROM outfit_composites WHERE user_id = ? ORDER BY manifest_hash")),
       deletedAssets: deleted.map((d) => ({ assetId: d.asset_id, deletedAt: d.deleted_at })),
     },
-    assets: renditions.map((r) => {
+    assets: renditions.filter((r) => r.status !== "deleted").map((r) => {
       assertOwnedKey(u, r.object_key as string);
       return { assetId: r.asset_id as string, renditionId: r.rendition_id as string, kind: r.kind as string, r2Key: r.object_key as string, contentType: r.content_type as string, byteLength: r.byte_length as number, sha256: r.sha256 as string };
     }),
@@ -93,7 +113,7 @@ export async function exportMediaData(rt: MediaRuntime, principal: Principal): P
       "is_demo = 1 marks a labelled demo placeholder; kind 'generic_illustration' is an illustration, never a photograph of the garment.",
       "Rendered outfit previews are a cache and are not included; they are rebuilt from the composition manifests.",
       "A day plan is an intention for a date, never a wear. Deleted images appear only as tombstones (deletedAssets).",
-      "Selfie originals removed under the photo-history setting are absent; their reduced display copies remain.",
+      "Selfie originals removed under the photo-history setting are absent (their rendition record has status 'deleted' and no file); their reduced display copies remain.",
     ],
   };
 }
@@ -106,9 +126,80 @@ const ImportPart = z.object({
 const s = (v: unknown): string | null => (v === null || v === undefined ? null : String(v));
 const n = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
 
+const ReapplyDeletions = z.object({
+  assetIds: z.array(z.string().min(1).max(64)).max(100).default([]),
+  purgedOriginalAssetIds: z.array(z.string().min(1).max(64)).max(100).default([]),
+  reason: z.string().max(300).default("deleted after the restored backup was taken"),
+});
+
 /** `media.import_records`: writes exported rows for the importing owner. Requires the import authorization (admin scope). */
-export function portabilityCommands(): CommandDefinition<any>[] {
+export function portabilityCommands(depsSource?: MediaDepsSource): CommandDefinition<any>[] {
+  const maxAttempts = () => (depsSource ? limitsOf(resolveDeps(depsSource)).jobMaxAttempts : 3);
   return [
+    define({
+      // Applies a deletion journal to an owner restored from a backup: whatever the backup brought back is deleted again.
+      type: "media.reapply_deletions",
+      schema: ReapplyDeletions,
+      class: "edit",
+      requiredScope: "write",
+      allowedAuthorizations: ["owner_tap", "system_schedule", "data_import"],
+      async plan(ctx, p) {
+        if (ctx.principal.actor === "assistant") throw new CommandError("forbidden", "a restore is completed by the owner or the system, not by an assistant");
+        const named = await allIn<AssetRow>(ctx.db, "SELECT * FROM media_assets WHERE user_id = ? AND asset_id IN (:ids)", [ctx.userId], [...new Set(p.assetIds)]);
+        const live = named.filter((a) => a.status !== "deleted" && a.status !== "rejected");
+        const derived = await allIn<AssetRow>(ctx.db, "SELECT * FROM media_assets WHERE user_id = ? AND status NOT IN ('deleted', 'rejected') AND derived_from_asset_id IN (:ids)", [ctx.userId], live.map((a) => a.asset_id));
+        const removing = [...live, ...derived.filter((d) => !live.some((a) => a.asset_id === d.asset_id))];
+        const statements: Stmt[] = [];
+        const outbox: PlannedOutbox[] = [];
+        const affected: { kind: string; id: string; version: number }[] = [];
+        if (removing.length > 0) {
+          const removal = await planAssetRemoval(ctx, removing, "deleted", p.reason, maxAttempts());
+          statements.push(...(removal.statements ?? []));
+          outbox.push(...(removal.outbox ?? []));
+          affected.push(...(removal.affected ?? []));
+          for (const a of removing) {
+            statements.push(stmt("UPDATE media_candidates SET decision = 'rejected', rejection_reasons_json = '[\"owner_rejected\"]', decided_by = 'owner', updated_at = ? WHERE user_id = ? AND asset_id = ? AND decision != 'rejected'", ctx.now, ctx.userId, a.asset_id));
+            outbox.push({ topic: "media.asset", entityKind: "media_asset", entityId: a.asset_id, revision: a.version + 1, payload: { deleted: true } });
+          }
+        }
+        // Full-resolution selfie originals that had been removed: removed again, the reduced copy is kept.
+        const removedIds = new Set(removing.map((a) => a.asset_id));
+        const candidates = await allIn<AssetRow>(ctx.db, "SELECT * FROM media_assets WHERE user_id = ? AND asset_id IN (:ids)", [ctx.userId], [...new Set(p.purgedOriginalAssetIds)].filter((id) => !removedIds.has(id)));
+        const keys: string[] = [];
+        const cacheShas: string[] = [];
+        let originalsPurged = 0;
+        for (const a of candidates) {
+          if (a.status === "deleted" || a.status === "rejected") continue;
+          const renditions = await loadRenditions(ctx.db, ctx.userId, a.asset_id);
+          const original = renditions.find((r) => r.kind === "original" && r.status !== "deleted");
+          if (!original) continue;
+          assertOwnedKey(ctx.userId, original.object_key);
+          keys.push(original.object_key);
+          cacheShas.push(original.sha256);
+          const keepsCopy = renditions.some((r) => r.kind !== "original" && r.status === "active");
+          statements.push(
+            stmt("UPDATE media_renditions SET status = 'deleted' WHERE user_id = ? AND rendition_id = ?", ctx.userId, original.rendition_id),
+            stmt("UPDATE media_assets SET original_purged_at = COALESCE(original_purged_at, ?), status = ?, status_reason = ?, version = version + 1, updated_at = ? WHERE user_id = ? AND asset_id = ?", ctx.now, keepsCopy ? a.status : "deleted", "full-resolution original removed under the photo-history setting", ctx.now, ctx.userId, a.asset_id),
+          );
+          affected.push({ kind: "media_asset", id: a.asset_id, version: a.version + 1 });
+          originalsPurged++;
+        }
+        if (keys.length > 0) {
+          const job = enqueueJob(ctx, { jobId: ctx.newId("job"), kind: "purge_objects", subjectId: candidates[0]!.asset_id, dedupeKey: `purge-originals:${ctx.commandId}`, payload: { keys, cacheShas }, maxAttempts: maxAttempts() });
+          statements.push(...job.statements);
+          outbox.push(...job.outbox);
+        }
+        if (statements.length === 0) return { outcome: "noop", summary: "Nothing that was deleted has come back", result: { assetsDeleted: 0, originalsPurged: 0 }, undo: { unavailableReason: "nothing changed" } };
+        return {
+          summary: `Deleted again after the restore: ${removing.length} image(s)${originalsPurged > 0 ? ` and ${originalsPurged} full-resolution selfie original(s)` : ""}; their stored files are being purged`,
+          statements,
+          outbox,
+          affected,
+          result: { assetsDeleted: removing.length, originalsPurged },
+          undo: { unavailableReason: "deleted image files are purged and cannot be restored" },
+        };
+      },
+    }),
     define({
       type: "media.import_records",
       schema: ImportPart,
@@ -227,15 +318,25 @@ export function portabilityCommands(): CommandDefinition<any>[] {
  * Import an export into an EMPTY owner. `readAsset(file)` returns the bytes stored in the package for an
  * exported file path, or null when the package does not contain it. Missing or checksum-mismatched files
  * are reported and their renditions (and assets left without an original) are not imported.
+ *
+ * With `opts.deletions` (the journal kept beside the backups) the files of images deleted after the
+ * package was made are never written back to storage, and their records are imported only to be marked
+ * deleted again through the command service, so the garment falls back exactly as it did at deletion.
  */
 export async function importMediaData(
   rt: MediaRuntime,
   principal: Principal,
   data: MediaExport,
   readAsset: (file: string) => Promise<ArrayBuffer | Uint8Array | null>,
-): Promise<{ imported: { assets: number; renditions: number; files: number }; missing: string[]; mismatched: string[] }> {
+  opts: { deletions?: MediaDeletionJournal | null } = {},
+): Promise<{ imported: { assets: number; renditions: number; files: number }; missing: string[]; mismatched: string[]; deletionsApplied: { assetsDeleted: number; originalsPurged: number; filesWithheld: number } }> {
   assertPrincipal(principal);
   if (data.format !== MEDIA_EXPORT_FORMAT) throw new CommandError("invalid_command", `unsupported media export format '${String(data.format)}'`);
+  const journal = opts.deletions ?? null;
+  if (journal && journal.format !== MEDIA_DELETIONS_FORMAT) throw new CommandError("invalid_command", `unsupported media deletion journal '${String((journal as { format?: unknown }).format)}'`);
+  const deletedAssetIds = new Set((journal?.deletedAssets ?? []).map((d) => d.assetId));
+  const purgedRenditionIds = new Set((journal?.purgedOriginals ?? []).map((d) => d.renditionId));
+  let filesWithheld = 0;
   const u = principal.userId;
   const existing = await first<{ n: number }>(rt.db, "SELECT (SELECT COUNT(*) FROM media_assets WHERE user_id = ?) + (SELECT COUNT(*) FROM studio_combinations WHERE user_id = ?) + (SELECT COUNT(*) FROM garment_media WHERE user_id = ?) AS n", u, u, u);
   if ((existing?.n ?? 0) > 0) throw new CommandError("precondition_failed", "media can only be imported into an owner that has none yet");
@@ -243,7 +344,16 @@ export async function importMediaData(
   const missing: string[] = [];
   const mismatched: string[] = [];
   const stored = new Set<string>();
+  // A rendition exported as a record only (a purged selfie original) has no file to verify.
+  for (const r of data.records.renditions) if (r.status === "deleted") stored.add(String(r.rendition_id));
+  let filesStored = 0;
   for (const file of data.assets) {
+    if (deletedAssetIds.has(file.assetId) || purgedRenditionIds.has(file.renditionId)) {
+      // Deleted after this package was made: the bytes are not read and never written back.
+      stored.add(file.renditionId);
+      filesWithheld++;
+      continue;
+    }
     const raw = await readAsset(file.r2Key);
     if (!raw) {
       missing.push(file.r2Key);
@@ -263,6 +373,7 @@ export async function importMediaData(
     assertOwnedKey(u, key);
     await rt.deps.bucket.put(key, bytes, { httpMetadata: { contentType: file.contentType }, customMetadata: { assetId: file.assetId, sha256: file.sha256, kind: file.kind, imported: "true" } });
     stored.add(file.renditionId);
+    filesStored++;
   }
   // Keep only renditions whose file arrived intact and whose source chain is intact; drop assets left without any.
   const renditions = data.records.renditions.filter((r) => stored.has(String(r.rendition_id)));
@@ -311,5 +422,57 @@ export async function importMediaData(
     return { dayPlanItems: data.records.dayPlanItems.filter((i) => ids.has(String(i.plan_id))) };
   });
   await chunked("composites", "composites", data.records.composites);
-  return { imported: { assets: assets.length, renditions: usable.length, files: stored.size }, missing, mismatched };
+  const replayed = journal ? await replayMediaDeletions(rt, principal, journal) : { assetsDeleted: 0, originalsPurged: 0 };
+  return { imported: { assets: assets.length, renditions: usable.length, files: filesStored }, missing, mismatched, deletionsApplied: { ...replayed, filesWithheld } };
+}
+
+/** The owner's deletion journal: what backups taken earlier may still hold and a restore must not bring back. Reads only. */
+export async function listMediaDeletions(rt: MediaRuntime, principal: Principal): Promise<MediaDeletionJournal> {
+  assertPrincipal(principal);
+  requireScope(principal, "read");
+  const u = principal.userId;
+  const assets = await all<{ asset_id: string; deleted_at: string | null; updated_at: string }>(rt.db, "SELECT asset_id, deleted_at, updated_at FROM media_assets WHERE user_id = ? AND status IN ('deleted', 'rejected') ORDER BY asset_id", u);
+  const files = await all<{ asset_id: string; rendition_id: string; object_key: string }>(
+    rt.db,
+    "SELECT r.asset_id, r.rendition_id, r.object_key FROM media_renditions r JOIN media_assets a ON a.user_id = r.user_id AND a.asset_id = r.asset_id WHERE r.user_id = ? AND a.status IN ('deleted', 'rejected') ORDER BY r.asset_id, r.rendition_id",
+    u,
+  );
+  const purged = await all<{ asset_id: string; rendition_id: string; object_key: string; original_purged_at: string }>(
+    rt.db,
+    `SELECT a.asset_id, r.rendition_id, r.object_key, a.original_purged_at FROM media_assets a JOIN media_renditions r ON r.user_id = a.user_id AND r.asset_id = a.asset_id
+      WHERE a.user_id = ? AND a.original_purged_at IS NOT NULL AND a.status NOT IN ('deleted', 'rejected') AND r.kind = 'original' AND r.status = 'deleted' ORDER BY a.asset_id`,
+    u,
+  );
+  return {
+    format: MEDIA_DELETIONS_FORMAT,
+    writtenAt: toInstant(rt.clock()),
+    deletedAssets: assets.map((a) => {
+      const own = files.filter((f) => f.asset_id === a.asset_id);
+      return { assetId: a.asset_id, deletedAt: a.deleted_at ?? a.updated_at, renditionIds: own.map((f) => f.rendition_id), files: own.map((f) => f.object_key) };
+    }),
+    purgedOriginals: purged.map((p) => ({ assetId: p.asset_id, renditionId: p.rendition_id, purgedAt: p.original_purged_at, file: p.object_key })),
+  };
+}
+
+/**
+ * Apply a deletion journal to an owner that was restored from a backup: every image the journal names that
+ * is present again is deleted through the command service (receipt, fallback image, purge of stored files
+ * and cached copies). Safe to repeat; an image that is already gone is left alone.
+ */
+export async function replayMediaDeletions(rt: MediaRuntime, principal: Principal, journal: MediaDeletionJournal): Promise<{ assetsDeleted: number; originalsPurged: number }> {
+  assertPrincipal(principal);
+  if (journal.format !== MEDIA_DELETIONS_FORMAT) throw new CommandError("invalid_command", `unsupported media deletion journal '${String((journal as { format?: unknown }).format)}'`);
+  const assetIds = [...new Set(journal.deletedAssets.map((d) => d.assetId))].sort();
+  const originals = [...new Set(journal.purgedOriginals.map((d) => d.assetId))].sort();
+  const out = { assetsDeleted: 0, originalsPurged: 0 };
+  for (let i = 0; i < Math.max(assetIds.length, originals.length); i += 50) {
+    const payload = { assetIds: assetIds.slice(i, i + 50), purgedOriginalAssetIds: originals.slice(i, i + 50) };
+    const receipt = await execAs(rt, principal, "media.reapply_deletions", payload, `media-deletions:${principal.userId}:${await sha256Hex(JSON.stringify(payload))}`);
+    // A replayed receipt describes work already done, not new deletions.
+    if (!receipt.replayed) {
+      out.assetsDeleted += Number(receipt.result.assetsDeleted ?? 0);
+      out.originalsPurged += Number(receipt.result.originalsPurged ?? 0);
+    }
+  }
+  return out;
 }
