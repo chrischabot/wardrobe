@@ -1,0 +1,22 @@
+{
+  "name": "@garderobe/media",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Visual wardrobe: private R2 media, upload and finalization, queue-driven discovery and normalization with fidelity checks, deterministic outfit composites and the Studio backend.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./image": "./src/image/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@garderobe/contracts": "1.0.0",
+    "@garderobe/domain": "1.0.0",
+    "jpeg-js": "0.4.4",
+    "zod": "4.6.5"
+  }
+}
