@@ -16463,6 +16463,175 @@
       ],
       "type": "object"
     },
+    "Proposal": {
+      "properties": {
+        "commandId": {
+          "description": "The command that carried out a confirmed proposal.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "decidedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Instant"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expiresAt": {
+          "$ref": "#/$defs/Instant",
+          "description": "After this it can only be rejected; ask for the change again."
+        },
+        "payload": {
+          "additionalProperties": {},
+          "propertyNames": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "proposalId": {
+          "type": "string"
+        },
+        "proposedAt": {
+          "$ref": "#/$defs/Instant"
+        },
+        "source": {
+          "properties": {
+            "assistantName": {
+              "description": "The connected assistant it came through, by the name the owner approved.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "channel": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "channel",
+            "assistantName"
+          ],
+          "type": "object"
+        },
+        "state": {
+          "enum": [
+            "pending",
+            "confirmed",
+            "rejected",
+            "expired"
+          ],
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "turnId": {
+          "description": "The turn (run) that produced it.",
+          "type": "string"
+        },
+        "type": {
+          "description": "Command type that would be executed.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "proposalId",
+        "turnId",
+        "type",
+        "summary",
+        "payload",
+        "proposedAt",
+        "expiresAt",
+        "source",
+        "state",
+        "decidedAt",
+        "commandId"
+      ],
+      "type": "object"
+    },
+    "ProposalDecisionRequest": {
+      "properties": {
+        "decision": {
+          "enum": [
+            "confirm",
+            "reject"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "decision"
+      ],
+      "type": "object"
+    },
+    "ProposalDecisionResponse": {
+      "properties": {
+        "proposal": {
+          "$ref": "#/$defs/Proposal"
+        },
+        "receipt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommandReceipt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "replayed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "proposal",
+        "receipt",
+        "replayed"
+      ],
+      "type": "object"
+    },
+    "ProposalList": {
+      "properties": {
+        "pending": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "proposals": {
+          "items": {
+            "$ref": "#/$defs/Proposal"
+          },
+          "type": "array"
+        },
+        "readAt": {
+          "$ref": "#/$defs/Instant"
+        }
+      },
+      "required": [
+        "proposals",
+        "pending",
+        "readAt"
+      ],
+      "type": "object"
+    },
+    "ProposalsQuery": {
+      "properties": {
+        "state": {
+          "default": "pending",
+          "enum": [
+            "pending",
+            "all"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "PublishedOptionInput": {
       "properties": {
         "explanationSource": {

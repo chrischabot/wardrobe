@@ -118,6 +118,8 @@ export const API_ROUTES: readonly RouteSpec[] = [
   r("POST", "/v1/runs/{id}/cancel", "access", "write", null, "RunCancelResponse", "Cancel remaining work; returns committed effects and what was stopped"),
   r("POST", "/v1/runs/{id}/resume", "access", "write", null, "Run", "Run again a run that failed with error.resumable = true (budget, no usable model, provider outage); committed changes are not repeated"),
   r("POST", "/v1/runs/{id}/input", "access", "write", "RunInputRequest", "Run", "Answer a needs_input request (same pending-action record as MCP input_required)"),
+  r("GET", "/v1/proposals", "access", "read", "ProposalsQuery", "ProposalList", "Changes the assistant proposed but could not make on its own authority (read-only or relayed through a connected assistant)"),
+  r("POST", "/v1/proposals/{id}/decision", "access", "write", "ProposalDecisionRequest", "ProposalDecisionResponse", "The owner confirms (the command runs once, as the owner's tap) or rejects a proposal; never reachable by a connected assistant"),
   // Media
   r("POST", "/v1/uploads", "access", "write", "UploadRequest", "UploadAuthorizationResponse", "Authorize a bounded media upload"),
   r("GET", "/v1/uploads/{id}", "access", "read", null, "UploadStatus", "State of an upload"),
@@ -755,6 +757,36 @@ export const RunCancelResponse = z.object({
   stopped: z.array(z.string()).describe("What was stopped, in owner-readable terms."),
 });
 export type RunCancelResponse = z.infer<typeof RunCancelResponse>;
+/* ------------------------------------------------------------------ */
+/* Proposals: changes waiting for the owner's decision                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A change the assistant was asked for but may not make on its own authority: the request came through
+ * a read-only connection, or it is a sensitive change (what the owner owns, the profile, a rule, a
+ * measurement, a restriction, a mailbox search) relayed by a connected assistant. `type` and `payload`
+ * are the typed command exactly as it would run. Only the owner, in the app, decides it.
+ */
+export const Proposal = z.object({
+  proposalId: z.string(),
+  turnId: z.string().describe("The turn (run) that produced it."),
+  type: z.string().describe("Command type that would be executed."),
+  summary: z.string(),
+  payload: z.record(z.string(), z.unknown()),
+  proposedAt: Instant,
+  expiresAt: Instant.describe("After this it can only be rejected; ask for the change again."),
+  source: z.object({ channel: z.string(), assistantName: z.string().nullable().describe("The connected assistant it came through, by the name the owner approved.") }),
+  state: z.enum(["pending", "confirmed", "rejected", "expired"]),
+  decidedAt: Instant.nullable(),
+  commandId: z.string().nullable().describe("The command that carried out a confirmed proposal."),
+});
+export type Proposal = z.infer<typeof Proposal>;
+export const ProposalsQuery = z.object({ state: z.enum(["pending", "all"]).default("pending") });
+export const ProposalList = z.object({ proposals: z.array(Proposal), pending: z.number().int().nonnegative(), readAt: Instant });
+export const ProposalDecisionRequest = z.object({ decision: z.enum(["confirm", "reject"]) });
+/** `receipt` is the verified receipt of the change when it was confirmed. A refused command answers with the usual error and the proposal stays pending. */
+export const ProposalDecisionResponse = z.object({ proposal: Proposal, receipt: CommandReceipt.nullable(), replayed: z.boolean() });
+
 export const RunInputRequest = z.object({
   inputId: z.string(),
   choiceId: z.string().optional(),

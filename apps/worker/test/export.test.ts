@@ -426,3 +426,31 @@ describe("importing into an empty account", () => {
     expect((await fresh.api.request("POST", "/v1/imports", { raw: bytes, headers: { "Content-Type": "text/plain" } })).status).toBe(415);
   });
 });
+
+describe("a laundry batch that was undone", () => {
+  it("comes across an export and import as withdrawn, not as a batch that is still out", async () => {
+    const app = await testApp();
+    const source = await provisionOwner({ real: true });
+    const wardrobe = await source.api.json("GET", "/v1/wardrobe");
+    const shirt = wardrobe.items.find((i: any) => i.garment.acquisition === "owned" && i.garment.careChannel === "service" && i.balances.some((b: any) => b.bucket === "clean" && b.quantity > 0)).garment;
+    expect((await source.api.command("care.mark_dirty", { items: [{ garmentId: shirt.garmentId, quantity: 1 }] })).status).toBe(200);
+    const collected = (await (await source.api.command("laundry.collect", {})).json()) as any;
+    expect(collected.outcome, JSON.stringify(collected)).toBe("committed");
+    const undone = await source.api.command("command.undo", { commandId: collected.commandId });
+    expect(undone.status, await undone.clone().text()).toBe(200);
+    const batches = async (userId: string) => (await app.db.prepare("SELECT batch_id, withdrawn_at, withdrawn_by_command_id FROM laundry_batches WHERE user_id = ? ORDER BY batch_id").bind(userId).all<{ batch_id: string; withdrawn_at: string | null; withdrawn_by_command_id: string | null }>()).results;
+    const before = await batches(source.userId);
+    expect(before).toHaveLength(1);
+    expect(before[0]!.withdrawn_at).toBeTruthy();
+    expect(before[0]!.withdrawn_by_command_id).toBeTruthy();
+
+    const done = await waitForExport(source, (await source.api.json("POST", "/v1/exports", { clientRequestId: `export-${crypto.randomUUID()}` })).exportId);
+    const { bytes } = await download(source, done.exportId);
+    const target = await provisionOwner();
+    const imported = await target.api.request("POST", "/v1/imports", { raw: bytes, headers: { "Content-Type": "application/zip" } });
+    expect(imported.status, await imported.clone().text()).toBe(200);
+    expect(await batches(target.userId)).toEqual(before);
+    // Seen through the product: nothing is out at the laundry service for either owner.
+    expect((await target.api.json("GET", "/v1/laundry")).batches ?? []).toEqual((await source.api.json("GET", "/v1/laundry")).batches ?? []);
+  });
+});
