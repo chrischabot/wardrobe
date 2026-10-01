@@ -35,7 +35,8 @@ describe("one semantic board document, three surfaces", () => {
       expect(html).toContain(`id="option-${o.optionId}"`);
       expect(html).toContain(`https://garderobe.example/board/2026-09-16#option-${o.optionId}`);
     }
-    expect(html).toContain("Lightweight oxford");
+    // Names on the web board come from the same garment records as the Calendar text.
+    for (const o of doc.options) for (const g of o.garments) expect(html).toContain(g.name.replace(/&/g, "&amp;").replace(/'/g, "&#39;").replace(/"/g, "&quot;"));
     expect(html).toContain('<meta name="robots" content="noindex">');
   });
 

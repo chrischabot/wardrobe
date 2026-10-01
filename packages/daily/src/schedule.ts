@@ -22,7 +22,16 @@ import { materialChange } from "./weather/assess.ts";
 export type Phase = "evening_compose" | "morning_refresh" | "morning_publish" | "morning_present";
 export const PHASES: Phase[] = ["evening_compose", "morning_refresh", "morning_publish", "morning_present"];
 const MAX_PHASE_ATTEMPTS = 5;
-const LEASE_MS = 5 * 60_000;
+const MIN_LEASE_MS = 5 * 60_000;
+/**
+ * How long a claimed phase is protected from a second runner. One phase can run up to three model
+ * compositions (compose, the final-check refresh, a replenishment), each bounded by the model budget,
+ * so the lease is derived from that budget instead of assuming it: three budgets and a minute of
+ * database and provider time, and never less than five minutes.
+ */
+export function phaseLeaseMs(deps: Pick<DailyDeps, "modelBudgetMs">): number {
+  return Math.max(MIN_LEASE_MS, 3 * Math.max(0, deps.modelBudgetMs ?? 120_000) + 60_000);
+}
 /** A missed morning phase is still worth running for this long after the morning time; later it would only be noise. */
 export const MORNING_CATCH_UP_MS = 3 * 3600_000;
 
@@ -53,10 +62,10 @@ export function phaseSchedule(localDate: string, timezone: string, morningLocalT
   };
 }
 
-/** Claim one (owner, local day, phase). Returns false when it is done, in progress, or out of attempts. */
-async function claim(deps: DailyDeps, userId: string, localDate: string, phase: string, dueAtMs: number, timezone: string, nowMs: number): Promise<"claimed" | "already_done" | "in_progress"> {
+/** Claim one (owner, local day, phase). `gave_up` is returned once, when the attempts are spent, so the failure is reported rather than dropped. */
+async function claim(deps: DailyDeps, userId: string, localDate: string, phase: string, dueAtMs: number, timezone: string, nowMs: number): Promise<"claimed" | "already_done" | "in_progress" | "gave_up"> {
   const now = toInstant(nowMs);
-  const lease = toInstant(nowMs + LEASE_MS);
+  const lease = toInstant(nowMs + phaseLeaseMs(deps));
   const inserted = await prepare(
     deps.db,
     stmt("INSERT INTO day_runs (user_id, local_date, phase, status, due_at, timezone, attempts, lease_until, started_at) VALUES (?, ?, ?, 'running', ?, ?, 1, ?, ?) ON CONFLICT (user_id, local_date, phase) DO NOTHING", userId, localDate, phase, toInstant(dueAtMs), timezone, lease, now),
@@ -70,8 +79,25 @@ async function claim(deps: DailyDeps, userId: string, localDate: string, phase: 
     ),
   ).run();
   if ((retry.meta?.changes ?? 0) === 1) return "claimed";
-  const row = await first<{ status: string }>(deps.db, "SELECT status FROM day_runs WHERE user_id = ? AND local_date = ? AND phase = ?", userId, localDate, phase);
-  return row?.status === "running" ? "in_progress" : "already_done";
+  const row = await first<{ status: string; attempts: number; lease_until: string | null; detail_json: string }>(deps.db, "SELECT status, attempts, lease_until, detail_json FROM day_runs WHERE user_id = ? AND local_date = ? AND phase = ?", userId, localDate, phase);
+  if (!row) return "already_done";
+  const expired = row.status === "running" && row.lease_until !== null && row.lease_until < now;
+  if (row.attempts >= MAX_PHASE_ATTEMPTS && (row.status === "failed" || expired)) {
+    // Out of attempts. Record that once, visibly: the run's row says so and the sweep reports it.
+    let detail: Record<string, unknown> = {};
+    try {
+      detail = JSON.parse(row.detail_json || "{}") as Record<string, unknown>;
+    } catch {
+      detail = {};
+    }
+    if (detail.gaveUp === true) return "already_done";
+    const marked = await prepare(
+      deps.db,
+      stmt("UPDATE day_runs SET status = 'failed', lease_until = NULL, finished_at = COALESCE(finished_at, ?), detail_json = ? WHERE user_id = ? AND local_date = ? AND phase = ? AND attempts >= ? AND detail_json = ?", now, JSON.stringify({ ...detail, gaveUp: true, attempts: row.attempts, gaveUpAt: now }), userId, localDate, phase, MAX_PHASE_ATTEMPTS, row.detail_json),
+    ).run();
+    return (marked.meta?.changes ?? 0) === 1 ? "gave_up" : "already_done";
+  }
+  return row.status === "running" ? "in_progress" : "already_done";
 }
 
 async function finish(deps: DailyDeps, userId: string, localDate: string, phase: string, status: "succeeded" | "failed" | "skipped_paused", detail: Record<string, unknown>, nowMs: number): Promise<void> {
@@ -98,7 +124,7 @@ async function refreshBoard(deps: DailyDeps, principal: Principal, board: BoardR
   const before = previousCalendar ? relevantEvents(previousCalendar.events).map((e) => e.eventId).sort().join(",") : "";
   const after = calendar.status === "ok" ? relevantEvents(calendar.events).map((e) => e.eventId).sort().join(",") : before;
   if (!board.selected_option_id && ((change.material && weather.freshness !== "unavailable") || before !== after)) {
-    const result = await prepareBoard(deps, principal, { localDate, reason: "refresh", brief: revision.brief, purpose: "morning_refresh", weather, calendar, idempotencyKey: key, nowMs });
+    const result = await prepareBoard(deps, principal, { localDate, reason: "refresh", brief: revision.brief, purpose: "morning_refresh", weather, calendar, idempotencyKey: key, nowMs, expectedBoardRevision: board.current_revision });
     return { board: board.board_id, action: "recomposed", reasons: [...change.reasons, ...(before !== after ? ["calendar changed"] : [])], revision: result.board?.revision ?? null, offered: result.board?.options.length ?? 0, weather: weather.freshness, calendar: calendar.status };
   }
   // A failed source never downgrades a board that was validated against a real forecast: the
@@ -107,7 +133,9 @@ async function refreshBoard(deps: DailyDeps, principal: Principal, board: BoardR
     const r = await reviseBoard(deps, principal, board, { nowMs, reason: "refresh", idempotencyKey: `${key}:revalidate` });
     return { board: board.board_id, action: r.action, revision: r.revision, offered: r.offered, weather: "unavailable", weatherLimitation: weather.limitation, keptBasis: revision.weather_snapshot_id, calendar: calendar.status };
   }
-  const r = await reviseBoard(deps, principal, board, { nowMs, reason: "refresh", weather, calendar: calendar.status === "error" || calendar.status === "not_connected" ? undefined : calendar, force: true, idempotencyKey: `${key}:refresh` });
+  // A calendar that can no longer be read is carried onto the board as what it is (not connected, or an
+  // error with no recent read to stand in): the board never goes on citing last night's successful read.
+  const r = await reviseBoard(deps, principal, board, { nowMs, reason: "refresh", weather, calendar, force: true, idempotencyKey: `${key}:refresh` });
   return { board: board.board_id, action: r.action, revision: r.revision, offered: r.offered, materialWeatherChange: change.material, reasons: change.reasons, weather: weather.freshness, calendar: calendar.status };
 }
 
@@ -202,6 +230,10 @@ export async function runOwnerPhase(deps: DailyDeps, input: { userId: string; lo
   const schedule = phaseSchedule(localDate, tz, owner.settings.delivery.morningLocalTime, dailySettings(owner.settings))[phase];
   if (!input.force && (nowMs < schedule.dueAtMs || nowMs >= schedule.expiresAtMs)) return { userId, localDate, phase, status: "not_due", detail: {} };
   const claimed = await claim(deps, userId, localDate, phase, schedule.dueAtMs, tz, nowMs);
+  if (claimed === "gave_up") {
+    const row = await first<{ detail_json: string }>(deps.db, "SELECT detail_json FROM day_runs WHERE user_id = ? AND local_date = ? AND phase = ?", userId, localDate, phase);
+    return { userId, localDate, phase, status: "failed", detail: { ...(JSON.parse(row?.detail_json ?? "{}") as Record<string, unknown>), gaveUp: true } };
+  }
   if (claimed !== "claimed") return { userId, localDate, phase, status: claimed, detail: {} };
   // Pause state is checked before any queued job composes or publishes.
   const paused = await pauseCovering(deps.db, userId, localDate);

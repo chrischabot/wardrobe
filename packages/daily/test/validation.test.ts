@@ -189,12 +189,13 @@ describe("profile 8.4: the thermal rule", () => {
     expect(noJacket.valid).toBe(true);
   });
 
-  it("with no forecast nothing is assumed: bounds are reported as unverified, not as passed-because-warm", async () => {
+  it("with no forecast nothing is assumed: bounds are reported as unverified, not as passed-because-warm, and a jacket over a heavier shirt is not offered", async () => {
     const v = await validateOutfit(h.db, owner.principal(), { forDate: "2026-11-20", slots: slots({ outer: "Drake's Olive Jungle Jacket", top: "Pima oxford — navy", bottom: "Di Sondrio beige chino" }) });
     expect(v.evidence.conditions).toMatchObject({ freshness: "unavailable", peakC: null, departureC: null });
     const advisory = v.violations.filter((x) => x.severity === "advisory").map((x) => x.code);
     expect(advisory).toContain("thermal_unverified");
-    expect(advisory).toContain("jacket_band_unverified");
+    // The 14-16 C band cannot be ruled out, so the combination is refused rather than waved through.
+    expect(codes(v)).toEqual(["jacket_band_unverified"]);
   });
 
   it("research rules absent from the profile are retained but NOT enforced until reconciled", async () => {

@@ -11,7 +11,7 @@
 import { DAILY_COMMANDS } from "@garderobe/contracts/ext/daily";
 import type { CalendarSnapshot, WeatherComparison, WeatherForecastInput, WeatherCompareLocationsInput, WeatherLocation, WeatherSnapshot } from "@garderobe/contracts/ext/daily";
 import { WeatherCompareLocationsInput as CompareSchema, WeatherForecastInput as ForecastSchema } from "@garderobe/contracts/ext/daily";
-import { addDays, assertPrincipal, define, first, newId, prepare, requireScope, stmt, toInstant, zonedToUtcMs, type CommandPlan, type CommandRegistry, type Db, type Principal } from "@garderobe/domain";
+import { addDays, all, assertPrincipal, define, first, newId, prepare, requireScope, stmt, toInstant, zonedToUtcMs, type CommandPlan, type CommandRegistry, type Db, type Principal } from "@garderobe/domain";
 import { managedEventId } from "./calendar/event-id.ts";
 import { weighEvents } from "./calendar/influence.ts";
 import { dailySettings, latestCalendarSnapshot, loadOwner } from "./context.ts";
@@ -236,9 +236,13 @@ export async function readCalendarSnapshot(deps: DailyDeps, principal: Principal
       const timeMin = toInstant(zonedToUtcMs(opts.localDate, "00:00", timezone));
       const timeMax = toInstant(zonedToUtcMs(addDays(opts.localDate, 1), "00:00", timezone));
       const raw = await deps.calendar.reader.listEvents(principal.userId, { calendarIds: settings.calendar.readCalendarIds, timeMin, timeMax, timezone });
-      // The managed outfit event is the board itself, never context for the board.
-      const own = await managedEventId(principal.userId, opts.scope ?? "home", opts.localDate);
-      const events = weighEvents(raw.filter((e) => e.eventId !== own), { localDate: opts.localDate, timezone });
+      // A managed outfit event is the board itself, never context for a board - whichever board is being
+      // read for: the home board's event is not a commitment on the evening or a trip day, nor the reverse.
+      const trips = await all<{ trip_id: string }>(deps.db, "SELECT trip_id FROM trips WHERE user_id = ? AND departs_on <= ? AND returns_on >= ?", principal.userId, opts.localDate, opts.localDate);
+      const scopes = new Set<string>([opts.scope ?? "home", "home", "home:evening", ...trips.flatMap((t) => [`trip:${t.trip_id}`, `trip:${t.trip_id}:evening`])]);
+      const own = new Set<string>();
+      for (const scope of scopes) own.add(await managedEventId(principal.userId, scope, opts.localDate));
+      const events = weighEvents(raw.filter((e) => !own.has(e.eventId)), { localDate: opts.localDate, timezone });
       snapshot = { snapshotId, localDate: opts.localDate, status: "ok", readAt: toInstant(nowMs), ageMinutes: 0, events, limitation: null };
     } catch (e) {
       if (e instanceof CalendarNotConnectedError || (e as Error)?.name === "CalendarNotConnectedError") {
