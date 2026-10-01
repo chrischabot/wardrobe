@@ -54,9 +54,11 @@ try {
   const viaApi = (await api("GET", `/v1/today?date=${date}`)).json;
   check("garderobe_today: the same board revision as the app", board.ok && today.ok && today.data.board?.boardId === viaApi.board?.boardId && today.data.board?.revision === viaApi.board?.revision, `revision ${today.data?.board?.revision}`);
 
-  const top = wardrobe.items.find((i) => i.garment.acquisition === "owned" && i.garment.roles.includes("top") && i.balances.some((b) => b.bucket === "clean" && b.quantity > 0));
+  // Writes go to a clearly labelled synthetic garment, never to real stock: no wear history is invented.
+  const created = await api("POST", "/v1/commands", { type: "garment.create", payload: { name: "Smoke-test shirt (synthetic, not real stock)", category: "shirt", roles: ["top"], careChannel: "service", acquisition: "owned", quantity: 1, isSynthetic: true, source: { kind: "system", note: "synthetic smoke-test garment" } }, idempotencyKey: `smoke-create-${Date.now()}`, authorization: "owner_tap", source: { channel: "ios" } });
+  const syntheticId = created.json.affected.find((a) => a.kind === "garment").id;
   const wearingDate = new Date().toISOString().slice(0, 10);
-  const args = { type: "wear.record", payload: { wearingDate, garmentIds: [top.garment.garmentId] }, idempotencyKey: `smoke-wear-${Date.now()}` };
+  const args = { type: "wear.record", payload: { wearingDate, garmentIds: [syntheticId] }, idempotencyKey: `smoke-wear-${Date.now()}` };
   const wrote = await callTool(writer.client, "garderobe_command", args);
   check("garderobe_command: verified receipt", wrote.ok && ["committed", "merged"].includes(wrote.data.receipt.outcome), wrote.ok ? wrote.data.receipt.summary : wrote.error?.message);
   const replay = await callTool(writer.client, "garderobe_command", args);
@@ -74,10 +76,10 @@ try {
   const forged = await callTool(writer.client, "garderobe_command", { type: "wear.record", payload: { wearingDate, garmentIds: ["gmt_not_a_real_garment"] }, idempotencyKey: `smoke-missing-${Date.now()}` });
   check("an invented garment is refused, nothing is created", !forged.ok && forged.error.code === "not_found");
 
-  const created = await api("POST", "/v1/commands", { type: "garment.create", payload: { name: "Smoke-test shirt (synthetic, not real stock)", category: "shirt", roles: ["top"], careChannel: "service", acquisition: "owned", quantity: 1, isSynthetic: true, source: { kind: "system", note: "synthetic smoke-test garment" } }, idempotencyKey: `smoke-create-${Date.now()}`, authorization: "owner_tap", source: { channel: "ios" } });
-  const syntheticId = created.json.affected.find((a) => a.kind === "garment").id;
   const retired = await callTool(writer.client, "garderobe_command", { type: "garment.remove_fabricated", payload: { garmentId: syntheticId, reason: "smoke-test cleanup of a synthetic garment" }, idempotencyKey: `smoke-remove-${Date.now()}` });
+  const wardrobeAfter = (await api("GET", "/v1/wardrobe")).json;
   check("consequential command asked for confirmation, then ran once", retired.ok && confirmations.length === 1, confirmations[0] ?? retired.error?.message);
+  check("the synthetic garment is gone and the real inventory is unchanged", wardrobeAfter.total === wardrobe.total && !wardrobeAfter.items.some((i) => i.garment.garmentId === syntheticId), `${wardrobeAfter.total} garments`);
 
   const asked = await callTool(reader.client, "garderobe_ask", { message: "What is in the wash?", clientTurnId: `smoke-ask-${Date.now()}`, mode: "start" });
   check("garderobe_ask: returns a durable run handle", asked.ok ? Boolean(asked.data.runId) : asked.error.code === "module_unavailable", asked.ok ? `run ${asked.data.runId} (${asked.data.state})` : asked.error.message);

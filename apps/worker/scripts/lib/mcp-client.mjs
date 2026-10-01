@@ -13,6 +13,7 @@
  * the consent page (a locally signed assertion instead of Cloudflare Access; see lib/local.mjs).
  */
 import { Client, StreamableHTTPClientTransport, UnauthorizedError } from "@modelcontextprotocol/client";
+import { CfWorkerJsonSchemaValidator } from "@modelcontextprotocol/client/validators/cf-worker";
 import { LOCAL, localAssertion } from "./local.mjs";
 
 class MemoryOAuthClient {
@@ -88,7 +89,13 @@ export async function connectLocalMcp(options = {}) {
   });
   const url = new URL(`${LOCAL.mcpOrigin}/mcp`);
   const newClient = () => {
-    const client = new Client({ name: "garderobe-local-client", version: "1.0.0" }, { capabilities: { elicitation: { form: {} } }, versionNegotiation: { mode: { pin: "2026-07-28" } } });
+    // The interpreting JSON Schema validator is chosen explicitly: the SDK's default (Ajv 8.20.0) ends the
+    // Node process with a bus error in the project sandbox as soon as `new Ajv()` runs, before any schema
+    // of ours is involved. Tool results are still validated against each tool's output schema.
+    const client = new Client(
+      { name: "garderobe-local-client", version: "1.0.0" },
+      { capabilities: { elicitation: { form: {} } }, versionNegotiation: { mode: { pin: "2026-07-28" } }, jsonSchemaValidator: new CfWorkerJsonSchemaValidator() },
+    );
     client.setRequestHandler("elicitation/create", async (request) => (options.onElicit ? options.onElicit(request.params ?? {}) : { action: "decline" }));
     return client;
   };
