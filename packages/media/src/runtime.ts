@@ -66,8 +66,17 @@ export interface MediaDeps {
   queue?: Queue<MediaQueueMessage>;
   images?: ImagesBinding;
   limits?: Partial<MediaLimits>;
-  /** Outfit validation (the daily service's `outfitValidator`). Falls back to the labelled baseline validator. */
+  /**
+   * Outfit validation (the daily service's `outfitValidator`). REQUIRED for Studio: without it validating,
+   * suggesting, saving and planning are refused rather than silently judged by weaker rules.
+   */
   validator?: OutfitValidator;
+  /**
+   * Explicitly accept the labelled baseline validator (identity, slot structure, eligibility and
+   * availability only; none of the owner's profile rules) when no validator is injected. For isolated
+   * tests of this package; a deployment never sets it.
+   */
+  allowBaselineValidator?: boolean;
   backgroundRemover?: BackgroundRemover;
   imageEditor?: ImageEditProvider;
   transcoder?: ImageTranscoder;

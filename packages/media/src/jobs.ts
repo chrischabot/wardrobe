@@ -61,7 +61,7 @@ async function claim(rt: MediaRuntime, userId: string, jobId: string): Promise<J
   return first<JobRow>(rt.db, "SELECT user_id, job_id, kind, subject_id, state, attempts, max_attempts, payload_json, last_error, updated_at FROM media_jobs WHERE user_id = ? AND job_id = ?", userId, jobId);
 }
 
-async function runPurge(rt: MediaRuntime, job: JobRow): Promise<void> {
+async function runPurge(rt: MediaRuntime, job: JobRow, ownerActive: boolean): Promise<void> {
   const payload = json<{ keys?: string[]; cacheShas?: string[] }>(job.payload_json, {});
   const keys = payload.keys ?? [];
   // Every key is re-checked against the job's owner before anything is deleted.
@@ -74,25 +74,40 @@ async function runPurge(rt: MediaRuntime, job: JobRow): Promise<void> {
       for (const width of MEDIA_THUMBNAIL_WIDTHS) if (await cache.delete(thumbnailCacheUrl(job.user_id, sha, width))) cachePurged++;
     }
   }
-  await execSystem(rt, job.user_id, "media.complete_job", { jobId: job.job_id, result: { deletedObjects: keys.length, cacheEntriesPurged: cachePurged } }, `job-done:${job.job_id}`);
+  const result = { deletedObjects: keys.length, cacheEntriesPurged: cachePurged };
+  if (ownerActive) {
+    await execSystem(rt, job.user_id, "media.complete_job", { jobId: job.job_id, result }, `job-done:${job.job_id}`);
+    return;
+  }
+  // A disabled account accepts no commands, but its deleted files must still leave storage. Only the job
+  // ledger's own bookkeeping is written here (as claiming a lease does); no wardrobe record changes.
+  await prepare(rt.db, stmt("UPDATE media_jobs SET state = 'succeeded', result_json = ?, last_error = NULL, lease_until = NULL, updated_at = ? WHERE user_id = ? AND job_id = ? AND state = 'running'", JSON.stringify({ ...result, accountDisabled: true }), toInstant(rt.clock()), job.user_id, job.job_id)).run();
 }
 
 /** Run one job. Never throws for job-level failures: they are recorded on the job and surfaced. */
 export async function runMediaJob(rt: MediaRuntime, userId: string, jobId: string): Promise<JobRunResult> {
   const owner = await first<{ status: string }>(rt.db, "SELECT status FROM users WHERE user_id = ?", userId);
-  // The job's verified owner is rechecked before any effect: a disabled or unknown account gets none.
-  if (!owner || owner.status !== "active") return "skipped";
+  if (!owner) return "skipped";
+  const ownerActive = owner.status === "active";
+  if (!ownerActive) {
+    // The job's verified owner is rechecked before any effect: a disabled account gets none - except the
+    // removal of files that were already deleted, which only takes data away and must not wait.
+    const kind = await first<{ kind: string }>(rt.db, "SELECT kind FROM media_jobs WHERE user_id = ? AND job_id = ?", userId, jobId);
+    if (kind?.kind !== "purge_objects") return "skipped";
+  }
   const job = await claim(rt, userId, jobId);
   if (!job) return "skipped";
   try {
     if (job.kind === "normalize") await runNormalizeJob(rt, job);
     else if (job.kind === "discover") await runDiscoveryJob(rt, job);
     else if (job.kind === "render_composite") await runRenderJob(rt, job);
-    else await runPurge(rt, job);
+    else await runPurge(rt, job, ownerActive);
     return "succeeded";
   } catch (e) {
     const message = (isCommandError(e) ? `${e.code}: ${e.message}` : String((e as Error)?.message ?? e)).slice(0, 500);
-    if (job.attempts >= job.max_attempts) {
+    // A purge is never given up: the owner was told the files are being removed. It stays queued with its
+    // error, is retried by every maintenance sweep, and is reported until it succeeds.
+    if (job.kind !== "purge_objects" && job.attempts >= job.max_attempts) {
       await execSystem(rt, userId, "media.fail_job", { jobId, error: message }, `job-failed:${jobId}`);
       return "dead";
     }
@@ -125,19 +140,52 @@ export async function handleMediaQueue(rt: MediaRuntime, batch: MessageBatch<unk
 
 /**
  * Run queued jobs directly from the ledger (scheduled sweep, or a deployment without a queue binding).
- * Also picks up jobs whose lease expired after a crash.
+ * Also picks up jobs whose lease expired after a crash. With `idleForMs`, only jobs nobody has touched
+ * for that long are taken: a job whose queue message was lost or whose retries ran out, without racing
+ * the queue consumer for work it is about to do.
  */
-export async function runQueuedMediaJobs(rt: MediaRuntime, opts: { limit?: number; userId?: string } = {}): Promise<Record<JobRunResult, number>> {
+export async function runQueuedMediaJobs(rt: MediaRuntime, opts: { limit?: number; userId?: string; idleForMs?: number } = {}): Promise<Record<JobRunResult, number>> {
   const now = toInstant(rt.clock());
+  const idleBefore = toInstant(rt.clock() - (opts.idleForMs ?? 0));
   const rows = await all<{ user_id: string; job_id: string }>(
     rt.db,
-    `SELECT user_id, job_id FROM media_jobs WHERE (state = 'queued' OR (state = 'running' AND lease_until < ?)) ${opts.userId ? "AND user_id = ?" : ""} ORDER BY created_at, job_id LIMIT ?`,
-    ...(opts.userId ? [now, opts.userId] : [now]),
+    `SELECT user_id, job_id FROM media_jobs WHERE ((state = 'queued' AND updated_at <= ?) OR (state = 'running' AND lease_until < ?)) ${opts.userId ? "AND user_id = ?" : ""} ORDER BY created_at, job_id LIMIT ?`,
+    ...(opts.userId ? [idleBefore, now, opts.userId] : [idleBefore, now]),
     opts.limit ?? 10,
   );
   const out: Record<JobRunResult, number> = { succeeded: 0, skipped: 0, retry: 0, dead: 0 };
   for (const r of rows) out[await runMediaJob(rt, r.user_id, r.job_id)]++;
   return out;
+}
+
+export interface MediaStorageStatus {
+  /** Deletions the owner asked for whose stored files have not been removed yet. */
+  deletionsPending: number;
+  /** Of those, how many have failed at least once. */
+  deletionsFailing: number;
+  oldestPendingSince: string | null;
+  lastError: string | null;
+  note: string;
+}
+
+/** Whether everything the owner deleted has actually left storage. A failing removal is shown, never hidden. */
+export async function getMediaStorageStatus(rt: MediaRuntime, principal: Principal): Promise<MediaStorageStatus> {
+  assertPrincipal(principal);
+  requireScope(principal, "read");
+  const rows = await all<{ created_at: string; last_error: string | null; attempts: number }>(rt.db, "SELECT created_at, last_error, attempts FROM media_jobs WHERE user_id = ? AND kind = 'purge_objects' AND state IN ('queued', 'running', 'failed', 'dead') ORDER BY created_at", principal.userId);
+  const failing = rows.filter((r) => r.last_error !== null);
+  return {
+    deletionsPending: rows.length,
+    deletionsFailing: failing.length,
+    oldestPendingSince: rows[0]?.created_at ?? null,
+    lastError: failing.length > 0 ? failing[failing.length - 1]!.last_error : null,
+    note:
+      rows.length === 0
+        ? "Everything that was deleted has been removed from storage."
+        : failing.length > 0
+          ? `${failing.length} deletion(s) could not be completed yet and are retried automatically; the image is no longer shown or served, but its stored files have not been removed.`
+          : `${rows.length} deletion(s) are being completed.`,
+  };
 }
 
 export async function listMediaJobs(rt: MediaRuntime, principal: Principal, opts: { limit?: number; state?: JobRow["state"] } = {}): Promise<MediaJobStatus[]> {

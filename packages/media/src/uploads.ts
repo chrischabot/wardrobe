@@ -6,7 +6,7 @@ import { assertPrincipal, CommandError, first, parseInstant, requireScope, sha25
 import type { CommandReceipt } from "@garderobe/contracts";
 import type { MediaAsset, MediaPayload, UploadAuthorization, UploadStatus } from "@garderobe/contracts/ext/media";
 import { UPLOAD_COLUMNS, type UploadRow } from "./commands/uploads.ts";
-import { execAs } from "./exec.ts";
+import { execAs, execSystem } from "./exec.ts";
 import { probeImage } from "./image/index.ts";
 import { stagingKey } from "./keys.ts";
 import { getAsset } from "./reads.ts";
@@ -137,19 +137,23 @@ export async function getUploadStatus(rt: MediaRuntime, principal: Principal, up
 /**
  * Copy image bytes the backend already holds (an authorized Drive file, or an illustration drawn by the
  * image model from a description) into private storage through the ordinary upload path, with provenance.
+ * The provenance is recorded by the system path: a client cannot declare it (it is refused on
+ * `media.authorize_upload`), so only backend code that actually fetched or drew the bytes calls this.
  */
 export async function importImageBytes(
   rt: MediaRuntime,
   principal: Principal,
   input: { garmentId: string; bytes: Uint8Array; origin: "drive_import" | "image_model"; originRef: string; idempotencyKey?: string },
 ): Promise<{ receipt: CommandReceipt; asset: MediaAsset | null; rejected: string | null; jobId: string | null }> {
+  assertPrincipal(principal);
+  requireScope(principal, "write");
   const probe = probeImage(input.bytes);
   if (!probe || !["image/jpeg", "image/png", "image/webp", "image/heic"].includes(probe.contentType)) throw new CommandError("invalid_command", "the bytes are not an accepted image");
   const key = input.idempotencyKey ?? `import:${await sha256Hex(input.bytes)}:${input.garmentId}`;
   const uploadId = `upl_${(await sha256Hex(key)).slice(0, 24)}`;
   const existing = await loadUploadRow(rt.db, principal.userId, uploadId);
   if (!existing) {
-    await execAs(rt, principal, "media.authorize_upload", { uploadId, intent: "garment_photo", garmentId: input.garmentId, contentType: probe.contentType, byteLength: input.bytes.length, origin: input.origin, originRef: input.originRef }, `${key}:authorize`);
+    await execSystem(rt, principal.userId, "media.authorize_upload", { uploadId, intent: "garment_photo", garmentId: input.garmentId, contentType: probe.contentType, byteLength: input.bytes.length, origin: input.origin, originRef: input.originRef }, `${key}:authorize`);
   }
   if (!existing || existing.state === "authorized") {
     const authorization = await mintUploadAuthorization(rt, principal, uploadId);

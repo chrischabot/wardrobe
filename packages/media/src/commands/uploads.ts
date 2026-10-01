@@ -56,8 +56,15 @@ export function uploadCommands(depsSource: MediaDepsSource): CommandDefinition<a
     schema: C["media.authorize_upload"],
     class: "edit",
     requiredScope: "write",
+    // The system path is how backend code records where bytes it fetched or drew came from (see `importImageBytes`).
+    allowedAuthorizations: ["owner_tap", "owner_statement", "system_schedule", "standing_policy"],
     async plan(ctx, p) {
       const limits = limitsOf(resolveDeps(depsSource));
+      // Provenance is not something a client declares: only the service that copied the Drive file or drew the
+      // illustration may say so. Anything a client uploads is an owner upload.
+      if (p.origin !== "owner_upload" && ctx.principal.actor !== "system") {
+        throw new CommandError("forbidden", "where an image came from is recorded by the service that fetched or drew it; a client upload is always an owner upload");
+      }
       if (p.byteLength > limits.maxUploadBytes) {
         throw new CommandError("invalid_command", `an upload may be at most ${limits.maxUploadBytes} bytes; resize the image on the device first`, { maxBytes: limits.maxUploadBytes });
       }
@@ -163,12 +170,18 @@ export function uploadCommands(depsSource: MediaDepsSource): CommandDefinition<a
           ctx.userId, assetId, upload.garment_id, kind, upload.is_demo, JSON.stringify(sourceFor(upload, ctx.now)),
           JSON.stringify(
             upload.is_demo === 1
-              ? { basis: "demo_fixture", note: "placeholder on a synthetic garment" }
+              ? { basis: "demo_fixture", note: "placeholder on a synthetic garment", finalizedBy: { actor: ctx.principal.actor, channel: ctx.principal.channel } }
               : kind === "generic_illustration"
-                ? { basis: "illustration_from_description", note: "not a photograph of the garment" }
+                ? { basis: "illustration_from_description", note: "not a photograph of the garment", finalizedBy: { actor: ctx.principal.actor, channel: ctx.principal.channel } }
                 : upload.garment_id
-                  ? { basis: "owner_statement", note: "the owner supplied this photograph for this garment", channel: ctx.principal.channel }
-                  : {},
+                  ? {
+                      basis: "owner_statement",
+                      // Who actually sent it is part of the evidence: the owner in the app, or an assistant acting on the owner's words.
+                      note: ctx.principal.actor === "owner" ? "the owner supplied this photograph for this garment" : `supplied through the ${ctx.principal.actor === "assistant" ? "assistant" : "service"} on the owner's statement that it shows this garment; not sent by the owner directly`,
+                      channel: ctx.principal.channel,
+                      finalizedBy: { actor: ctx.principal.actor, channel: ctx.principal.channel },
+                    }
+                  : { finalizedBy: { actor: ctx.principal.actor, channel: ctx.principal.channel } },
           ),
           probe.exif.hasGps, upload.wearing_date, retainUntil, upload.upload_id, ctx.commandId, ctx.now, ctx.now,
         ),

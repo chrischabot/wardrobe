@@ -3,7 +3,7 @@ import { outfitValidator, registerDaily } from "@garderobe/daily";
 import { all, isCommandError } from "@garderobe/domain";
 import type { TestOwner } from "@garderobe/domain/testing";
 import {
-  exportMediaData, getComposition, getGarmentMedia, importMediaData, listMediaJobs, listPhotosNeeded, listStudioCombinations, listStudioDayPlans, openAssetImage, requestCompositePreview, type DiscoveryProvider, type MediaExport,
+  exportMediaData, getComposition, getGarmentMedia, importMediaData, listMediaJobs, listPhotosNeeded, listStudioCombinations, listStudioDayPlans, openAssetImage, readExportFile, requestCompositePreview, type DiscoveryProvider, type MediaExport,
 } from "../src/index.ts";
 import { encodePng } from "../src/image/index.ts";
 import { createMediaHarness, syntheticShirt, syntheticTrousers, type MediaHarness } from "../src/testing/index.ts";
@@ -34,7 +34,8 @@ describe("portable export and clean import of the visual wardrobe", () => {
   let planId: string;
   let previewHash: string;
   const importer = (o: TestOwner) => o.principal({ channel: "import", actor: "system", scopes: ["read", "write", "admin"] });
-  const fromSource = async (key: string) => (await h.bindings.MEDIA_BUCKET.get(key))?.arrayBuffer() ?? null;
+  // The package's files, read the way a package builder reads them: by package-relative path, through the owner's own read.
+  const fromSource = (file: string) => readExportFile(h.rt, source.principal(), file);
   const newTarget = async (name: string) => {
     const target = await h.createSyntheticOwner({ displayName: name });
     await target.exec("garment.create", { garmentId: "needs-photo", name: "fixture shirt without a photo", category: "shirt", roles: ["top"], careChannel: "service", acquisition: "owned", quantity: 1, maker: "Test Maker", product: "Oxford Shirt", colour: "Blue", isSynthetic: true, source: { kind: "system", note: "synthetic test fixture" } });
@@ -84,15 +85,16 @@ describe("portable export and clean import of the visual wardrobe", () => {
     // The file list is exactly the live renditions, each with the checksum of the bytes in private storage.
     expect(data.assets.map((f) => f.renditionId).sort()).toEqual(data.records.renditions.map((r) => String(r.rendition_id)).sort());
     for (const file of data.assets) {
-      expect(file.r2Key.startsWith(`u/${source.userId}/assets/`)).toBe(true);
-      const bytes = new Uint8Array((await fromSource(file.r2Key))!);
+      expect(file.file).toMatch(new RegExp(`^assets/${file.assetId}/[a-z]+-`)); // a path inside the package, not a storage key
+      const bytes = new Uint8Array((await fromSource(file.file))!);
       const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map((b) => b.toString(16).padStart(2, "0")).join("");
       expect([digest, bytes.length]).toEqual([file.sha256, file.byteLength]);
     }
     // Rendered previews (a rebuildable cache), staging bytes and deleted files are not in the package.
-    expect(data.assets.some((f) => f.r2Key.includes("/composites/") || f.r2Key.includes("/staging/") || f.r2Key.includes(deletedAsset))).toBe(false);
+    expect(data.assets.some((f) => f.file.includes("composites/") || f.file.includes("staging/") || f.file.includes(deletedAsset))).toBe(false);
     // No owner identifier columns, command references, upload authorizations, jobs, tokens or signing material.
     const text = JSON.stringify(data);
+    expect(text).not.toContain(source.userId); // review M3: no storage key, and nothing else that names the owner
     expect(Object.keys(data.records).sort()).toEqual(["assets", "candidates", "combinationItems", "combinations", "composites", "dayPlanItems", "dayPlans", "deletedAssets", "discoveryAttempts", "fidelityChecks", "garmentMedia", "renditions"]);
     expect(text).not.toMatch(/"user_id"|"command_id"|"upload_id":"|token|signing|preview_key|lease_until/);
     expect(text).not.toContain(h.deps.signingKey);
@@ -112,8 +114,8 @@ describe("portable export and clean import of the visual wardrobe", () => {
       read.push(key);
       return fromSource(key);
     });
-    expect(result).toEqual({ imported: { assets: data.records.assets.length, renditions: data.records.renditions.length, files: data.assets.length }, missing: [], mismatched: [], deletionsApplied: { assetsDeleted: 0, originalsPurged: 0, filesWithheld: 0 } });
-    expect(read.sort()).toEqual(data.assets.map((f) => f.r2Key).sort());
+    expect(result).toEqual({ imported: { assets: data.records.assets.length, renditions: data.records.renditions.length, files: data.assets.length }, missing: [], mismatched: [], rejected: [], deletionsApplied: { assetsDeleted: 0, originalsPurged: 0, filesWithheld: 0 } });
+    expect(read.sort()).toEqual(data.assets.map((f) => f.file).sort());
 
     // The same asset and rendition identities, now under the importing owner's own prefix.
     const media = await getGarmentMedia(h.rt, target.principal(), "shirt-moss");
@@ -153,7 +155,7 @@ describe("portable export and clean import of the visual wardrobe", () => {
     expect(await exportMediaData(h.rt, source.principal())).toEqual({ ...data, exportedAt: expect.any(String) });
     // A round trip is stable: exporting the imported owner gives the same records under the new owner's prefix.
     const again = await exportMediaData(h.rt, target.principal());
-    expect(again.records.renditions.map((r) => [r.rendition_id, r.sha256, String(r.file).replace(target.userId, "X")])).toEqual(data.records.renditions.map((r) => [r.rendition_id, r.sha256, String(r.file).replace(source.userId, "X")]));
+    expect(again.records.renditions.map((r) => [r.rendition_id, r.sha256, r.file])).toEqual(data.records.renditions.map((r) => [r.rendition_id, r.sha256, r.file]));
     expect(again.records.combinations.map((c) => [c.combination_id, c.slots_json, c.signature])).toEqual(data.records.combinations.map((c) => [c.combination_id, c.slots_json, c.signature]));
   });
 
@@ -162,17 +164,17 @@ describe("portable export and clean import of the visual wardrobe", () => {
     const shirtCatalogue = data.assets.find((f) => f.assetId === shirtAsset && f.kind === "catalogue")!;
     const trouserOriginal = data.assets.find((f) => f.assetId === trouserAsset && f.kind === "original")!;
     const result = await importMediaData(h.rt, importer(target), data, async (key) => {
-      if (key === shirtCatalogue.r2Key) return null; // not in the package
+      if (key === shirtCatalogue.file) return null; // not in the package
       const bytes = await fromSource(key);
-      if (key === trouserOriginal.r2Key && bytes) {
+      if (key === trouserOriginal.file && bytes) {
         const altered = new Uint8Array(bytes);
         altered[altered.length - 20] = altered[altered.length - 20]! ^ 0xff; // bytes that no longer match the checksum
         return altered;
       }
       return bytes;
     });
-    expect(result.missing).toEqual([shirtCatalogue.r2Key]);
-    expect(result.mismatched).toEqual([trouserOriginal.r2Key]);
+    expect(result.missing).toEqual([shirtCatalogue.file]);
+    expect(result.mismatched).toEqual([trouserOriginal.file]);
     // The shirt keeps its verified files; only the missing catalogue view is absent.
     const shirt = await getGarmentMedia(h.rt, target.principal(), "shirt-moss");
     expect(shirt.assets[0]!.renditions.map((r) => r.kind).sort()).toEqual(["cutout", "mask", "original"]);

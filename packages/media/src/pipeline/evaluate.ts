@@ -99,9 +99,11 @@ export function evaluateCandidate(garment: DiscoveryGarment, page: DiscoveryCand
   if (reasons.length > 0) return { decision: "rejected", rejectionReasons: [...new Set(reasons)], reviewQuestion: null, exactIdentifier, rank, evidence };
 
   // Strong identity: an exact product/fabric code (which fixes the colourway), the garment's own recorded
-  // purchase page, or maker + product together. Without a code the colourway must also be stated and match.
+  // purchase page WHEN that page also names the maker or the product, or maker + product together. Without
+  // a code the colourway must also be stated and match. The recorded link alone proves nothing about what
+  // the page shows today.
   if (exactIdentifier) return { decision: "eligible", rejectionReasons: [], reviewQuestion: null, exactIdentifier, rank, evidence };
-  if (recordedPurchasePage || (makerMatch && productMatch)) {
+  if ((recordedPurchasePage && (makerMatch || productMatch)) || (makerMatch && productMatch)) {
     if (!colourKnown || colourMatch) return { decision: "eligible", rejectionReasons: [], reviewQuestion: null, exactIdentifier, rank, evidence };
     return {
       decision: "needs_review",

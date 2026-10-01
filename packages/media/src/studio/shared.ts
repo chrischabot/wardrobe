@@ -3,7 +3,7 @@ import { allIn, CommandError, first, json, sha256Hex, toInstant, type Db, type P
 import { StudioSlot } from "@garderobe/contracts/ext/media";
 import type { CompositionManifest, StudioValidation, StudioViolation } from "@garderobe/contracts/ext/media";
 import type { z } from "zod";
-import type { ValidatorSlot } from "../adapters.ts";
+import type { OutfitValidator, ValidatorSlot } from "../adapters.ts";
 import { buildManifest, manifestHash, type ComposeSlot } from "../compose/manifest.ts";
 import type { MediaDeps } from "../runtime.ts";
 import { loadImageRefs } from "../store.ts";
@@ -66,12 +66,19 @@ export async function composeResolved(resolved: ResolvedSlots): Promise<{ manife
   return { manifest, hash: await manifestHash(manifest) };
 }
 
+/** The validator Studio may use: the injected one, or the baseline only when it was explicitly accepted. Otherwise Studio fails closed. */
+export function studioValidator(deps: MediaDeps): OutfitValidator {
+  if (deps.validator) return deps.validator;
+  if (deps.allowBaselineValidator === true) return baselineValidator;
+  throw new CommandError("precondition_failed", "outfit validation is not configured (the daily service's validator is missing), so this outfit cannot be checked against the owner's rules; nothing was written");
+}
+
 /**
  * Validate through the injected validator (the daily service's), adding the one rule that is Studio's
  * own: a shopping candidate is not owned stock, so it can be explored but never worn or planned.
  */
 export async function validateResolved(deps: MediaDeps, db: Db, principal: Principal, resolved: ResolvedSlots, mode: "for_today" | "explore", forDate: string, nowMs: number): Promise<StudioValidation> {
-  const validator = deps.validator ?? baselineValidator;
+  const validator = studioValidator(deps);
   const violations: StudioViolation[] = [];
   if (resolved.garmentSlots.length > 0) {
     const result = await validator.validate(db, principal, { slots: resolved.garmentSlots, forDate, mode, nowMs });

@@ -9,7 +9,8 @@
 import { all, isCommandError, toInstant } from "@garderobe/domain";
 import { execSystem } from "./exec.ts";
 import { dispatchMediaJobs, runQueuedMediaJobs } from "./jobs.ts";
-import type { MediaRuntime } from "./runtime.ts";
+import { stagingKey } from "./keys.ts";
+import { limitsOf, type MediaRuntime } from "./runtime.ts";
 import { FINALIZE_GRACE_MS } from "./commands/uploads.ts";
 import { DISCOVERY_BATCH } from "./commands/discovery.ts";
 
@@ -19,12 +20,16 @@ export interface MaintenanceResult {
   discoveryQueued: number;
   jobsDispatched: number;
   staleJobsRun: number;
+  /** Unfinished upload bytes removed for accounts that are disabled (their records are left as they are). */
+  stagingObjectsRemoved: number;
+  /** Deletions whose stored files are still not removed after this sweep (retried on the next one). */
+  purgesOutstanding: number;
   errors: string[];
 }
 
 export async function runMediaMaintenance(rt: MediaRuntime, opts: { startDiscovery?: boolean } = {}): Promise<MaintenanceResult> {
   const now = toInstant(rt.clock());
-  const result: MaintenanceResult = { expiredUploads: 0, selfieOriginalsRemoved: 0, discoveryQueued: 0, jobsDispatched: 0, staleJobsRun: 0, errors: [] };
+  const result: MaintenanceResult = { expiredUploads: 0, selfieOriginalsRemoved: 0, discoveryQueued: 0, jobsDispatched: 0, staleJobsRun: 0, stagingObjectsRemoved: 0, purgesOutstanding: 0, errors: [] };
   const attempt = async (what: string, fn: () => Promise<void>) => {
     try {
       await fn();
@@ -45,6 +50,19 @@ export async function runMediaMaintenance(rt: MediaRuntime, opts: { startDiscove
       result.expiredUploads += Number(receipt.result.expired ?? 0);
     });
   }
+
+  // 1b. A disabled account accepts no commands, but bytes it never finalized must not sit in storage: the
+  //     staging objects are removed (the upload records stay; they can no longer be finalized anyway).
+  await attempt("remove unfinished uploads of disabled accounts", async () => {
+    const orphaned = await all<{ user_id: string; upload_id: string }>(rt.db, "SELECT m.user_id, m.upload_id FROM media_uploads m JOIN users u ON u.user_id = m.user_id WHERE u.status != 'active' AND m.state = 'authorized' AND m.expires_at < ? ORDER BY m.expires_at LIMIT 500", cutoff);
+    const keys = orphaned.map((o) => stagingKey(o.user_id, o.upload_id));
+    for (let i = 0; i < keys.length; i += 500) {
+      const part = keys.slice(i, i + 500);
+      const present = (await Promise.all(part.map((k) => rt.deps.bucket.head(k)))).filter((o) => o !== null).length;
+      await rt.deps.bucket.delete(part);
+      result.stagingObjectsRemoved += present;
+    }
+  });
 
   // 2. Selfie originals past retention (the reduced outfit-history copy is kept).
   const due = await all<{ user_id: string; asset_id: string }>(
@@ -81,15 +99,21 @@ export async function runMediaMaintenance(rt: MediaRuntime, opts: { startDiscove
     }
   }
 
-  // 4. Queue what was committed; run what a lost message or a crashed consumer left behind.
+  // 4. Queue what was committed; run what a lost message, exhausted queue retries or a crashed consumer left
+  //    behind. With a queue, only jobs idle for a lease period are taken here, so the sweep does not race the
+  //    consumer; without one, everything queued is run. Purges are retried on every sweep until they succeed.
   await attempt("dispatch", async () => {
     result.jobsDispatched = (await dispatchMediaJobs(rt)).sent;
   });
-  if (!rt.deps.queue) {
-    await attempt("run jobs", async () => {
-      const ran = await runQueuedMediaJobs(rt, { limit: 10 });
-      result.staleJobsRun = ran.succeeded + ran.dead + ran.retry;
-    });
-  }
+  await attempt("run jobs", async () => {
+    const ran = await runQueuedMediaJobs(rt, { limit: 20, ...(rt.deps.queue ? { idleForMs: limitsOf(rt.deps).jobLeaseSeconds * 1000 } : {}) });
+    result.staleJobsRun = ran.succeeded + ran.dead + ran.retry;
+  });
+  await attempt("count outstanding deletions", async () => {
+    const failing = await all<{ user_id: string; job_id: string; last_error: string }>(rt.db, "SELECT user_id, job_id, last_error FROM media_jobs WHERE kind = 'purge_objects' AND state IN ('queued', 'running', 'failed', 'dead') AND last_error IS NOT NULL ORDER BY created_at LIMIT 50");
+    result.purgesOutstanding = failing.length;
+    // Reported, not swallowed: a deletion whose files are still in storage is an operational fault.
+    if (failing.length > 0) result.errors.push(`${failing.length} deletion(s) have not left storage yet (job ${failing[0]!.job_id}: ${failing[0]!.last_error})`.slice(0, 300));
+  });
   return result;
 }

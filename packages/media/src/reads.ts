@@ -15,7 +15,8 @@ const FIDELITY_COLS = "check_id, asset_id, subject, rendition_id, verdict, faile
 export async function getAsset(rt: MediaRuntime, principal: Principal, assetId: string): Promise<MediaAsset> {
   const userId = guard(principal);
   const asset = await loadAsset(rt.db, userId, assetId);
-  if (!asset) throw new CommandError("not_found", "no such image for this owner");
+  // A deleted image is gone for every read: its metadata and checksums are not returned either.
+  if (!asset || asset.status === "deleted") throw new CommandError("not_found", "no such image for this owner");
   const renditions = await loadRenditions(rt.db, userId, assetId);
   const fidelity = await all<FidelityRow>(rt.db, `SELECT ${FIDELITY_COLS} FROM media_fidelity_checks WHERE user_id = ? AND asset_id = ? ORDER BY created_at, check_id`, userId, assetId);
   return toAsset(asset, renditions, fidelity);

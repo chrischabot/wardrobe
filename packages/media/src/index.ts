@@ -22,7 +22,7 @@ import { portabilityCommands } from "./portability.ts";
 import type { MediaDepsSource } from "./runtime.ts";
 
 /** Command types that record pipeline results. They require the system actor and are not offered to clients. */
-export const MEDIA_SYSTEM_COMMAND_TYPES = ["media.record_normalization", "media.record_discovery", "media.record_composite", "media.fail_job", "media.complete_job", "media.apply_retention", "media.expire_uploads"] as const;
+export const MEDIA_SYSTEM_COMMAND_TYPES = ["media.record_normalization", "media.record_discovery", "media.record_composite", "media.discard_composite", "media.fail_job", "media.complete_job", "media.apply_retention", "media.expire_uploads"] as const;
 
 /** Register every media and Studio command, the Studio commit hook and the version resolvers. */
 export function registerMedia(registry: CommandRegistry, deps: MediaDepsSource): void {
@@ -37,8 +37,8 @@ export type { BackgroundRemover, DiscoveryCandidatePage, DiscoveryGarment, Disco
 export { EDIT_CONSTRAINTS } from "./adapters.ts";
 export { authorizeUpload, finalizeUpload, getUploadStatus, importImageBytes, mintUploadAuthorization, receiveUploadContent } from "./uploads.ts";
 export { garmentImageRefs, getAsset, getBackfillEstimate, getGarmentMedia, listMediaReview, listPhotosNeeded } from "./reads.ts";
-export { openAssetImage, openRendition, purgeOwnerMediaCache, serveSignedMedia, signRenditionUrl, type OpenedImage } from "./delivery.ts";
-export { dispatchMediaJobs, handleMediaQueue, listMediaJobs, runMediaJob, runQueuedMediaJobs } from "./jobs.ts";
+export { MEDIA_RESPONSE_HEADERS, openAssetImage, openRendition, purgeOwnerMediaCache, SERVABLE_IMAGE_TYPES, serveSignedMedia, signRenditionUrl, type OpenedImage } from "./delivery.ts";
+export { dispatchMediaJobs, getMediaStorageStatus, handleMediaQueue, listMediaJobs, runMediaJob, runQueuedMediaJobs, type MediaStorageStatus } from "./jobs.ts";
 export { runMediaMaintenance, type MaintenanceResult } from "./maintenance.ts";
 export { composeOutfit, getComposition, getStudioSelectors, knownCombinationsForGarment, listStudioCombinations, listStudioDayPlans, openCompositePreview, requestCompositePreview, suggestStudioOutfits, validateStudioOutfit } from "./studio/reads.ts";
 export { buildManifest, manifestHash, manifestLabels, TEMPLATE_VERSION, type ComposeSlot } from "./compose/manifest.ts";
@@ -46,8 +46,8 @@ export { renderSvg } from "./compose/svg.ts";
 export { renderRaster } from "./compose/raster.ts";
 export { baselineValidator, BASELINE_VALIDATOR_NAME } from "./validator.ts";
 export { createCloudflareImagesTranscoder, createCloudflareImagesBackgroundRemover } from "./cloudflare-images.ts";
-export { createPurchaseLinkProvider, extractProductPage } from "./pipeline/purchase-link.ts";
-export { createSafeImageFetcher, refuseUrl, safeFetch } from "./pipeline/safe-fetch.ts";
+export { createPurchaseLinkProvider, extractProductPage, sameDocument } from "./pipeline/purchase-link.ts";
+export { createDohResolver, createSafeImageFetcher, isPrivateAddress, refuseUrl, safeFetch, type HostResolver } from "./pipeline/safe-fetch.ts";
 export { evaluateCandidate } from "./pipeline/evaluate.ts";
-export { exportMediaData, importMediaData, listMediaDeletions, replayMediaDeletions, MEDIA_DELETIONS_FORMAT, type MediaDeletionJournal, type MediaExport } from "./portability.ts";
+export { exportMediaData, importMediaData, listMediaDeletions, readExportFile, replayMediaDeletions, MEDIA_DELETIONS_FORMAT, type MediaDeletionJournal, type MediaExport, type MediaExportFile } from "./portability.ts";
 export { ownerPrefix } from "./keys.ts";

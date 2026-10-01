@@ -1,8 +1,8 @@
 /** Composite preview commands: queue the background render of an outfit manifest, and record its result. */
 import { z } from "zod";
-import { CommandError, define, first, stableId, stmt, type CommandDefinition, type Stmt } from "@garderobe/domain";
+import { CommandError, define, first, stableId, stmt, type CommandContext, type CommandDefinition, type CommandPlan, type Db, type Stmt } from "@garderobe/domain";
 import { CompositionManifest, MEDIA_COMMANDS as C } from "@garderobe/contracts/ext/media";
-import { assertOwnedKey } from "../keys.ts";
+import { assertOwnedKey, compositeKey } from "../keys.ts";
 import { limitsOf, resolveDeps, type MediaDepsSource } from "../runtime.ts";
 import { enqueueJob } from "../store.ts";
 import { composeResolved, resolveSlots } from "../studio/shared.ts";
@@ -30,6 +30,41 @@ export interface CompositeRow {
 }
 
 export const COMPOSITE_COLS = "manifest_hash, manifest_json, preview_state, preview_key, preview_sha256, svg_key, failure, rendered_at";
+
+export const DiscardComposite = z.object({ manifestHash: z.string().length(64), jobId: z.string().min(1).max(64), reason: z.string().max(300) });
+
+const STALE_ITEMS_SQL = `(SELECT COUNT(*) FROM outfit_composite_items i
+   LEFT JOIN media_renditions r ON r.user_id = i.user_id AND r.rendition_id = i.rendition_id
+   LEFT JOIN media_assets a ON a.user_id = r.user_id AND a.asset_id = r.asset_id
+  WHERE i.user_id = ? AND i.manifest_hash = ? AND i.rendition_id IS NOT NULL AND (r.rendition_id IS NULL OR r.status != 'active' OR a.status != 'active'))`;
+
+/** How many images a composite's manifest refers to that are no longer there (deleted, rejected or replaced). */
+export async function staleCompositeItems(db: Db, userId: string, manifestHash: string): Promise<number> {
+  return (await first<{ n: number }>(db, `SELECT ${STALE_ITEMS_SQL} AS n`, userId, manifestHash))?.n ?? 0;
+}
+
+/**
+ * A preview that must not exist: an image it drew was deleted (or replaced) while it was being prepared.
+ * The composite is reset, the job is closed, and whatever the render wrote is purged from storage.
+ */
+function planDiscard(ctx: CommandContext, manifestHash: string, jobId: string, reason: string, maxAttempts: number): CommandPlan {
+  const keys = [compositeKey(ctx.userId, manifestHash, "image/png"), compositeKey(ctx.userId, manifestHash, "image/svg+xml")];
+  const purge = enqueueJob(ctx, { jobId: ctx.newId("job"), kind: "purge_objects", subjectId: manifestHash, dedupeKey: `purge-composite:${ctx.commandId}`, payload: { keys, cacheShas: [] }, maxAttempts });
+  return {
+    summary: `The outfit preview was discarded: ${reason}`,
+    statements: [
+      stmt("UPDATE outfit_composites SET preview_state = 'none', preview_key = NULL, preview_sha256 = NULL, preview_bytes = NULL, svg_key = NULL, rendered_at = NULL, failure = ?, updated_at = ? WHERE user_id = ? AND manifest_hash = ?", reason, ctx.now, ctx.userId, manifestHash),
+      finishJob(ctx, jobId, "succeeded", { discarded: true, reason }, null),
+      ...purge.statements,
+    ],
+    outbox: purge.outbox,
+    affected: [{ kind: "outfit_composite", id: manifestHash, version: 1 }],
+    result: { manifestHash, discarded: true, reason, purgeJobId: purge.outbox[0]?.entityId ?? null },
+    undo: { unavailableReason: "a discarded preview is simply requested again" },
+  };
+}
+
+export const PREVIEW_INVALIDATED = "an image it used was deleted or replaced while the preview was being prepared";
 
 export function compositeCommands(depsSource: MediaDepsSource): CommandDefinition<any>[] {
   const request = define({
@@ -88,11 +123,22 @@ export function compositeCommands(depsSource: MediaDepsSource): CommandDefinitio
       const row = await first<CompositeRow>(ctx.db, `SELECT ${COMPOSITE_COLS} FROM outfit_composites WHERE user_id = ? AND manifest_hash = ?`, ctx.userId, p.manifestHash);
       if (!row) throw new CommandError("not_found", "no such composite for this owner");
       CompositionManifest.parse(JSON.parse(row.manifest_json));
+      // The render ran outside any transaction: an image may have been deleted while it was being drawn.
+      // A preview is recorded only if the request is still open and every image it used is still there.
+      if (row.preview_state !== "queued" || (await staleCompositeItems(ctx.db, ctx.userId, p.manifestHash)) > 0) {
+        return planDiscard(ctx, p.manifestHash, p.jobId, row.preview_state === "none" && row.failure ? row.failure : PREVIEW_INVALIDATED, limitsOf(resolveDeps(depsSource)).jobMaxAttempts);
+      }
       return {
         summary: "Outfit preview rendered and stored privately",
         statements: [
           stmt("UPDATE outfit_composites SET preview_state = 'rendered', preview_key = ?, preview_sha256 = ?, preview_bytes = ?, svg_key = ?, failure = NULL, rendered_at = ?, updated_at = ? WHERE user_id = ? AND manifest_hash = ?", p.previewKey, p.previewSha256, p.previewBytes, p.svgKey, ctx.now, ctx.now, ctx.userId, p.manifestHash),
           finishJob(ctx, p.jobId, "succeeded", { renderer: p.renderer, sha256: p.previewSha256 }, null),
+        ],
+        // Checked again inside the commit: a deletion that lands between this plan and its commit fails the
+        // command, the job runs again, and the next attempt discards the preview.
+        preconditions: [
+          { label: "the preview request is still open", sql: "(SELECT preview_state FROM outfit_composites WHERE user_id = ? AND manifest_hash = ?) = 'queued'", params: [ctx.userId, p.manifestHash], class: "state" },
+          { label: "every image the preview used is still there", sql: `${STALE_ITEMS_SQL} = 0`, params: [ctx.userId, p.manifestHash], class: "state" },
         ],
         affected: [{ kind: "outfit_composite", id: p.manifestHash, version: 1 }],
         outbox: [{ topic: "media.composite", entityKind: "outfit_composite", entityId: p.manifestHash, revision: 1 }],
@@ -102,5 +148,19 @@ export function compositeCommands(depsSource: MediaDepsSource): CommandDefinitio
     },
   });
 
-  return [request, record];
+  const discard = define({
+    type: "media.discard_composite",
+    schema: DiscardComposite,
+    class: "system",
+    requiredScope: "write",
+    allowedAuthorizations: SYSTEM_AUTH,
+    async plan(ctx, p) {
+      requireSystemActor(ctx);
+      const row = await first<CompositeRow>(ctx.db, `SELECT ${COMPOSITE_COLS} FROM outfit_composites WHERE user_id = ? AND manifest_hash = ?`, ctx.userId, p.manifestHash);
+      if (!row) throw new CommandError("not_found", "no such composite for this owner");
+      return planDiscard(ctx, p.manifestHash, p.jobId, p.reason, limitsOf(resolveDeps(depsSource)).jobMaxAttempts);
+    },
+  });
+
+  return [request, record, discard];
 }

@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { isCommandError } from "@garderobe/domain";
+import { all, isCommandError } from "@garderobe/domain";
 import type { TestOwner } from "@garderobe/domain/testing";
-import { authorizeUpload, composeOutfit, finalizeUpload, getGarmentMedia, importImageBytes, listPhotosNeeded, receiveUploadContent, type DiscoveryProvider } from "../src/index.ts";
+import { authorizeUpload, composeOutfit, getGarmentMedia, importImageBytes, listPhotosNeeded, type DiscoveryProvider } from "../src/index.ts";
 import { encodePng } from "../src/image/index.ts";
 import { createMediaHarness, syntheticShirt, type MediaHarness } from "../src/testing/index.ts";
 
@@ -16,10 +16,8 @@ describe("generic illustrations are labelled and never become the garment's real
 
   async function uploadIllustration(garmentId: string, colour: [number, number, number]) {
     const bytes = await encodePng(syntheticShirt({ size: 256, body: colour }));
-    const { authorization } = await authorizeUpload(h.rt, owner.principal(), { intent: "garment_photo", garmentId, contentType: "image/png", byteLength: bytes.length, origin: "image_model", originRef: "test-double-image-model prompt-v1", idempotencyKey: `illustration:${garmentId}:${colour.join("-")}` });
-    const token = new URLSearchParams(authorization.url.split("?")[1]).get("token")!;
-    await receiveUploadContent(h.rt, { uploadId: authorization.uploadId, token, body: bytes, contentLength: bytes.length, contentType: "image/png" });
-    const done = await finalizeUpload(h.rt, owner.principal(), authorization.uploadId);
+    // The backend path that records where the bytes came from; a client cannot declare this (see the last test).
+    const done = await importImageBytes(h.rt, owner.principal(), { garmentId, bytes, origin: "image_model", originRef: "test-double-image-model prompt-v1", idempotencyKey: `illustration:${garmentId}:${colour.join("-")}` });
     await h.settle(owner);
     return done.asset!;
   }
@@ -55,10 +53,10 @@ describe("generic illustrations are labelled and never become the garment's real
     expect(composition.labels).toEqual(["Illustration", "No photo yet"]);
     expect(composition.manifest.layers.find((l) => l.garmentId === "ill-shirt")!.imageLabel).toBe("illustration");
     expect(composition.manifest.caption).toContain("test record ill-shirt (illustration)");
-    // An illustration is never a selfie or attachment, and never a demo placeholder on a real garment.
+    // An illustration is never a selfie or attachment, and a client cannot declare one at all.
     const bytes = await encodePng(syntheticShirt({ size: 128 }));
     const wrong = await authorizeUpload(h.rt, owner.principal(), { intent: "selfie", contentType: "image/png", byteLength: bytes.length, origin: "image_model", idempotencyKey: "illustration-as-selfie" }).catch((e) => e);
-    expect(isCommandError(wrong) && wrong.code).toBe("invalid_command");
+    expect(isCommandError(wrong) && wrong.code).toBe("forbidden");
   });
 
   it("a real photograph replaces the illustration; a later illustration never replaces the photograph", async () => {
@@ -98,5 +96,26 @@ describe("generic illustrations are labelled and never become the garment's real
     // Bytes that are not an image are refused before anything is authorized or stored.
     const bad = await importImageBytes(h.rt, owner.principal(), { garmentId: "ill-trousers", bytes: new TextEncoder().encode("<html>shared link page</html>"), origin: "drive_import", originRef: "drive:file/OTHER" }).catch((e) => e);
     expect(isCommandError(bad) && bad.code).toBe("invalid_command");
+  });
+
+  it("review L3: a client cannot declare where an image came from, and who sent a photo is part of its evidence", async () => {
+    const bytes = await encodePng(syntheticShirt({ size: 200 }));
+    const declare = (principal: ReturnType<TestOwner["principal"]>, origin: "drive_import" | "image_model", key: string) =>
+      authorizeUpload(h.rt, principal, { intent: "garment_photo", garmentId: "ill-shirt", contentType: "image/png", byteLength: bytes.length, origin, originRef: "drive:file/MADE-UP-ID", idempotencyKey: key }).catch((e) => e);
+    const assistant = owner.principal({ actor: "assistant", channel: "mcp" });
+    for (const [who, origin, key] of [[assistant, "drive_import", "l3-assistant-drive"], [assistant, "image_model", "l3-assistant-model"], [owner.principal(), "drive_import", "l3-owner-drive"]] as const) {
+      const refused = await declare(who, origin, key);
+      expect(isCommandError(refused) && [refused.code, refused.message]).toEqual(["forbidden", "where an image came from is recorded by the service that fetched or drew it; a client upload is always an owner upload"]);
+    }
+    expect(await all(h.db, "SELECT 1 FROM media_uploads WHERE user_id = ? AND origin_ref = 'drive:file/MADE-UP-ID'", owner.userId)).toHaveLength(0);
+
+    // A photo sent through the assistant is accepted on the owner's statement, and the record says who sent it.
+    await owner.exec("garment.create", { garmentId: "ill-via-assistant", name: "test record via assistant", category: "shirt", roles: ["top"], careChannel: "service", acquisition: "owned", quantity: 1, source: { kind: "system", note: "test record" } });
+    const viaAssistant = await h.upload(owner, { garmentId: "ill-via-assistant", raster: syntheticShirt({ size: 200 }), principal: assistant });
+    expect(viaAssistant.asset!.source).toMatchObject({ kind: "owner_upload" });
+    expect(viaAssistant.asset!.matchEvidence).toMatchObject({ basis: "owner_statement", channel: "mcp", finalizedBy: { actor: "assistant", channel: "mcp" }, note: "supplied through the assistant on the owner's statement that it shows this garment; not sent by the owner directly" });
+    const direct = await h.upload(owner, { garmentId: "ill-via-assistant", raster: syntheticShirt({ size: 220 }) });
+    expect(direct.asset!.matchEvidence).toMatchObject({ finalizedBy: { actor: "owner", channel: "ios" }, note: "the owner supplied this photograph for this garment" });
+    await h.settle(owner);
   });
 });

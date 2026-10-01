@@ -5,7 +5,7 @@
  */
 import { all, first, sha256Hex } from "@garderobe/domain";
 import { CompositionManifest } from "@garderobe/contracts/ext/media";
-import { COMPOSITE_COLS, type CompositeRow } from "../commands/composites.ts";
+import { COMPOSITE_COLS, PREVIEW_INVALIDATED, staleCompositeItems, type CompositeRow } from "../commands/composites.ts";
 import { renderRaster } from "../compose/raster.ts";
 import { renderSvg } from "../compose/svg.ts";
 import { execSystem } from "../exec.ts";
@@ -24,6 +24,21 @@ export async function runRenderJob(rt: MediaRuntime, job: JobRow): Promise<void>
     return;
   }
   const manifest = CompositionManifest.parse(JSON.parse(row.manifest_json));
+  // A preview is only drawn, and only stored, while its request is open and every image it uses is still
+  // there. Checked before reading the images and again after rendering, immediately before anything is
+  // written; `media.record_composite` checks a third time inside its commit.
+  const invalidated = async (): Promise<string | null> => {
+    const now = await first<CompositeRow>(rt.db, `SELECT ${COMPOSITE_COLS} FROM outfit_composites WHERE user_id = ? AND manifest_hash = ?`, userId, job.subject_id);
+    if (!now) return "the composite no longer exists";
+    if (now.preview_state !== "queued") return now.preview_state === "none" && now.failure ? now.failure : PREVIEW_INVALIDATED;
+    return (await staleCompositeItems(rt.db, userId, job.subject_id)) > 0 ? PREVIEW_INVALIDATED : null;
+  };
+  const discard = (reason: string) => execSystem(rt, userId, "media.discard_composite", { manifestHash: row.manifest_hash, jobId: job.job_id, reason }, `discarded:${job.job_id}`);
+  const before = await invalidated();
+  if (before) {
+    await discard(before);
+    return;
+  }
   const ids = [...new Set(manifest.layers.map((l) => l.renditionId).filter((id): id is string => !!id))];
   const images = new Map<string, Raster>();
   if (ids.length > 0) {
@@ -59,6 +74,12 @@ export async function runRenderJob(rt: MediaRuntime, job: JobRow): Promise<void>
 
   const previewKey = compositeKey(userId, row.manifest_hash, "image/png");
   const svgKey = compositeKey(userId, row.manifest_hash, "image/svg+xml");
+  const after = await invalidated();
+  if (after) {
+    // An image was deleted while the preview was being drawn from bytes already read: nothing is stored.
+    await discard(after);
+    return;
+  }
   const previewSha256 = await sha256Hex(png);
   await rt.deps.bucket.put(previewKey, png, { httpMetadata: { contentType: "image/png" }, customMetadata: { manifestHash: row.manifest_hash, sha256: previewSha256 } });
   await rt.deps.bucket.put(svgKey, svg, { httpMetadata: { contentType: "image/svg+xml" }, customMetadata: { manifestHash: row.manifest_hash } });

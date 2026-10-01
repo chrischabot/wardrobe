@@ -14,7 +14,9 @@
 import { z } from "zod";
 import { all, allIn, assertPrincipal, CommandError, define, first, requireScope, sha256Hex, stmt, toInstant, type CommandDefinition, type PlannedOutbox, type Principal, type Stmt } from "@garderobe/domain";
 import { planAssetRemoval } from "./commands/assets.ts";
+import { MediaSource } from "@garderobe/contracts/ext/media";
 import { execAs } from "./exec.ts";
+import { probeImage } from "./image/index.ts";
 import { assertOwnedKey, ownerPrefix } from "./keys.ts";
 import { limitsOf, resolveDeps, type MediaDepsSource, type MediaRuntime } from "./runtime.ts";
 import { enqueueJob, loadRenditions, type AssetRow } from "./store.ts";
@@ -36,6 +38,43 @@ export interface MediaDeletionJournal {
   purgedOriginals: { assetId: string; renditionId: string; purgedAt: string; file: string }[];
 }
 
+/** Image types that may be imported (and are the only ones ever served). */
+const IMPORTABLE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/heic"]);
+
+/**
+ * Package-relative path of a stored object: the storage key without the owner's prefix, e.g.
+ * `assets/<assetId>/cutout-v1-<sha16>.png`. Exports and journals carry these, never storage keys: the
+ * bucket layout and the owner's ID are not part of what a read returns.
+ */
+function relativeFile(userId: string, key: string): string {
+  assertOwnedKey(userId, key);
+  return key.slice(ownerPrefix(userId).length);
+}
+
+/** The package-relative path named by an export entry: accepts the current relative form and the earlier `u/<owner>/...` form. */
+function toRelative(file: unknown): string | null {
+  const text = String(file ?? "");
+  const rest = /^u\/[^/]+\/(.+)$/.exec(text)?.[1] ?? text;
+  return /^assets\/[A-Za-z0-9_-]{1,128}\/[A-Za-z0-9_.-]{1,160}$/.test(rest) && !rest.includes("..") ? rest : null;
+}
+
+/**
+ * Read one exported file of the caller's OWN media by its package-relative path (as listed in
+ * `exportMediaData().assets[].file`). Returns null when there is no such file. Used by the code that
+ * builds export and backup packages; it never reads outside the caller's own images.
+ */
+export async function readExportFile(rt: MediaRuntime, principal: Principal, file: string): Promise<ArrayBuffer | null> {
+  assertPrincipal(principal);
+  requireScope(principal, "read");
+  if (/^u\//.test(file) && !file.startsWith(ownerPrefix(principal.userId))) return null; // another owner's key in the earlier form
+  const rest = toRelative(file);
+  if (!rest) return null;
+  const key = `${ownerPrefix(principal.userId)}${rest}`;
+  assertOwnedKey(principal.userId, key);
+  const object = await rt.deps.bucket.get(key);
+  return object ? object.arrayBuffer() : null;
+}
+
 type Row = Record<string, unknown>;
 
 export interface MediaExportFile {
@@ -43,7 +82,8 @@ export interface MediaExportFile {
   renditionId: string;
   kind: string;
   /** The key inside the exporting owner's private prefix; the package stores the file under this path. */
-  r2Key: string;
+  /** Path of the file inside the package (relative; never a storage key): `assets/<assetId>/<kind>-...`. */
+  file: string;
   contentType: string;
   byteLength: number;
   sha256: string;
@@ -91,7 +131,7 @@ export async function exportMediaData(rt: MediaRuntime, principal: Principal): P
     records: {
       // upload_id points at an upload authorization, which is not exported; the dangling reference is dropped.
       assets: strip(assets).map(({ upload_id: _upload, ...a }) => a),
-      renditions: strip(renditions).map(({ object_key, ...r }) => ({ ...r, file: object_key })),
+      renditions: strip(renditions).map(({ object_key, ...r }) => ({ ...r, file: relativeFile(u, object_key as string) })),
       fidelityChecks: strip((await q("SELECT * FROM media_fidelity_checks WHERE user_id = ? ORDER BY created_at, check_id")).filter((f) => live.has(f.asset_id as string))),
       garmentMedia: strip(await q("SELECT * FROM garment_media WHERE user_id = ? ORDER BY garment_id")),
       discoveryAttempts: strip(await q("SELECT * FROM media_discovery_attempts WHERE user_id = ? ORDER BY created_at, attempt_id")),
@@ -104,11 +144,10 @@ export async function exportMediaData(rt: MediaRuntime, principal: Principal): P
       deletedAssets: deleted.map((d) => ({ assetId: d.asset_id, deletedAt: d.deleted_at })),
     },
     assets: renditions.filter((r) => r.status !== "deleted").map((r) => {
-      assertOwnedKey(u, r.object_key as string);
-      return { assetId: r.asset_id as string, renditionId: r.rendition_id as string, kind: r.kind as string, r2Key: r.object_key as string, contentType: r.content_type as string, byteLength: r.byte_length as number, sha256: r.sha256 as string };
+      return { assetId: r.asset_id as string, renditionId: r.rendition_id as string, kind: r.kind as string, file: relativeFile(u, r.object_key as string), contentType: r.content_type as string, byteLength: r.byte_length as number, sha256: r.sha256 as string };
     }),
     notes: [
-      "Rows are the stored records with snake_case column names; *_json fields hold JSON text. `file` on a rendition is its path in this package.",
+      "Rows are the stored records with snake_case column names; *_json fields hold JSON text. `file` on a rendition and in the file list is its path inside this package, relative to the package's media folder.",
       "Each rendition names the rendition it was derived from (source_rendition_id) and lists its transformation steps (transformations_json); edited = 1 means a generative step contributed and the image is not evidence for fabric or fit.",
       "is_demo = 1 marks a labelled demo placeholder; kind 'generic_illustration' is an illustration, never a photograph of the garment.",
       "Rendered outfit previews are a cache and are not included; they are rebuilt from the composition manifests.",
@@ -212,22 +251,62 @@ export function portabilityCommands(depsSource?: MediaDepsSource): CommandDefini
         const rows = (name: string) => p.rows[name] ?? [];
         const preconditions: { label: string; sql: string; params: unknown[]; class: "state" }[] = [];
         const rekey = (file: unknown): string => {
-          const key = String(file);
-          const rest = /^u\/[^/]+\/(.+)$/.exec(key)?.[1];
-          if (!rest) throw new CommandError("invalid_command", "an exported file path is not inside an owner prefix");
+          const rest = toRelative(file);
+          if (!rest) throw new CommandError("invalid_command", "an exported file path is not a media file path");
           const out = `${ownerPrefix(u)}${rest}`;
           assertOwnedKey(u, out);
           return out;
         };
         if (p.part === "assets") {
+          // Nothing is taken on trust from the package: every image record must say where it came from, be of
+          // a known kind and state, and have at least one file that THIS import verified and stored (checked
+          // against storage here, not against what the caller says). A record without a verified file would
+          // make a garment claim a photograph that does not exist.
+          const deps = depsSource ? resolveDeps(depsSource) : null;
+          if (!deps) throw new CommandError("internal", "media import is not configured with storage");
+          const liveAssets = rows("assets").filter((a) => a.status !== "deleted");
+          const garmentIds = [...new Set(liveAssets.map((a) => s(a.garment_id)).filter((id): id is string => id !== null))];
+          const garments = new Map((await allIn<{ garment_id: string; is_synthetic: number }>(ctx.db, "SELECT garment_id, is_synthetic FROM garments WHERE user_id = ? AND garment_id IN (:ids)", [u], garmentIds)).map((g) => [g.garment_id, g]));
+          for (const a of rows("assets")) {
+            const id = s(a.asset_id);
+            if (!id) throw new CommandError("invalid_command", "an imported image record has no ID");
+            if (!["active", "needs_review", "processing", "deleted"].includes(String(a.status))) throw new CommandError("invalid_command", `image ${id} has a state that cannot be imported`);
+            const own = rows("renditions").filter((r) => r.asset_id === a.asset_id);
+            if (a.status === "deleted") {
+              // A tombstone: an image deleted after the package was made. It may carry no live file.
+              if (own.some((r) => r.status !== "deleted")) throw new CommandError("invalid_command", `deleted image ${id} cannot bring files with it`);
+              continue;
+            }
+            let source: unknown = null;
+            try {
+              source = JSON.parse(String(a.source_json ?? ""));
+            } catch {
+              source = null;
+            }
+            if (!MediaSource.safeParse(source).success) throw new CommandError("invalid_command", `image ${id} does not say where it came from; it was not imported`);
+            const garmentId = s(a.garment_id);
+            if (garmentId !== null && !garments.has(garmentId)) throw new CommandError("invalid_command", `image ${id} belongs to a garment that is not in this wardrobe`);
+            // The same rule as for uploads: a demo placeholder is only ever attached to a synthetic fixture garment.
+            if ((n(a.is_demo) ?? 0) === 1 && (garmentId === null || garments.get(garmentId)!.is_synthetic !== 1)) throw new CommandError("forbidden", `image ${id} is a demo placeholder and can only be attached to a synthetic fixture garment`);
+            if (!own.some((r) => r.status !== "deleted")) throw new CommandError("invalid_command", `image ${id} has no verified file; it was not imported`);
+          }
+          for (const r of rows("renditions")) {
+            if (!rows("assets").some((a) => a.asset_id === r.asset_id)) throw new CommandError("invalid_command", "a file record must belong to an image in the same import");
+            if (r.status === "deleted") continue; // a record without a file (purged original, or part of a tombstone)
+            if (!IMPORTABLE_TYPES.has(String(r.content_type))) throw new CommandError("invalid_command", `file ${String(r.rendition_id)} is not an accepted image type`);
+            const head = await deps.bucket.head(rekey(r.file));
+            if (!head || head.size !== n(r.byte_length) || head.customMetadata?.sha256 !== s(r.sha256) || head.customMetadata?.imported !== "true" || head.httpMetadata?.contentType !== s(r.content_type)) {
+              throw new CommandError("invalid_command", `file ${String(r.rendition_id)} was not verified and stored by this import; nothing was written`);
+            }
+          }
           preconditions.push({ label: "the importing owner has no media yet for these IDs", sql: `NOT EXISTS (SELECT 1 FROM media_assets WHERE user_id = ? AND asset_id IN (${rows("assets").map(() => "?").join(",") || "''"}))`, params: [u, ...rows("assets").map((a) => a.asset_id)], class: "state" });
           for (const a of rows("assets")) {
             statements.push(
               stmt(
-                `INSERT INTO media_assets (user_id, asset_id, garment_id, kind, is_demo, status, status_reason, source_json, match_evidence_json, derived_from_asset_id, had_location_metadata, wearing_date, retain_original_until, original_purged_at, upload_id, version, command_id, created_at, updated_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
+                `INSERT INTO media_assets (user_id, asset_id, garment_id, kind, is_demo, status, status_reason, source_json, match_evidence_json, derived_from_asset_id, had_location_metadata, wearing_date, retain_original_until, original_purged_at, upload_id, version, command_id, created_at, updated_at, deleted_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)`,
                 u, s(a.asset_id), s(a.garment_id), s(a.kind), n(a.is_demo) ?? 0, a.status === "processing" ? "active" : s(a.status), s(a.status_reason), s(a.source_json), s(a.match_evidence_json) ?? "{}", s(a.derived_from_asset_id),
-                n(a.had_location_metadata) ?? 0, s(a.wearing_date), s(a.retain_original_until), s(a.original_purged_at), n(a.version) ?? 1, ctx.commandId, s(a.created_at), s(a.updated_at),
+                n(a.had_location_metadata) ?? 0, s(a.wearing_date), s(a.retain_original_until), s(a.original_purged_at), n(a.version) ?? 1, ctx.commandId, s(a.created_at), s(a.updated_at), a.status === "deleted" ? (s(a.deleted_at) ?? ctx.now) : null,
               ),
             );
           }
@@ -329,8 +408,10 @@ export async function importMediaData(
   data: MediaExport,
   readAsset: (file: string) => Promise<ArrayBuffer | Uint8Array | null>,
   opts: { deletions?: MediaDeletionJournal | null } = {},
-): Promise<{ imported: { assets: number; renditions: number; files: number }; missing: string[]; mismatched: string[]; deletionsApplied: { assetsDeleted: number; originalsPurged: number; filesWithheld: number } }> {
+): Promise<{ imported: { assets: number; renditions: number; files: number }; missing: string[]; mismatched: string[]; rejected: string[]; deletionsApplied: { assetsDeleted: number; originalsPurged: number; filesWithheld: number } }> {
   assertPrincipal(principal);
+  // Checked before anything is read or stored: an import writes files, so it needs the import authorization.
+  requireScope(principal, "admin");
   if (data.format !== MEDIA_EXPORT_FORMAT) throw new CommandError("invalid_command", `unsupported media export format '${String(data.format)}'`);
   const journal = opts.deletions ?? null;
   if (journal && journal.format !== MEDIA_DELETIONS_FORMAT) throw new CommandError("invalid_command", `unsupported media deletion journal '${String((journal as { format?: unknown }).format)}'`);
@@ -343,40 +424,52 @@ export async function importMediaData(
 
   const missing: string[] = [];
   const mismatched: string[] = [];
+  const rejected: string[] = [];
   const stored = new Set<string>();
-  // A rendition exported as a record only (a purged selfie original) has no file to verify.
-  for (const r of data.records.renditions) if (r.status === "deleted") stored.add(String(r.rendition_id));
+  /** What each stored file IS, read from its bytes; the package's own claim is not used. */
+  const typeOf = new Map<string, string>();
   let filesStored = 0;
   for (const file of data.assets) {
+    const name = String((file as { file?: unknown; r2Key?: unknown }).file ?? (file as { r2Key?: unknown }).r2Key ?? ""); // `r2Key`: packages made before paths became relative
     if (deletedAssetIds.has(file.assetId) || purgedRenditionIds.has(file.renditionId)) {
       // Deleted after this package was made: the bytes are not read and never written back.
-      stored.add(file.renditionId);
       filesWithheld++;
       continue;
     }
-    const raw = await readAsset(file.r2Key);
+    const rest = toRelative(name);
+    if (!rest || !rest.startsWith(`assets/${file.assetId}/`)) {
+      mismatched.push(name);
+      continue;
+    }
+    const raw = await readAsset(name);
     if (!raw) {
-      missing.push(file.r2Key);
+      missing.push(name);
       continue;
     }
     const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
     if ((await sha256Hex(bytes)) !== file.sha256 || bytes.length !== file.byteLength) {
-      mismatched.push(file.r2Key);
+      mismatched.push(name);
       continue;
     }
-    const rest = /^u\/[^/]+\/(.+)$/.exec(file.r2Key)?.[1];
-    if (!rest) {
-      mismatched.push(file.r2Key);
+    // Content validation, as for an upload: what the bytes ARE. Anything that is not an accepted image is refused.
+    const probe = probeImage(bytes);
+    if (!probe || !IMPORTABLE_TYPES.has(probe.contentType)) {
+      rejected.push(name);
       continue;
     }
     const key = `${ownerPrefix(u)}${rest}`;
     assertOwnedKey(u, key);
-    await rt.deps.bucket.put(key, bytes, { httpMetadata: { contentType: file.contentType }, customMetadata: { assetId: file.assetId, sha256: file.sha256, kind: file.kind, imported: "true" } });
+    await rt.deps.bucket.put(key, bytes, { httpMetadata: { contentType: probe.contentType }, customMetadata: { assetId: file.assetId, sha256: file.sha256, kind: file.kind, imported: "true" } });
     stored.add(file.renditionId);
+    typeOf.set(file.renditionId, probe.contentType);
     filesStored++;
   }
-  // Keep only renditions whose file arrived intact and whose source chain is intact; drop assets left without any.
-  const renditions = data.records.renditions.filter((r) => stored.has(String(r.rendition_id)));
+  // Rendition records: those whose file arrived intact and verified, with the content type read from the
+  // bytes; records that have no file by design (a purged selfie original; every rendition of an image
+  // deleted after the package was made) are kept as records marked deleted.
+  const renditions = data.records.renditions
+    .filter((r) => stored.has(String(r.rendition_id)) || r.status === "deleted" || deletedAssetIds.has(String(r.asset_id)) || purgedRenditionIds.has(String(r.rendition_id)))
+    .map((r): Row => (stored.has(String(r.rendition_id)) && r.status !== "deleted" ? { ...r, content_type: typeOf.get(String(r.rendition_id)) } : { ...r, status: "deleted" }));
   const kept = new Set(renditions.map((r) => String(r.rendition_id)));
   let usable = renditions.filter((r) => r.source_rendition_id === null || kept.has(String(r.source_rendition_id)));
   for (let changed = true; changed; ) {
@@ -385,9 +478,33 @@ export async function importMediaData(
     changed = next.length !== usable.length;
     usable = next;
   }
-  const assetIds = new Set(usable.map((r) => String(r.asset_id)));
-  const assets = data.records.assets.filter((a) => assetIds.has(String(a.asset_id)));
+  // An image is imported when it has at least one verified file. An image deleted after the package was made
+  // is imported as a tombstone only: its record marked deleted, no file, so it can never be shown and the
+  // restored owner's own deletion journal still names it.
+  const purgedAt = new Map((journal?.purgedOriginals ?? []).map((d) => [d.assetId, d.purgedAt]));
+  const deletedAt = new Map((journal?.deletedAssets ?? []).map((d) => [d.assetId, d.deletedAt]));
+  const withFile = new Set(usable.filter((r) => r.status !== "deleted").map((r) => String(r.asset_id)));
+  const assets = data.records.assets
+    .filter((a) => deletedAssetIds.has(String(a.asset_id)) || withFile.has(String(a.asset_id)))
+    .map((a): Row =>
+      deletedAssetIds.has(String(a.asset_id))
+        ? { ...a, status: "deleted", status_reason: "deleted after the restored backup was taken", deleted_at: deletedAt.get(String(a.asset_id)) ?? null }
+        : purgedAt.has(String(a.asset_id)) && !a.original_purged_at
+          ? { ...a, original_purged_at: purgedAt.get(String(a.asset_id)), status_reason: "full-resolution original removed under the photo-history setting" }
+          : a,
+    );
+  const assetIds = new Set(assets.map((a) => String(a.asset_id)));
+  const liveAssetIds = new Set(assets.filter((a) => a.status !== "deleted").map((a) => String(a.asset_id)));
+  usable = usable.filter((r) => assetIds.has(String(r.asset_id)));
   const renditionIds = new Set(usable.map((r) => String(r.rendition_id)));
+  const tombstoned = assets.filter((a) => a.status === "deleted").length;
+  const originalsPurged = usable.filter((r) => purgedRenditionIds.has(String(r.rendition_id)) && liveAssetIds.has(String(r.asset_id))).length;
+  /** The image a garment shows when the one recorded for it did not come through: its newest remaining real photo, else any remaining image, else none. */
+  const fallbackFor = (garmentId: unknown): Row | null => {
+    const own = assets.filter((a) => a.garment_id === garmentId && a.status === "active").sort((x, y) => String(y.created_at).localeCompare(String(x.created_at)) || String(y.asset_id).localeCompare(String(x.asset_id)));
+    const real = (a: Row) => Number(a.is_demo ?? 0) === 0 && ["exact_product_photo", "owner_photo", "edited_rendition"].includes(String(a.kind));
+    return own.find(real) ?? own[0] ?? null;
+  };
 
   // The key names the row set as well as the part: two row sets of one part (combinations and day plans are both "studio") are different requests.
   const run = (part: string, rows: Record<string, Row[]>, index: number) =>
@@ -408,10 +525,29 @@ export async function importMediaData(
       await run(part, { [name]: chunk, ...extra(chunk) }, index);
     }
   };
-  await chunked("garmentMedia", "garmentMedia", data.records.garmentMedia.map((m) => (m.primary_asset_id && !assetIds.has(String(m.primary_asset_id)) ? { ...m, primary_asset_id: null, image_state: m.image_state === "resolved" ? "not_started" : m.image_state } : m)));
+  await chunked(
+    "garmentMedia",
+    "garmentMedia",
+    data.records.garmentMedia.map((m) => {
+      if (!m.primary_asset_id || liveAssetIds.has(String(m.primary_asset_id))) return m;
+      const fallback = fallbackFor(m.garment_id);
+      if (fallback) return { ...m, primary_asset_id: fallback.asset_id, image_state: m.image_state === "photos_needed" ? "photos_needed" : "resolved" };
+      return { ...m, primary_asset_id: null, image_state: m.image_state === "resolved" ? "not_started" : m.image_state };
+    }),
+  );
   await chunked("discovery", "discoveryAttempts", data.records.discoveryAttempts, (chunk) => {
     const ids = new Set(chunk.map((a) => String(a.attempt_id)));
-    return { candidates: data.records.candidates.filter((c) => ids.has(String(c.attempt_id))).map((c) => (c.asset_id && !assetIds.has(String(c.asset_id)) ? { ...c, asset_id: null } : c)) };
+    return {
+      candidates: data.records.candidates
+        .filter((c) => ids.has(String(c.attempt_id)))
+        .map((c) =>
+          !c.asset_id || liveAssetIds.has(String(c.asset_id))
+            ? c
+            : assetIds.has(String(c.asset_id))
+              ? { ...c, decision: "rejected", rejection_reasons_json: '["owner_rejected"]', decided_by: "owner" } // its image was deleted after the package was made
+              : { ...c, asset_id: null, ...(c.decision === "rejected" ? {} : { decision: "rejected", rejection_reasons_json: '["image_quality"]' }) }, // its image did not come through
+        ),
+    };
   });
   await chunked("studio", "combinations", data.records.combinations, (chunk) => {
     const ids = new Set(chunk.map((c) => String(c.combination_id)));
@@ -422,14 +558,17 @@ export async function importMediaData(
     return { dayPlanItems: data.records.dayPlanItems.filter((i) => ids.has(String(i.plan_id))) };
   });
   await chunked("composites", "composites", data.records.composites);
-  const replayed = journal ? await replayMediaDeletions(rt, principal, journal) : { assetsDeleted: 0, originalsPurged: 0 };
-  return { imported: { assets: assets.length, renditions: usable.length, files: filesStored }, missing, mismatched, deletionsApplied: { ...replayed, filesWithheld } };
+  return { imported: { assets: liveAssetIds.size, renditions: usable.filter((r) => r.status !== "deleted").length, files: filesStored }, missing, mismatched, rejected, deletionsApplied: { assetsDeleted: tombstoned, originalsPurged, filesWithheld } };
 }
 
-/** The owner's deletion journal: what backups taken earlier may still hold and a restore must not bring back. Reads only. */
+/**
+ * The owner's deletion journal: what backups taken earlier may still hold and a restore must not bring
+ * back. Reads only, but it is an operational record for backup code, not something a read-only client
+ * (an assistant connection) needs: it requires write scope. Files are package-relative paths.
+ */
 export async function listMediaDeletions(rt: MediaRuntime, principal: Principal): Promise<MediaDeletionJournal> {
   assertPrincipal(principal);
-  requireScope(principal, "read");
+  requireScope(principal, "write");
   const u = principal.userId;
   const assets = await all<{ asset_id: string; deleted_at: string | null; updated_at: string }>(rt.db, "SELECT asset_id, deleted_at, updated_at FROM media_assets WHERE user_id = ? AND status IN ('deleted', 'rejected') ORDER BY asset_id", u);
   const files = await all<{ asset_id: string; rendition_id: string; object_key: string }>(
@@ -448,9 +587,9 @@ export async function listMediaDeletions(rt: MediaRuntime, principal: Principal)
     writtenAt: toInstant(rt.clock()),
     deletedAssets: assets.map((a) => {
       const own = files.filter((f) => f.asset_id === a.asset_id);
-      return { assetId: a.asset_id, deletedAt: a.deleted_at ?? a.updated_at, renditionIds: own.map((f) => f.rendition_id), files: own.map((f) => f.object_key) };
+      return { assetId: a.asset_id, deletedAt: a.deleted_at ?? a.updated_at, renditionIds: own.map((f) => f.rendition_id), files: own.map((f) => relativeFile(u, f.object_key)) };
     }),
-    purgedOriginals: purged.map((p) => ({ assetId: p.asset_id, renditionId: p.rendition_id, purgedAt: p.original_purged_at, file: p.object_key })),
+    purgedOriginals: purged.map((p) => ({ assetId: p.asset_id, renditionId: p.rendition_id, purgedAt: p.original_purged_at, file: relativeFile(u, p.object_key) })),
   };
 }
 

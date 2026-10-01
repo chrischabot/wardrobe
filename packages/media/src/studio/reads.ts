@@ -10,7 +10,7 @@ import { assertOwnedKey } from "../keys.ts";
 import type { MediaRuntime } from "../runtime.ts";
 import { loadImageRefs } from "../store.ts";
 import { baselineValidator } from "../validator.ts";
-import { composeResolved, resolveSlots, validateResolved, type StudioSlotInput } from "./shared.ts";
+import { composeResolved, resolveSlots, studioValidator, validateResolved, type StudioSlotInput } from "./shared.ts";
 
 const SELECTOR_ROLES: Role[] = ["top", "bottom", "footwear", "outer", "mid_layer", "one_piece", "socks", "belt", "neckwear", "accessory"];
 const PRIMARY_ROLES: Role[] = ["top", "bottom", "footwear", "outer"];
@@ -105,7 +105,11 @@ export async function suggestStudioOutfits(
   const locked = given.filter((s) => s.locked && s.garmentId !== null);
   const lockedRoles = new Set(locked.map((s) => s.role));
   const openRoles = (input.openRoles ?? [...new Set<Role>([...given.filter((s) => !s.locked).map((s) => s.role), "top", "bottom", "footwear"])]).filter((r) => !lockedRoles.has(r));
-  const validator = rt.deps.validator?.suggest ? rt.deps.validator : baselineValidator;
+  const configured = studioValidator(rt.deps);
+  // A validator that cannot suggest leaves only the baseline's availability-ordered suggestions, and those
+  // are used only when the baseline was explicitly accepted; every suggestion is validated below either way.
+  const validator = configured.suggest ? configured : rt.deps.allowBaselineValidator === true ? baselineValidator : null;
+  if (!validator) return [];
   const raw = await validator.suggest!(rt.db, principal, { locked: locked.map((s) => ({ role: s.role, garmentId: s.garmentId! })), openRoles, forDate, mode: input.mode, limit: input.limit ?? 5 });
   const out: StudioSuggestion[] = [];
   for (const suggestion of raw) {
@@ -146,7 +150,23 @@ export async function getComposition(rt: MediaRuntime, principal: Principal, man
   const userId = guard(principal);
   const row = await first<CompositeRow>(rt.db, `SELECT ${COMPOSITE_COLS} FROM outfit_composites WHERE user_id = ? AND manifest_hash = ?`, userId, manifestHash);
   if (!row) throw new CommandError("not_found", "no such outfit preview for this owner");
-  return toComposition(json<CompositionManifest>(row.manifest_json, null as never), row.manifest_hash, row);
+  const stored = json<CompositionManifest>(row.manifest_json, null as never);
+  // The stored manifest is what was requested THEN. An image deleted or replaced since is shown as
+  // missing here (no reference, no label of a picture), exactly as a fresh composition of the slots would.
+  const ids = [...new Set(stored.layers.map((l) => l.renditionId).filter((id): id is string => !!id))];
+  const active = new Set(
+    ids.length === 0
+      ? []
+      : (
+          await all<{ rendition_id: string }>(
+            rt.db,
+            `SELECT r.rendition_id FROM media_renditions r JOIN media_assets a ON a.user_id = r.user_id AND a.asset_id = r.asset_id WHERE r.user_id = ? AND r.status = 'active' AND a.status = 'active' AND r.rendition_id IN (${ids.map(() => "?").join(",")})`,
+            userId, ...ids,
+          )
+        ).map((r) => r.rendition_id),
+  );
+  const manifest: CompositionManifest = { ...stored, layers: stored.layers.map((l) => (l.renditionId && !active.has(l.renditionId) ? { ...l, assetId: null, renditionId: null, renditionVersion: null, renditionSha256: null, imageLabel: "missing" as const } : l)) };
+  return toComposition(manifest, row.manifest_hash, row);
 }
 
 /** Queue the raster preview (background work). Wraps `media.request_composite_preview`. */

@@ -62,8 +62,26 @@ async function loadActiveRendition(rt: MediaRuntime, userId: string, renditionId
   return row;
 }
 
+/** The only content types ever served; anything else stored under a rendition is treated as not there. */
+export const SERVABLE_IMAGE_TYPES: ReadonlySet<string> = new Set(["image/jpeg", "image/png", "image/webp", "image/heic"]);
+
+/**
+ * Headers every image response must carry, whoever builds it (this package's signed-URL responses and
+ * the API Worker's authenticated image routes): the body is never sniffed into another type, can run
+ * nothing, load nothing and frame nothing even if a browser is pointed straight at it.
+ */
+export const MEDIA_RESPONSE_HEADERS: Readonly<Record<string, string>> = {
+  "x-content-type-options": "nosniff",
+  "content-security-policy": "default-src 'none'; sandbox",
+  "content-disposition": "inline",
+  "referrer-policy": "no-referrer",
+  "cross-origin-resource-policy": "same-site",
+};
+
 async function readRendition(rt: MediaRuntime, userId: string, row: RenditionRow, width: ThumbnailWidth | null): Promise<OpenedImage> {
   assertOwnedKey(userId, row.object_key);
+  // Whatever a record claims, only a fixed list of image types is ever served.
+  if (!SERVABLE_IMAGE_TYPES.has(row.content_type)) throw new CommandError("not_found", "no such image");
   const images = rt.deps.images;
   if (width !== null && images && (row.width === null || row.width > width)) {
     // On-demand thumbnail through Cloudflare Images, cached at delivery. Nothing is precomputed in R2.
@@ -126,6 +144,12 @@ export async function signRenditionUrl(rt: MediaRuntime, principal: Principal, r
   if (audience === "calendar" && (row.asset_kind === "selfie" || row.asset_kind === "attachment")) {
     throw new CommandError("forbidden", "a selfie or attachment is never linked from Calendar or any shared text");
   }
+  // The original is the photograph exactly as supplied, with whatever metadata it carried (including a GPS
+  // position). Outside the owner's own app only derived, metadata-free copies are ever linked.
+  if (audience !== "app" && row.kind === "original") {
+    throw new CommandError("forbidden", "the original photograph is never linked outside the app; only a derived copy without metadata can be");
+  }
+  if (opts.ttlSeconds !== undefined && (typeof opts.ttlSeconds !== "number" || !Number.isFinite(opts.ttlSeconds))) throw new CommandError("invalid_command", "the link lifetime must be a number of seconds");
   const requested = opts.ttlSeconds ?? limits.defaultUrlTtlSeconds;
   const ttl = Math.max(30, Math.min(requested, audience === "app" ? limits.maxUrlTtlSeconds : limits.defaultUrlTtlSeconds));
   const exp = Math.floor(rt.clock() / 1000) + ttl;
@@ -133,7 +157,7 @@ export async function signRenditionUrl(rt: MediaRuntime, principal: Principal, r
   return { url: `/v1/media/signed/${token}`, renditionId: row.rendition_id, width, expiresAt: toInstant(exp * 1000) };
 }
 
-const DENIED_HEADERS = { "cache-control": "no-store", "content-type": "text/plain; charset=utf-8", "x-content-type-options": "nosniff" };
+const DENIED_HEADERS = { "cache-control": "no-store", "content-type": "text/plain; charset=utf-8", "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'; sandbox" };
 
 /**
  * Serve a signed media URL. Every failure - bad signature, expiry, wrong owner, deleted image, disabled
@@ -166,10 +190,7 @@ export async function serveSignedMedia(rt: MediaRuntime, token: string, request?
       // Private to the one device; never stored by shared caches, and not beyond the URL's own lifetime.
       "cache-control": `private, max-age=${remaining}, no-transform`,
       etag,
-      "x-content-type-options": "nosniff",
-      "content-disposition": "inline",
-      "referrer-policy": "no-referrer",
-      "cross-origin-resource-policy": "same-site",
+      ...MEDIA_RESPONSE_HEADERS,
       ...(image.byteLength !== null ? { "content-length": String(image.byteLength) } : {}),
     },
   });

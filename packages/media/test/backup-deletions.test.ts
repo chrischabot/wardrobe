@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { all, isCommandError } from "@garderobe/domain";
+import { all, first, isCommandError } from "@garderobe/domain";
 import type { TestOwner } from "@garderobe/domain/testing";
-import { exportMediaData, getAsset, getGarmentMedia, importMediaData, listMediaDeletions, openAssetImage, replayMediaDeletions, runMediaMaintenance, type MediaDeletionJournal, type MediaExport } from "../src/index.ts";
+import { exportMediaData, getAsset, getGarmentMedia, importMediaData, listMediaDeletions, listMediaJobs, openAssetImage, readExportFile, replayMediaDeletions, runMediaMaintenance, type MediaDeletionJournal, type MediaExport } from "../src/index.ts";
 import { createMediaHarness, syntheticShirt, syntheticTrousers, type MediaHarness } from "../src/testing/index.ts";
 
 // SYNTHETIC TEST IMAGES on synthetic fixture garments (labelled demo placeholders).
@@ -40,7 +40,7 @@ describe("a deleted image does not come back from a backup taken before the dele
     // The backup is taken while all three images exist.
     const data = await exportMediaData(h.rt, source.principal());
     const files = new Map<string, Uint8Array>();
-    for (const f of data.assets) files.set(f.r2Key, new Uint8Array(await (await h.bindings.MEDIA_BUCKET.get(f.r2Key))!.arrayBuffer()));
+    for (const f of data.assets) files.set(f.file, new Uint8Array((await readExportFile(h.rt, source.principal(), f.file))!));
     backup = { data, files };
     expect(await listMediaDeletions(h.rt, source.principal())).toMatchObject({ format: "garderobe-media-deletions/1", deletedAssets: [], purgedOriginals: [] });
 
@@ -57,18 +57,21 @@ describe("a deleted image does not come back from a backup taken before the dele
     expect(journal.deletedAssets[0]).toMatchObject({ assetId: shirtAsset, deletedAt: expect.any(String) });
     const inBackup = backup.data.assets.filter((f) => f.assetId === shirtAsset);
     expect(inBackup.map((f) => f.kind).sort()).toEqual(["catalogue", "cutout", "mask", "original"]);
-    expect([...journal.deletedAssets[0]!.files].sort()).toEqual(inBackup.map((f) => f.r2Key).sort());
+    expect([...journal.deletedAssets[0]!.files].sort()).toEqual(inBackup.map((f) => f.file).sort());
     expect([...journal.deletedAssets[0]!.renditionIds].sort()).toEqual(inBackup.map((f) => f.renditionId).sort());
     const original = backup.data.assets.find((f) => f.assetId === selfieAsset && f.kind === "original")!;
-    expect(journal.purgedOriginals).toEqual([{ assetId: selfieAsset, renditionId: original.renditionId, purgedAt: expect.any(String), file: original.r2Key }]);
+    expect(journal.purgedOriginals).toEqual([{ assetId: selfieAsset, renditionId: original.renditionId, purgedAt: expect.any(String), file: original.file }]);
+    expect(JSON.stringify(journal)).not.toContain(source.userId); // package-relative paths, never storage keys
     // The live bytes are gone already; only the backup copy is left, which is why the journal exists.
     expect(await objectsOf(source, shirtAsset)).toEqual([]);
     expect(await objectsOf(source, selfieAsset)).toEqual(["display"]);
-    expect(backup.files.has(original.r2Key)).toBe(true);
-    // It is the owner's own record: another owner's journal is empty, and reading needs read scope.
+    expect(backup.files.has(original.file)).toBe(true);
+    // It is the owner's own record: another owner's journal is empty. It is an operational record for backup
+    // code, so a read-only connection (an assistant) does not get it.
     const stranger = await h.createSyntheticOwner({ displayName: "Synthetic owner (backup stranger)" });
     expect(await listMediaDeletions(h.rt, stranger.principal())).toMatchObject({ deletedAssets: [], purgedOriginals: [] });
     expect(await code(listMediaDeletions(h.rt, source.principal({ scopes: [] })))).toBe("forbidden");
+    expect(await code(listMediaDeletions(h.rt, source.principal({ actor: "assistant", channel: "mcp", scopes: ["read"] })))).toBe("forbidden");
   });
 
   it("restoring with the journal never writes the deleted bytes back and leaves the garment honestly without an image", async () => {
@@ -101,8 +104,14 @@ describe("a deleted image does not come back from a backup taken before the dele
     const carried = await listMediaDeletions(h.rt, target.principal());
     expect(carried.deletedAssets.map((d) => d.assetId)).toEqual([shirtAsset]);
     expect(carried.purgedOriginals.map((d) => d.assetId)).toEqual([selfieAsset]);
-    // Each deletion is a command with a receipt.
-    expect((await h.service.listReceipts(target.principal(), { kind: "media_asset", entityId: shirtAsset })).map((r) => r.type)).toContain("media.reapply_deletions");
+    // The deleted image arrives as a tombstone record only: every deletion is in the ledger, attributed to the
+    // import, with no file ever written and therefore nothing left to purge.
+    expect(await first<{ status: string; status_reason: string }>(h.db, "SELECT status, status_reason FROM media_assets WHERE user_id = ? AND asset_id = ?", target.userId, shirtAsset)).toEqual({ status: "deleted", status_reason: "deleted after the restored backup was taken" });
+    expect((await all<{ status: string }>(h.db, "SELECT status FROM media_renditions WHERE user_id = ? AND asset_id = ?", target.userId, shirtAsset)).every((r) => r.status === "deleted")).toBe(true);
+    expect(await listMediaJobs(h.rt, target.principal())).toEqual([]);
+    // Record counts equal the package's, so a restore check that compares counts still holds.
+    expect((await all(h.db, "SELECT 1 FROM media_assets WHERE user_id = ?", target.userId)).length).toBe(backup.data.records.assets.length);
+    expect((await all(h.db, "SELECT 1 FROM media_renditions WHERE user_id = ?", target.userId)).length).toBe(backup.data.records.renditions.length);
   });
 
   it("an import made without the journal brings the image back, and replaying the journal deletes it again", async () => {
@@ -120,7 +129,9 @@ describe("a deleted image does not come back from a backup taken before the dele
     expect(await objectsOf(target, shirtAsset)).toEqual([]);
     expect(await objectsOf(target, selfieAsset)).toEqual(["display"]);
     expect((await getGarmentMedia(h.rt, target.principal(), "shirt-moss")).image).toMatchObject({ hasRealImage: false, renditionId: null });
-    expect(await getAsset(h.rt, target.principal(), shirtAsset)).toMatchObject({ status: "deleted", statusReason: "deleted after the restored backup was taken" });
+    expect(await code(getAsset(h.rt, target.principal(), shirtAsset))).toBe("not_found"); // review L6: a deleted image's metadata is not returned
+    expect(await first<{ status: string; status_reason: string }>(h.db, "SELECT status, status_reason FROM media_assets WHERE user_id = ? AND asset_id = ?", target.userId, shirtAsset)).toEqual({ status: "deleted", status_reason: "deleted after the restored backup was taken" });
+    expect((await h.service.listReceipts(target.principal(), { kind: "media_asset", entityId: shirtAsset })).map((r) => r.type)).toContain("media.reapply_deletions");
     expect((await getAsset(h.rt, target.principal(), trouserAsset)).status).toBe("active");
     // Repeating it changes nothing; a journal naming images this owner does not have deletes nothing.
     expect(await replayMediaDeletions(h.rt, target.principal(), journal)).toEqual({ assetsDeleted: 0, originalsPurged: 0 });
@@ -142,7 +153,7 @@ describe("a deleted image does not come back from a backup taken before the dele
     // The purged original travels as a record without a file, so the copy derived from it keeps its recorded source.
     expect(later.records.renditions.filter((r) => r.asset_id === selfieAsset).map((r) => [r.kind, r.status]).sort()).toEqual([["display", "active"], ["original", "deleted"]]);
     const target = await h.createSyntheticOwner({ displayName: "Synthetic owner (restore of later backup)" });
-    const result = await importMediaData(h.rt, importer(target), later, async (key) => (await h.bindings.MEDIA_BUCKET.get(key))?.arrayBuffer() ?? null);
+    const result = await importMediaData(h.rt, importer(target), later, (file) => readExportFile(h.rt, source.principal(), file));
     expect([result.missing, result.mismatched]).toEqual([[], []]);
     const selfie = await getAsset(h.rt, target.principal(), selfieAsset);
     expect(selfie.renditions.map((r) => [r.kind, r.status]).sort()).toEqual([["display", "active"], ["original", "deleted"]]);

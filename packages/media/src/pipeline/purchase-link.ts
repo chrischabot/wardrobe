@@ -4,7 +4,7 @@
  * The page is untrusted source material: only data fields are extracted, as plain strings.
  */
 import type { DiscoveryCandidatePage, DiscoveryProvider } from "../adapters.ts";
-import { safeFetch } from "./safe-fetch.ts";
+import { safeFetch, type HostResolver } from "./safe-fetch.ts";
 
 function text(value: unknown, max = 300): string | null {
   if (typeof value === "string") return value.replace(/\s+/g, " ").trim().slice(0, max) || null;
@@ -45,8 +45,28 @@ function metaContent(html: string, property: string): string | null {
   return content ? content.replace(/&amp;/g, "&").trim() : null;
 }
 
-/** Extract product identity and an image from a product page's HTML. Pure; exported for tests. */
-export function extractProductPage(html: string, pageUrl: string, retrievedAt: string): DiscoveryCandidatePage | null {
+/** Whether two URLs name the same document: same host (ignoring a leading "www.") and path (ignoring a trailing slash); query and fragment are ignored. */
+export function sameDocument(a: string, b: string): boolean {
+  try {
+    const x = new URL(a), y = new URL(b);
+    const host = (u: URL) => u.hostname.toLowerCase().replace(/^www\./, "").replace(/\.$/, "");
+    const path = (u: URL) => decodeURI(u.pathname).replace(/\/+$/, "").toLowerCase();
+    return host(x) === host(y) && path(x) === path(y);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Extract product identity and an image from a product page's HTML. Pure; exported for tests.
+ *
+ * `recordedLink` is the purchase link stored on the garment. The page counts as the garment's recorded
+ * purchase page only when `pageUrl` (where the fetch ENDED) is that same document: a link that now
+ * redirects to a collection page, a search page or another product is just some page on the web.
+ * A page without a structured Product block yields nothing: a site banner in an Open Graph tag is not a
+ * product photograph.
+ */
+export function extractProductPage(html: string, pageUrl: string, retrievedAt: string, recordedLink: string = pageUrl): DiscoveryCandidatePage | null {
   const products: Record<string, unknown>[] = [];
   const scripts = html.matchAll(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi);
   let seen = 0;
@@ -59,7 +79,8 @@ export function extractProductPage(html: string, pageUrl: string, retrievedAt: s
     }
   }
   const product = products[0] ?? null;
-  const rawImage = (product ? firstImage(product.image) : null) ?? metaContent(html, "og:image");
+  if (!product) return null;
+  const rawImage = firstImage(product.image) ?? metaContent(html, "og:image");
   if (!rawImage) return null;
   let imageUrl: string;
   try {
@@ -69,12 +90,13 @@ export function extractProductPage(html: string, pageUrl: string, retrievedAt: s
   }
   const brand = product?.brand;
   const codes = [text(product?.sku, 80), text(product?.mpn, 80), text(product?.productID, 80)].filter((c): c is string => !!c);
+  const stillTheRecordedPage = sameDocument(pageUrl, recordedLink);
   return {
     pageUrl,
     imageUrl,
     title: text(product?.name) ?? metaContent(html, "og:title")?.slice(0, 300) ?? null,
-    sourceClass: "purchase_source",
-    recordedPurchaseLink: true,
+    sourceClass: stillTheRecordedPage ? "purchase_source" : "other",
+    recordedPurchaseLink: stillTheRecordedPage,
     identifiers: {
       productCodes: codes,
       maker: text(typeof brand === "object" && brand !== null ? (brand as { name?: unknown }).name : brand, 120),
@@ -85,7 +107,7 @@ export function extractProductPage(html: string, pageUrl: string, retrievedAt: s
   };
 }
 
-export function createPurchaseLinkProvider(opts: { fetchImpl?: typeof fetch; now?: () => number } = {}): DiscoveryProvider {
+export function createPurchaseLinkProvider(opts: { fetchImpl?: typeof fetch; now?: () => number; resolver?: HostResolver | null } = {}): DiscoveryProvider {
   return {
     name: "recorded-purchase-link",
     strategies: ["purchase_source"],
@@ -93,10 +115,10 @@ export function createPurchaseLinkProvider(opts: { fetchImpl?: typeof fetch; now
     async search(query) {
       const link = query.garment.purchaseLink;
       if (!link) return { pages: [], browserSessions: 0, browserSeconds: 0 };
-      const page = await safeFetch(link, { maxBytes: 2 * 1024 * 1024, accept: "text/html,application/xhtml+xml", fetchImpl: opts.fetchImpl });
+      const page = await safeFetch(link, { maxBytes: 2 * 1024 * 1024, accept: "text/html,application/xhtml+xml", contentTypes: /^(text\/html|application\/xhtml\+xml)$/, fetchImpl: opts.fetchImpl, ...(opts.resolver !== undefined ? { resolver: opts.resolver } : {}) });
       if (!page.ok) return { pages: [], browserSessions: 0, browserSeconds: 0, error: `the recorded purchase link could not be read: ${page.reason}` };
       const html = new TextDecoder("utf-8", { fatal: false, ignoreBOM: false }).decode(page.bytes);
-      const candidate = extractProductPage(html, page.finalUrl, new Date((opts.now ?? Date.now)()).toISOString().replace(/\.\d{3}Z$/, "Z"));
+      const candidate = extractProductPage(html, page.finalUrl, new Date((opts.now ?? Date.now)()).toISOString().replace(/\.\d{3}Z$/, "Z"), link);
       return { pages: candidate ? [candidate] : [], browserSessions: 0, browserSeconds: 0 };
     },
   };
