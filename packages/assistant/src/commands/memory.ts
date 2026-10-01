@@ -89,6 +89,7 @@ const PENDING_STORES: Record<string, string[]> = {
 };
 
 const FORGOTTEN = "[forgotten at the owner's request]";
+const LEDGER_HELD = "the receipts and queued effects of the commands that message's turn issued are kept by the command ledger; their request payloads and the records they wrote have been scrubbed";
 
 async function scrubCommandPayload(ctx: CommandContext, commandId: string | null): Promise<Stmt[]> {
   if (!commandId) return [];
@@ -118,14 +119,44 @@ export const conversationForgetSource = define({
     }
     if (fresh.length === 0) return { outcome: "noop", summary: "Those were already forgotten", result: { sourceIds: ids, newlyForgotten: [] }, undo: NO_UNDO("nothing changed") };
 
-    const pending = PENDING_STORES[p.sourceKind] ?? [];
+    const pending = [...(PENDING_STORES[p.sourceKind] ?? [])];
     let invalidatedSummaries = 0;
     let derivedMemories = 0;
+    let ledgerHeldAny = false;
     for (const id of fresh) {
+      // Copies of a message's text that the ledger's own tables hold: the turn record, its event stream,
+      // and the free text of records the turn's commands wrote.
+      let ledgerHeld = false;
+      if (p.sourceKind === "message") {
+        const turns = await all<{ turn_id: string; user_message_id: string; receipts_json: string }>(ctx.db, "SELECT turn_id, user_message_id, receipts_json FROM assistant_turns WHERE user_id = ? AND (user_message_id = ? OR reply_message_id = ?)", ctx.userId, id, id);
+        for (const t of turns) {
+          const receipts = json<{ commandId: string; type: string; outcome: string; undoAvailable: boolean }[]>(t.receipts_json, []);
+          const kept = receipts.map((r) => ({ commandId: r.commandId, type: r.type, outcome: r.outcome, summary: FORGOTTEN, undoAvailable: r.undoAvailable }));
+          statements.push(stmt("UPDATE assistant_turns SET reply_text = ?, clarification_json = NULL, proposals_json = '[]', refusals_json = '[]', result_json = NULL, failure_json = NULL, receipts_json = ?, updated_at = ? WHERE user_id = ? AND turn_id = ?", FORGOTTEN, JSON.stringify(kept), ctx.now, ctx.userId, t.turn_id));
+          statements.push(stmt("DELETE FROM assistant_turn_events WHERE user_id = ? AND turn_id = ?", ctx.userId, t.turn_id));
+          if (t.user_message_id !== id) continue;
+          // What the turn's own commands wrote from the owner's words goes with the message.
+          for (const r of receipts) {
+            if (r.commandId === ctx.commandId) continue;
+            ledgerHeld = true;
+            statements.push(...(await scrubCommandPayload(ctx, r.commandId)));
+            statements.push(stmt("UPDATE comfort_feedback SET status = 'forgotten', text = ?, activity = NULL, conditions_json = '{}', scope = NULL WHERE user_id = ? AND command_id = ?", FORGOTTEN, ctx.userId, r.commandId));
+            statements.push(stmt("UPDATE research_notes SET status = 'forgotten', topic = ?, body = ?, claims_json = '[]', version = version + 1, updated_at = ? WHERE user_id = ? AND command_id = ?", FORGOTTEN, FORGOTTEN, ctx.now, ctx.userId, r.commandId));
+            const reminders = await all<{ reminder_id: string }>(ctx.db, "SELECT reminder_id FROM reminders WHERE user_id = ? AND command_id = ?", ctx.userId, r.commandId);
+            for (const rem of reminders) {
+              statements.push(stmt("UPDATE reminders SET status = 'cancelled', title = ?, note = NULL, url = NULL, version = version + 1, updated_at = ? WHERE user_id = ? AND reminder_id = ?", FORGOTTEN, ctx.now, ctx.userId, rem.reminder_id));
+              statements.push(stmt("UPDATE effects SET state = 'cancelled', updated_at = ? WHERE user_id = ? AND target_key = ? AND kind IN ('notification.reminder', 'calendar.project_reminder') AND state = 'pending'", ctx.now, ctx.userId, `reminder:${rem.reminder_id}`));
+            }
+          }
+        }
+      }
+      ledgerHeldAny ||= ledgerHeld;
+      // The ledger is reported erased only when nothing of the text is left in it. Receipts and effect
+      // payloads of the turn's commands belong to the foundation's tables and are not scrubbed here.
       statements.push(
         stmt(
-          "INSERT INTO source_tombstones (user_id, source_kind, source_id, reason, requested_at, erased_stores_json, pending_stores_json, state, command_id) VALUES (?, ?, ?, ?, ?, ?, ?, 'suppressed', ?)",
-          ctx.userId, p.sourceKind, id, p.reason, ctx.now, JSON.stringify(["retrieval_index", "ledger"]), JSON.stringify(pending), ctx.commandId,
+          "INSERT INTO source_tombstones (user_id, source_kind, source_id, reason, requested_at, erased_stores_json, pending_stores_json, outstanding_retention, state, command_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'suppressed', ?)",
+          ctx.userId, p.sourceKind, id, p.reason, ctx.now, JSON.stringify(ledgerHeld ? ["retrieval_index"] : ["retrieval_index", "ledger"]), JSON.stringify(ledgerHeld ? [...pending, "ledger"] : pending), ledgerHeld ? LEDGER_HELD : null, ctx.commandId,
         ),
       );
       if (p.sourceKind === "message") {
@@ -161,6 +192,7 @@ export const conversationForgetSource = define({
         statements.push(...(await scrubCommandPayload(ctx, row.command_id)));
       }
     }
+    if (ledgerHeldAny) pending.push("ledger");
     const pendingText = pending.length > 0 ? ` Hidden everywhere now; physical removal from ${pending.join(", ").replace(/_/g, " ")} is still in progress` : " Removed";
     return {
       summary: `Forgotten: ${plural(fresh.length, p.sourceKind.replace(/_/g, " "))}.${pendingText}${derivedMemories ? `. ${plural(derivedMemories, "remembered conclusion")} drawn from them went too` : ""}${invalidatedSummaries ? `. ${plural(invalidatedSummaries, "summary", "summaries")} will be rebuilt without them` : ""}`,
@@ -171,7 +203,7 @@ export const conversationForgetSource = define({
         ...(p.sourceKind === "message" ? fresh.map((id) => ({ topic: "conversation.erase", entityKind: "message", entityId: id, revision: 0 })) : []),
         ...(invalidatedSummaries > 0 ? [{ topic: "summary.regenerate", entityKind: "conversation", entityId: ctx.userId, revision: 0 }] : []),
       ],
-      result: { sourceKind: p.sourceKind, newlyForgotten: fresh, erasedStores: ["retrieval_index", "ledger"], pendingStores: pending, invalidatedSummaries, derivedMemories },
+      result: { sourceKind: p.sourceKind, newlyForgotten: fresh, erasedStores: ledgerHeldAny ? ["retrieval_index"] : ["retrieval_index", "ledger"], pendingStores: pending, invalidatedSummaries, derivedMemories },
       // Forgetting is deliberately irreversible: an undo would have to resurrect the removed text.
       undo: NO_UNDO("forgetting cannot be undone"),
     };
@@ -189,7 +221,7 @@ export const conversationConfirmErasure = define({
     const statements: Stmt[] = [];
     let done = 0;
     for (const id of [...new Set(p.sourceIds)]) {
-      const row = await first<{ erased_stores_json: string; pending_stores_json: string }>(ctx.db, "SELECT erased_stores_json, pending_stores_json FROM source_tombstones WHERE user_id = ? AND source_kind = ? AND source_id = ?", ctx.userId, p.sourceKind, id);
+      const row = await first<{ erased_stores_json: string; pending_stores_json: string; outstanding_retention: string | null }>(ctx.db, "SELECT erased_stores_json, pending_stores_json, outstanding_retention FROM source_tombstones WHERE user_id = ? AND source_kind = ? AND source_id = ?", ctx.userId, p.sourceKind, id);
       if (!row) throw new CommandError("not_found", `'${id}' was never forgotten; nothing was written`);
       const erased = new Set(json<string[]>(row.erased_stores_json, []));
       const pending = json<string[]>(row.pending_stores_json, []).filter((s) => s !== p.store);
@@ -198,7 +230,7 @@ export const conversationConfirmErasure = define({
       const state = pending.length === 0 ? "erased" : "suppressed";
       if (state === "erased") done++;
       statements.push(
-        stmt("UPDATE source_tombstones SET erased_stores_json = ?, pending_stores_json = ?, outstanding_retention = ?, state = ? WHERE user_id = ? AND source_kind = ? AND source_id = ?", JSON.stringify([...erased]), JSON.stringify(pending), p.outstandingRetention, state, ctx.userId, p.sourceKind, id),
+        stmt("UPDATE source_tombstones SET erased_stores_json = ?, pending_stores_json = ?, outstanding_retention = ?, state = ? WHERE user_id = ? AND source_kind = ? AND source_id = ?", JSON.stringify([...erased]), JSON.stringify(pending), p.outstandingRetention ?? (pending.length > 0 && !(p.store === "ai_search" && row.outstanding_retention !== LEDGER_HELD) ? row.outstanding_retention : null), state, ctx.userId, p.sourceKind, id),
       );
     }
     return {

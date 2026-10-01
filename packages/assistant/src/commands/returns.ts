@@ -1,6 +1,6 @@
 import { ASSISTANT_COMMANDS as C, type ReturnTerms } from "@garderobe/contracts/ext/assistant";
 import { CommandError, addDays, define, endOfLocalDateMs, first, json, stmt, toInstant, type CommandContext, type PlannedEffect, type Stmt } from "@garderobe/domain";
-import { NO_UNDO, assistantSettings, money, newEffects, requireGarments } from "./common.ts";
+import { NO_UNDO, assistantSettings, money, newEffects, requireGarments, named } from "./common.ts";
 
 export interface DeadlineResult {
   status: "established" | "unresolved";
@@ -104,7 +104,7 @@ export const returnOpenCase = define({
     const label = await subjectLabel(ctx, garmentId, p.orderId, p.lineId);
     const effects = await newEffects(ctx, reminderEffects(ctx, caseId, deadline, label));
     return {
-      summary: `${p.kind === "exchange" ? "Exchange" : "Return"} opened for ${label}. ${describeDeadline(deadline)}. It stays in your wardrobe until it physically leaves`,
+      summary: `${p.kind === "exchange" ? "Exchange" : "Return"} opened for ${named(label)}. ${describeDeadline(deadline)}. It stays in your wardrobe until it physically leaves`,
       statements: [
         stmt(
           `INSERT INTO return_cases (user_id, case_id, version, kind, state, order_id, line_id, garment_id, quantity, terms_json, trigger_date, deadline_status, deadline_at, deadline_local_date, deadline_timezone, deadline_concerns, deadline_reason,
@@ -206,7 +206,7 @@ export const returnUpdateCase = define({
     }
     const effects = finished ? [] : await newEffects(ctx, reminderEffects(ctx, p.caseId, deadline, label));
     return {
-      summary: `${label}: ${parts.join(". ")}.${stockNote}`,
+      summary: `${named(label)}: ${parts.join(". ")}.${stockNote}`,
       statements,
       preconditions: [{ label: `return ${p.caseId} unchanged since read`, sql: "(SELECT version FROM return_cases WHERE user_id = ? AND case_id = ?) = ?", params: [ctx.userId, p.caseId, row.version], class: "internal" }],
       affected: [{ kind: "return_case", id: p.caseId, version: row.version + 1 }],
@@ -237,7 +237,7 @@ export const returnLinkExchange = define({
       statements.push(stmt("UPDATE order_lines SET replaces_order_id = ?, replaces_line_id = ? WHERE user_id = ? AND order_id = ? AND line_id = ?", row.order_id, row.line_id, ctx.userId, p.incomingOrderId, p.incomingLineId));
     }
     return {
-      summary: `Exchange linked: ${line.product_name}${line.size ? ` (${line.size})` : ""} is the incoming replacement. It counts as owned only once it arrives, and the outgoing piece until it leaves`,
+      summary: `Exchange linked: ${named(line.product_name)}${line.size ? ` (${line.size})` : ""} is the incoming replacement. It counts as owned only once it arrives, and the outgoing piece until it leaves`,
       statements,
       affected: [{ kind: "return_case", id: p.caseId, version: row.version + 1 }],
       result: { caseId: p.caseId, incomingOrderId: p.incomingOrderId, incomingLineId: p.incomingLineId },

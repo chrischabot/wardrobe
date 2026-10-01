@@ -48,6 +48,8 @@ export function ownerAuthoredText(raw: string): string {
     .join("\n");
   // Long quoted passages (the owner relaying what something else says).
   text = text.replace(/"[^"\n]{60,}"|\u201C[^\u201D\n]{60,}\u201D/g, " ");
+  // Any quotation of three or more words is something being quoted, not the owner speaking.
+  text = text.replace(/"([^"\n]+)"|\u201C([^\u201D\n]+)\u201D/g, (whole, a?: string, b?: string) => ((a ?? b ?? "").trim().split(/\s+/).length >= 3 ? " " : whole));
   return text;
 }
 
@@ -58,7 +60,7 @@ function sentences(text: string): string[] {
     .filter(Boolean);
 }
 
-const HYPOTHETICAL = /\b(pretend|imagine|hypothetical(?:ly)?|suppose|supposing|as if|let's say|lets say|what if|assume|assuming|role-?play|for the sake of|in theory|theoretically)\b/;
+const HYPOTHETICAL = /\b(pretend|imagine|hypothetical(?:ly)?|suppose|supposing|as if|let's say|lets say|what if|assume|assuming|role-?play|for the sake of|in theory|theoretically|let's play|lets play|play a game|a game|make believe|in a story|fiction(?:al)?)\b/;
 const CONDITIONAL_START = /^(if|when|once|unless|until|should|would|could|can|may|might|maybe|perhaps|do|does|did|is|are|am|was|were|will|shall|have|has)\b/;
 
 /** A question, a hypothetical or a conditional is not a statement of fact or an instruction. */
@@ -91,6 +93,8 @@ export interface OwnerStatementInput {
   /** Raw owner text of the current turn and of the most recent earlier owner turns, newest first. */
   ownerTexts: string[];
   level: AuthorityLevel;
+  /** The owner's own question is enough (for reads the owner asks for, such as a mailbox search); a hypothetical still is not. */
+  allowQuestion?: boolean;
 }
 
 /** Verify that `quote` is the owner's own statement. */
@@ -101,10 +105,15 @@ export function verifyOwnerStatement(input: OwnerStatementInput): AuthorityCheck
   if (input.level === "sensitive" && words < 3) return { ok: false, code: "quote_too_short", message: "that is too little to rest this change on; quote the owner's full statement" };
   for (const raw of input.ownerTexts) {
     const authored = ownerAuthoredText(raw);
+    // A hypothetical, a game or a role-play anywhere in the message frames everything in it: nothing
+    // that changes the profile, the rules or the wardrobe's contents rests on such a message.
+    if (input.level === "sensitive" && normalize(authored).includes(quote) && sentences(authored).some((x) => HYPOTHETICAL.test(normalize(x)))) {
+      return { ok: false, code: "not_a_statement", message: "the owner's message sets up a hypothetical or a game; that does not change anything. Ask the owner to say it plainly" };
+    }
     for (const sentence of sentences(authored)) {
       const n = normalize(sentence);
       if (!n.includes(quote)) continue;
-      if (input.level === "sensitive" ? !isStatement(sentence) : !isRequestOrStatement(sentence)) {
+      if (input.allowQuestion ? HYPOTHETICAL.test(n) : input.level === "sensitive" ? !isStatement(sentence) : !isRequestOrStatement(sentence)) {
         return { ok: false, code: "not_a_statement", message: "the owner asked a question or described a hypothetical; that does not change anything. Answer it, or ask the owner to say so plainly" };
       }
       return { ok: true, sentence };
@@ -124,7 +133,7 @@ export function verifyOwnerStatement(input: OwnerStatementInput): AuthorityCheck
 
 /** What the owner must actually have said before a restriction of each kind can be lifted. */
 const RESOLUTION_TERMS: Record<string, RegExp> = {
-  healing: /\b(heal(?:ed|ing)?|recover(?:ed|y)?|better|fine|cleared|all clear|back to normal|no longer (?:hurt|sore|injured)|can wear)\b/,
+  healing: /\b(heal(?:ed)?|recover(?:ed)?|better|fine|cleared|all clear|back to normal|can wear)\b/,
   tailor: /\b(back|returned|collected|picked up|got (?:it|them) back|home)\b/,
   storage: /\b(out of storage|back|retrieved|brought (?:it|them) (?:out|back)|unpacked|home)\b/,
   trip: /\b(back|home|returned|unpacked)\b/,
@@ -133,22 +142,57 @@ const RESOLUTION_TERMS: Record<string, RegExp> = {
   occasional_use: /\b(everyday|regular(?:ly)?|normal(?:ly)?|any ?time|no longer occasional)\b/,
   other: /\b(lift|remove|end|over|done|resolved|no longer|finished|cancel)\b/,
 };
+/** Words that name the restricted condition, by kind, in addition to the words of the restriction's own reason. */
+const KIND_SUBJECT: Record<string, string[]> = {
+  healing: ["feet", "foot", "toe", "toes", "heel", "heels", "ankle", "ankles", "nerve", "nerves", "injury", "blister", "blisters"],
+  tailor: ["tailor", "alteration", "alterations"],
+  storage: ["storage"],
+  trip: ["trip", "travel", "suitcase"],
+  for_sale: ["sale", "selling", "listing", "sell"],
+  return_pending: ["return", "returning"],
+};
+const SUBJECT_STOP = new Set("only until says owner said play previously damage small large have been from with that this they them their there here then than when once will would could should about into over under more most some each every also just very out are was were has had his her its our your and the for not but".split(" "));
 const EXPLICIT_LIFT = /\b(lift|remove|end|drop|cancel|clear)\b.{0,40}\b(restriction|rule|ban|limit|constraint)\b|\b(restriction|rule|ban|limit|constraint)\b.{0,40}\b(is over|is done|no longer applies|can go|lifted)\b/;
-const NEGATED = /\b(not|n't|never|no longer|hasn't|haven't|isn't|aren't|still)\b.{0,24}\b(heal(?:ed|ing)?|recover(?:ed)?|better|fine|back|returned|cleared)\b|\bstill\b.{0,30}\b(hurt|sore|healing|injured|away|at the tailor)\b/;
+/** The owner relaying what someone or something else says. */
+const REPORTED = /\b(says?|said|saying|wrote|writes|written|according to|claims?|claimed|reads?|told|tells|heard|apparently|reportedly|supposedly|leaflet|letter|email|article|website|page|message from)\b/;
+/** Doubt, a wish, a condition, a request for news or a future: not a statement that the condition has ended. */
+const UNCERTAIN = /\b(can't wait|cannot wait|doubt|doubtful|hope|hoping|hopefully|wish|wishing|until|till|when|whenever|once|if|whether|unless|tell me|let me know|remind me|far from|nowhere near|not yet|nearly|almost|soon|maybe|perhaps|probably|possibly|think|guess|wonder|wondering|waiting|look(?:ing)? forward|expect|expecting|unsure|not sure|should be|ought to|about to|going to|someday|eventually)\b|\b(will|would|should|could|might|may|shall)\b.{0,40}\b(heal|healed|recover|recovered|better|fine|back|returned|cleared|over|done)\b/;
+const NO_LONGER_BAD = /\bno longer (?:hurts?|hurting|sore|painful|injured|aches?|aching|restricted|a problem|an issue|bothers? me|bothering me|swollen|numb)\b|\b(?:don't|do not|doesn't|does not) hurt(?: any ?more| any longer)?\b/g;
+const NEGATION = /\b(not|never|no|hardly|barely|still|yet|neither|nor)\b|n't\b/;
+
+function subjectWords(kind: string, subject: string | undefined): string[] {
+  const fromReason = (subject ?? "")
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((t) => t.length >= 4 && !SUBJECT_STOP.has(t));
+  const terms = RESOLUTION_TERMS[kind] ?? RESOLUTION_TERMS["other"]!;
+  return [...new Set([...fromReason.filter((t) => !terms.test(t)), ...(KIND_SUBJECT[kind] ?? [])])];
+}
 
 /**
- * Lifting a restriction needs more than any owner sentence: the owner's own statement must actually
- * say that the condition ended (or explicitly lift the restriction). "Hi" or "what should I wear"
- * cannot be turned into a recovery statement by anything else in the context.
+ * Lifting a restriction needs the owner's own plain statement that ITS condition has ended (or an explicit
+ * request to lift it). The sentence must be about the restricted condition - "that looks fine to me" or
+ * "the weather is fine" is about something else - and it must be a statement of fact: doubt, a wish, a
+ * future, a request to be told, a negation, something the owner is relaying or quoting, and anything
+ * inside a message that sets up a hypothetical or a game are all refused. When in doubt the restriction
+ * stays and the assistant asks.
  */
-export function verifyRestrictionLift(input: { quote: string | undefined | null; ownerTexts: string[]; restrictionKind: string }): AuthorityCheck {
+export function verifyRestrictionLift(input: { quote: string | undefined | null; ownerTexts: string[]; restrictionKind: string; /** The restriction's own reason and the names of the pieces it covers. */ subject?: string }): AuthorityCheck {
   const base = verifyOwnerStatement({ quote: input.quote, ownerTexts: input.ownerTexts, level: "sensitive" });
   if (!base.ok) return base;
   const sentence = normalize(base.sentence ?? input.quote ?? "");
-  if (NEGATED.test(sentence)) return { ok: false, code: "not_about_this", message: "the owner said the condition has NOT ended; the restriction stays" };
+  const stays = (message: string): AuthorityCheck => ({ ok: false, code: "not_about_this", message });
+  if (REPORTED.test(sentence)) return stays("the owner is relaying what someone or something else says; the restriction ends only on the owner's own plain statement. Ask the owner to confirm");
+  if (UNCERTAIN.test(sentence)) return stays("the owner did not state that the condition has ended (a wish, a doubt, a condition or a future is not that); the restriction stays");
+  const positive = sentence.replace(NO_LONGER_BAD, " healed ");
+  if (NEGATION.test(positive)) return stays("the owner said the condition has NOT ended, or was not definite; the restriction stays");
+  if (EXPLICIT_LIFT.test(sentence)) return base;
   const terms = RESOLUTION_TERMS[input.restrictionKind] ?? RESOLUTION_TERMS["other"]!;
-  if (!terms.test(sentence) && !EXPLICIT_LIFT.test(sentence)) {
-    return { ok: false, code: "not_about_this", message: "the owner's statement does not say this restriction has ended; it stays in force until the owner says so" };
+  if (!terms.test(positive)) return stays("the owner's statement does not say this restriction has ended; it stays in force until the owner says so");
+  if (input.subject !== undefined) {
+    const words = positive.split(/[^\p{L}\p{N}]+/u);
+    const about = subjectWords(input.restrictionKind, input.subject).some((w) => words.includes(w) || words.includes(`${w}s`));
+    if (!about) return stays("the owner's sentence is not about the condition this restriction waits on; it stays in force. Ask the owner whether the condition has ended");
   }
   return base;
 }

@@ -33,6 +33,13 @@ const CATEGORY_DEFAULTS: Record<string, { roles: string[]; careChannel: "service
   other: { roles: ["accessory"], careChannel: "none" },
 };
 
+/** Parameters a model may pass to a background job, per kind. Everything else is dropped. */
+const BACKGROUND_PARAMS: Record<string, string[]> = {
+  product_investigation: ["url", "productId", "note"],
+  historical_research: ["topic", "note"],
+  other: ["note"],
+};
+
 const committed = (r: CommitResult): r is Extract<CommitResult, { status: "committed" }> => r.status === "committed";
 
 export function buildWriteTools(rt: TurnRuntime): ToolSet {
@@ -70,7 +77,7 @@ export function buildWriteTools(rt: TurnRuntime): ToolSet {
         const received = await commit(rt, { tool: "report_arrival", type: "garment.receive", payload: { garmentId: i.garmentId }, targets: [i.garmentId], authority: routine(i.ownerQuote), proposalSummary: `record the arrival of ${i.garmentId}` });
         if (!committed(received)) return forModel(received);
         const line = await first<{ order_id: string; line_id: string }>(rt.db, "SELECT order_id, line_id FROM order_lines WHERE user_id = ? AND garment_id = ? AND state IN ('ordered', 'dispatched')", rt.principal.userId, i.garmentId);
-        const delivered = line ? await commit(rt, { tool: "report_arrival", type: "purchase.mark_delivered", payload: { orderId: line.order_id, lineId: line.line_id, deliveredOn: rt.localDate }, targets: [line.order_id, line.line_id], authority: routine(i.ownerQuote), proposalSummary: "mark the order line delivered" }) : null;
+        const delivered = line ? await commit(rt, { tool: "report_arrival", type: "purchase.mark_delivered", payload: { orderId: line.order_id, lineId: line.line_id, deliveredOn: rt.localDate }, targets: [line.order_id, line.line_id], authority: routine(i.ownerQuote), followsVerified: true, proposalSummary: "mark the order line delivered" }) : null;
         return { ...forModel(received), order: delivered ? forModel(delivered) : null };
       },
     }),
@@ -124,7 +131,10 @@ export function buildWriteTools(rt: TurnRuntime): ToolSet {
           await rt.onRefusal({ tool: "resolve_restriction", code: "not_found", message: "no active restriction with that ID" });
           return { status: "refused", code: "not_found", message: "Nothing was changed. There is no active restriction with that ID." };
         }
-        const authority = { level: "lift_restriction" as const, ownerQuote: i.ownerQuote, restrictionKind: restriction.kind };
+        // What the restriction is about: its own reason and the pieces it names. The owner's sentence must be about that.
+        const scoped = ((restriction.scope as { garmentIds?: string[] }).garmentIds ?? []).slice(0, 20);
+        const names = scoped.length > 0 ? (await all<{ name: string }>(rt.db, `SELECT name FROM garments WHERE user_id = ? AND garment_id IN (${scoped.map(() => "?").join(",")})`, rt.principal.userId, ...scoped)).map((g) => g.name) : [];
+        const authority = { level: "lift_restriction" as const, ownerQuote: i.ownerQuote, restrictionKind: restriction.kind, subject: [restriction.reason, ...names].join(" ") };
         const check = checkAuthority(rt, authority);
         const lifted = await commit(rt, { tool: "resolve_restriction", type: "restriction.resolve", payload: { restrictionId: i.restrictionId, evidence: src(), note: null }, targets: [i.restrictionId], authority, proposalSummary: `lift the restriction "${restriction.reason}"` });
         if (!committed(lifted) || lifted.outcome === "noop") return forModel(lifted);
@@ -132,7 +142,7 @@ export function buildWriteTools(rt: TurnRuntime): ToolSet {
         const amendment = await commit(rt, {
           tool: "resolve_restriction", type: "style.add_amendment", targets: [i.restrictionId],
           payload: { text: `On ${rt.localDate} the owner said: "${(check.sentence ?? i.ownerQuote).trim()}". The restriction "${restriction.reason}" (${restriction.kind}) has ended; profile passages describing it as current no longer apply.`, kind: "restriction", source: src() },
-          authority, proposalSummary: "note the ended restriction as a profile amendment",
+          authority, followsVerified: true, proposalSummary: "note the ended restriction as a profile amendment",
         });
         return { ...forModel(lifted), amendment: forModel(amendment) };
       },
@@ -205,14 +215,14 @@ export function buildWriteTools(rt: TurnRuntime): ToolSet {
           const garment = await commit(rt, {
             tool: "log_order", type: "garment.create", targets: [orderId, line.line_id], businessKey: `order-line:${orderId}:${line.line_id}:garment`,
             payload: { name: line.product_name, category: input.category, roles: d.roles, careChannel: d.careChannel, colour: line.colour, size: line.size, maker: i.merchant, acquisition: "incoming", quantity: line.quantity, source: { kind: "receipt", ref: i.sourceRef ?? `order:${orderId}` } },
-            authority: routine(i.ownerQuote), proposalSummary: "create the incoming record",
+            authority: routine(i.ownerQuote), followsVerified: true, proposalSummary: "create the incoming record",
           });
           if (!committed(garment)) {
             created.push(forModel(garment));
             continue;
           }
           const garmentId = String(garment.result["garmentId"]);
-          const link = await commit(rt, { tool: "log_order", type: "purchase.link_line", payload: { orderId, lineId: line.line_id, garmentId }, targets: [orderId, line.line_id, garmentId], businessKey: `order-line:${orderId}:${line.line_id}:link`, authority: routine(i.ownerQuote), proposalSummary: "link the order line" });
+          const link = await commit(rt, { tool: "log_order", type: "purchase.link_line", payload: { orderId, lineId: line.line_id, garmentId }, targets: [orderId, line.line_id, garmentId], businessKey: `order-line:${orderId}:${line.line_id}:link`, authority: routine(i.ownerQuote), followsVerified: true, proposalSummary: "link the order line" });
           created.push({ lineId: line.line_id, garmentId, incoming: forModel(garment), link: forModel(link) });
         }
         return { ...forModel(order), incomingRecords: created, note: "Ordered, not arrived. Do not treat these pieces as wearable." };
@@ -273,7 +283,7 @@ export function buildWriteTools(rt: TurnRuntime): ToolSet {
       execute: async (i) => {
         const project = await commit(rt, { tool: "open_project", type: "lifecycle.open_project", payload: { kind: i.kind, title: i.title, items: i.garmentIds.map((garmentId) => ({ garmentId })), destination: i.destination ?? null, nextAction: i.nextAction ?? null, details: i.details }, targets: i.garmentIds, authority: routine(i.ownerQuote), proposalSummary: `open the project "${i.title}"` });
         if (!committed(project) || !(i.kind === "sale" || i.kind === "consignment")) return forModel(project);
-        const hold = await commit(rt, { tool: "open_project", type: "restriction.add", payload: { kind: "for_sale", scope: { garmentIds: i.garmentIds }, reason: `For sale: ${i.title}`, source: src() }, targets: i.garmentIds, authority: routine(i.ownerQuote), proposalSummary: "exclude the pieces from recommendations while for sale" });
+        const hold = await commit(rt, { tool: "open_project", type: "restriction.add", payload: { kind: "for_sale", scope: { garmentIds: i.garmentIds }, reason: `For sale: ${i.title}`, source: src() }, targets: i.garmentIds, authority: routine(i.ownerQuote), followsVerified: true, proposalSummary: "exclude the pieces from recommendations while for sale" });
         return { ...forModel(project), forSaleHold: forModel(hold) };
       },
     }),
@@ -357,21 +367,43 @@ export function buildWriteTools(rt: TurnRuntime): ToolSet {
         })),
     }),
     start_background_work: tool({
-      description: "Start a long investigation (mailbox search for purchases, product or historical research, image backfill, sheet import) as a durable background job that reports here when it settles. Use for anything that would not finish in this turn.",
-      inputSchema: z.object({ kind: z.enum(["email_investigation", "product_investigation", "historical_research", "image_backfill", "sheet_import", "other"]), title: z.string().min(1), params: z.record(z.string(), z.unknown()).default({}) }),
-      execute: async (i) => forModel(await commit(rt, { tool: "start_background_work", type: "job.create", payload: { kind: i.kind, title: i.title, params: i.params }, targets: [i.kind, i.title], authority: { level: "record" }, proposalSummary: `start "${i.title}" in the background` })),
+      description: "Start a product or historical investigation as a durable background job that reports here when it settles. Mailbox searches use search_mailbox_for_purchases; image backfill and sheet imports are started by the owner in the app.",
+      inputSchema: z.object({ kind: z.enum(["product_investigation", "historical_research", "other"]), title: z.string().min(1).max(180), params: z.record(z.string(), z.unknown()).default({}) }),
+      execute: async (i) => {
+        // Only the parameters each kind is known to use, as short plain values. Nothing here can carry an
+        // authorization, name a connection or a mailbox, or select another kind of job.
+        const allowed = BACKGROUND_PARAMS[i.kind] ?? [];
+        const params: Record<string, string | number> = {};
+        for (const key of allowed) {
+          const v = i.params[key];
+          if (typeof v === "string" && v.length <= 500) params[key] = v;
+          else if (typeof v === "number" && Number.isFinite(v)) params[key] = v;
+        }
+        return forModel(await commit(rt, { tool: "start_background_work", type: "job.create", payload: { kind: i.kind, title: i.title, params }, targets: [i.kind, i.title], authority: { level: "record" }, proposalSummary: `start "${i.title}" in the background` }));
+      },
     }),
-
     search_mailbox_for_purchases: tool({
-      description: "\"What have I bought?\" over a period: start a mailbox investigation as a background job. It states the range it searched and whether that was complete. With logOrders false (a question) it only FINDS orders and keeps them as a draft. Set logOrders true only when the owner asked to log them (\"log the orders\"), with their words in ownerQuote.",
-      inputSchema: z.object({ from: DateStr, to: DateStr, merchants: z.array(z.string()).max(10).default([]), logOrders: z.boolean().default(false), ownerQuote: z.string().optional() }),
+      description: "\"What have I bought?\" over a period: start a mailbox investigation as a background job, because the OWNER asked about their purchases, orders or receipts in their own words (quote them in ownerQuote; a question counts). It states the range it searched and whether that was complete. With logOrders false it only FINDS orders and keeps them as a draft. Set logOrders true only when the owner asked to log them (\"log the orders\").",
+      inputSchema: z.object({ from: DateStr, to: DateStr, merchants: z.array(z.string().max(120)).max(10).default([]), logOrders: z.boolean().default(false), ownerQuote: Quote }),
       execute: async (i) => {
         const title = `Purchases ${i.from} to ${i.to}${i.logOrders ? " (log the orders)" : ""}`;
+        const authority = i.logOrders ? routine(i.ownerQuote) : ({ level: "asked", ownerQuote: i.ownerQuote } as const);
+        if (i.logOrders) {
+          // Logging what is found needs the owner's words to ask for logging, not only to mention purchases.
+          const check = checkAuthority(rt, authority);
+          if (check.ok && !/\b(log|add|record|save|import|track|enter)\b/i.test(check.sentence ?? "")) {
+            await rt.onRefusal({ tool: "search_mailbox_for_purchases", code: "not_what_the_owner_asked", message: "the owner asked about purchases but did not ask to log them" });
+            return { status: "refused", code: "not_what_the_owner_asked", message: "Nothing was changed. The owner did not ask to log the orders; search without logOrders, or ask them." };
+          }
+        }
+        // The job's identity and its authorization are fixed by trusted code and recorded with the turn;
+        // the job runner checks that record before it logs anything.
+        const jobId = `job_mail_${rt.turnId.replace(/^trn_/, "")}_${i.from.replace(/-/g, "")}_${i.to.replace(/-/g, "")}${i.logOrders ? "_log" : ""}`;
         return forModel(await commit(rt, {
           tool: "search_mailbox_for_purchases", type: "job.create", targets: ["email_investigation", i.from, i.to, String(i.logOrders)],
-          payload: { kind: "email_investigation", title, params: { from: i.from, to: i.to, merchants: i.merchants, importAuthorizedBy: i.logOrders ? `message:${rt.userMessageId}` : null } },
-          // Finding is bookkeeping for the owner's question; logging needs the owner's own words.
-          authority: i.logOrders ? routine(i.ownerQuote) : { level: "record" }, proposalSummary: `search the mailbox for purchases from ${i.from} to ${i.to}${i.logOrders ? " and log the orders" : ""}`,
+          payload: { jobId, kind: "email_investigation", title, params: { from: i.from, to: i.to, merchants: i.merchants, importAuthorizedBy: i.logOrders ? `turn:${rt.turnId}` : null } },
+          authority, ownerPresentOnly: true, grant: { jobId, logOrders: i.logOrders, messageId: rt.userMessageId },
+          proposalSummary: `search the mailbox for purchases from ${i.from} to ${i.to}${i.logOrders ? " and log the orders" : ""}`,
         }));
       },
     }),

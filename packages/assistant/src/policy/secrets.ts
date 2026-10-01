@@ -30,6 +30,16 @@ const PATTERNS: Pattern[] = [
     re: /\b(pass(?:word|code|phrase)?|pwd|secret|api[ _-]?key|access[ _-]?token|auth[ _-]?token|refresh[ _-]?token|client[ _-]?secret|recovery[ _-]?(?:code|key)|token)\b(\s*(?:is|=|:)\s*)(["']?)([^\s"',;]{4,})\3/gi,
     group: 4,
   },
+  // The same label followed directly by the value ("password hunter2secret") or after "is:" ("my password is: x").
+  {
+    name: "labelled_credential",
+    re: /\b(pass(?:word|code|phrase)|pwd|api[ _-]?key|access[ _-]?token|auth[ _-]?token|refresh[ _-]?token|client[ _-]?secret|recovery[ _-]?(?:code|key))\b(\s*(?:is\s*[:=]|[:=]\s*is|is|[:=])?\s*)(["']?)((?=[^\s"',;]*\d)[^\s"',;]{6,}|[^\s"',;]{10,})\3/gi,
+    group: 4,
+  },
+  // "login / password" pairs: "name / secret", "user: x pass: y", "x:y" after the word login or credentials.
+  { name: "login_pair", re: /\b(log[- ]?in|credentials?|username|user)\b(\s*(?:is|=|:)?\s*)([^\s/|,;]{2,})(\s*[/|]\s*)([^\s/|,;]{4,})/gi, group: 5 },
+  // A UUID-format or 32+ hexadecimal key near the word key, token or secret.
+  { name: "labelled_key", re: /\b(key|token|secret)\b([^\n]{0,24}?)\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32,})\b/gi, group: 3 },
   // Key-bearing URL parameters.
   { name: "url_credential", re: /([?&](?:api[_-]?key|apikey|key|token|access_token|auth|secret|signature|tavilyApiKey|exaApiKey)=)([^&\s#]+)/gi, group: 2 },
   { name: "url_userinfo", re: /(\bhttps?:\/\/)([^\s/:@]+:[^\s/@]+)@/gi, group: 2 },

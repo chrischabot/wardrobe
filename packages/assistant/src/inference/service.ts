@@ -51,7 +51,8 @@ export function classifyError(error: unknown): ErrorClass {
   return "unknown";
 }
 
-const FALLBACK_CLASSES: ErrorClass[] = ["transport", "timeout", "unknown"];
+/** Fallback happens only for a transport failure or a timeout (and, in generateStructured, invalid structured output). An error that is not understood is not retried elsewhere. */
+const FALLBACK_CLASSES: ErrorClass[] = ["transport", "timeout"];
 export const BREAKER_THRESHOLD = 3;
 /** Model calls one owner may have in flight at once. */
 export const MAX_OPEN_RESERVATIONS = 6;

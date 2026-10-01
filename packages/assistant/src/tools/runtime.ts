@@ -14,6 +14,7 @@
 import type { CommandReceipt } from "@garderobe/contracts";
 import { CommandError, isCommandError, registerActionIntent, type CommandService, type Db, type Principal } from "@garderobe/domain";
 import { verifyOwnerStatement, verifyRestrictionLift, type AuthorityCheck } from "../policy/authority.ts";
+import { verifyIntent } from "../policy/intent.ts";
 import type { CanonicalMessage } from "../recall/index.ts";
 import type { SearchIndexPort } from "../recall/ai-search.ts";
 import type { ExtractionRouter, SearchProvider } from "../research/index.ts";
@@ -60,12 +61,20 @@ export interface TurnRuntime {
   ports: AssistantPorts;
   /** Schema-validated product facts from page text, through the model service under this turn's identity. */
   extractProduct?: (page: { url: string; content: string }) => Promise<Record<string, unknown>>;
+  /**
+   * Addresses that may be retrieved in this turn (normalized with urlKey): those the owner supplied and
+   * those a search of this turn returned. A model cannot make the assistant fetch an address of its own
+   * composition, which could carry private data out in the path or query.
+   */
+  allowedUrls?: Set<string>;
   /** True once the owner stopped this turn: nothing further is dispatched. */
   isCancelled?: () => Promise<boolean>;
   /** One original conversation message by ID (text and bounded tool payloads). */
   readOriginal?: (messageId: string) => Promise<Record<string, unknown> | null>;
   /** Full-text search over the Think Session. */
   sessionSearch?: (query: string, limit: number) => Promise<{ messageId: string }[]>;
+  /** Record a verified owner authorization with the turn (trusted code only). */
+  onGrant?(grant: Record<string, unknown>): Promise<void> | void;
   onReceipt(receipt: CommandReceipt): Promise<void> | void;
   onRefusal(refusal: { tool: string; code: string; message: string }): Promise<void> | void;
   onProposal(proposal: { type: string; summary: string; payload: Record<string, unknown> }): Promise<void> | void;
@@ -76,12 +85,14 @@ export interface TurnRuntime {
 export type AuthorityRequirement =
   /** Bookkeeping the owner's question implies (saving research, a shopping candidate): no quote needed. */
   | { level: "record" }
+  /** A read the owner asked for in their own words (a question counts), such as searching their mailbox. */
+  | { level: "asked"; ownerQuote: string | undefined }
   /** An ordinary reversible request: the owner's words asking for it. */
   | { level: "routine"; ownerQuote: string | undefined }
   /** Creating garments, amending the profile or rules, external authorizations, forgetting. */
   | { level: "sensitive"; ownerQuote: string | undefined }
   /** Lifting a restriction: the owner must have said its condition ended. */
-  | { level: "lift_restriction"; ownerQuote: string | undefined; restrictionKind: string };
+  | { level: "lift_restriction"; ownerQuote: string | undefined; restrictionKind: string; subject: string };
 
 export interface CommitRequest {
   tool: string;
@@ -94,6 +105,16 @@ export interface CommitRequest {
   /** Durable business key for effects that are identified by a source occurrence rather than by the turn. */
   businessKey?: string;
   occurredAt?: string;
+  /**
+   * Set ONLY by tool code for a follow-up command whose content was built by trusted code from a command
+   * that was just verified in this same tool call (for example the incoming record of a verified order
+   * line). The quote is still verified; the action-intent match is not repeated.
+   */
+  followsVerified?: boolean;
+  /** Never executed on words relayed by a connected assistant (MCP): kept as a proposal for the owner to confirm in the app. */
+  ownerPresentOnly?: boolean;
+  /** Recorded with the turn when this command is authorized, for later checks by trusted code (never read from a model). */
+  grant?: Record<string, unknown>;
 }
 
 export type CommitResult =
@@ -103,7 +124,8 @@ export type CommitResult =
 
 export function checkAuthority(rt: Pick<TurnRuntime, "ownerTexts">, authority: AuthorityRequirement): AuthorityCheck {
   if (authority.level === "record") return { ok: true };
-  if (authority.level === "lift_restriction") return verifyRestrictionLift({ quote: authority.ownerQuote, ownerTexts: rt.ownerTexts, restrictionKind: authority.restrictionKind });
+  if (authority.level === "lift_restriction") return verifyRestrictionLift({ quote: authority.ownerQuote, ownerTexts: rt.ownerTexts, restrictionKind: authority.restrictionKind, subject: authority.subject });
+  if (authority.level === "asked") return verifyOwnerStatement({ quote: authority.ownerQuote, ownerTexts: rt.ownerTexts, level: "routine", allowQuestion: true });
   return verifyOwnerStatement({ quote: authority.ownerQuote, ownerTexts: rt.ownerTexts, level: authority.level });
 }
 
@@ -117,12 +139,28 @@ export async function commit(rt: TurnRuntime, req: CommitRequest): Promise<Commi
     await rt.onRefusal(refusal);
     return { status: "refused", code: "cancelled", message: "Nothing was changed. The owner stopped this turn." };
   }
+  // Words that arrive through a connected assistant (MCP) are relayed by another model: they are never
+  // enough for a change to the profile, the rules, the wardrobe's contents or a restriction. Such a
+  // request is kept as a proposal for the owner to confirm in the app.
+  if (rt.principal.channel === "mcp" && (req.authority.level === "sensitive" || req.authority.level === "lift_restriction" || req.ownerPresentOnly)) {
+    await rt.onProposal({ type: req.type, summary: req.proposalSummary, payload: req.payload });
+    return { status: "proposed", summary: `Not done: this needs the owner's confirmation in the Garderobe app. Proposed for the owner to confirm: ${req.proposalSummary}` };
+  }
   const check = checkAuthority(rt, req.authority);
   if (!check.ok) {
     const refusal = { tool: req.tool, code: check.code ?? "not_authorized", message: check.message ?? "not authorized" };
     await rt.onRefusal(refusal);
     return { status: "refused", code: refusal.code, message: `Nothing was changed. ${refusal.message}` };
   }
+  // The owner's sentence must ask for THIS action on THIS target (policy/intent.ts).
+  if (req.authority.level !== "record" && req.authority.level !== "lift_restriction" && !req.followsVerified) {
+    const intent = await verifyIntent({ db: rt.db, userId: rt.principal.userId, type: req.type, level: req.authority.level === "asked" ? "routine" : req.authority.level, sentence: check.sentence ?? "", ownerTexts: rt.ownerTexts, payload: req.payload, targets: req.targets, attachedRefs: rt.attachedRefs });
+    if (!intent.ok) {
+      await rt.onRefusal({ tool: req.tool, code: intent.code, message: intent.message });
+      return { status: "refused", code: intent.code, message: `Nothing was changed. ${intent.message}` };
+    }
+  }
+  if (req.grant && req.authority.level !== "record") await rt.onGrant?.({ tool: req.tool, type: req.type, level: req.authority.level, ...req.grant });
   try {
     let idempotencyKey: string;
     let actionId: string | undefined;
@@ -171,4 +209,24 @@ export function forModel(result: CommitResult): Record<string, unknown> {
 
 export function ownerSource(rt: TurnRuntime): { kind: "owner_statement"; ref: string } {
   return { kind: "owner_statement", ref: `message:${rt.userMessageId}` };
+}
+
+/** An address normalized for comparison: scheme, host, path and query; no fragment, no trailing slash. Null when it is not a valid https address. */
+export function urlKey(url: string): string | null {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "https:") return null;
+    u.hash = "";
+    return u.toString().replace(/\/$/, "");
+  } catch {
+    return null;
+  }
+}
+
+/** Why an address may not be retrieved in this turn, or null when it may. */
+export function retrievalRefusal(rt: Pick<TurnRuntime, "allowedUrls">, url: string): string | null {
+  const key = urlKey(url);
+  if (!key) return "that is not a public https address";
+  if (rt.allowedUrls && !rt.allowedUrls.has(key)) return "that address was not given by the owner and did not come from a search in this turn; only those are retrieved. Search first, or ask the owner for the link";
+  return null;
 }

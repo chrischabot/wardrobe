@@ -52,6 +52,33 @@ export interface McpToolResult {
   isError: boolean;
 }
 
+/** Read a response body up to a byte limit, stopping the download as soon as the limit is passed. */
+export async function readBounded(response: Response, maxBytes: number): Promise<string> {
+  const declared = Number(response.headers.get("content-length") ?? "0");
+  if (declared > maxBytes) throw new ConnectionError("too_large", "the service's answer exceeded the size limit");
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      throw new ConnectionError("too_large", "the service's answer exceeded the size limit");
+    }
+    chunks.push(value);
+  }
+  const all = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) {
+    all.set(c, at);
+    at += c.byteLength;
+  }
+  return new TextDecoder().decode(all);
+}
+
 export class McpHttpClient {
   private readonly endpoint: string;
   private sessionId: string | null = null;
@@ -89,8 +116,7 @@ export class McpHttpClient {
       if (response.status === 401 || response.status === 403) throw new ConnectionError("auth", "the service rejected the credential; the owner needs to reconnect");
       if (response.status === 429) throw new ConnectionError("rate_limited", "the service's rate limit was reached");
       if (!response.ok) throw new ConnectionError("transport", `the service answered ${response.status}`);
-      const body = await response.text();
-      if (body.length > MAX_MCP_RESPONSE_BYTES) throw new ConnectionError("too_large", "the service's answer exceeded the size limit");
+      const body = await readBounded(response, MAX_MCP_RESPONSE_BYTES);
       const payload = (response.headers.get("content-type") ?? "").includes("text/event-stream")
         ? body.split(/\r?\n/).filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim()).filter(Boolean).at(-1) ?? ""
         : body;
