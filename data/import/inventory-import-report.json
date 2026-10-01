@@ -1,0 +1,2782 @@
+{
+  "source": {
+    "name": "wardrobe_inventory_clean.csv",
+    "sha256": "ca9a5e06edbb2646ad91f102cb242a81b1776bd39e86e99300c0eb387254c946",
+    "bytes": 21800,
+    "title": "CHRIS — WARDROBE INVENTORY (clean master, May 2026)"
+  },
+  "profileSha256": "e15639d891f9a5264c7eff13d05a478bcb188745aea11323b2131db37f5cb198",
+  "importRunId": "imp_ca9a5e06edbb2646",
+  "totals": {
+    "physicalLines": 132,
+    "dataRows": 130,
+    "imported": 127,
+    "merged": 3,
+    "held": 0,
+    "notDataRows": 2,
+    "garments": 127,
+    "units": 144,
+    "byCategory": {
+      "footwear": {
+        "rows": 7,
+        "garments": 7,
+        "units": 7
+      },
+      "shirt": {
+        "rows": 43,
+        "garments": 43,
+        "units": 43
+      },
+      "trousers": {
+        "rows": 25,
+        "garments": 22,
+        "units": 25
+      },
+      "outerwear": {
+        "rows": 25,
+        "garments": 25,
+        "units": 25
+      },
+      "belt": {
+        "rows": 3,
+        "garments": 3,
+        "units": 3
+      },
+      "pocket_square": {
+        "rows": 1,
+        "garments": 1,
+        "units": 1
+      },
+      "scarf": {
+        "rows": 6,
+        "garments": 6,
+        "units": 6
+      },
+      "tie": {
+        "rows": 5,
+        "garments": 5,
+        "units": 5
+      },
+      "socks": {
+        "rows": 15,
+        "garments": 15,
+        "units": 29
+      }
+    },
+    "byPlanningPolicy": {
+      "normal": 113,
+      "excluded": 13,
+      "occasional": 1
+    }
+  },
+  "rows": [
+    {
+      "line": 1,
+      "disposition": "not_a_data_row",
+      "garmentId": null,
+      "garmentName": null,
+      "reason": "sheet title row"
+    },
+    {
+      "line": 2,
+      "disposition": "not_a_data_row",
+      "garmentId": null,
+      "garmentName": null,
+      "reason": "column header row"
+    },
+    {
+      "line": 3,
+      "disposition": "imported",
+      "garmentId": "gmt_a1cec1a08c0d07b696a9fffa",
+      "garmentName": "Drake's Clifford boot",
+      "reason": "imported as footwear, quantity 1, planning policy normal"
+    },
+    {
+      "line": 4,
+      "disposition": "imported",
+      "garmentId": "gmt_14bc4338d6760f6a13434b2f",
+      "garmentName": "NB 990v4 — grey",
+      "reason": "imported as footwear, quantity 1, planning policy normal"
+    },
+    {
+      "line": 5,
+      "disposition": "imported",
+      "garmentId": "gmt_0e6f1cd30a9171ab9c392df6",
+      "garmentName": "NB 990v4 — navy",
+      "reason": "imported as footwear, quantity 1, planning policy normal"
+    },
+    {
+      "line": 6,
+      "disposition": "imported",
+      "garmentId": "gmt_185ccf753d109848f21f7cec",
+      "garmentName": "NB 990v4 — olive/cream",
+      "reason": "imported as footwear, quantity 1, planning policy normal"
+    },
+    {
+      "line": 7,
+      "disposition": "imported",
+      "garmentId": "gmt_8dde46d29da812bd39afe097",
+      "garmentName": "Paraboot Michael Cerf",
+      "reason": "imported as footwear, quantity 1, planning policy normal"
+    },
+    {
+      "line": 8,
+      "disposition": "imported",
+      "garmentId": "gmt_a8fe5fe3a6c0754361249bf8",
+      "garmentName": "Paraboot Reims — noir (black)",
+      "reason": "imported as footwear, quantity 1, planning policy normal"
+    },
+    {
+      "line": 9,
+      "disposition": "imported",
+      "garmentId": "gmt_0a0dd120cdf5c327269267cd",
+      "garmentName": "Paraboot Reims — café/marron",
+      "reason": "imported as footwear, quantity 1, planning policy normal"
+    },
+    {
+      "line": 10,
+      "disposition": "imported",
+      "garmentId": "gmt_ec41eb7ad2e2ab344b0e03c3",
+      "garmentName": "Brushed wool — Subalpino navy",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 11,
+      "disposition": "imported",
+      "garmentId": "gmt_ba15935f12a0493186c376ad",
+      "garmentName": "California plaid",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 12,
+      "disposition": "imported",
+      "garmentId": "gmt_7df68c3c1e4e8d2b7f47146a",
+      "garmentName": "Clark oxford — beige",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 13,
+      "disposition": "imported",
+      "garmentId": "gmt_235a6bcf18a50f576d401d40",
+      "garmentName": "Clark oxford — evergreen",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 14,
+      "disposition": "imported",
+      "garmentId": "gmt_017629c751784b01b203111c",
+      "garmentName": "Cotton-linen oxford — Portuguese light blue",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 15,
+      "disposition": "imported",
+      "garmentId": "gmt_c82879124bb236deec454622",
+      "garmentName": "Cotton-linen oxford — blue stripe",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 16,
+      "disposition": "imported",
+      "garmentId": "gmt_65cb8a5be1d2e3105441e67e",
+      "garmentName": "Cotton-linen oxford — blue wide stripe",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 17,
+      "disposition": "imported",
+      "garmentId": "gmt_b04d8284c912ef85a956b977",
+      "garmentName": "Cotton-linen oxford — dark navy stripe",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 18,
+      "disposition": "imported",
+      "garmentId": "gmt_63d4e66bfe2720f8b36f0fc4",
+      "garmentName": "Cotton-linen plaid — Sedona",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 19,
+      "disposition": "imported",
+      "garmentId": "gmt_45d928c9831bc5eb71a701db",
+      "garmentName": "Cotton-linen twill — Canclini sunwashed",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 20,
+      "disposition": "imported",
+      "garmentId": "gmt_e3222d5de837b1abf7c9fc44",
+      "garmentName": "Flannel plaid — grey",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 21,
+      "disposition": "imported",
+      "garmentId": "gmt_5b39b0df7ecd757c62c9eb15",
+      "garmentName": "Flannel plaid — grey/slate/black ombre",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 22,
+      "disposition": "imported",
+      "garmentId": "gmt_bdf932437b10a10f4fbe9d90",
+      "garmentName": "Flannel plaid — rust+grey",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 23,
+      "disposition": "imported",
+      "garmentId": "gmt_68349d317265476f08c41de3",
+      "garmentName": "Heavy rustic linen — sage",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 24,
+      "disposition": "imported",
+      "garmentId": "gmt_b012557fb038061e8e8b3d3b",
+      "garmentName": "Heavy rustic linen — slate",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 25,
+      "disposition": "imported",
+      "garmentId": "gmt_2f05f7ff166b98fc374e1b32",
+      "garmentName": "ISTO denim shirt",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 26,
+      "disposition": "imported",
+      "garmentId": "gmt_510617672008a26fcabaac1f",
+      "garmentName": "Irish linen — olive",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 27,
+      "disposition": "imported",
+      "garmentId": "gmt_82a55e6a403a51f11e708ba7",
+      "garmentName": "Irish linen — slate blue",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 28,
+      "disposition": "imported",
+      "garmentId": "gmt_dd7fee1fea3bf2b5d11767c0",
+      "garmentName": "Irish linen — slate+navy plaid",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 29,
+      "disposition": "imported",
+      "garmentId": "gmt_3894b6a6295908d5e687af4f",
+      "garmentName": "Lightweight oxford — blue",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 30,
+      "disposition": "imported",
+      "garmentId": "gmt_0603478a3cfd7734b8992e8e",
+      "garmentName": "Lightweight oxford — blue stripe",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 31,
+      "disposition": "imported",
+      "garmentId": "gmt_47ac32e498579958f1e6fd43",
+      "garmentName": "Lightweight oxford — gold",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 32,
+      "disposition": "imported",
+      "garmentId": "gmt_00684bbf0f616eea8523f02c",
+      "garmentName": "Lightweight oxford — laurel",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 33,
+      "disposition": "imported",
+      "garmentId": "gmt_268e88702a3436a46fb768c4",
+      "garmentName": "Lightweight oxford — light blue",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 34,
+      "disposition": "imported",
+      "garmentId": "gmt_a0ce8c0c86dd5fe68be9e8e3",
+      "garmentName": "Lightweight oxford — light blue extra-wide stripe",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 35,
+      "disposition": "imported",
+      "garmentId": "gmt_9ed4407fc91ee8f7077f58c8",
+      "garmentName": "Lightweight oxford — light blue striped (thin)",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 36,
+      "disposition": "imported",
+      "garmentId": "gmt_6d8159dab0580a03058e1948",
+      "garmentName": "Lightweight oxford — light blue wide stripe",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 37,
+      "disposition": "imported",
+      "garmentId": "gmt_b1b76f448dd10945cd84a701",
+      "garmentName": "Lightweight oxford — moss",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 38,
+      "disposition": "imported",
+      "garmentId": "gmt_940fcd8eb24b8ecf930b6ab4",
+      "garmentName": "Lightweight oxford — off-white",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 39,
+      "disposition": "imported",
+      "garmentId": "gmt_41c2da80e7f41e5dc6a4340b",
+      "garmentName": "Lightweight oxford — pink",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 40,
+      "disposition": "imported",
+      "garmentId": "gmt_d6145187b1c0b2ced846f3cd",
+      "garmentName": "Lightweight oxford — red stripe",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 41,
+      "disposition": "imported",
+      "garmentId": "gmt_3273640d216a3f1d4b342905",
+      "garmentName": "Lightweight oxford — slate",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 42,
+      "disposition": "imported",
+      "garmentId": "gmt_33d7931e41e7526c95fa1d09",
+      "garmentName": "Lightweight oxford — yellow stripe",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 43,
+      "disposition": "imported",
+      "garmentId": "gmt_5882e20c9798352bbfe3f5a3",
+      "garmentName": "Pima oxford — charcoal",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 44,
+      "disposition": "imported",
+      "garmentId": "gmt_aeebf456b036c01074ad0d72",
+      "garmentName": "Pima oxford — fatigue",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 45,
+      "disposition": "imported",
+      "garmentId": "gmt_494538ee0e88e402d1549864",
+      "garmentName": "Pima oxford — light blue university stripe",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 46,
+      "disposition": "imported",
+      "garmentId": "gmt_a01d7f585213d7059b9a8322",
+      "garmentName": "Pima oxford — navy",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 47,
+      "disposition": "imported",
+      "garmentId": "gmt_16395c4a33f5e6de5d425a6a",
+      "garmentName": "Pima oxford — sage+red fancy stripe",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 48,
+      "disposition": "imported",
+      "garmentId": "gmt_2d22145b2318255c0a0f6f2d",
+      "garmentName": "Pima oxford — white",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 49,
+      "disposition": "imported",
+      "garmentId": "gmt_deea51c10edbf14a95eeadd1",
+      "garmentName": "Pima oxford — wine/burgundy",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 50,
+      "disposition": "imported",
+      "garmentId": "gmt_afcb45ebfd27d7d43ccec258",
+      "garmentName": "Selvedge twill — camel",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 51,
+      "disposition": "imported",
+      "garmentId": "gmt_743d72b25b68942b828176ee",
+      "garmentName": "Selvedge twill — navy",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 52,
+      "disposition": "imported",
+      "garmentId": "gmt_0648fa5012a97d3a0ee53b3d",
+      "garmentName": "Selvedge twill — olive",
+      "reason": "imported as shirt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 53,
+      "disposition": "imported",
+      "garmentId": "gmt_0bd82c642c7606199361d3d4",
+      "garmentName": "Akita slub 5-pocket — cream",
+      "reason": "imported as trousers, quantity 1, planning policy normal"
+    },
+    {
+      "line": 54,
+      "disposition": "imported",
+      "garmentId": "gmt_7333fee5bf3bc6e3415776f5",
+      "garmentName": "Akita slub 5-pocket — dried sage",
+      "reason": "imported as trousers, quantity 1, planning policy normal"
+    },
+    {
+      "line": 55,
+      "disposition": "imported",
+      "garmentId": "gmt_229b8965fd0dfd322ea8c6d6",
+      "garmentName": "Bergamo cotton-linen chino — bone white",
+      "reason": "imported as trousers, quantity 1, planning policy normal"
+    },
+    {
+      "line": 56,
+      "disposition": "imported",
+      "garmentId": "gmt_e90a84cb03d4c8e3f685f715",
+      "garmentName": "Bergamo cotton-linen chino — sand",
+      "reason": "imported as trousers, quantity 1, planning policy normal"
+    },
+    {
+      "line": 57,
+      "disposition": "imported",
+      "garmentId": "gmt_f96d0dbd5cba605d91e54490",
+      "garmentName": "Cord — beige",
+      "reason": "imported as trousers, quantity 1, planning policy normal"
+    },
+    {
+      "line": 58,
+      "disposition": "imported",
+      "garmentId": "gmt_ff24fdb7a0bce13b2d7e7963",
+      "garmentName": "Cord — navy",
+      "reason": "imported as trousers, quantity 1, planning policy normal"
+    },
+    {
+      "line": 59,
+      "disposition": "imported",
+      "garmentId": "gmt_74a7caf75d387b9358e1742e",
+      "garmentName": "Denim — light olive",
+      "reason": "imported as trousers, quantity 1, planning policy normal"
+    },
+    {
+      "line": 60,
+      "disposition": "imported",
+      "garmentId": "gmt_4bfef48b16446bbf7fa28bf1",
+      "garmentName": "Denim — white",
+      "reason": "imported as trousers, quantity 1, planning policy normal"
+    },
+    {
+      "line": 61,
+      "disposition": "imported",
+      "garmentId": "gmt_7a15e929c951abab832af60d",
+      "garmentName": "Di Sondrio beige chino",
+      "reason": "imported as trousers, quantity 1, planning policy normal"
+    },
+    {
+      "line": 62,
+      "disposition": "imported",
+      "garmentId": "gmt_58fb8730a65c17ad9bc80215",
+      "garmentName": "Di Sondrio faded navy lightweight",
+      "reason": "imported as trousers, quantity 2, planning policy normal (units from lines 62, 63)"
+    },
+    {
+      "line": 63,
+      "disposition": "merged",
+      "garmentId": "gmt_58fb8730a65c17ad9bc80215",
+      "garmentName": "Di Sondrio faded navy lightweight",
+      "reason": "interchangeable unit of \"Di Sondrio faded navy lightweight\" (same product, colour, fabric, size and status as line 62); merged as quantity 2"
+    },
+    {
+      "line": 64,
+      "disposition": "imported",
+      "garmentId": "gmt_b8744c2627cd88a3b937f851",
+      "garmentName": "Di Sondrio grey chino",
+      "reason": "imported as trousers, quantity 1, planning policy normal"
+    },
+    {
+      "line": 65,
+      "disposition": "imported",
+      "garmentId": "gmt_ff25dfaf5876e58a551fe11d",
+      "garmentName": "Di Sondrio walnut chino",
+      "reason": "imported as trousers, quantity 2, planning policy normal (units from lines 65, 66)"
+    },
+    {
+      "line": 66,
+      "disposition": "merged",
+      "garmentId": "gmt_ff25dfaf5876e58a551fe11d",
+      "garmentName": "Di Sondrio walnut chino",
+      "reason": "interchangeable unit of \"Di Sondrio walnut chino\" (same product, colour, fabric, size and status as line 65); merged as quantity 2"
+    },
+    {
+      "line": 67,
+      "disposition": "imported",
+      "garmentId": "gmt_d8c87e314af240e3e1e2b147",
+      "garmentName": "JP double-pleated heavyweight chino — navy",
+      "reason": "imported as trousers, quantity 1, planning policy normal"
+    },
+    {
+      "line": 68,
+      "disposition": "imported",
+      "garmentId": "gmt_2e8c73004b36a1852ad86c5b",
+      "garmentName": "JP double-pleated heavyweight chino — soft olive",
+      "reason": "imported as trousers, quantity 1, planning policy normal"
+    },
+    {
+      "line": 69,
+      "disposition": "imported",
+      "garmentId": "gmt_23f576ccf4ac26592ce9cb57",
+      "garmentName": "Joseph Turner flannel — Prince of Wales check",
+      "reason": "imported as trousers, quantity 1, planning policy normal"
+    },
+    {
+      "line": 70,
+      "disposition": "imported",
+      "garmentId": "gmt_5da465049a3b0866ecf1ac65",
+      "garmentName": "Joseph Turner flannel — charcoal",
+      "reason": "imported as trousers, quantity 1, planning policy normal"
+    },
+    {
+      "line": 71,
+      "disposition": "imported",
+      "garmentId": "gmt_3f87094925ba6f12873baf04",
+      "garmentName": "Olive reverse sateen fatigue",
+      "reason": "imported as trousers, quantity 1, planning policy normal"
+    },
+    {
+      "line": 72,
+      "disposition": "imported",
+      "garmentId": "gmt_0f461ad174c203925f407dd9",
+      "garmentName": "Palermo linen drawstring — neutral",
+      "reason": "imported as trousers, quantity 1, planning policy normal"
+    },
+    {
+      "line": 73,
+      "disposition": "imported",
+      "garmentId": "gmt_4bf4c25c24760b0978c5d254",
+      "garmentName": "Palermo linen drawstring — tobacco",
+      "reason": "imported as trousers, quantity 1, planning policy normal"
+    },
+    {
+      "line": 74,
+      "disposition": "imported",
+      "garmentId": "gmt_a6fde2a39ce44042d92426df",
+      "garmentName": "Single-pleated Di Sondrio navy",
+      "reason": "imported as trousers, quantity 2, planning policy normal (units from lines 74, 75)"
+    },
+    {
+      "line": 75,
+      "disposition": "merged",
+      "garmentId": "gmt_a6fde2a39ce44042d92426df",
+      "garmentName": "Single-pleated Di Sondrio navy",
+      "reason": "interchangeable unit of \"Single-pleated Di Sondrio navy\" (same product, colour, fabric, size and status as line 74); merged as quantity 2"
+    },
+    {
+      "line": 76,
+      "disposition": "imported",
+      "garmentId": "gmt_debb281d8db87a9e39c61fc5",
+      "garmentName": "Stratton stretch corduroy",
+      "reason": "imported as trousers, quantity 1, planning policy normal"
+    },
+    {
+      "line": 77,
+      "disposition": "imported",
+      "garmentId": "gmt_512d6745b2d0827f375fdd51",
+      "garmentName": "Trunk Clothiers cord",
+      "reason": "imported as trousers, quantity 1, planning policy normal"
+    },
+    {
+      "line": 78,
+      "disposition": "imported",
+      "garmentId": "gmt_c8c5f3b201ef344b0a8a1864",
+      "garmentName": "DBF Grandfather Coat",
+      "reason": "imported as outerwear, quantity 1, planning policy normal"
+    },
+    {
+      "line": 79,
+      "disposition": "imported",
+      "garmentId": "gmt_d49a3ac887977cf682915c01",
+      "garmentName": "DBF Traveler — linen",
+      "reason": "imported as outerwear, quantity 1, planning policy excluded"
+    },
+    {
+      "line": 80,
+      "disposition": "imported",
+      "garmentId": "gmt_1c51b1b79a303afd685827c6",
+      "garmentName": "DBF Traveler — wool",
+      "reason": "imported as outerwear, quantity 1, planning policy excluded"
+    },
+    {
+      "line": 81,
+      "disposition": "imported",
+      "garmentId": "gmt_1b67b81380f5ac86b7a88b36",
+      "garmentName": "Drake's Black Heavy Twill Chore",
+      "reason": "imported as outerwear, quantity 1, planning policy normal"
+    },
+    {
+      "line": 82,
+      "disposition": "imported",
+      "garmentId": "gmt_638bcac4f1df41494e25af8c",
+      "garmentName": "Drake's Camel Field Games",
+      "reason": "imported as outerwear, quantity 1, planning policy normal"
+    },
+    {
+      "line": 83,
+      "disposition": "imported",
+      "garmentId": "gmt_0573b00364cad2ee03e8b70f",
+      "garmentName": "Drake's Navy Cotton-Linen Games Mk.IV",
+      "reason": "imported as outerwear, quantity 1, planning policy normal"
+    },
+    {
+      "line": 84,
+      "disposition": "imported",
+      "garmentId": "gmt_fa77eb2ca87f84bfcb769856",
+      "garmentName": "Drake's Navy Cotton-Linen Raglan Work Coat",
+      "reason": "imported as outerwear, quantity 1, planning policy normal"
+    },
+    {
+      "line": 85,
+      "disposition": "imported",
+      "garmentId": "gmt_6f0a166dd1d0a05d69cf216b",
+      "garmentName": "Drake's Navy Herringbone Games Mk.I",
+      "reason": "imported as outerwear, quantity 1, planning policy normal"
+    },
+    {
+      "line": 86,
+      "disposition": "imported",
+      "garmentId": "gmt_8ff9c9267902d57fb64d1ffd",
+      "garmentName": "Drake's Olive Jungle Jacket",
+      "reason": "imported as outerwear, quantity 1, planning policy normal"
+    },
+    {
+      "line": 87,
+      "disposition": "imported",
+      "garmentId": "gmt_1036d75ee60f24cb600b2f36",
+      "garmentName": "Drake's Tobacco Summer Moleskin Games Mk.I",
+      "reason": "imported as outerwear, quantity 1, planning policy normal"
+    },
+    {
+      "line": 88,
+      "disposition": "imported",
+      "garmentId": "gmt_ad4c10c8e9a2bea114e33847",
+      "garmentName": "Drake's Waxed Chasseur",
+      "reason": "imported as outerwear, quantity 1, planning policy normal"
+    },
+    {
+      "line": 89,
+      "disposition": "imported",
+      "garmentId": "gmt_d874ebf682299c2c5ed6834f",
+      "garmentName": "ISTO Heavy Wool Jacket",
+      "reason": "imported as outerwear, quantity 1, planning policy normal"
+    },
+    {
+      "line": 90,
+      "disposition": "imported",
+      "garmentId": "gmt_7059d58f8e3d2e491a5351d2",
+      "garmentName": "ISTO Linen Work Jacket — clay",
+      "reason": "imported as outerwear, quantity 1, planning policy normal"
+    },
+    {
+      "line": 91,
+      "disposition": "imported",
+      "garmentId": "gmt_922c8837188520bc628c4d82",
+      "garmentName": "ISTO Linen Work Jacket — navy",
+      "reason": "imported as outerwear, quantity 1, planning policy normal"
+    },
+    {
+      "line": 92,
+      "disposition": "imported",
+      "garmentId": "gmt_2a5171cf2db5616807570b4d",
+      "garmentName": "Mr P Cotton-Linen Field Jacket",
+      "reason": "imported as outerwear, quantity 1, planning policy normal"
+    },
+    {
+      "line": 93,
+      "disposition": "imported",
+      "garmentId": "gmt_3c96b0b107d442742ab09b2f",
+      "garmentName": "PWVC Belted Safari",
+      "reason": "imported as outerwear, quantity 1, planning policy excluded"
+    },
+    {
+      "line": 94,
+      "disposition": "imported",
+      "garmentId": "gmt_62da20ad5a7385361e068c7f",
+      "garmentName": "PWVC Cashmere Cord Bark",
+      "reason": "imported as outerwear, quantity 1, planning policy normal"
+    },
+    {
+      "line": 95,
+      "disposition": "imported",
+      "garmentId": "gmt_6efa79f157b2e36c5fbdff41",
+      "garmentName": "PWVC Cord Craftsman",
+      "reason": "imported as outerwear, quantity 1, planning policy excluded"
+    },
+    {
+      "line": 96,
+      "disposition": "imported",
+      "garmentId": "gmt_305c709620b3b4984be63d18",
+      "garmentName": "PWVC General's Overcoat",
+      "reason": "imported as outerwear, quantity 1, planning policy excluded"
+    },
+    {
+      "line": 97,
+      "disposition": "imported",
+      "garmentId": "gmt_9a65f400dc8ddd50caf2c2d2",
+      "garmentName": "PWVC Harris Tweed Marylebone",
+      "reason": "imported as outerwear, quantity 1, planning policy excluded"
+    },
+    {
+      "line": 98,
+      "disposition": "imported",
+      "garmentId": "gmt_f7df6afc29c378718253440b",
+      "garmentName": "PWVC Loden Cuddler Lumber",
+      "reason": "imported as outerwear, quantity 1, planning policy excluded"
+    },
+    {
+      "line": 99,
+      "disposition": "imported",
+      "garmentId": "gmt_a39a8cae279dece6cc68358d",
+      "garmentName": "PWVC Manchester Peacoat",
+      "reason": "imported as outerwear, quantity 1, planning policy excluded"
+    },
+    {
+      "line": 100,
+      "disposition": "imported",
+      "garmentId": "gmt_13a33232ae4ae0dbaee30581",
+      "garmentName": "PWVC Observer Jacket",
+      "reason": "imported as outerwear, quantity 1, planning policy excluded"
+    },
+    {
+      "line": 101,
+      "disposition": "imported",
+      "garmentId": "gmt_a37e00f78108abea8dcc82b1",
+      "garmentName": "PWVC Overlord Jacket",
+      "reason": "imported as outerwear, quantity 1, planning policy excluded"
+    },
+    {
+      "line": 102,
+      "disposition": "imported",
+      "garmentId": "gmt_4151f185f33a9c928b68c81d",
+      "garmentName": "PWVC Richmond Revere",
+      "reason": "imported as outerwear, quantity 1, planning policy normal"
+    },
+    {
+      "line": 103,
+      "disposition": "imported",
+      "garmentId": "gmt_4f778d8afb62d536e5fc036b",
+      "garmentName": "Anderson's belt — black",
+      "reason": "imported as belt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 104,
+      "disposition": "imported",
+      "garmentId": "gmt_6335e17bcb19fb15f77c31bf",
+      "garmentName": "Anderson's belt — brown",
+      "reason": "imported as belt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 105,
+      "disposition": "imported",
+      "garmentId": "gmt_6286816310853fcd516e3a65",
+      "garmentName": "Anderson's belt — olive (dark khaki)",
+      "reason": "imported as belt, quantity 1, planning policy normal"
+    },
+    {
+      "line": 106,
+      "disposition": "imported",
+      "garmentId": "gmt_ba4e4b4619f0eac05412a17a",
+      "garmentName": "Anglo-Italian pocket square",
+      "reason": "imported as pocket_square, quantity 1, planning policy occasional"
+    },
+    {
+      "line": 107,
+      "disposition": "imported",
+      "garmentId": "gmt_bf3551c54a3be6972b49bddb",
+      "garmentName": "Drake's navy Mughal bandana",
+      "reason": "imported as scarf, quantity 1, planning policy excluded"
+    },
+    {
+      "line": 108,
+      "disposition": "imported",
+      "garmentId": "gmt_c46952f2cdce24571ca50d43",
+      "garmentName": "Drake's red polka-dot",
+      "reason": "imported as scarf, quantity 1, planning policy excluded"
+    },
+    {
+      "line": 109,
+      "disposition": "imported",
+      "garmentId": "gmt_07dc6e21f77eb904d42bdfcc",
+      "garmentName": "Drake's scarf — burgundy unicorn",
+      "reason": "imported as scarf, quantity 1, planning policy normal"
+    },
+    {
+      "line": 110,
+      "disposition": "imported",
+      "garmentId": "gmt_000050e6dc924b3cfaff464f",
+      "garmentName": "Drake's scarf — green Summer Moghul",
+      "reason": "imported as scarf, quantity 1, planning policy normal"
+    },
+    {
+      "line": 111,
+      "disposition": "imported",
+      "garmentId": "gmt_0930eba17e4bb45c0d30d5b7",
+      "garmentName": "Drake's scarf — navy unicorn",
+      "reason": "imported as scarf, quantity 1, planning policy normal"
+    },
+    {
+      "line": 112,
+      "disposition": "imported",
+      "garmentId": "gmt_3dcf6bcf111d6340b0e5892d",
+      "garmentName": "Joseph Turner cashmere scarf",
+      "reason": "imported as scarf, quantity 1, planning policy normal"
+    },
+    {
+      "line": 113,
+      "disposition": "imported",
+      "garmentId": "gmt_ae39741f53a37b59fb293b92",
+      "garmentName": "Silk knit tie — burgundy",
+      "reason": "imported as tie, quantity 1, planning policy normal"
+    },
+    {
+      "line": 114,
+      "disposition": "imported",
+      "garmentId": "gmt_f937ca3ed937af3f17d0d9e4",
+      "garmentName": "Silk knit tie — emerald",
+      "reason": "imported as tie, quantity 1, planning policy normal"
+    },
+    {
+      "line": 115,
+      "disposition": "imported",
+      "garmentId": "gmt_5ee75031c78621c039354b2e",
+      "garmentName": "Silk knit tie — navy",
+      "reason": "imported as tie, quantity 1, planning policy normal"
+    },
+    {
+      "line": 116,
+      "disposition": "imported",
+      "garmentId": "gmt_89ac3666c71254cb3488c707",
+      "garmentName": "Silk knit tie — rust",
+      "reason": "imported as tie, quantity 1, planning policy normal"
+    },
+    {
+      "line": 117,
+      "disposition": "imported",
+      "garmentId": "gmt_d81a2951d56a7371cc2bc790",
+      "garmentName": "Wool-stripe knit tie — maroon",
+      "reason": "imported as tie, quantity 1, planning policy excluded"
+    },
+    {
+      "line": 118,
+      "disposition": "imported",
+      "garmentId": "gmt_8c8b983912a6effbc6b33a86",
+      "garmentName": "Alpaca bed sock — clotted cream",
+      "reason": "imported as socks, quantity 1, planning policy normal"
+    },
+    {
+      "line": 119,
+      "disposition": "imported",
+      "garmentId": "gmt_b0c11a0a4fd7942ba6debe7a",
+      "garmentName": "Alpaca — inky blue",
+      "reason": "imported as socks, quantity 1, planning policy normal"
+    },
+    {
+      "line": 120,
+      "disposition": "imported",
+      "garmentId": "gmt_86111bf38c194328b33bc40d",
+      "garmentName": "Alpaca — true black",
+      "reason": "imported as socks, quantity 1, planning policy normal"
+    },
+    {
+      "line": 121,
+      "disposition": "imported",
+      "garmentId": "gmt_9eb32f6a40ea3e5e4dee484b",
+      "garmentName": "Merino — biscuit beige",
+      "reason": "imported as socks, quantity 2, planning policy normal"
+    },
+    {
+      "line": 122,
+      "disposition": "imported",
+      "garmentId": "gmt_6ae4ef7693f5699f4d49d57f",
+      "garmentName": "Merino — blue jean",
+      "reason": "imported as socks, quantity 2, planning policy normal"
+    },
+    {
+      "line": 123,
+      "disposition": "imported",
+      "garmentId": "gmt_67d3228f744d17138e400729",
+      "garmentName": "Merino — correct grey",
+      "reason": "imported as socks, quantity 3, planning policy normal"
+    },
+    {
+      "line": 124,
+      "disposition": "imported",
+      "garmentId": "gmt_2de42b28e580f01f70665b8b",
+      "garmentName": "Merino — deep earth brown",
+      "reason": "imported as socks, quantity 3, planning policy normal"
+    },
+    {
+      "line": 125,
+      "disposition": "imported",
+      "garmentId": "gmt_7b2cf52fc7644699975d0ff9",
+      "garmentName": "Merino — deep forest green",
+      "reason": "imported as socks, quantity 2, planning policy normal"
+    },
+    {
+      "line": 126,
+      "disposition": "imported",
+      "garmentId": "gmt_a4d4bdc94538699e883c866a",
+      "garmentName": "Merino — fire red",
+      "reason": "imported as socks, quantity 1, planning policy normal"
+    },
+    {
+      "line": 127,
+      "disposition": "imported",
+      "garmentId": "gmt_e4997b3c3e3d4f4fa3b018f4",
+      "garmentName": "Merino — golden yellow",
+      "reason": "imported as socks, quantity 1, planning policy normal"
+    },
+    {
+      "line": 128,
+      "disposition": "imported",
+      "garmentId": "gmt_d5a6f18a3586536b6e6c6beb",
+      "garmentName": "Merino — inky blue",
+      "reason": "imported as socks, quantity 4, planning policy normal"
+    },
+    {
+      "line": 129,
+      "disposition": "imported",
+      "garmentId": "gmt_32c5531a0df1777198b6b4fd",
+      "garmentName": "Merino — milky tea beige",
+      "reason": "imported as socks, quantity 2, planning policy normal"
+    },
+    {
+      "line": 130,
+      "disposition": "imported",
+      "garmentId": "gmt_ba4fd33f2edeee4f61573f2e",
+      "garmentName": "Merino — pine green",
+      "reason": "imported as socks, quantity 2, planning policy normal"
+    },
+    {
+      "line": 131,
+      "disposition": "imported",
+      "garmentId": "gmt_4d9f680f66580a7f965e1698",
+      "garmentName": "Merino — strong blue",
+      "reason": "imported as socks, quantity 2, planning policy normal"
+    },
+    {
+      "line": 132,
+      "disposition": "imported",
+      "garmentId": "gmt_f2815784ca620821173c334c",
+      "garmentName": "Merino — true black",
+      "reason": "imported as socks, quantity 2, planning policy normal"
+    }
+  ],
+  "garments": [
+    {
+      "garmentId": "gmt_a1cec1a08c0d07b696a9fffa",
+      "name": "Drake's Clifford boot",
+      "category": "footwear",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        3
+      ],
+      "status": "Breaking in"
+    },
+    {
+      "garmentId": "gmt_14bc4338d6760f6a13434b2f",
+      "name": "NB 990v4 — grey",
+      "category": "footwear",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        4
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_0e6f1cd30a9171ab9c392df6",
+      "name": "NB 990v4 — navy",
+      "category": "footwear",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        5
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_185ccf753d109848f21f7cec",
+      "name": "NB 990v4 — olive/cream",
+      "category": "footwear",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        6
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_8dde46d29da812bd39afe097",
+      "name": "Paraboot Michael Cerf",
+      "category": "footwear",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        7
+      ],
+      "status": "Breaking in"
+    },
+    {
+      "garmentId": "gmt_a8fe5fe3a6c0754361249bf8",
+      "name": "Paraboot Reims — noir (black)",
+      "category": "footwear",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        8
+      ],
+      "status": "Breaking in"
+    },
+    {
+      "garmentId": "gmt_0a0dd120cdf5c327269267cd",
+      "name": "Paraboot Reims — café/marron",
+      "category": "footwear",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        9
+      ],
+      "status": "Breaking in"
+    },
+    {
+      "garmentId": "gmt_ec41eb7ad2e2ab344b0e03c3",
+      "name": "Brushed wool — Subalpino navy",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        10
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_ba15935f12a0493186c376ad",
+      "name": "California plaid",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        11
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_7df68c3c1e4e8d2b7f47146a",
+      "name": "Clark oxford — beige",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        12
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_235a6bcf18a50f576d401d40",
+      "name": "Clark oxford — evergreen",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        13
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_017629c751784b01b203111c",
+      "name": "Cotton-linen oxford — Portuguese light blue",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        14
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_c82879124bb236deec454622",
+      "name": "Cotton-linen oxford — blue stripe",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        15
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_65cb8a5be1d2e3105441e67e",
+      "name": "Cotton-linen oxford — blue wide stripe",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        16
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_b04d8284c912ef85a956b977",
+      "name": "Cotton-linen oxford — dark navy stripe",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        17
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_63d4e66bfe2720f8b36f0fc4",
+      "name": "Cotton-linen plaid — Sedona",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        18
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_45d928c9831bc5eb71a701db",
+      "name": "Cotton-linen twill — Canclini sunwashed",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        19
+      ],
+      "status": "Active (layering tier)"
+    },
+    {
+      "garmentId": "gmt_e3222d5de837b1abf7c9fc44",
+      "name": "Flannel plaid — grey",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        20
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_5b39b0df7ecd757c62c9eb15",
+      "name": "Flannel plaid — grey/slate/black ombre",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        21
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_bdf932437b10a10f4fbe9d90",
+      "name": "Flannel plaid — rust+grey",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        22
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_68349d317265476f08c41de3",
+      "name": "Heavy rustic linen — sage",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        23
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_b012557fb038061e8e8b3d3b",
+      "name": "Heavy rustic linen — slate",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        24
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_2f05f7ff166b98fc374e1b32",
+      "name": "ISTO denim shirt",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        25
+      ],
+      "status": "Secondary/layering"
+    },
+    {
+      "garmentId": "gmt_510617672008a26fcabaac1f",
+      "name": "Irish linen — olive",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        26
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_82a55e6a403a51f11e708ba7",
+      "name": "Irish linen — slate blue",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        27
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_dd7fee1fea3bf2b5d11767c0",
+      "name": "Irish linen — slate+navy plaid",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        28
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_3894b6a6295908d5e687af4f",
+      "name": "Lightweight oxford — blue",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        29
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_0603478a3cfd7734b8992e8e",
+      "name": "Lightweight oxford — blue stripe",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        30
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_47ac32e498579958f1e6fd43",
+      "name": "Lightweight oxford — gold",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        31
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_00684bbf0f616eea8523f02c",
+      "name": "Lightweight oxford — laurel",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        32
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_268e88702a3436a46fb768c4",
+      "name": "Lightweight oxford — light blue",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        33
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_a0ce8c0c86dd5fe68be9e8e3",
+      "name": "Lightweight oxford — light blue extra-wide stripe",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        34
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_9ed4407fc91ee8f7077f58c8",
+      "name": "Lightweight oxford — light blue striped (thin)",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        35
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_6d8159dab0580a03058e1948",
+      "name": "Lightweight oxford — light blue wide stripe",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        36
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_b1b76f448dd10945cd84a701",
+      "name": "Lightweight oxford — moss",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        37
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_940fcd8eb24b8ecf930b6ab4",
+      "name": "Lightweight oxford — off-white",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        38
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_41c2da80e7f41e5dc6a4340b",
+      "name": "Lightweight oxford — pink",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        39
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_d6145187b1c0b2ced846f3cd",
+      "name": "Lightweight oxford — red stripe",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        40
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_3273640d216a3f1d4b342905",
+      "name": "Lightweight oxford — slate",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        41
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_33d7931e41e7526c95fa1d09",
+      "name": "Lightweight oxford — yellow stripe",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        42
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_5882e20c9798352bbfe3f5a3",
+      "name": "Pima oxford — charcoal",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        43
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_aeebf456b036c01074ad0d72",
+      "name": "Pima oxford — fatigue",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        44
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_494538ee0e88e402d1549864",
+      "name": "Pima oxford — light blue university stripe",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        45
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_a01d7f585213d7059b9a8322",
+      "name": "Pima oxford — navy",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        46
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_16395c4a33f5e6de5d425a6a",
+      "name": "Pima oxford — sage+red fancy stripe",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        47
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_2d22145b2318255c0a0f6f2d",
+      "name": "Pima oxford — white",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        48
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_deea51c10edbf14a95eeadd1",
+      "name": "Pima oxford — wine/burgundy",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        49
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_afcb45ebfd27d7d43ccec258",
+      "name": "Selvedge twill — camel",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        50
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_743d72b25b68942b828176ee",
+      "name": "Selvedge twill — navy",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        51
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_0648fa5012a97d3a0ee53b3d",
+      "name": "Selvedge twill — olive",
+      "category": "shirt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        52
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_0bd82c642c7606199361d3d4",
+      "name": "Akita slub 5-pocket — cream",
+      "category": "trousers",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        53
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_7333fee5bf3bc6e3415776f5",
+      "name": "Akita slub 5-pocket — dried sage",
+      "category": "trousers",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        54
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_229b8965fd0dfd322ea8c6d6",
+      "name": "Bergamo cotton-linen chino — bone white",
+      "category": "trousers",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        55
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_e90a84cb03d4c8e3f685f715",
+      "name": "Bergamo cotton-linen chino — sand",
+      "category": "trousers",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        56
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_f96d0dbd5cba605d91e54490",
+      "name": "Cord — beige",
+      "category": "trousers",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        57
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_ff24fdb7a0bce13b2d7e7963",
+      "name": "Cord — navy",
+      "category": "trousers",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        58
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_74a7caf75d387b9358e1742e",
+      "name": "Denim — light olive",
+      "category": "trousers",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        59
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_4bfef48b16446bbf7fa28bf1",
+      "name": "Denim — white",
+      "category": "trousers",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        60
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_7a15e929c951abab832af60d",
+      "name": "Di Sondrio beige chino",
+      "category": "trousers",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        61
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_58fb8730a65c17ad9bc80215",
+      "name": "Di Sondrio faded navy lightweight",
+      "category": "trousers",
+      "quantity": 2,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        62,
+        63
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_b8744c2627cd88a3b937f851",
+      "name": "Di Sondrio grey chino",
+      "category": "trousers",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        64
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_ff25dfaf5876e58a551fe11d",
+      "name": "Di Sondrio walnut chino",
+      "category": "trousers",
+      "quantity": 2,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        65,
+        66
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_d8c87e314af240e3e1e2b147",
+      "name": "JP double-pleated heavyweight chino — navy",
+      "category": "trousers",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        67
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_2e8c73004b36a1852ad86c5b",
+      "name": "JP double-pleated heavyweight chino — soft olive",
+      "category": "trousers",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        68
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_23f576ccf4ac26592ce9cb57",
+      "name": "Joseph Turner flannel — Prince of Wales check",
+      "category": "trousers",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        69
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_5da465049a3b0866ecf1ac65",
+      "name": "Joseph Turner flannel — charcoal",
+      "category": "trousers",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        70
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_3f87094925ba6f12873baf04",
+      "name": "Olive reverse sateen fatigue",
+      "category": "trousers",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        71
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_0f461ad174c203925f407dd9",
+      "name": "Palermo linen drawstring — neutral",
+      "category": "trousers",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        72
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_4bf4c25c24760b0978c5d254",
+      "name": "Palermo linen drawstring — tobacco",
+      "category": "trousers",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        73
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_a6fde2a39ce44042d92426df",
+      "name": "Single-pleated Di Sondrio navy",
+      "category": "trousers",
+      "quantity": 2,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        74,
+        75
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_debb281d8db87a9e39c61fc5",
+      "name": "Stratton stretch corduroy",
+      "category": "trousers",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        76
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_512d6745b2d0827f375fdd51",
+      "name": "Trunk Clothiers cord",
+      "category": "trousers",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        77
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_c8c5f3b201ef344b0a8a1864",
+      "name": "DBF Grandfather Coat",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        78
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_d49a3ac887977cf682915c01",
+      "name": "DBF Traveler — linen",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "excluded",
+      "sourceLines": [
+        79
+      ],
+      "status": "Benched (too large)"
+    },
+    {
+      "garmentId": "gmt_1c51b1b79a303afd685827c6",
+      "name": "DBF Traveler — wool",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "excluded",
+      "sourceLines": [
+        80
+      ],
+      "status": "Benched (too large)"
+    },
+    {
+      "garmentId": "gmt_1b67b81380f5ac86b7a88b36",
+      "name": "Drake's Black Heavy Twill Chore",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        81
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_638bcac4f1df41494e25af8c",
+      "name": "Drake's Camel Field Games",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        82
+      ],
+      "status": "Active (a bit large)"
+    },
+    {
+      "garmentId": "gmt_0573b00364cad2ee03e8b70f",
+      "name": "Drake's Navy Cotton-Linen Games Mk.IV",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        83
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_fa77eb2ca87f84bfcb769856",
+      "name": "Drake's Navy Cotton-Linen Raglan Work Coat",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        84
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_6f0a166dd1d0a05d69cf216b",
+      "name": "Drake's Navy Herringbone Games Mk.I",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        85
+      ],
+      "status": "Active (a bit large)"
+    },
+    {
+      "garmentId": "gmt_8ff9c9267902d57fb64d1ffd",
+      "name": "Drake's Olive Jungle Jacket",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        86
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_1036d75ee60f24cb600b2f36",
+      "name": "Drake's Tobacco Summer Moleskin Games Mk.I",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        87
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_ad4c10c8e9a2bea114e33847",
+      "name": "Drake's Waxed Chasseur",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        88
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_d874ebf682299c2c5ed6834f",
+      "name": "ISTO Heavy Wool Jacket",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        89
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_7059d58f8e3d2e491a5351d2",
+      "name": "ISTO Linen Work Jacket — clay",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        90
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_922c8837188520bc628c4d82",
+      "name": "ISTO Linen Work Jacket — navy",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        91
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_2a5171cf2db5616807570b4d",
+      "name": "Mr P Cotton-Linen Field Jacket",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        92
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_3c96b0b107d442742ab09b2f",
+      "name": "PWVC Belted Safari",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "excluded",
+      "sourceLines": [
+        93
+      ],
+      "status": "Benched (too large; tailoring candidate)"
+    },
+    {
+      "garmentId": "gmt_62da20ad5a7385361e068c7f",
+      "name": "PWVC Cashmere Cord Bark",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        94
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_6efa79f157b2e36c5fbdff41",
+      "name": "PWVC Cord Craftsman",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "excluded",
+      "sourceLines": [
+        95
+      ],
+      "status": "Benched (too large; tailoring candidate)"
+    },
+    {
+      "garmentId": "gmt_305c709620b3b4984be63d18",
+      "name": "PWVC General's Overcoat",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "excluded",
+      "sourceLines": [
+        96
+      ],
+      "status": "Benched (too large; tailoring candidate)"
+    },
+    {
+      "garmentId": "gmt_9a65f400dc8ddd50caf2c2d2",
+      "name": "PWVC Harris Tweed Marylebone",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "excluded",
+      "sourceLines": [
+        97
+      ],
+      "status": "Benched (too large; tailoring candidate)"
+    },
+    {
+      "garmentId": "gmt_f7df6afc29c378718253440b",
+      "name": "PWVC Loden Cuddler Lumber",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "excluded",
+      "sourceLines": [
+        98
+      ],
+      "status": "Benched (too large; tailoring candidate)"
+    },
+    {
+      "garmentId": "gmt_a39a8cae279dece6cc68358d",
+      "name": "PWVC Manchester Peacoat",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "excluded",
+      "sourceLines": [
+        99
+      ],
+      "status": "Benched (too large; tailoring candidate)"
+    },
+    {
+      "garmentId": "gmt_13a33232ae4ae0dbaee30581",
+      "name": "PWVC Observer Jacket",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "excluded",
+      "sourceLines": [
+        100
+      ],
+      "status": "Benched (too large; tailoring candidate)"
+    },
+    {
+      "garmentId": "gmt_a37e00f78108abea8dcc82b1",
+      "name": "PWVC Overlord Jacket",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "excluded",
+      "sourceLines": [
+        101
+      ],
+      "status": "Benched (too large; tailoring candidate)"
+    },
+    {
+      "garmentId": "gmt_4151f185f33a9c928b68c81d",
+      "name": "PWVC Richmond Revere",
+      "category": "outerwear",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        102
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_4f778d8afb62d536e5fc036b",
+      "name": "Anderson's belt — black",
+      "category": "belt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        103
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_6335e17bcb19fb15f77c31bf",
+      "name": "Anderson's belt — brown",
+      "category": "belt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        104
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_6286816310853fcd516e3a65",
+      "name": "Anderson's belt — olive (dark khaki)",
+      "category": "belt",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        105
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_ba4e4b4619f0eac05412a17a",
+      "name": "Anglo-Italian pocket square",
+      "category": "pocket_square",
+      "quantity": 1,
+      "planningPolicy": "occasional",
+      "sourceLines": [
+        106
+      ],
+      "status": "Occasional"
+    },
+    {
+      "garmentId": "gmt_bf3551c54a3be6972b49bddb",
+      "name": "Drake's navy Mughal bandana",
+      "category": "scarf",
+      "quantity": 1,
+      "planningPolicy": "excluded",
+      "sourceLines": [
+        107
+      ],
+      "status": "Benched"
+    },
+    {
+      "garmentId": "gmt_c46952f2cdce24571ca50d43",
+      "name": "Drake's red polka-dot",
+      "category": "scarf",
+      "quantity": 1,
+      "planningPolicy": "excluded",
+      "sourceLines": [
+        108
+      ],
+      "status": "Benched"
+    },
+    {
+      "garmentId": "gmt_07dc6e21f77eb904d42bdfcc",
+      "name": "Drake's scarf — burgundy unicorn",
+      "category": "scarf",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        109
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_000050e6dc924b3cfaff464f",
+      "name": "Drake's scarf — green Summer Moghul",
+      "category": "scarf",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        110
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_0930eba17e4bb45c0d30d5b7",
+      "name": "Drake's scarf — navy unicorn",
+      "category": "scarf",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        111
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_3dcf6bcf111d6340b0e5892d",
+      "name": "Joseph Turner cashmere scarf",
+      "category": "scarf",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        112
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_ae39741f53a37b59fb293b92",
+      "name": "Silk knit tie — burgundy",
+      "category": "tie",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        113
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_f937ca3ed937af3f17d0d9e4",
+      "name": "Silk knit tie — emerald",
+      "category": "tie",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        114
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_5ee75031c78621c039354b2e",
+      "name": "Silk knit tie — navy",
+      "category": "tie",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        115
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_89ac3666c71254cb3488c707",
+      "name": "Silk knit tie — rust",
+      "category": "tie",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        116
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_d81a2951d56a7371cc2bc790",
+      "name": "Wool-stripe knit tie — maroon",
+      "category": "tie",
+      "quantity": 1,
+      "planningPolicy": "excluded",
+      "sourceLines": [
+        117
+      ],
+      "status": "Benched"
+    },
+    {
+      "garmentId": "gmt_8c8b983912a6effbc6b33a86",
+      "name": "Alpaca bed sock — clotted cream",
+      "category": "socks",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        118
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_b0c11a0a4fd7942ba6debe7a",
+      "name": "Alpaca — inky blue",
+      "category": "socks",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        119
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_86111bf38c194328b33bc40d",
+      "name": "Alpaca — true black",
+      "category": "socks",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        120
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_9eb32f6a40ea3e5e4dee484b",
+      "name": "Merino — biscuit beige",
+      "category": "socks",
+      "quantity": 2,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        121
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_6ae4ef7693f5699f4d49d57f",
+      "name": "Merino — blue jean",
+      "category": "socks",
+      "quantity": 2,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        122
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_67d3228f744d17138e400729",
+      "name": "Merino — correct grey",
+      "category": "socks",
+      "quantity": 3,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        123
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_2de42b28e580f01f70665b8b",
+      "name": "Merino — deep earth brown",
+      "category": "socks",
+      "quantity": 3,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        124
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_7b2cf52fc7644699975d0ff9",
+      "name": "Merino — deep forest green",
+      "category": "socks",
+      "quantity": 2,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        125
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_a4d4bdc94538699e883c866a",
+      "name": "Merino — fire red",
+      "category": "socks",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        126
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_e4997b3c3e3d4f4fa3b018f4",
+      "name": "Merino — golden yellow",
+      "category": "socks",
+      "quantity": 1,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        127
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_d5a6f18a3586536b6e6c6beb",
+      "name": "Merino — inky blue",
+      "category": "socks",
+      "quantity": 4,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        128
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_32c5531a0df1777198b6b4fd",
+      "name": "Merino — milky tea beige",
+      "category": "socks",
+      "quantity": 2,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        129
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_ba4fd33f2edeee4f61573f2e",
+      "name": "Merino — pine green",
+      "category": "socks",
+      "quantity": 2,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        130
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_4d9f680f66580a7f965e1698",
+      "name": "Merino — strong blue",
+      "category": "socks",
+      "quantity": 2,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        131
+      ],
+      "status": "Active"
+    },
+    {
+      "garmentId": "gmt_f2815784ca620821173c334c",
+      "name": "Merino — true black",
+      "category": "socks",
+      "quantity": 2,
+      "planningPolicy": "normal",
+      "sourceLines": [
+        132
+      ],
+      "status": "Active"
+    }
+  ],
+  "issues": [
+    {
+      "issueId": "imp_ca9a5e06edbb2646_001",
+      "kind": "link_without_url",
+      "severity": "info",
+      "detail": "Line 82 (\"Drake's Camel Field Games\") has the Link cell \"link\" but no URL survived the export; no purchase link was recorded.",
+      "garmentId": "gmt_638bcac4f1df41494e25af8c",
+      "sourceRows": [
+        82
+      ]
+    },
+    {
+      "issueId": "imp_ca9a5e06edbb2646_002",
+      "kind": "link_without_url",
+      "severity": "info",
+      "detail": "Line 83 (\"Drake's Navy Cotton-Linen Games Mk.IV\") has the Link cell \"link\" but no URL survived the export; no purchase link was recorded.",
+      "garmentId": "gmt_0573b00364cad2ee03e8b70f",
+      "sourceRows": [
+        83
+      ]
+    },
+    {
+      "issueId": "imp_ca9a5e06edbb2646_003",
+      "kind": "link_without_url",
+      "severity": "info",
+      "detail": "Line 84 (\"Drake's Navy Cotton-Linen Raglan Work Coat\") has the Link cell \"link\" but no URL survived the export; no purchase link was recorded.",
+      "garmentId": "gmt_fa77eb2ca87f84bfcb769856",
+      "sourceRows": [
+        84
+      ]
+    },
+    {
+      "issueId": "imp_ca9a5e06edbb2646_004",
+      "kind": "link_without_url",
+      "severity": "info",
+      "detail": "Line 85 (\"Drake's Navy Herringbone Games Mk.I\") has the Link cell \"link\" but no URL survived the export; no purchase link was recorded.",
+      "garmentId": "gmt_6f0a166dd1d0a05d69cf216b",
+      "sourceRows": [
+        85
+      ]
+    },
+    {
+      "issueId": "imp_ca9a5e06edbb2646_005",
+      "kind": "link_without_url",
+      "severity": "info",
+      "detail": "Line 86 (\"Drake's Olive Jungle Jacket\") has the Link cell \"link\" but no URL survived the export; no purchase link was recorded.",
+      "garmentId": "gmt_8ff9c9267902d57fb64d1ffd",
+      "sourceRows": [
+        86
+      ]
+    },
+    {
+      "issueId": "imp_ca9a5e06edbb2646_006",
+      "kind": "link_without_url",
+      "severity": "info",
+      "detail": "Line 87 (\"Drake's Tobacco Summer Moleskin Games Mk.I\") has the Link cell \"link\" but no URL survived the export; no purchase link was recorded.",
+      "garmentId": "gmt_1036d75ee60f24cb600b2f36",
+      "sourceRows": [
+        87
+      ]
+    },
+    {
+      "issueId": "imp_ca9a5e06edbb2646_007",
+      "kind": "link_without_url",
+      "severity": "info",
+      "detail": "Line 107 (\"Drake's navy Mughal bandana\") has the Link cell \"link\" but no URL survived the export; no purchase link was recorded.",
+      "garmentId": "gmt_bf3551c54a3be6972b49bddb",
+      "sourceRows": [
+        107
+      ]
+    },
+    {
+      "issueId": "imp_ca9a5e06edbb2646_008",
+      "kind": "link_without_url",
+      "severity": "info",
+      "detail": "Line 109 (\"Drake's scarf — burgundy unicorn\") has the Link cell \"link\" but no URL survived the export; no purchase link was recorded.",
+      "garmentId": "gmt_07dc6e21f77eb904d42bdfcc",
+      "sourceRows": [
+        109
+      ]
+    },
+    {
+      "issueId": "imp_ca9a5e06edbb2646_009",
+      "kind": "link_without_url",
+      "severity": "info",
+      "detail": "Line 111 (\"Drake's scarf — navy unicorn\") has the Link cell \"link\" but no URL survived the export; no purchase link was recorded.",
+      "garmentId": "gmt_0930eba17e4bb45c0d30d5b7",
+      "sourceRows": [
+        111
+      ]
+    },
+    {
+      "issueId": "imp_ca9a5e06edbb2646_010",
+      "kind": "quantity_not_stated",
+      "severity": "needs_owner",
+      "detail": "Line 118 (\"Alpaca bed sock — clotted cream\") gives no pair count; imported as 1 pair, the minimum the row establishes. Correct the count with a reconciliation if more are owned.",
+      "garmentId": "gmt_8c8b983912a6effbc6b33a86",
+      "sourceRows": [
+        118
+      ]
+    },
+    {
+      "issueId": "imp_ca9a5e06edbb2646_011",
+      "kind": "quantity_not_stated",
+      "severity": "needs_owner",
+      "detail": "Line 119 (\"Alpaca — inky blue\") gives no pair count; imported as 1 pair, the minimum the row establishes. Correct the count with a reconciliation if more are owned.",
+      "garmentId": "gmt_b0c11a0a4fd7942ba6debe7a",
+      "sourceRows": [
+        119
+      ]
+    },
+    {
+      "issueId": "imp_ca9a5e06edbb2646_012",
+      "kind": "quantity_not_stated",
+      "severity": "needs_owner",
+      "detail": "Line 120 (\"Alpaca — true black\") gives no pair count; imported as 1 pair, the minimum the row establishes. Correct the count with a reconciliation if more are owned.",
+      "garmentId": "gmt_86111bf38c194328b33bc40d",
+      "sourceRows": [
+        120
+      ]
+    }
+  ],
+  "conflicts": [
+    {
+      "severity": "needs_owner",
+      "title": "Profile names New Balance 990v6 and 993; the inventory has none",
+      "profileQuote": "New Balance is the spine: the 990v4 and 990v6 chosen on their merits rather than by habit, with the 993 a genuine complement.",
+      "inventoryEvidence": "Sneakers in the sheet: NB 990v4 — grey (size UK 8.5) [Active]; NB 990v4 — navy (size UK 8.5) [Active]; NB 990v4 — olive/cream (size UK 8.5) [Active].",
+      "importerAction": "No 990v6 or 993 was created: a garment exists only when the inventory or the owner says so. The 990v6 exclusion is still recorded in the healing restriction, so one added later is excluded automatically.",
+      "id": "C01",
+      "sourceRows": [
+        4,
+        5,
+        6
+      ],
+      "garmentIds": [
+        "gmt_14bc4338d6760f6a13434b2f",
+        "gmt_0e6f1cd30a9171ab9c392df6",
+        "gmt_185ccf753d109848f21f7cec"
+      ]
+    },
+    {
+      "severity": "conflict",
+      "title": "Sheet shows welted shoes and a boot in rotation (\"Breaking in\"); the profile's sneakers-only restriction is newer",
+      "profileQuote": "**Sneakers only, until he says his feet have healed.**",
+      "inventoryEvidence": "Drake's Clifford boot (size UK 9) [Breaking in]; Paraboot Michael Cerf (size UK 8.5) [Breaking in]; Paraboot Reims — noir (black) (size UK 8.5) [Breaking in]; Paraboot Reims — café/marron (size UK 8.5) [Breaking in]",
+      "importerAction": "All are imported as owned and kept out of every recommendation by the active healing restriction. The restriction is lifted only by the owner's explicit statement; the sheet's older status does not lift it.",
+      "id": "C02",
+      "sourceRows": [
+        3,
+        7,
+        8,
+        9
+      ],
+      "garmentIds": [
+        "gmt_a1cec1a08c0d07b696a9fffa",
+        "gmt_8dde46d29da812bd39afe097",
+        "gmt_a8fe5fe3a6c0754361249bf8",
+        "gmt_0a0dd120cdf5c327269267cd"
+      ]
+    },
+    {
+      "severity": "info",
+      "title": "A shoe is not the profile's UK 8.5",
+      "profileQuote": "Footwear: UK 8.5 across sneakers and Paraboot alike.",
+      "inventoryEvidence": "Drake's Clifford boot (size UK 9) [Breaking in]. The sheet's own note explains the boot runs small.",
+      "importerAction": "Sizes imported as stated per garment; the profile's 8.5 is kept as the dated body fact. A maker-specific size is not treated as a contradiction of the body fact.",
+      "id": "C03",
+      "sourceRows": [
+        3
+      ],
+      "garmentIds": [
+        "gmt_a1cec1a08c0d07b696a9fffa"
+      ]
+    },
+    {
+      "severity": "conflict",
+      "title": "Drake's jackets in sizes other than the profile's 46",
+      "profileQuote": "Jackets and coats: 46 at Drake's, including Games blazers, chores and macs.",
+      "inventoryEvidence": "Drake's Camel Field Games (size 48) [Active (a bit large)]; Drake's Navy Cotton-Linen Games Mk.IV (size 48) [Active]; Drake's Navy Cotton-Linen Raglan Work Coat (size 44) [Active]; Drake's Navy Herringbone Games Mk.I (size 48) [Active (a bit large)]; Drake's Waxed Chasseur (size 44) [Active]",
+      "importerAction": "Imported with their stated sizes and the sheet's planning status. Nothing was benched or retired on the strength of the profile's size alone.",
+      "id": "C04",
+      "sourceRows": [
+        82,
+        83,
+        84,
+        85,
+        88
+      ],
+      "garmentIds": [
+        "gmt_638bcac4f1df41494e25af8c",
+        "gmt_0573b00364cad2ee03e8b70f",
+        "gmt_fa77eb2ca87f84bfcb769856",
+        "gmt_6f0a166dd1d0a05d69cf216b",
+        "gmt_ad4c10c8e9a2bea114e33847"
+      ]
+    },
+    {
+      "severity": "conflict",
+      "title": "Private White pieces are sizes 7 and 8; the profile's current size is 6 / XL",
+      "profileQuote": "Private White chart size 6 / XL.",
+      "inventoryEvidence": "PWVC Belted Safari (size 8) [Benched (too large; tailoring candidate)]; PWVC Cashmere Cord Bark (size 7) [Active]; PWVC Cord Craftsman (size 8) [Benched (too large; tailoring candidate)]; PWVC General's Overcoat (size 8) [Benched (too large; tailoring candidate)]; PWVC Harris Tweed Marylebone (size 8) [Benched (too large; tailoring candidate)]; PWVC Loden Cuddler Lumber (size 8) [Benched (too large; tailoring candidate)]; PWVC Manchester Peacoat (size 8) [Benched (too large; tailoring candidate)]; PWVC Observer Jacket (size 8) [Benched (too large; tailoring candidate)]; PWVC Overlord Jacket (size 8) [Benched (too large; tailoring candidate)]; PWVC Richmond Revere (size 7) [Active]",
+      "importerAction": "Imported as stated: the size 8 pieces keep the sheet's 'Benched (too large)' exclusion; the size 7 pieces stay active as the sheet says. Whether the 7s still fit is the owner's call.",
+      "id": "C05",
+      "sourceRows": [
+        93,
+        94,
+        95,
+        96,
+        97,
+        98,
+        99,
+        100,
+        101,
+        102
+      ],
+      "garmentIds": [
+        "gmt_3c96b0b107d442742ab09b2f",
+        "gmt_62da20ad5a7385361e068c7f",
+        "gmt_6efa79f157b2e36c5fbdff41",
+        "gmt_305c709620b3b4984be63d18",
+        "gmt_9a65f400dc8ddd50caf2c2d2",
+        "gmt_f7df6afc29c378718253440b",
+        "gmt_a39a8cae279dece6cc68358d",
+        "gmt_13a33232ae4ae0dbaee30581",
+        "gmt_a37e00f78108abea8dcc82b1",
+        "gmt_4151f185f33a9c928b68c81d"
+      ]
+    },
+    {
+      "severity": "needs_owner",
+      "title": "Profile says Games blazers, a jungle jacket and rugbies were sold; the sheet still lists Games blazers and a jungle jacket",
+      "profileQuote": "He sold Games blazers, a jungle jacket and rugbies because they no longer fit, and he wants those same categories back in the smaller size.",
+      "inventoryEvidence": "Drake's Camel Field Games (size 48) [Active (a bit large)]; Drake's Navy Cotton-Linen Games Mk.IV (size 48) [Active]; Drake's Navy Herringbone Games Mk.I (size 48) [Active (a bit large)]; Drake's Tobacco Summer Moleskin Games Mk.I (size 46) [Active]; Drake's Olive Jungle Jacket (size 46) [Active]. The sheet lists no rugby shirts at all.",
+      "importerAction": "All listed pieces are imported as owned with the sheet's status, because the profile does not say WHICH pieces left and the sheet may predate or postdate the sale. No disposal was recorded and no rugby was created. The owner retires whatever has actually gone.",
+      "id": "C06",
+      "sourceRows": [
+        82,
+        83,
+        85,
+        86,
+        87
+      ],
+      "garmentIds": [
+        "gmt_638bcac4f1df41494e25af8c",
+        "gmt_0573b00364cad2ee03e8b70f",
+        "gmt_6f0a166dd1d0a05d69cf216b",
+        "gmt_1036d75ee60f24cb600b2f36",
+        "gmt_8ff9c9267902d57fb64d1ffd"
+      ]
+    },
+    {
+      "severity": "conflict",
+      "title": "An active moleskin jacket; the profile lists moleskin among the surfaces that repel",
+      "profileQuote": "sealed or napped surfaces, moleskin included",
+      "inventoryEvidence": "Drake's Tobacco Summer Moleskin Games Mk.I (size 46) [Active]",
+      "importerAction": "Imported as stated (active). The hand-feel passage stays in the profile for the assistant; no planning policy was changed on its strength.",
+      "id": "C07",
+      "sourceRows": [
+        87
+      ],
+      "garmentIds": [
+        "gmt_1036d75ee60f24cb600b2f36"
+      ]
+    },
+    {
+      "severity": "info",
+      "title": "A shirt with fused cuffs; the profile requires sewn collars and cuffs",
+      "profileQuote": "Collars and cuffs must be sewn, never fused",
+      "inventoryEvidence": "Cotton-linen twill — Canclini sunwashed (size MTM) [Active (layering tier)]",
+      "importerAction": "Imported as the sheet has it (layering tier). Consistent with the profile's verdict rather than contrary to it; recorded so purchase advice can cite the experience.",
+      "id": "C08",
+      "sourceRows": [
+        19
+      ],
+      "garmentIds": [
+        "gmt_45d928c9831bc5eb71a701db"
+      ]
+    },
+    {
+      "severity": "needs_owner",
+      "title": "Garments and categories the profile describes that are not in the inventory",
+      "profileQuote": "The range runs from a white tee, jeans and a cardigan at the quiet end to a panelled rugby at the loud end, and both are him.",
+      "inventoryEvidence": "Not found in the sheet: rugby shirts; knitwear (Shetland, cardigan, cashmere); a white tee; light, mid or dark blue jeans; an active tweed, houndstooth or Donegal academic blazer; an active loden or mac. Denim trousers present: Denim — light olive [Active]; Denim — white [Active].",
+      "importerAction": "Nothing was created for them. The profile's prose is kept in full as taste context; recommendations can only use garments that exist in the ledger. Items acquired after the May 2026 sheet enter through ordinary intake.",
+      "id": "C09",
+      "sourceRows": [
+        59,
+        60
+      ],
+      "garmentIds": [
+        "gmt_74a7caf75d387b9358e1742e",
+        "gmt_4bfef48b16446bbf7fa28bf1"
+      ]
+    },
+    {
+      "severity": "info",
+      "title": "Counts differ from the profile's round numbers",
+      "profileQuote": "He owns twenty-odd trousers and thirty-odd shirts precisely so that nothing repeats inside a fortnight.",
+      "inventoryEvidence": "The sheet has 43 shirts and 25 pairs of trousers (22 distinct garments).",
+      "importerAction": "The sheet's rows are imported exactly; the profile's figures are treated as prose, not as a count to reconcile to.",
+      "id": "C10",
+      "sourceRows": [],
+      "garmentIds": []
+    },
+    {
+      "severity": "info",
+      "title": "The inventory is a May 2026 snapshot; the profile is dated 14 September 2026",
+      "profileQuote": "Second edition, 14 September 2026, superseding the first draft of 30 August.",
+      "inventoryEvidence": "Sheet title: \"CHRIS — WARDROBE INVENTORY (clean master, May 2026)\". Latest acquisition date in the sheet: 2026-05-19.",
+      "importerAction": "Rows are imported as historical evidence of ownership. Cleanliness was never observed, so every laundered garment starts as an estimate; no wear history is imported or invented; purchases and disposals after the snapshot are unknown until the owner reports them.",
+      "id": "C11",
+      "sourceRows": [],
+      "garmentIds": []
+    },
+    {
+      "severity": "info",
+      "title": "The sheet flags one of its own rows as mislabelled",
+      "profileQuote": null,
+      "inventoryEvidence": "Drake's Waxed Chasseur: item says waxed cotton; source detail says \"DRAKE'S cotton-twill chore jacket in green (sale)\"",
+      "importerAction": "Imported under the sheet's corrected name; the mislabelled product name is kept as an alias so either phrase finds the same garment.",
+      "id": "C12",
+      "sourceRows": [
+        88
+      ],
+      "garmentIds": [
+        "gmt_ad4c10c8e9a2bea114e33847"
+      ]
+    },
+    {
+      "severity": "info",
+      "title": "Sheet temperature ranges do not say whether they mean the morning or the daytime peak",
+      "profileQuote": "Shirts and trousers are chosen against the day's *peak* temperature, never the morning low.",
+      "inventoryEvidence": "20 garments carry a numeric range in the Season column (for example \"To 22°C\", \"10-24°C\", \"30°C+ only\").",
+      "importerAction": "The numbers are stored with basis 'unsettled' rather than silently choosing morning or peak. The research-derived thresholds in specification section 7 (cotton-linen 28, pure linen 30, oxford floor 10, outerwear ceiling 24, alpaca 12) are recorded as rules pending reconciliation, not enforced.",
+      "id": "C13",
+      "sourceRows": [
+        43,
+        44,
+        45,
+        46,
+        47,
+        48,
+        49,
+        72,
+        73,
+        81,
+        82,
+        83,
+        84,
+        85,
+        86,
+        87,
+        88,
+        90,
+        91,
+        92
+      ],
+      "garmentIds": [
+        "gmt_5882e20c9798352bbfe3f5a3",
+        "gmt_aeebf456b036c01074ad0d72",
+        "gmt_494538ee0e88e402d1549864",
+        "gmt_a01d7f585213d7059b9a8322",
+        "gmt_16395c4a33f5e6de5d425a6a",
+        "gmt_2d22145b2318255c0a0f6f2d",
+        "gmt_deea51c10edbf14a95eeadd1",
+        "gmt_0f461ad174c203925f407dd9",
+        "gmt_4bf4c25c24760b0978c5d254",
+        "gmt_1b67b81380f5ac86b7a88b36",
+        "gmt_638bcac4f1df41494e25af8c",
+        "gmt_0573b00364cad2ee03e8b70f",
+        "gmt_fa77eb2ca87f84bfcb769856",
+        "gmt_6f0a166dd1d0a05d69cf216b",
+        "gmt_8ff9c9267902d57fb64d1ffd",
+        "gmt_1036d75ee60f24cb600b2f36",
+        "gmt_ad4c10c8e9a2bea114e33847",
+        "gmt_7059d58f8e3d2e491a5351d2",
+        "gmt_922c8837188520bc628c4d82",
+        "gmt_2a5171cf2db5616807570b4d"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "B001": {"status_requests_created": 0, "confirmed_wear_entries_created": 0},
+  "B002": {"routine_reset_applications": 1, "moss_tailor_restriction_active": true, "handwash_changed_by_service_reset": false, "observed_returns_fabricated": 0},
+  "B003": {"navy_selection_probability": 0.6, "confirmed_wear_entries_created": 0},
+  "B004": {"wear_deltas": {"shirt-red-stripe": 1, "shirt-moss": 0, "trouser-olive": 0, "sock-navy": 0, "shoe-navy": 0}, "additional_sock_pairs_consumed": 0},
+  "B005": {"counted_wears": 2, "wearing_dates": ["2026-09-14", "2026-09-15"]},
+  "B006": {"counted_wears": 1, "source_observations_retained": 2, "status_questions": 0},
+  "B007": {"yesterday_wear_recorded": true, "current_clean_state": true, "conflict_questions": 0},
+  "B008": {"wash_recorded": true, "current_clean_state": true, "prior_wear_history_preserved": true},
+  "B009": {"current_location": "with_owner", "current_wear_recorded": true, "duplicate_garments_created": 0},
+  "B010": {"canonical_garments": 1, "counted_wears": 1, "source_observations_retained": 2},
+  "B011": {"today_wear_recorded": true, "gold_in_tomorrow_offerable_options": false, "unaffected_selected_slots_preserved": true, "repair_approval_questions": 0},
+  "B012": {"managed_event_count": 1, "remote_revision": 12, "superseded_choices_appended": 0},
+  "B015": {"home_only_items_in_destination_options": 0, "home_laundry_applied_to_suitcase": false},
+  "B016": {"request_deadline": "2026-09-15", "posting_deadline": null, "owned_stock_removed_by_draft": 0},
+  "B017": {"comfort_observation_saved": true, "questionnaire_created": false, "universal_garment_ban_created": false},
+  "B018": {"old_board_notifications_replayed": 0, "wear_confirmation_tasks_created": 0, "return_deadline_preserved": true},
+  "B019": {"retained_user_id": "owner-fixture", "used_recovery_credential_reusable": false, "old_native_sessions_valid": false, "credentials_in_conversation": false},
+  "B020": {"original_history_included": true, "media_manifest_included": true, "checksums_valid": true, "credentials_in_export": false, "external_effects_replayed_on_import": 0}
+}

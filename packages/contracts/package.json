@@ -1,0 +1,20 @@
+{
+  "name": "@garderobe/contracts",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Versioned shared contracts: Zod schemas, TypeScript types, generated JSON Schema and Swift Codable types.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./ext/*": "./src/ext/*.ts",
+    "./generated/schema.json": "./generated/garderobe-contracts.schema.json"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "generate": "node --experimental-strip-types scripts/generate.ts"
+  },
+  "dependencies": {
+    "zod": "4.6.5"
+  }
+}

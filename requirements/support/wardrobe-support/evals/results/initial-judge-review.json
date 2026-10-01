@@ -1,0 +1,340 @@
+{
+  "review_date": "2026-09-15",
+  "judge": "Codex in the current authoring task",
+  "judge_model_id": "Not independently recorded by runtime metadata; no invented exact model ID.",
+  "candidate_origin": "Eight real visible assistant replies in the provided Claude export; provider metadata not used as a scoring cue.",
+  "profile_sha256": "e15639d891f9a5264c7eff13d05a478bcb188745aea11323b2131db37f5cb198",
+  "method": "One retrospective pass, full September profile and current amendments. Exact visible reply text only. No model comparison, no live application run, and no repeatability claim.",
+  "judgments": [
+    {
+      "case_id": "C001",
+      "related_case_id": "H001",
+      "candidate_id": "anonymous-1",
+      "mode": "historical_response_review",
+      "candidate_sha256": "b3b129e97c8d6a8a3162e3fb2ee8d6074a2870e8f3907cc8ccb691fba0bb8113",
+      "verdict": "revise",
+      "scores": {
+        "personal_fit": 4,
+        "composition": 4,
+        "comfort_and_fabric": null,
+        "variety_and_scope": null,
+        "practical_usefulness": 3,
+        "voice_and_teaching": 2
+      },
+      "hard_violations": [],
+      "findings": [
+        {
+          "candidate_excerpt": "it signals intentionality without formality.",
+          "basis": "Profile sections 2, 3, and 6; historical owner message 019d54d7-43a0-700b-9f1c-888ea3797ba1.",
+          "judgment": "This identifies the desired register well: a considered blazer without business formality."
+        },
+        {
+          "candidate_excerpt": "The clothes are good because the person wearing them has good instincts",
+          "basis": "Profile section 11.",
+          "judgment": "Flattery replaces a useful explanation of the clothes."
+        },
+        {
+          "candidate_excerpt": "a Mk. VII Harris Tweed would have been too composed, too \"dressed.\"",
+          "basis": "Profile section 3 admits textured academic blazers; construction and actual outfit evidence matter.",
+          "judgment": "This may describe a specific jacket, but the supplied packet does not establish its construction or why it necessarily fails. Avoid a categorical tweed-versus-cotton rule."
+        }
+      ],
+      "limitations": [
+        "Historical images are not included.",
+        "Full model input and tool receipts are not reconstructed.",
+        "Current-profile retrospective review; not a live application run or controlled historical benchmark.",
+        "The no-canvas construction assertion and the visual scarf comparison are not verified from this packet."
+      ],
+      "summary": "Understands the relaxed academic register, but gives too much flattering performance and overstates the contrast with tweed."
+    },
+    {
+      "case_id": "C002",
+      "related_case_id": "H007",
+      "candidate_id": "anonymous-2",
+      "mode": "historical_response_review",
+      "candidate_sha256": "c8c11eb404bc6794de5fc1cbc5cdc5c44b5ffd38bda2326941577e07be79bee6",
+      "verdict": "revise",
+      "scores": {
+        "personal_fit": 4,
+        "composition": null,
+        "comfort_and_fabric": 4,
+        "variety_and_scope": 3,
+        "practical_usefulness": 3,
+        "voice_and_teaching": 2
+      },
+      "hard_violations": [],
+      "findings": [
+        {
+          "candidate_excerpt": "that slightly nubby, almost grainy quality",
+          "basis": "Profile section 4; historical owner message 019c7263-0d4a-7d0b-9dff-96c19d07229f.",
+          "judgment": "The physical explanation connects to the owner's stated enjoyment of the weave."
+        },
+        {
+          "candidate_excerpt": "That's not impulse buying, that's how a considered wardrobe works.",
+          "basis": "Profile sections 10 and 11 require judgment rather than reassurance or flattery.",
+          "judgment": "The reply cannot establish this conclusion from enjoying a fabric. It prematurely validates the buying decision."
+        },
+        {
+          "candidate_excerpt": "With the new measurements being untested, that's a lot riding on one fit profile.",
+          "basis": "The owner describes an experimental measurement order in the same conversation.",
+          "judgment": "This is a useful concrete counterargument and improves the advice."
+        }
+      ],
+      "limitations": [
+        "Historical images are not included.",
+        "Full model input and tool receipts are not reconstructed.",
+        "Current-profile retrospective review; not a live application run or controlled historical benchmark.",
+        "Exact thread count and the full cart are not independently verified in the selected context. No medical claim is adopted by this review."
+      ],
+      "summary": "Recognizes the tactile preference and the risk of ordering many untested sizes, but endorses the purchase too readily and adds unnecessary psychological framing."
+    },
+    {
+      "case_id": "C003",
+      "related_case_id": "H016",
+      "candidate_id": "anonymous-3",
+      "mode": "historical_response_review",
+      "candidate_sha256": "fba35e94584deb4bd8fe589f4459f9b5eea4fb7140dbc5ec4c1c9a02eb7658cc",
+      "verdict": "fail",
+      "scores": {
+        "personal_fit": 2,
+        "composition": null,
+        "comfort_and_fabric": null,
+        "variety_and_scope": 2,
+        "practical_usefulness": 2,
+        "voice_and_teaching": 2
+      },
+      "hard_violations": [],
+      "findings": [
+        {
+          "candidate_excerpt": "no trouser colour or footwear may repeat across the set",
+          "basis": "Owner decision 1; profile section 6; historical owner message 019dbe5f-956b-7fef-9f48-a12bc3a55270.",
+          "judgment": "This overconstrains variety instead of considering availability, quantity, and composition. Brown is still liked."
+        },
+        {
+          "candidate_excerpt": "Two questions before I commit it:",
+          "basis": "Profile section 11 and the September 15 decision-light operating policy.",
+          "judgment": "The response leaves the owner to design exceptions rather than presenting a usable proportional rule."
+        },
+        {
+          "candidate_excerpt": "all three Allbirds (Navy/Grey/Brown) must appear",
+          "basis": "Historical request asks for a better spread, not a permanent requirement that each brand/color occur in every set.",
+          "judgment": "A fixed brand quota is not a general taste rule and does not adapt to changing eligible stock."
+        }
+      ],
+      "limitations": [
+        "Historical images are not included.",
+        "Full model input and tool receipts are not reconstructed.",
+        "Current-profile retrospective review; not a live application run or controlled historical benchmark."
+      ],
+      "summary": "Finds the repetition problem but replaces it with rigid quotas and more decisions for the owner."
+    },
+    {
+      "case_id": "C004",
+      "related_case_id": "H024",
+      "candidate_id": "anonymous-4",
+      "mode": "historical_response_review",
+      "candidate_sha256": "5d1fae584fd512ab98de5e2a13dcdedbbcbd5a834f2849e765b5b50b850609ab",
+      "verdict": "fail",
+      "scores": {
+        "personal_fit": 2,
+        "composition": 2,
+        "comfort_and_fabric": 2,
+        "variety_and_scope": 4,
+        "practical_usefulness": 2,
+        "voice_and_teaching": 2
+      },
+      "hard_violations": [],
+      "findings": [
+        {
+          "candidate_excerpt": "only the shirt is in question.",
+          "basis": "Historical request 019e7d3b-ec01-7744-824d-4b9415c45628; profile section 11.",
+          "judgment": "This correctly keeps the existing outfit intact."
+        },
+        {
+          "candidate_excerpt": "the heavier weave is arguably the best wind answer.",
+          "basis": "Profile section 8 distinguishes peak-temperature base garments from the outer layer that covers wind and a cool start.",
+          "judgment": "The coat is already retained for wind; using that as the reason for a heavier base at a 22 C peak poorly serves the brief."
+        },
+        {
+          "candidate_excerpt": "every one of them stacks green on the olive trouser and turns the fit muddy.",
+          "basis": "Profile sections 5 and 6 permit tonal depth, greyed adjacency, and coherent quiet combinations.",
+          "judgment": "This categorical prohibition substitutes a simplistic rule for assessment of actual hues, values, and texture."
+        },
+        {
+          "candidate_excerpt": "gold lightweight oxford (PCF4627)",
+          "basis": "Profile sections 8 and 11; perceptible names are the dressing interface.",
+          "judgment": "The readable garment name is useful, but the extra product code adds no value at the wardrobe."
+        }
+      ],
+      "limitations": [
+        "Historical images are not included.",
+        "Full model input and tool receipts are not reconstructed.",
+        "Current-profile retrospective review; not a live application run or controlled historical benchmark.",
+        "Gold laundry and off-white repair were disclosed in the following owner message. They are not charged as already-known violations in this historical review.",
+        "The omitted tool output prevents independent verification of the claimed inventory read."
+      ],
+      "summary": "Preserves the requested swap scope but offers poorly grounded thermal alternatives and a blanket ban on green-on-green combinations."
+    },
+    {
+      "case_id": "C005",
+      "related_case_id": "H038",
+      "candidate_id": "anonymous-5",
+      "mode": "historical_response_review",
+      "candidate_sha256": "fa0d7d65f736836601fe7876d74eb23855443aee282c8997be2391fa959f7bd8",
+      "verdict": "fail",
+      "scores": {
+        "personal_fit": 2,
+        "composition": null,
+        "comfort_and_fabric": 1,
+        "variety_and_scope": null,
+        "practical_usefulness": 1,
+        "voice_and_teaching": 3
+      },
+      "hard_violations": [
+        "Unsupported garment waist measurement and definitive fit assurance from chest-only evidence."
+      ],
+      "findings": [
+        {
+          "candidate_excerpt": "circumference at waist sits close to chest — 51.8\" full",
+          "basis": "Profile section 7; historical owner message 019e3f64-451c-7247-ae42-ca76bde2a6e7.",
+          "judgment": "Chest circumference and cut assumptions do not establish the missing waist dimension."
+        },
+        {
+          "candidate_excerpt": "it won't compress or cling",
+          "basis": "The candidate itself states that the relevant chart information is missing.",
+          "judgment": "This definitive fit promise is not supported by the measurement evidence."
+        },
+        {
+          "candidate_excerpt": "a sz44 garment with ~7-8\" of designed waist ease",
+          "basis": "Profile section 11: verify before asserting.",
+          "judgment": "Calling inferred ease designed ease turns an estimate into a construction fact."
+        }
+      ],
+      "limitations": [
+        "Historical images are not included.",
+        "Full model input and tool receipts are not reconstructed.",
+        "Current-profile retrospective review; not a live application run or controlled historical benchmark.",
+        "The historical screenshot and retailer return terms are not available; this review does not verify the claimed 28-day return window."
+      ],
+      "summary": "Acknowledges the waist concern but then supplies invented precision from a chest measurement, which defeats the purpose of the correction."
+    },
+    {
+      "case_id": "C006",
+      "related_case_id": "H036",
+      "candidate_id": "anonymous-6",
+      "mode": "historical_response_review",
+      "candidate_sha256": "98150b4868f0c987276136960dfadd2d10ccf7eaa737cde87419d9d600b89d9e",
+      "verdict": "revise",
+      "scores": {
+        "personal_fit": null,
+        "composition": null,
+        "comfort_and_fabric": null,
+        "variety_and_scope": 4,
+        "practical_usefulness": 2,
+        "voice_and_teaching": 3
+      },
+      "hard_violations": [],
+      "findings": [
+        {
+          "candidate_excerpt": "no weekly limit.",
+          "basis": "Historical owner message 019d7ec2-a886-7f65-a080-e48f4331910d; profile sections 9 and 11.",
+          "judgment": "Correctly removes the invented weekly laundry restriction from jackets."
+        },
+        {
+          "candidate_excerpt": "Ready to build the 28 days now. Shall I go?",
+          "basis": "Historical context is an ongoing requested rotation; owner amendment emphasizes low-effort execution.",
+          "judgment": "The extra approval question leaves the actual work unfinished."
+        }
+      ],
+      "limitations": [
+        "Historical images are not included.",
+        "Full model input and tool receipts are not reconstructed.",
+        "Current-profile retrospective review; not a live application run or controlled historical benchmark.",
+        "This is a conversational-response assessment, not verification that any wardrobe rule was saved."
+      ],
+      "summary": "Corrects the jacket rule but stops to ask permission to continue an already requested rotation."
+    },
+    {
+      "case_id": "C007",
+      "related_case_id": "H012",
+      "candidate_id": "anonymous-7",
+      "mode": "historical_response_review",
+      "candidate_sha256": "da824bfd53383f6aaa159cecbc1efd6638c983b875be0aa2fd956f177af923ab",
+      "verdict": "pass",
+      "scores": {
+        "personal_fit": 4,
+        "composition": 4,
+        "comfort_and_fabric": null,
+        "variety_and_scope": 4,
+        "practical_usefulness": 4,
+        "voice_and_teaching": 3
+      },
+      "hard_violations": [],
+      "findings": [
+        {
+          "candidate_excerpt": "Charcoal trousers it is.",
+          "basis": "Historical owner message 019ce89f-e6c1-7ca2-8743-c2b82e6349f7; profile sections 5 and 6.",
+          "judgment": "A clear recommendation follows the owner's corrected tonal description."
+        },
+        {
+          "candidate_excerpt": "that value contrast is what creates the silhouette",
+          "basis": "Profile sections 5 and 6.",
+          "judgment": "The explanation is about visible relationships and proportion rather than status or a generic style label."
+        },
+        {
+          "candidate_excerpt": "Two similar-value greys in two different patterns just reads as muddy rather than considered.",
+          "basis": "Profile section 5 also allows greyed adjacency and depth within one color.",
+          "judgment": "Too absolute as a general rule, but it does not invalidate the specific charcoal recommendation."
+        }
+      ],
+      "limitations": [
+        "Historical images are not included.",
+        "Full model input and tool receipts are not reconstructed.",
+        "Current-profile retrospective review; not a live application run or controlled historical benchmark.",
+        "This passes the textual choice and reasoning task only. Missing image bytes prevent a visual composition verdict."
+      ],
+      "summary": "Makes a defensible charcoal choice from the corrected coat value and explains the silhouette; the categorical language about other grey pairings needs restraint."
+    },
+    {
+      "case_id": "C008",
+      "related_case_id": "H039",
+      "candidate_id": "anonymous-8",
+      "mode": "historical_response_review",
+      "candidate_sha256": "3c1a6eeec2f58f06f875c7efb08533aff375b9047588ec31a1116699b23f2a47",
+      "verdict": "insufficient_evidence",
+      "scores": {
+        "personal_fit": 3,
+        "composition": null,
+        "comfort_and_fabric": null,
+        "variety_and_scope": 4,
+        "practical_usefulness": 3,
+        "voice_and_teaching": 3
+      },
+      "hard_violations": [],
+      "findings": [
+        {
+          "candidate_excerpt": "Confirmed walnut",
+          "basis": "Historical owner message 019e3fd2-93d0-7d72-a3bc-54c7b7d04480; owner observation precedence.",
+          "judgment": "Accepting the owner's color description is correct."
+        },
+        {
+          "candidate_excerpt": "the close-up shows the warm tan-brown clearly, with the twill weave visible.",
+          "basis": "Historical photo bytes are absent from the supplied export packet.",
+          "judgment": "This review cannot validate the visual claim. That absence is not proof that the original assistant lacked the photo."
+        },
+        {
+          "candidate_excerpt": "coherent through and through",
+          "basis": "Profile sections 5 and 6: saturation discipline and avoidance of several competing statement colors.",
+          "judgment": "Pink, saturated yellow, walnut, and olive require actual shade and proportion evidence. The praise is more certain than this packet permits."
+        }
+      ],
+      "limitations": [
+        "Historical images are not included.",
+        "Full model input and tool receipts are not reconstructed.",
+        "Current-profile retrospective review; not a live application run or controlled historical benchmark.",
+        "Do not grade this as a verified visual success or infer a false historical hallucination solely from unavailable photos."
+      ],
+      "summary": "Accepts the walnut correction, but the visible text alone cannot establish the confident photographic and saturation judgments."
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  "name": "garderobe",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Garderobe: a private wardrobe companion (fresh implementation of the revision 4 specification).",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "tests/*"
+  ],
+  "scripts": {
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run typecheck && npm run test --workspaces --if-present",
+    "test:foundation": "npm run test -w @garderobe/contracts -w @garderobe/domain",
+    "generate:contracts": "npm run generate -w @garderobe/contracts",
+    "import:report": "npm run import:report -w @garderobe/domain",
+    "verify:documents": "node tools/verify-documents.mjs",
+    "verify:checklist": "node tools/check-checklist.mjs",
+    "verify": "npm run verify:documents && npm run verify:checklist && npm run import:report -- --check && npm run generate:contracts -- --check"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.22.0",
+    "@cloudflare/workers-types": "5.20260930.2",
+    "@types/node": "22.20.4",
+    "@vitest/runner": "4.1.11",
+    "@vitest/snapshot": "4.1.11",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11",
+    "wrangler": "4.145.0"
+  },
+  "dependencies": {
+    "zod": "4.6.5"
+  }
+}
