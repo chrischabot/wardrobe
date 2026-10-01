@@ -1,0 +1,514 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		7A7C359972587113F8D78B06 /* GarderobeShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 56670B6D8C39A188058AD7CF /* GarderobeShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		96B3BEF9A15FBF68B5F76901 /* GarderobeKit in Frameworks */ = {isa = PBXBuildFile; productRef = B52FF5334217250CB1A47B14 /* GarderobeKit */; };
+		E6DE92A3F7DE0745617903B2 /* GarderobeKit in Frameworks */ = {isa = PBXBuildFile; productRef = 87C06E0D1D7B4F00510D087A /* GarderobeKit */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		3896E70D38E9645048E48A97 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 80CE8F80D803D3A12CEB1B60 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = C16F3A3010603BDEA39D189D;
+			remoteInfo = GarderobeShare;
+		};
+		865EB9B5716BB75832F70E1F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 80CE8F80D803D3A12CEB1B60 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 944C9665890975F878E6AF06;
+			remoteInfo = Garderobe;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		5FD6F8106ADC8DFC0D6977C4 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				7A7C359972587113F8D78B06 /* GarderobeShare.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		0C2BF23AFD89FD40D594C9B0 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
+		22CADBF163A7DDDAB6B2B3B5 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
+		56670B6D8C39A188058AD7CF /* GarderobeShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = GarderobeShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		66A198C9FE7F76A63AB33178 /* Garderobe.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Garderobe.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		80A595AC7A457C6D460844B3 /* Base.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Base.xcconfig; sourceTree = "<group>"; };
+		8EE257580B763C8C401BACC0 /* GarderobeUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = GarderobeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		725719F3D88CE4C165539F82 /* Exceptions for "Garderobe" folder in "Garderobe" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Garderobe.entitlements,
+				Info.plist,
+			);
+			target = 944C9665890975F878E6AF06 /* Garderobe */;
+		};
+		A4BC6065CFBE9587ACC108DB /* Exceptions for "GarderobeShare" folder in "GarderobeShare" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				GarderobeShare.entitlements,
+				Info.plist,
+			);
+			target = C16F3A3010603BDEA39D189D /* GarderobeShare */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		48CD28ECF3F2A626E4AE4F03 /* GarderobeUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = GarderobeUITests;
+			sourceTree = "<group>";
+		};
+		96E0B4C844672A1666B30F6F /* GarderobeShare */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				A4BC6065CFBE9587ACC108DB /* Exceptions for "GarderobeShare" folder in "GarderobeShare" target */,
+			);
+			path = GarderobeShare;
+			sourceTree = "<group>";
+		};
+		C057FB7D817DEF922D896812 /* Garderobe */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				725719F3D88CE4C165539F82 /* Exceptions for "Garderobe" folder in "Garderobe" target */,
+			);
+			path = Garderobe;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		C260D8F3224953DC4343C2CA /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E6DE92A3F7DE0745617903B2 /* GarderobeKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E56D9F245CE711061B598820 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				96B3BEF9A15FBF68B5F76901 /* GarderobeKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F4E6711CD306CC3C33F25F22 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		23A321E84D66CDD4B5489BD9 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				C057FB7D817DEF922D896812 /* Garderobe */,
+				96E0B4C844672A1666B30F6F /* GarderobeShare */,
+				48CD28ECF3F2A626E4AE4F03 /* GarderobeUITests */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		87B1221A1639380F233834DC /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				80A595AC7A457C6D460844B3 /* Base.xcconfig */,
+				0C2BF23AFD89FD40D594C9B0 /* Debug.xcconfig */,
+				22CADBF163A7DDDAB6B2B3B5 /* Release.xcconfig */,
+			);
+			path = Config;
+			sourceTree = "<group>";
+		};
+		E09179827F111487FDC9ECF9 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				66A198C9FE7F76A63AB33178 /* Garderobe.app */,
+				56670B6D8C39A188058AD7CF /* GarderobeShare.appex */,
+				8EE257580B763C8C401BACC0 /* GarderobeUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		E1DFE0C83B345E69E4B48D47 = {
+			isa = PBXGroup;
+			children = (
+				23A321E84D66CDD4B5489BD9 /* App */,
+				87B1221A1639380F233834DC /* Config */,
+				E09179827F111487FDC9ECF9 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		5F780FF34BE55266BA5849BB /* GarderobeUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 9B5665326446B8B0D23A8B02 /* Build configuration list for PBXNativeTarget "GarderobeUITests" */;
+			buildPhases = (
+				D0102F955FA498FAC91E444B /* Sources */,
+				F4E6711CD306CC3C33F25F22 /* Frameworks */,
+				3C8F028EC9DF2B5BDFA9BD4E /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				1F7BA905BCEC8972A920ADF6 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				48CD28ECF3F2A626E4AE4F03 /* GarderobeUITests */,
+			);
+			name = GarderobeUITests;
+			packageProductDependencies = (
+			);
+			productName = GarderobeUITests;
+			productReference = 8EE257580B763C8C401BACC0 /* GarderobeUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		944C9665890975F878E6AF06 /* Garderobe */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 8D7EEFF4532B889AE8EE9D66 /* Build configuration list for PBXNativeTarget "Garderobe" */;
+			buildPhases = (
+				664326AEDC0E5B706E59A024 /* Sources */,
+				E56D9F245CE711061B598820 /* Frameworks */,
+				4FE88D8D053F7E48EFAB88B2 /* Resources */,
+				5FD6F8106ADC8DFC0D6977C4 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				1182838F1BDCE6575A8E2310 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				C057FB7D817DEF922D896812 /* Garderobe */,
+			);
+			name = Garderobe;
+			packageProductDependencies = (
+				B52FF5334217250CB1A47B14 /* GarderobeKit */,
+			);
+			productName = Garderobe;
+			productReference = 66A198C9FE7F76A63AB33178 /* Garderobe.app */;
+			productType = "com.apple.product-type.application";
+		};
+		C16F3A3010603BDEA39D189D /* GarderobeShare */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7EA9B9FB9DB7D838DA171C39 /* Build configuration list for PBXNativeTarget "GarderobeShare" */;
+			buildPhases = (
+				B80B43BD72CD9656BD67E43B /* Sources */,
+				C260D8F3224953DC4343C2CA /* Frameworks */,
+				ECD9FE50AF85CEAAA436FDE3 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				96E0B4C844672A1666B30F6F /* GarderobeShare */,
+			);
+			name = GarderobeShare;
+			packageProductDependencies = (
+				87C06E0D1D7B4F00510D087A /* GarderobeKit */,
+			);
+			productName = GarderobeShare;
+			productReference = 56670B6D8C39A188058AD7CF /* GarderobeShare.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		80CE8F80D803D3A12CEB1B60 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2600;
+				LastUpgradeCheck = 2600;
+				TargetAttributes = {
+					5F780FF34BE55266BA5849BB = {
+						CreatedOnToolsVersion = 26.0;
+						TestTargetID = 944C9665890975F878E6AF06;
+					};
+					944C9665890975F878E6AF06 = {
+						CreatedOnToolsVersion = 26.0;
+					};
+					C16F3A3010603BDEA39D189D = {
+						CreatedOnToolsVersion = 26.0;
+					};
+				};
+			};
+			buildConfigurationList = 1360CC4CD34678B6F408BBAA /* Build configuration list for PBXProject "Garderobe" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = E1DFE0C83B345E69E4B48D47;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				C3FEBB55749EF15F95E3F417 /* XCLocalSwiftPackageReference "GarderobeKit" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = E09179827F111487FDC9ECF9 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				944C9665890975F878E6AF06 /* Garderobe */,
+				C16F3A3010603BDEA39D189D /* GarderobeShare */,
+				5F780FF34BE55266BA5849BB /* GarderobeUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		3C8F028EC9DF2B5BDFA9BD4E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		4FE88D8D053F7E48EFAB88B2 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		ECD9FE50AF85CEAAA436FDE3 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		664326AEDC0E5B706E59A024 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B80B43BD72CD9656BD67E43B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D0102F955FA498FAC91E444B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		1182838F1BDCE6575A8E2310 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = C16F3A3010603BDEA39D189D /* GarderobeShare */;
+			targetProxy = 3896E70D38E9645048E48A97 /* PBXContainerItemProxy */;
+		};
+		1F7BA905BCEC8972A920ADF6 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 944C9665890975F878E6AF06 /* Garderobe */;
+			targetProxy = 865EB9B5716BB75832F70E1F /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		16E980BC12A3923979F20C49 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 22CADBF163A7DDDAB6B2B3B5 /* Release.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = App/Garderobe/Garderobe.entitlements;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Garderobe/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(GARDEROBE_BUNDLE_ID_PREFIX)";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Release;
+		};
+		22673EA27884934F94E03EF7 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 0C2BF23AFD89FD40D594C9B0 /* Debug.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = App/Garderobe/Garderobe.entitlements;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Garderobe/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(GARDEROBE_BUNDLE_ID_PREFIX)";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Debug;
+		};
+		270386AE6111D183E1E42B3A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 0C2BF23AFD89FD40D594C9B0 /* Debug.xcconfig */;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		4DE6F5031BEE031FD4097D08 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 22CADBF163A7DDDAB6B2B3B5 /* Release.xcconfig */;
+			buildSettings = {
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(GARDEROBE_BUNDLE_ID_PREFIX).uitests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TEST_TARGET_NAME = Garderobe;
+			};
+			name = Release;
+		};
+		77126F4D4E0D2218626917BB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 0C2BF23AFD89FD40D594C9B0 /* Debug.xcconfig */;
+			buildSettings = {
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(GARDEROBE_BUNDLE_ID_PREFIX).uitests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TEST_TARGET_NAME = Garderobe;
+			};
+			name = Debug;
+		};
+		8248BCA95275BC0EB91FBA29 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 22CADBF163A7DDDAB6B2B3B5 /* Release.xcconfig */;
+			buildSettings = {
+			};
+			name = Release;
+		};
+		B23C5BC19D046EDCC6375F1B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 0C2BF23AFD89FD40D594C9B0 /* Debug.xcconfig */;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = App/GarderobeShare/GarderobeShare.entitlements;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/GarderobeShare/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(GARDEROBE_BUNDLE_ID_PREFIX).share";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+			};
+			name = Debug;
+		};
+		F25383EA4904DC6FC6AF510A /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 22CADBF163A7DDDAB6B2B3B5 /* Release.xcconfig */;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = App/GarderobeShare/GarderobeShare.entitlements;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/GarderobeShare/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = "$(GARDEROBE_BUNDLE_ID_PREFIX).share";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1360CC4CD34678B6F408BBAA /* Build configuration list for PBXProject "Garderobe" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				270386AE6111D183E1E42B3A /* Debug */,
+				8248BCA95275BC0EB91FBA29 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		7EA9B9FB9DB7D838DA171C39 /* Build configuration list for PBXNativeTarget "GarderobeShare" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B23C5BC19D046EDCC6375F1B /* Debug */,
+				F25383EA4904DC6FC6AF510A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		8D7EEFF4532B889AE8EE9D66 /* Build configuration list for PBXNativeTarget "Garderobe" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				22673EA27884934F94E03EF7 /* Debug */,
+				16E980BC12A3923979F20C49 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		9B5665326446B8B0D23A8B02 /* Build configuration list for PBXNativeTarget "GarderobeUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				77126F4D4E0D2218626917BB /* Debug */,
+				4DE6F5031BEE031FD4097D08 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		C3FEBB55749EF15F95E3F417 /* XCLocalSwiftPackageReference "GarderobeKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = GarderobeKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		87C06E0D1D7B4F00510D087A /* GarderobeKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = GarderobeKit;
+		};
+		B52FF5334217250CB1A47B14 /* GarderobeKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = GarderobeKit;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 80CE8F80D803D3A12CEB1B60 /* Project object */;
+}

@@ -1,0 +1,126 @@
+// Base.xcconfig
+// Build settings shared by every configuration of Garderobe.xcodeproj.
+// Debug.xcconfig and Release.xcconfig include this file; the project and each
+// target use those two files as their base configuration, so a value set here
+// applies everywhere unless a target overrides it in the project file.
+//
+// xcconfig syntax reminder: two slashes start a comment, also in the middle of
+// a value. A URL therefore cannot be written literally. Break up the two
+// slashes with an empty variable reference:
+//     GARDEROBE_API_BASE_URL = https:/$()/host
+// which the build system expands to the URL with both slashes.
+
+// ---------------------------------------------------------------------------
+// Platform
+// ---------------------------------------------------------------------------
+
+// The specification targets iOS 27. When only an older SDK is installed,
+// override this on the xcodebuild command line, for example
+//     xcodebuild ... IPHONEOS_DEPLOYMENT_TARGET=26.0
+// The code uses no API newer than iOS 26 (GarderobeKit declares iOS 26.0 in
+// its Package.swift), so that override builds the same sources.
+IPHONEOS_DEPLOYMENT_TARGET = 27.0
+
+// Build against the iOS SDK (device and simulator).
+SDKROOT = iphoneos
+
+// 1 = iPhone only. The app has no iPad layout.
+TARGETED_DEVICE_FAMILY = 1
+
+// Swift 5 language mode for the app, the share extension and the UI tests.
+// GarderobeKit chooses its own language mode in its Package.swift.
+SWIFT_VERSION = 5.0
+
+// ---------------------------------------------------------------------------
+// Versioning
+// ---------------------------------------------------------------------------
+
+// User-visible version (CFBundleShortVersionString) of the app and extension.
+MARKETING_VERSION = 1.0.0
+
+// Build number (CFBundleVersion). The app and its extension must agree.
+CURRENT_PROJECT_VERSION = 1
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+// Bundle identifier of the app. The targets derive theirs from it:
+//     Garderobe         $(GARDEROBE_BUNDLE_ID_PREFIX)
+//     GarderobeShare    $(GARDEROBE_BUNDLE_ID_PREFIX).share
+//     GarderobeUITests  $(GARDEROBE_BUNDLE_ID_PREFIX).uitests
+GARDEROBE_BUNDLE_ID_PREFIX = com.chrischabot.garderobe
+
+// App group shared by the app and the share extension (entitlements and the
+// GarderobeAppGroup Info.plist key).
+GARDEROBE_APP_GROUP = group.$(GARDEROBE_BUNDLE_ID_PREFIX)
+
+// Keychain access group shared by the app and the share extension.
+// AppIdentifierPrefix is supplied by code signing (the team prefix followed by
+// a dot); it is empty when a simulator build is not signed with a team.
+GARDEROBE_KEYCHAIN_GROUP = $(AppIdentifierPrefix)$(GARDEROBE_BUNDLE_ID_PREFIX)
+
+// ---------------------------------------------------------------------------
+// Signing
+// ---------------------------------------------------------------------------
+
+// Apple developer team ID. Intentionally empty: the owner sets it. Simulator
+// builds work without it; device builds and archives do not.
+DEVELOPMENT_TEAM =
+
+// Let Xcode manage certificates and provisioning profiles.
+CODE_SIGN_STYLE = Automatic
+
+// ---------------------------------------------------------------------------
+// Deployment values (not known yet)
+// ---------------------------------------------------------------------------
+// The four settings below are intentionally empty. The deployment workstream
+// supplies them. Until then the app builds, but it cannot reach a server or
+// sign in, and device signing can fail on the empty associated domain.
+
+// Base URL of the Garderobe API, read at run time from the GarderobeAPIBaseURL
+// Info.plist key. Supplied by the deployment workstream.
+// Write it with the $() trick described at the top: https:/$()/host
+GARDEROBE_API_BASE_URL =
+
+// OAuth client identifier of the iOS app, read from the GarderobeOAuthClientID
+// Info.plist key. Supplied by the deployment workstream.
+GARDEROBE_OAUTH_CLIENT_ID =
+
+// OAuth redirect URL registered for the iOS app, read from the
+// GarderobeOAuthRedirectURL Info.plist key. Supplied by the deployment
+// workstream. Write it with the $() trick: https:/$()/host/path
+GARDEROBE_OAUTH_REDIRECT_URL =
+
+// Host name (no scheme, no path) that serves the apple-app-site-association
+// file. Used for the applinks: and webcredentials: associated domains in
+// Garderobe.entitlements. Supplied by the deployment workstream.
+GARDEROBE_ASSOCIATED_DOMAIN =
+
+// ---------------------------------------------------------------------------
+// Compiler and build-system defaults (the values Xcode's project template sets)
+// ---------------------------------------------------------------------------
+
+// Never search user header paths for system-style includes.
+ALWAYS_SEARCH_USER_PATHS = NO
+
+// Use Clang modules for any C or Objective-C that a dependency brings in.
+CLANG_ENABLE_MODULES = YES
+
+// Keep symbols in copied binaries; stripping happens at install time.
+COPY_PHASE_STRIP = NO
+
+// Type-check objc_msgSend calls.
+ENABLE_STRICT_OBJC_MSGSEND = YES
+
+// Run script phases inside the build sandbox. The project has none today.
+ENABLE_USER_SCRIPT_SANDBOXING = YES
+
+// Do not place uninitialised C globals in common blocks.
+GCC_NO_COMMON_BLOCKS = YES
+
+// Prefer string catalogs (.xcstrings) when localisations are added.
+LOCALIZATION_PREFERS_STRING_CATALOGS = YES
+
+// Extract localisable strings from Swift sources at build time.
+SWIFT_EMIT_LOC_STRINGS = YES

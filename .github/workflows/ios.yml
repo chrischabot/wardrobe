@@ -1,0 +1,83 @@
+name: iOS (manual)
+
+# Builds the SwiftUI app and runs the Swift package tests and the UI tests on a macOS runner.
+# Manual trigger only: macOS runner minutes are billed to the repository owner, so this never
+# runs on push, pull request or a schedule. It has not been run from the project that wrote it.
+on:
+  workflow_dispatch:
+    inputs:
+      deployment_target:
+        description: "IPHONEOS_DEPLOYMENT_TARGET override (the project sets 27.0; use 26.0 when the runner has no iOS 27 SDK)"
+        required: false
+        default: ""
+      simulator:
+        description: "Simulator device name (empty: the first available iPhone simulator)"
+        required: false
+        default: ""
+      run_ui_tests:
+        description: "Run the UI tests (slower)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  ios:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+          xcrun simctl list devices available | head -40
+
+      - name: Project structure
+        run: |
+          python3 ios/Tools/generate-xcodeproj.py --check
+          python3 ios/Tools/check-xcodeproj.py
+          python3 ios/Tools/check-app-sources.py
+
+      - name: Swift package tests (macOS host)
+        working-directory: ios/GarderobeKit
+        run: swift test
+
+      - name: Choose a simulator
+        id: sim
+        run: |
+          name="${{ inputs.simulator }}"
+          if [ -z "$name" ]; then
+            name="$(xcrun simctl list devices available | sed -n 's/^ *\(iPhone[^(]*\) (.*/\1/p' | sed 's/ *$//' | head -1)"
+          fi
+          if [ -z "$name" ]; then echo "No iPhone simulator is available on this runner" >&2; exit 1; fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "Using simulator: $name"
+
+      - name: Build the app for the simulator
+        run: |
+          set -o pipefail
+          args=(-project ios/Garderobe.xcodeproj -scheme Garderobe -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" CODE_SIGNING_ALLOWED=NO)
+          if [ -n "${{ inputs.deployment_target }}" ]; then args+=("IPHONEOS_DEPLOYMENT_TARGET=${{ inputs.deployment_target }}"); fi
+          xcodebuild build-for-testing "${args[@]}" | tee build.log | tail -40
+
+      - name: UI tests (demo mode: a recording of the real backend)
+        if: ${{ inputs.run_ui_tests }}
+        run: |
+          set -o pipefail
+          args=(-project ios/Garderobe.xcodeproj -scheme Garderobe -destination "platform=iOS Simulator,name=${{ steps.sim.outputs.name }}" CODE_SIGNING_ALLOWED=NO -resultBundlePath TestResults.xcresult)
+          if [ -n "${{ inputs.deployment_target }}" ]; then args+=("IPHONEOS_DEPLOYMENT_TARGET=${{ inputs.deployment_target }}"); fi
+          xcodebuild test-without-building "${args[@]}" | tee test.log | tail -60
+
+      - name: Keep logs and results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-and-test
+          path: |
+            build.log
+            test.log
+            TestResults.xcresult
+          if-no-files-found: ignore

@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>Garderobe</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>GarderobeAPIBaseURL</key>
+	<string>$(GARDEROBE_API_BASE_URL)</string>
+	<key>GarderobeAppGroup</key>
+	<string>$(GARDEROBE_APP_GROUP)</string>
+	<key>GarderobeKeychainGroup</key>
+	<string>$(GARDEROBE_KEYCHAIN_GROUP)</string>
+	<key>GarderobeOAuthClientID</key>
+	<string>$(GARDEROBE_OAUTH_CLIENT_ID)</string>
+	<key>GarderobeOAuthRedirectURL</key>
+	<string>$(GARDEROBE_OAUTH_REDIRECT_URL)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Garderobe uses the camera when you choose to photograph a garment or what you are wearing.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Garderobe reads a photo only when you pick one to add to your wardrobe or a conversation.</string>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+	</dict>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+</dict>
+</plist>

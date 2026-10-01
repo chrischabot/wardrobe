@@ -1,0 +1,20 @@
+// Release.xcconfig
+// Base configuration of the Release build configuration, for the project and
+// for every target.
+
+#include "Base.xcconfig"
+
+// Produce a dSYM bundle so crash reports can be symbolicated.
+DEBUG_INFORMATION_FORMAT = dwarf-with-dsym
+
+// Compile out NSAssert in any Objective-C code.
+ENABLE_NS_ASSERTIONS = NO
+
+// Optimise across the whole module.
+SWIFT_COMPILATION_MODE = wholemodule
+
+// Optimise Swift for speed.
+SWIFT_OPTIMIZATION_LEVEL = -O
+
+// Run the product validation step on release builds.
+VALIDATE_PRODUCT = YES
