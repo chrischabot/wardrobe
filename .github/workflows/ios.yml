@@ -89,10 +89,12 @@ jobs:
         run: |
           set -o pipefail
           status=0
+          # The simulator's iOS version as the deployment target (no iOS 27 SDK is installed on runners).
+          echo "IPHONEOS_DEPLOYMENT_TARGET = ${{ steps.sim.outputs.target }}" > ios/Config/Local.xcconfig
           xcodebuild build-for-testing -project ios/Garderobe.xcodeproj -scheme Garderobe \
             -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
             -derivedDataPath DerivedData -IDEBuildingContinueBuildingAfterErrors=YES \
-            CODE_SIGNING_ALLOWED=NO IPHONEOS_DEPLOYMENT_TARGET=${{ steps.sim.outputs.target }} > build.log 2>&1 || status=$?
+            CODE_SIGNING_ALLOWED=NO > build.log 2>&1 || status=$?
           # The distinct compiler and build-system errors, with the checkout path removed.
           grep -E "(error|fatal error):|^xcodebuild: error|^error:|BUILD (SUCCEEDED|FAILED)|TEST BUILD (SUCCEEDED|FAILED)" build.log | sed "s#$PWD/##g" | awk '!seen[$0]++' > build-errors.txt || true
           if ! grep -qE "\.swift:[0-9]+" build-errors.txt; then
@@ -112,7 +114,7 @@ jobs:
           xcodebuild test-without-building -project ios/Garderobe.xcodeproj -scheme Garderobe \
             -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
             -derivedDataPath DerivedData -resultBundlePath TestResults.xcresult \
-            CODE_SIGNING_ALLOWED=NO IPHONEOS_DEPLOYMENT_TARGET=${{ steps.sim.outputs.target }} > test.log 2>&1 || status=$?
+            CODE_SIGNING_ALLOWED=NO > test.log 2>&1 || status=$?
           grep -E "Test Case .* (passed|failed)|error:|Executed [0-9]+ tests|TEST (SUCCEEDED|FAILED|EXECUTE)" test.log | sed "s#$PWD/##g" > test-summary.txt || true
           if ! grep -q "Test Case" test-summary.txt; then { echo "---- end of test.log ----"; tail -60 test.log | sed "s#$PWD/##g"; } >> test-summary.txt; fi
           echo "xcodebuild test-without-building exit $status" >> test-summary.txt
