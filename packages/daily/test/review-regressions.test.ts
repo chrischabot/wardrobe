@@ -334,7 +334,7 @@ describe("review finding 7: watches and jewellery are excluded by classification
     const check = async (id: string, explicit: boolean) => validateOutfit(h.db, owner.principal(), { forDate: DAY, nowMs: h.clock.now(), slots: [...base, { role: "accessory", garmentId: id }], ...(explicit ? { explicitGarmentIds: [id] } : {}) });
 
     // Classified: the name gives nothing away, the classification decides - also against an explicit request.
-    for (const [name, kind] of [["Seiko SKX007 diver (synthetic boundary piece)", "watch"], ["Signet (synthetic boundary piece)", "ring"], ["Silver curb (synthetic boundary piece)", "chain"], ["Speedmaster (synthetic boundary piece)", "Wristwatch"]] as const) {
+    for (const [name, kind] of [["Seiko SKX007 diver (synthetic boundary piece)", "watch"], ["Signet (synthetic boundary piece)", "ring"], ["Silver curb (synthetic boundary piece)", "chain"], ["Tank on a strap (synthetic boundary piece)", "bracelet"]] as const) {
       const id = await create(name, kind);
       for (const explicit of [false, true]) {
         const v = await check(id, explicit);
@@ -359,10 +359,12 @@ describe("review finding 7: watches and jewellery are excluded by classification
   });
 
   it("the verdict uses the rule's own excluded words", () => {
-    const piece = (name: string, accessoryKind?: string, category = "accessory") => ({ name, category: category as never, roles: ["accessory" as const], attributes: accessoryKind ? { accessoryKind } : {} });
+    const piece = (name: string, accessoryKind?: string, category = "accessory") => ({ name, category: category as never, roles: ["accessory" as const], attributes: (accessoryKind ? { accessoryKind } : {}) as never });
     expect(accessoryVerdict(piece("Diver", "watch"), ["watch", "jewellery"])).toBe("excluded");
     expect(accessoryVerdict(piece("Diver", "watch"), ["jewellery"])).toBe("allowed");
     expect(accessoryVerdict(piece("Band", "bracelet"), ["watch", "jewellery"])).toBe("excluded");
+    // A value older than the contract's enum (stored before it existed) is still read as a watch.
+    expect(accessoryVerdict(piece("Speedmaster", "Wristwatch"), ["watch", "jewellery"])).toBe("excluded");
     expect(accessoryVerdict(piece("Diver"), ["watch", "jewellery"])).toBe("unclassified");
     expect(accessoryVerdict(piece("Chain-stitch chino", undefined, "trousers"), ["watch", "jewellery"])).toBe("allowed");
     expect(accessoryVerdict(piece("Field watch", undefined, "other"), ["watch", "jewellery"])).toBe("excluded");
