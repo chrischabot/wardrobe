@@ -37,7 +37,7 @@ export type { BackgroundRemover, DiscoveryCandidatePage, DiscoveryGarment, Disco
 export { EDIT_CONSTRAINTS } from "./adapters.ts";
 export { authorizeUpload, finalizeUpload, getUploadStatus, importImageBytes, mintUploadAuthorization, receiveUploadContent } from "./uploads.ts";
 export { garmentImageRefs, getAsset, getBackfillEstimate, getGarmentMedia, listMediaReview, listPhotosNeeded } from "./reads.ts";
-export { openAssetImage, openRendition, serveSignedMedia, signRenditionUrl, type OpenedImage } from "./delivery.ts";
+export { openAssetImage, openRendition, purgeOwnerMediaCache, serveSignedMedia, signRenditionUrl, type OpenedImage } from "./delivery.ts";
 export { dispatchMediaJobs, handleMediaQueue, listMediaJobs, runMediaJob, runQueuedMediaJobs } from "./jobs.ts";
 export { runMediaMaintenance, type MaintenanceResult } from "./maintenance.ts";
 export { composeOutfit, getComposition, getStudioSelectors, knownCombinationsForGarment, listStudioCombinations, listStudioDayPlans, openCompositePreview, requestCompositePreview, suggestStudioOutfits, validateStudioOutfit } from "./studio/reads.ts";

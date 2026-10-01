@@ -4,8 +4,10 @@
  * including `segment: "foreground"`). They are optional: without the binding, formats this package cannot
  * decode stay stored as supplied and cluttered photographs keep their background.
  *
- * NOT exercised by the local test suite (the local runtime has no Images service); they need the live
- * verification listed in the workstream report.
+ * The transcoder and the delivery thumbnails are exercised in test/delivery.test.ts against the local
+ * runtime's implementation of the binding, which resizes and converts but is not the production service.
+ * Foreground segmentation is NOT exercised locally. All of them need the live verification listed in the
+ * workstream report.
  */
 import type { BackgroundRemover, ImageTranscoder } from "./adapters.ts";
 

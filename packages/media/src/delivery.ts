@@ -3,7 +3,7 @@
  * (b) through a short-lived signed URL that names ONE rendition of ONE owner. The bucket has no public
  * access; nothing here ever returns an R2 key, a bucket URL or a long-lived link.
  */
-import { assertPrincipal, CommandError, first, requireScope, toInstant, type Principal } from "@garderobe/domain";
+import { all, assertPrincipal, CommandError, first, requireScope, toInstant, type Principal } from "@garderobe/domain";
 import { MEDIA_THUMBNAIL_WIDTHS } from "@garderobe/contracts/ext/media";
 import type { MediaRenditionKind, SignedMediaUrl } from "@garderobe/contracts/ext/media";
 import { assertOwnedKey } from "./keys.ts";
@@ -25,6 +25,23 @@ export type ThumbnailWidth = (typeof MEDIA_THUMBNAIL_WIDTHS)[number];
 /** Synthetic cache key: only this Worker reads the cache, and only after authorization succeeded. */
 export function thumbnailCacheUrl(userId: string, sha256: string, width: number): string {
   return `https://thumbnails.garderobe.internal/${encodeURIComponent(userId)}/${sha256}/${width}`;
+}
+
+/**
+ * Remove every cached thumbnail of one owner from this data centre's cache (account erasure). Call it
+ * BEFORE the owner's rows are deleted: the cache keys are derived from the rendition checksums. The
+ * Cache API is per data centre, so copies elsewhere lapse with their own 24-hour lifetime; they are
+ * unreachable meanwhile because every read checks the owner's records first.
+ */
+export async function purgeOwnerMediaCache(rt: MediaRuntime, userId: string): Promise<{ purged: number }> {
+  const cache = (globalThis as { caches?: { default?: Cache } }).caches?.default;
+  if (!cache) return { purged: 0 };
+  const rows = await all<{ sha256: string }>(rt.db, "SELECT DISTINCT sha256 FROM media_renditions WHERE user_id = ?", userId);
+  let purged = 0;
+  for (const r of rows) {
+    for (const width of MEDIA_THUMBNAIL_WIDTHS) if (await cache.delete(thumbnailCacheUrl(userId, r.sha256, width))) purged++;
+  }
+  return { purged };
 }
 
 function checkWidth(width: number | undefined | null): ThumbnailWidth | null {
