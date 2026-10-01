@@ -14,13 +14,14 @@ import type { CandidateRejectionReason, DiscoveryStrategy } from "@garderobe/con
 import type { DiscoveryCandidatePage, DiscoveryGarment, DiscoveryProvider, ImageFetcher } from "../adapters.ts";
 import type { RecordDiscoveryPayload } from "../commands/discovery.ts";
 import { execSystem } from "../exec.ts";
-import { decodeImage, probeImage } from "../image/index.ts";
+import { decodeImage, probeImage, type Raster } from "../image/index.ts";
 import type { JobRow } from "../jobs.ts";
 import { originalKey } from "../keys.ts";
 import { limitsOf, type MediaRuntime } from "../runtime.ts";
 import { isRealGarmentImage, loadAsset, loadGarmentMediaRow, mediaSettings } from "../store.ts";
 import { evaluateCandidate, type CandidateEvaluation } from "./evaluate.ts";
 import { createPurchaseLinkProvider } from "./purchase-link.ts";
+import { compareCandidateWithOwnerPhotos, loadOwnerReferences, type OwnerReferences } from "./owner-photo.ts";
 import { createSafeImageFetcher } from "./safe-fetch.ts";
 
 export const STRATEGY_ORDER: DiscoveryStrategy[] = ["purchase_source", "maker_catalogue", "identifier_search"];
@@ -73,7 +74,7 @@ function clip(value: unknown, max = 300): unknown {
 type Candidate = RecordDiscoveryPayload["candidates"][number];
 type Attempt = RecordDiscoveryPayload["attempts"][number];
 
-async function fetchAndCheckImage(rt: MediaRuntime, fetcher: ImageFetcher, url: string): Promise<{ ok: true; bytes: Uint8Array; contentType: string; width: number | null; height: number | null } | { ok: false; reason: CandidateRejectionReason; detail: string }> {
+async function fetchAndCheckImage(rt: MediaRuntime, fetcher: ImageFetcher, url: string): Promise<{ ok: true; bytes: Uint8Array; contentType: string; width: number | null; height: number | null; raster: Raster | null } | { ok: false; reason: CandidateRejectionReason; detail: string }> {
   const limits = limitsOf(rt.deps);
   const fetched = await fetcher.fetchImage(url, { maxBytes: limits.discovery.maxCandidateBytes });
   if (!fetched.ok) return { ok: false, reason: "unsafe_or_unreachable_source", detail: fetched.reason };
@@ -86,14 +87,15 @@ async function fetchAndCheckImage(rt: MediaRuntime, fetcher: ImageFetcher, url: 
     const ratio = probe.width / probe.height;
     if (ratio > 3 || ratio < 1 / 3) return { ok: false, reason: "image_quality", detail: "banner-shaped image, not a product photograph" };
   }
+  let raster: Raster | null = null;
   if (probe.format !== "webp") {
     try {
-      await decodeImage(fetched.bytes, { maxPixels: limits.maxPixels });
+      raster = (await decodeImage(fetched.bytes, { maxPixels: limits.maxPixels })).raster;
     } catch {
       return { ok: false, reason: "image_quality", detail: "the image is corrupt" };
     }
   }
-  return { ok: true, bytes: fetched.bytes, contentType: probe.contentType, width: probe.width, height: probe.height };
+  return { ok: true, bytes: fetched.bytes, contentType: probe.contentType, width: probe.width, height: probe.height, raster };
 }
 
 export async function runDiscoveryJob(rt: MediaRuntime, job: JobRow): Promise<void> {
@@ -108,13 +110,20 @@ export async function runDiscoveryJob(rt: MediaRuntime, job: JobRow): Promise<vo
     execSystem(rt, userId, "media.record_discovery", { garmentId: garment.garmentId, jobId: job.job_id, ...body }, `discovered:${job.job_id}`);
 
   const current = await loadGarmentMediaRow(rt.db, userId, garment.garmentId);
+  // The owner may ask for a product photo of a garment that so far only has their own photograph.
+  let seekingBesideOwnerPhoto = false;
   if (current?.primary_asset_id) {
     const primary = await loadAsset(rt.db, userId, current.primary_asset_id);
     if (primary && primary.status === "active" && isRealGarmentImage(primary.kind, primary.is_demo === 1)) {
-      await record({ attempts: [], candidates: [], conclusion: "already_resolved", note: null });
-      return;
+      seekingBesideOwnerPhoto = primary.kind === "owner_photo" && json<{ seekProductPhoto?: boolean }>(current.discovery_json, {}).seekProductPhoto === true;
+      if (!seekingBesideOwnerPhoto) {
+        await record({ attempts: [], candidates: [], conclusion: "already_resolved", note: null });
+        return;
+      }
     }
   }
+  // The owner's own photographs of this garment, loaded once, only when a candidate needs comparing.
+  let ownerReferences: OwnerReferences | null = null;
 
   const prior = await all<{ strategy: string; query_hash: string; pages_examined: number; browser_sessions: number }>(rt.db, "SELECT strategy, query_hash, pages_examined, browser_sessions FROM media_discovery_attempts WHERE user_id = ? AND garment_id = ?", userId, garment.garmentId);
   const tried = new Set(prior.map((p) => p.query_hash));
@@ -185,6 +194,27 @@ export async function runDiscoveryJob(rt: MediaRuntime, job: JobRow): Promise<vo
           candidates.push({ ...base, rejectionReasons: [image.reason], evidence: { ...evaluation.evidence, imageCheck: image.detail } });
           continue;
         }
+        // Compare with the owner's own photograph of the garment where one exists. It can only ever count
+        // AGAINST a candidate (reject it, or hand the decision to the owner); it never promotes one.
+        ownerReferences ??= await loadOwnerReferences(rt, userId, garment.garmentId);
+        const ownerPhoto = compareCandidateWithOwnerPhotos(ownerReferences, image.raster);
+        let decision: "eligible" | "needs_review" = evaluation.decision;
+        let reviewQuestion = evaluation.reviewQuestion;
+        if (ownerPhoto?.compared && (ownerPhoto.verdict === "different_colour" || ownerPhoto.verdict === "different_outline")) {
+          const what = ownerPhoto.verdict === "different_colour" ? "colours differ" : "outline differs";
+          if (ownerPhoto.verdict === "different_colour" && !evaluation.exactIdentifier) {
+            // No exact identifier vouches for it and it is visibly another colourway than the owner's own garment.
+            candidates.push({ ...base, rejectionReasons: ["wrong_colourway"], evidence: { ...evaluation.evidence, ownerPhotoComparison: { ...ownerPhoto, effect: "rejected" } } });
+            continue;
+          }
+          if (reviews >= MAX_REVIEW_CANDIDATES) {
+            candidates.push({ ...base, rejectionReasons: ["uncertain_lookalike"], evidence: { ...evaluation.evidence, ownerPhotoComparison: { ...ownerPhoto, effect: "rejected" } } });
+            continue;
+          }
+          ownerPhoto.effect = "sent_to_owner_review";
+          decision = "needs_review";
+          reviewQuestion = `The found photo matches the recorded ${evaluation.exactIdentifier ? "product code" : "maker and product"}, but its ${what} from your own photo of ${garment.name}. Is it the same garment?`;
+        }
         const sha256 = await sha256Hex(image.bytes);
         const assetId = await stableId("ast", userId, "candidate", candidateId);
         const objectKey = originalKey(userId, assetId, sha256, image.contentType);
@@ -193,15 +223,15 @@ export async function runDiscoveryJob(rt: MediaRuntime, job: JobRow): Promise<vo
           assetId, renditionId: await stableId("rnd", userId, assetId, "original"), objectKey, contentType: image.contentType, width: image.width, height: image.height, byteLength: image.bytes.length, sha256,
           sourceKind: page.sourceClass === "purchase_source" ? ("purchase_source" as const) : page.sourceClass === "maker" ? ("maker_catalogue" as const) : page.sourceClass === "retailer" ? ("retailer" as const) : ("search_result" as const),
         };
-        const evidence = { ...evaluation.evidence, imageSha256: sha256, imageSize: [image.width, image.height], adoptionBasis: evaluation.decision === "eligible" ? "product identity evidence and image-quality checks" : "awaiting the owner's decision" };
-        if (evaluation.decision === "eligible") {
+        const evidence = { ...evaluation.evidence, ...(ownerPhoto ? { ownerPhotoComparison: ownerPhoto } : {}), imageSha256: sha256, imageSize: [image.width, image.height], adoptionBasis: decision === "eligible" ? "product identity evidence and image-quality checks" : "awaiting the owner's decision" };
+        if (decision === "eligible") {
           adopted = true;
           attempt.outcome = "adopted";
           candidates.push({ ...base, decision: "adopted", rejectionReasons: [], evidence, stored });
         } else {
           reviews++;
           if (attempt.outcome !== "adopted") attempt.outcome = "needs_review";
-          candidates.push({ ...base, decision: "needs_review", rejectionReasons: [], reviewQuestion: evaluation.reviewQuestion, evidence, stored });
+          candidates.push({ ...base, decision: "needs_review", rejectionReasons: [], reviewQuestion, evidence, stored });
         }
       }
       if (adopted) break outer;
@@ -211,6 +241,10 @@ export async function runDiscoveryJob(rt: MediaRuntime, job: JobRow): Promise<vo
   const investigated = prior.length + attempts.length > 0;
   if (adopted) await record({ attempts, candidates, conclusion: "adopted", note: null });
   else if (reviews > 0) await record({ attempts, candidates, conclusion: "needs_review", note: null });
+  else if (seekingBesideOwnerPhoto) {
+    // Nothing verified was found, and the garment is not short of a picture: the owner's own photo stays.
+    await record({ attempts, candidates, conclusion: "already_resolved", note: "no verified product photo was found; the owner's own photo is kept" });
+  }
   else if (deferrals.length > 0 && (attempts.length === 0 || strategiesUsed < limits.maxStrategies) && untriedQueries > attempts.length) {
     // Something could still be tried later (a provider or more allowance): not a failed investigation yet.
     await record({ attempts, candidates, conclusion: "deferred", note: [...new Set(deferrals)].join("; ") });

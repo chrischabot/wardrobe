@@ -8,8 +8,8 @@
 import { json, stableId, sha256Hex } from "@garderobe/domain";
 import type { TransformationStep } from "@garderobe/contracts/ext/media";
 import {
-  catalogueView, checkFidelity, decodeImage, decodePng, encodeJpeg, encodePng, fitWithin, ImageDecodeError, probeImage, resizeRaster, uniformBackgroundCutout,
-  FIDELITY_ALGORITHM_VERSION, type FidelityReport as PixelFidelity, type Raster,
+  catalogueView, checkFidelity, correctLighting, cropUniformBorders, decodeImage, decodePng, encodeJpeg, encodePng, fitWithin, ImageDecodeError, probeImage, resizeRaster, uniformBackgroundCutout,
+  FIDELITY_ALGORITHM_VERSION, PREPARE_ALGORITHM_VERSION, type FidelityReport as PixelFidelity, type Raster,
 } from "../image/index.ts";
 import { EDIT_CONSTRAINTS } from "../adapters.ts";
 import type { RecordedFidelity, RecordedRendition } from "../commands/assets.ts";
@@ -142,6 +142,22 @@ export async function runNormalizeJob(rt: MediaRuntime, job: JobRow): Promise<vo
   };
 
   let attempt = await tryCutout(base);
+  // Steps considered but not applied (a correction that failed its check): recorded on the copy that is kept.
+  const notApplied: TransformationStep[] = [];
+  if (!("raster" in attempt)) {
+    // Cropping comes before anything generative: flat neutral bars around the picture are removed, and the
+    // source-pixel cutout is tried again on what remains.
+    const crop = cropUniformBorders(base);
+    if (crop.changed) {
+      const cropStep: TransformationStep = {
+        step: "crop_uniform_borders", tool: "garderobe-image", version: PREPARE_ALGORITHM_VERSION, generative: false,
+        params: { from: [base.width, base.height], box: crop.box, removed: crop.removed, fidelity: { verdict: "passed", measure: "largest channel difference from the bar colour among removed pixels", score: crop.maxDeviation, threshold: 10, sourcePixelsPreserved: true } },
+      };
+      base = crop.raster;
+      baseSteps = [...steps, cropStep];
+      attempt = await tryCutout(base);
+    }
+  }
   if ("raster" in attempt) {
     const report = checkFidelity(base, attempt.raster, { mode: "cutout" });
     if (report.verdict === "passed") {
@@ -153,9 +169,27 @@ export async function runNormalizeJob(rt: MediaRuntime, job: JobRow): Promise<vo
       notes.push(describeFailure("The background-removed cutout", report));
     }
   } else if (rt.deps.imageEditor && asset.kind === "owner_photo") {
+    // Lighting correction also precedes generative editing: an underexposed photograph is brightened with
+    // one hue-preserving gain, checked, and only then handed to the editor. A failed correction is discarded.
+    const lighting = correctLighting(base);
+    let editInput = base;
+    let editInputSteps = baseSteps;
+    if (lighting.needed) {
+      const lightingStep: TransformationStep = {
+        step: "lighting_correction", tool: "garderobe-image", version: lighting.algorithmVersion, generative: false,
+        params: { applied: lighting.applied, gain: lighting.gain, highlightBefore: lighting.highlightBefore, fidelity: { verdict: lighting.verdict, failed: lighting.failed, checks: lighting.checks } },
+      };
+      if (lighting.applied) {
+        editInput = lighting.raster;
+        editInputSteps = [...baseSteps, lightingStep];
+      } else {
+        notApplied.push(lightingStep);
+        notes.push(`The lighting correction failed its check (${lighting.failed.join(", ").replace(/_/g, " ")}) and was discarded; the photo was used as taken`);
+      }
+    }
     // The photograph cannot be cut out as it is: ask the dedicated editing model for a catalogue-style view of THIS image.
     const result = await rt.deps.imageEditor.edit({
-      image: { bytes: await encodePng(base), contentType: "image/png" },
+      image: { bytes: await encodePng(editInput), contentType: "image/png" },
       instruction: "Show this exact garment, unchanged, front-on on a plain white background with soft even lighting. Do not redraw, restyle or invent any part of it.",
       preserve: EDIT_CONSTRAINTS,
       idempotencyKey: `edit:${asset.asset_id}:${original.sha256.slice(0, 16)}`,
@@ -174,7 +208,7 @@ export async function runNormalizeJob(rt: MediaRuntime, job: JobRow): Promise<vo
         notes.push("The image-editing model returned something that is not a readable image; it was discarded");
       }
       if (editedRaster) {
-        const report = checkFidelity(base, editedRaster, { mode: "edit" });
+        const report = checkFidelity(editInput, editedRaster, { mode: "edit" });
         if (report.verdict === "failed") {
           fidelity.push(toRecorded(report, "edit", null));
           notes.push(describeFailure("The edited rendition", report));
@@ -183,11 +217,11 @@ export async function runNormalizeJob(rt: MediaRuntime, job: JobRow): Promise<vo
             step: "image_model_edit", tool: rt.deps.imageEditor.name, version: result.model, generative: true,
             params: { preserve: [...EDIT_CONSTRAINTS], providerJobId: result.providerJobId, reconstructsUnseenParts: result.reconstructsUnseen, evidenceForFabricOrFit: false },
           };
-          const stored = await store("edited", encodeJpeg(editedRaster, 92), "image/jpeg", editedRaster, original.rendition_id, [...steps, editStep], true);
+          const stored = await store("edited", encodeJpeg(editedRaster, 92), "image/jpeg", editedRaster, original.rendition_id, [...editInputSteps, ...notApplied, editStep], true);
           fidelity.push(toRecorded(report, "edit", stored.renditionId));
           base = editedRaster;
           baseRenditionId = stored.renditionId;
-          baseSteps = [...steps, editStep];
+          baseSteps = [...editInputSteps, ...notApplied, editStep];
           edited = true;
           attempt = await tryCutout(base);
           if ("raster" in attempt) {
@@ -222,7 +256,7 @@ export async function runNormalizeJob(rt: MediaRuntime, job: JobRow): Promise<vo
     ], edited);
   } else if (!edited) {
     // No cutout and no accepted edit: the honest photograph is used, as a metadata-free copy.
-    await store("display", encodeJpeg(working, 90), "image/jpeg", working, original.rendition_id, [...steps, reencoded], false);
+    await store("display", encodeJpeg(working, 90), "image/jpeg", working, original.rendition_id, [...steps, ...notApplied, reencoded], false);
   }
   // Sources must be recorded before the renditions derived from them.
   const order = ["edited", "display", "cutout", "mask", "catalogue"];

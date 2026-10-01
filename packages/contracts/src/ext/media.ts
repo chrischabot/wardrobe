@@ -493,6 +493,10 @@ export const MediaDecideReview = z.object({ candidateId: z.string().min(1).max(6
 export const MediaRequestDiscovery = z.object({
   garmentIds: z.array(GarmentId).max(500).default([]).describe("Empty means every active garment without an approved image."),
   retry: z.boolean().default(false).describe("Allow another bounded attempt for garments already in Photos needed (uses only untried sources)."),
+  seekProductPhoto: z
+    .boolean()
+    .default(false)
+    .describe("Also look for a product photo of garments that so far only have the owner's own photograph. Candidates are compared with that photograph; the owner's photo stays until a verified one is adopted."),
 });
 
 export const StudioSaveCombination = z.object({

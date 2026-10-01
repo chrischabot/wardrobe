@@ -9,3 +9,5 @@ export * from "./colour.ts";
 export * from "./cutout.ts";
 export * from "./catalogue.ts";
 export * from "./fidelity.ts";
+export * from "./prepare.ts";
+export * from "./compare.ts";

@@ -4375,13 +4375,18 @@ public struct CommandMediaRequestDiscovery: Codable, Sendable, Equatable, Garder
     /// Allow another bounded attempt for garments already in Photos needed (uses only untried sources).
     /// Server default when omitted: `false`.
     public var retry: Bool?
+    /// Also look for a product photo of garments that so far only have the owner's own photograph. Candidates are compared with that photograph; the owner's photo stays until a verified one is adopted.
+    /// Server default when omitted: `false`.
+    public var seekProductPhoto: Bool?
 
     public init(
         garmentIds: [GarmentId]? = nil,
-        retry: Bool? = nil
+        retry: Bool? = nil,
+        seekProductPhoto: Bool? = nil
     ) {
         self.garmentIds = garmentIds
         self.retry = retry
+        self.seekProductPhoto = seekProductPhoto
     }
 }
 
@@ -11774,13 +11779,17 @@ public struct MediaRequestDiscovery: Codable, Sendable, Equatable {
     public var garmentIds: [GarmentId]
     /// Allow another bounded attempt for garments already in Photos needed (uses only untried sources).
     public var retry: Bool
+    /// Also look for a product photo of garments that so far only have the owner's own photograph. Candidates are compared with that photograph; the owner's photo stays until a verified one is adopted.
+    public var seekProductPhoto: Bool
 
     public init(
         garmentIds: [GarmentId],
-        retry: Bool
+        retry: Bool,
+        seekProductPhoto: Bool
     ) {
         self.garmentIds = garmentIds
         self.retry = retry
+        self.seekProductPhoto = seekProductPhoto
     }
 }
 

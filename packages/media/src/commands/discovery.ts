@@ -70,12 +70,15 @@ interface DiscoveryState {
   lastOutcome?: string;
   lastNote?: string | null;
   lastRunAt?: string;
+  /** This round looks for a product photo although the owner's own photograph already shows the garment. */
+  seekProductPhoto?: boolean;
 }
 
-async function hasRealPrimary(ctx: CommandContext, row: GarmentMediaRow | null): Promise<boolean> {
-  if (!row?.primary_asset_id) return false;
+/** The garment's current image when it is a real one (not a demo placeholder or an illustration), else null. */
+async function realPrimary(ctx: CommandContext, row: GarmentMediaRow | null): Promise<AssetRow | null> {
+  if (!row?.primary_asset_id) return null;
   const asset = await loadAsset(ctx.db, ctx.userId, row.primary_asset_id);
-  return !!asset && asset.status === "active" && isRealGarmentImage(asset.kind, asset.is_demo === 1);
+  return asset && asset.status === "active" && isRealGarmentImage(asset.kind, asset.is_demo === 1) ? asset : null;
 }
 
 export function discoveryCommands(depsSource: MediaDepsSource): CommandDefinition<any>[] {
@@ -114,7 +117,11 @@ export function discoveryCommands(depsSource: MediaDepsSource): CommandDefinitio
         const state = current?.image_state ?? "not_started";
         if (state === "searching" || state === "needs_review") continue;
         if (state === "photos_needed" && !p.retry) continue;
-        if (state === "resolved" && (await hasRealPrimary(ctx, current))) continue;
+        const shown = state === "resolved" ? await realPrimary(ctx, current) : null;
+        // A garment with a real image is left alone, unless the owner asked for a product photo of one that
+        // so far only has their own photograph (candidates are then compared with that photograph).
+        const seek = !!shown && p.seekProductPhoto && shown.kind === "owner_photo";
+        if (shown && !seek) continue;
         eligible++;
         if (queued.length >= DISCOVERY_BATCH) continue;
         const discovery = json<DiscoveryState>(current?.discovery_json, {});
@@ -122,7 +129,8 @@ export function discoveryCommands(depsSource: MediaDepsSource): CommandDefinitio
         const job = enqueueJob(ctx, { jobId: await stableId("job", ctx.userId, "discover", g.garment_id, String(round)), kind: "discover", subjectId: g.garment_id, dedupeKey: `discover:${g.garment_id}:${round}`, maxAttempts: maxAttempts() });
         statements.push(
           ...job.statements,
-          upsertGarmentMedia(ctx, g.garment_id, current, { imageState: "searching", primaryAssetId: current?.primary_asset_id ?? null, photoRequest: null, lastFailure: null, discovery: { ...discovery, rounds: round } }),
+          // While a product photo is sought the garment keeps showing the owner's photo and stays resolved.
+          upsertGarmentMedia(ctx, g.garment_id, current, { imageState: seek ? "resolved" : "searching", primaryAssetId: current?.primary_asset_id ?? null, photoRequest: null, lastFailure: null, discovery: { ...discovery, rounds: round, seekProductPhoto: seek } }),
         );
         outbox.push(...job.outbox);
         queued.push(g.garment_id);
@@ -208,7 +216,7 @@ export function discoveryCommands(depsSource: MediaDepsSource): CommandDefinitio
       const request = photoRequestFor(garment.name, garment.category);
       const patch =
         p.conclusion === "adopted"
-          ? { imageState: "searching" as const, primaryAssetId: keepPrimary, photoRequest: null, lastFailure: null }
+          ? { imageState: keepPrimary ? ("resolved" as const) : ("searching" as const), primaryAssetId: keepPrimary, photoRequest: null, lastFailure: null }
           : p.conclusion === "needs_review"
             ? { imageState: "needs_review" as const, primaryAssetId: keepPrimary, photoRequest: null, lastFailure: null }
             : p.conclusion === "photos_needed"

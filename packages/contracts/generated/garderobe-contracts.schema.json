@@ -4677,6 +4677,11 @@
           "default": false,
           "description": "Allow another bounded attempt for garments already in Photos needed (uses only untried sources).",
           "type": "boolean"
+        },
+        "seekProductPhoto": {
+          "default": false,
+          "description": "Also look for a product photo of garments that so far only have the owner's own photograph. Candidates are compared with that photograph; the owner's photo stays until a verified one is adopted.",
+          "type": "boolean"
         }
       },
       "type": "object"
@@ -14215,11 +14220,17 @@
           "default": false,
           "description": "Allow another bounded attempt for garments already in Photos needed (uses only untried sources).",
           "type": "boolean"
+        },
+        "seekProductPhoto": {
+          "default": false,
+          "description": "Also look for a product photo of garments that so far only have the owner's own photograph. Candidates are compared with that photograph; the owner's photo stays until a verified one is adopted.",
+          "type": "boolean"
         }
       },
       "required": [
         "garmentIds",
-        "retry"
+        "retry",
+        "seekProductPhoto"
       ],
       "type": "object"
     },
