@@ -31,11 +31,14 @@ export async function createDailyHarness(opts: { startAt?: string; model?: Compo
   const registry = createFoundationRegistry();
   registerDaily(registry);
   const h = await createHarness({ registry, startAt: opts.startAt });
+  // The forecast cache is shared by every owner and every test of a file (its key holds no user). A
+  // harness starts without it, so a test never reads the synthetic forecast an earlier test cached.
+  await h.db.prepare("DELETE FROM weather_cache").run();
   if (opts.isolate) {
     // The local D1 database is shared by the tests of one file. Sweeps and the projector work across
     // ALL owners, so a test that drives them first retires the owners and pending effects that earlier
     // tests left behind (their data stays; their accounts are simply disabled).
-    await h.db.batch([h.db.prepare("UPDATE users SET status = 'disabled' WHERE status = 'active'"), h.db.prepare("UPDATE effects SET state = 'cancelled' WHERE state IN ('pending', 'in_progress')"), h.db.prepare("DELETE FROM weather_cache")]);
+    await h.db.batch([h.db.prepare("UPDATE users SET status = 'disabled' WHERE status = 'active'"), h.db.prepare("UPDATE effects SET state = 'cancelled' WHERE state IN ('pending', 'in_progress')")]);
   }
   const weather = new FakeWeatherProvider({ now: h.clock.now });
   const geocoder = new FakeGeocoder();

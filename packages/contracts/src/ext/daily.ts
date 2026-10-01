@@ -417,6 +417,12 @@ export const BoardPublish = z.object({
   notice: z.string().nullable().default(null),
   /** Revisions the composition read; recorded as evidence. */
   composedAgainst: z.object({ wardrobeRevision: z.number().int(), styleRevision: z.number().int() }).optional(),
+  /**
+   * The board revision this composition was made over (0 = no board existed for the day). When given
+   * and the day's board is at a different revision, nothing is published: a scheduled composition
+   * never replaces a board the owner made or changed while it was composing.
+   */
+  expectedBoardRevision: z.number().int().min(0).optional(),
 });
 
 /** Choose records an intention, never a wear. `optionId: null` clears the selection. */

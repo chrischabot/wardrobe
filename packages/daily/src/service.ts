@@ -107,6 +107,8 @@ export interface PrepareBoardOptions {
   /** Offered options to keep exactly as they are (replenishment / refresh). */
   keep?: StoredOption[];
   avoidTops?: string[];
+  /** The board revision the caller decided on (0 = none); defaults to what exists when this call starts. */
+  expectedBoardRevision?: number;
 }
 
 export interface PrepareBoardResult {
@@ -150,17 +152,41 @@ export async function prepareBoard(deps: DailyDeps, principal: Principal, opts: 
   const scope = opts.scope ?? "home";
   const parsed = parseScope(scope);
   const brief = DayBrief.parse({ ...(opts.brief ?? {}), ...(parsed.evening ? { segment: "evening" } : {}) });
+  // A scheduled run states which board it is composing over. If the owner makes, changes or chooses
+  // from the day's board while it composes, its publication is refused and the owner's board is
+  // revalidated in place instead (see `keepOwnersBoard`). The owner's own requests are not guarded:
+  // asking for a new board is how he replaces one.
+  const automatic = principal.actor === "system";
+  let expectedRevision: number | undefined = automatic ? (opts.expectedBoardRevision ?? (await loadBoard(deps.db, principal.userId, { date: opts.localDate, scope }))?.current_revision ?? 0) : undefined;
   const weather = opts.weather ?? (await fetchWeatherSnapshot(deps, principal, { localDate: opts.localDate, purpose: opts.purpose, segment: brief.segment, location: opts.location, nowMs }));
   // A scheduled phase reads the calendar itself; an ad hoc request reuses a read inside the freshness threshold.
   const calendar = opts.calendar !== undefined ? opts.calendar : await readCalendarSnapshot(deps, principal, { localDate: opts.localDate, scope, nowMs, ...(opts.purpose === "adhoc" ? { maxAgeMinutes: dailySettings((await loadOwner(deps.db, principal.userId)).settings).calendarMaxAgeMinutes } : {}) });
   const approved = await approvedCombinations(deps.db, principal.userId, opts.localDate);
   const comfort = await loadComfort(deps, principal);
+  // One wall-clock model budget for the whole request, shared by its attempts, so a scheduled phase
+  // stays inside its lease however many times the wardrobe changes underneath it.
+  const startedAt = Date.now();
+  const modelBudgetMs = Math.max(0, deps.modelBudgetMs ?? 120_000);
+
+  const keepOwnersBoard = async (result: PrepareBoardResult, why: string): Promise<PrepareBoardResult> => {
+    const current = await loadBoard(deps.db, principal.userId, { date: opts.localDate, scope });
+    if (!current) return { ...result, board: null, receipt: null, note: why };
+    if (current.status === "active") {
+      try {
+        await reviseBoard(deps, principal, current, { nowMs, reason: "refresh", ...(weather.freshness !== "unavailable" ? { weather } : {}), ...(calendar ? { calendar } : {}), force: true, idempotencyKey: `${opts.idempotencyKey}:keep:r${current.current_revision}` });
+      } catch (e) {
+        if (!isCommandError(e)) throw e; // left as the owner made it; the next phase revalidates it
+      }
+    }
+    const after = await loadBoard(deps.db, principal.userId, { date: opts.localDate, scope });
+    return { ...result, board: after ? await buildBoardDocument(deps.db, principal.userId, after) : null, receipt: null, note: why };
+  };
 
   let last: PrepareBoardResult = { board: null, receipt: null, note: null, requestedCount: 0, diagnostics: null };
   for (let attempt = 1; attempt <= 3; attempt++) {
     const rc = await assembleContext(deps.db, principal, { localDate: opts.localDate, nowMs, scope, brief, weather, calendar, comfort });
     const keep = (opts.keep ?? []).map((o) => storedToComposed(rc, o)).filter((o) => o.validation.valid);
-    const composed = await composeBoard(rc, { count: opts.count, model: modelOf(deps, principal), modelBudgetMs: deps.modelBudgetMs, maxModelAttempts: deps.maxModelAttempts ?? 2, deadlineAtMs: nowMs + 120_000, approved, keep, avoidTops: opts.avoidTops });
+    const composed = await composeBoard(rc, { count: opts.count, model: modelOf(deps, principal), modelBudgetMs: Math.max(0, modelBudgetMs - (Date.now() - startedAt)), maxModelAttempts: deps.maxModelAttempts ?? 2, deadlineAtMs: nowMs + 120_000, approved, keep, avoidTops: opts.avoidTops });
     last = { board: null, receipt: null, note: composed.notice, requestedCount: composed.requestedCount, diagnostics: composed.diagnostics };
     if (composed.options.length === 0) return last;
     try {
@@ -176,7 +202,9 @@ export async function prepareBoard(deps: DailyDeps, principal: Principal, opts: 
         calendarSnapshotId: calendar?.snapshotId ?? null,
         notice: composed.notice,
         composedAgainst: { wardrobeRevision: rc.revisions.wardrobeRevision, styleRevision: rc.revisions.styleRevision },
+        ...(expectedRevision !== undefined ? { expectedBoardRevision: expectedRevision } : {}),
       }, `${opts.idempotencyKey}:${attempt}`);
+      if (expectedRevision !== undefined && typeof (receipt.result as any)?.revision === "number") expectedRevision = (receipt.result as any).revision;
       const board = await loadBoard(deps.db, principal.userId, { date: opts.localDate, scope });
       last = { board: board ? await buildBoardDocument(deps.db, principal.userId, board) : null, receipt, note: composed.notice, requestedCount: composed.requestedCount, diagnostics: composed.diagnostics };
       const dropped = ((receipt.result as any)?.dropped ?? []) as unknown[];
@@ -190,6 +218,8 @@ export async function prepareBoard(deps: DailyDeps, principal: Principal, opts: 
         return { ...last, board: board ? await buildBoardDocument(deps.db, principal.userId, board) : null };
       }
       if (isCommandError(e) && e.code === "precondition_failed" && (e.details as any)?.dropped) continue; // every candidate went stale: recompose
+      if (isCommandError(e) && e.code === "precondition_failed" && (e.details as any)?.boardChanged) return keepOwnersBoard(last, "The day's board was made or changed while this one was being prepared; the existing board was kept and rechecked.");
+      if (isCommandError(e) && e.code === "precondition_failed" && (e.details as any)?.selectionWouldBeLost) return keepOwnersBoard(last, "An outfit was chosen while the board was being refreshed; the board was rechecked around that choice instead of recomposed.");
       throw e;
     }
   }
@@ -475,9 +505,22 @@ export async function reviseBoard(deps: DailyDeps, principal: Principal, board: 
     return { boardId: board.board_id, localDate: board.local_date, action: "none", revision: board.current_revision, offered: keep.length };
   }
   if (options.length === 0) {
-    return { boardId: board.board_id, localDate: board.local_date, action: "none", revision: board.current_revision, offered: 0 };
+    // Every option the board shows is invalid and nothing valid can be composed. The board must not go
+    // on showing them as current: a revision with no options and a plain notice is published, exactly
+    // as the in-commit repair does. An already empty board is left as it is (the flag is cleared; any
+    // later change to stock, rules or settings sets it again, and every scheduled phase retries).
+    if (stored.filter((o) => o.state === "offered").length === 0) {
+      if (board.needs_replenishment === 1) await prepare(deps.db, stmt("UPDATE boards SET needs_replenishment = 0 WHERE user_id = ? AND board_id = ? AND current_revision = ?", principal.userId, board.board_id, board.current_revision)).run();
+      return { boardId: board.board_id, localDate: board.local_date, action: "none", revision: board.current_revision, offered: 0 };
+    }
+    const withdrawn = await execAs(deps, principal, "board.publish", {
+      localDate: board.local_date, scope: board.scope, reason: opts.reason === "refresh" ? "refresh" : "repair", options: [], reserves: [], brief: revision.brief, requestedCount: revision.requested_count,
+      weatherSnapshotId: weather?.snapshotId ?? null, calendarSnapshotId: calendar?.snapshotId ?? null, notice,
+    }, opts.idempotencyKey);
+    return { boardId: board.board_id, localDate: board.local_date, action: "repaired", revision: Number((withdrawn.result as { revision?: number }).revision ?? board.current_revision), offered: 0 };
   }
-  const reason = opts.reason === "refresh" || opts.reason === "resume" ? opts.reason : added > 0 ? "replenish" : "repair";
+  // A revision that only tops up options or reserves is a replenishment; "repair" means a shown option changed.
+  const reason = opts.reason === "refresh" || opts.reason === "resume" ? opts.reason : added > 0 || !outcome.changed ? "replenish" : "repair";
   const receipt = await execAs(deps, principal, "board.publish", {
     localDate: board.local_date, scope: board.scope, reason, options: options.map(toPublishOption), reserves: reserves.map(toPublishOption), brief: revision.brief, requestedCount: revision.requested_count,
     weatherSnapshotId: weather?.snapshotId ?? null, calendarSnapshotId: calendar?.snapshotId ?? null, notice,

@@ -26,7 +26,7 @@ const SINGLE_ROLES: Role[] = ["top", "mid_layer", "bottom", "outer", "footwear",
 /** Codes that describe "not wearable today" rather than "not an outfit"; advisory in Explore mode. */
 export const EXPLORE_ADVISORY = new Set([
   "unavailable", "restricted", "not_packed", "conditional_not_requested", "thermal_too_warm", "thermal_too_cold", "fabric_rule",
-  "jacket_band_requires_lightweight_oxford", "too_warm_together", "outerwear_ceiling", "repeat_within_horizon", "footwear_restricted", "paired_footwear_required",
+  "jacket_band_requires_lightweight_oxford", "jacket_band_unverified", "too_warm_together", "outerwear_ceiling", "repeat_within_horizon", "footwear_restricted", "paired_footwear_required",
 ]);
 
 const REASON_WORDS: Record<string, string> = {
@@ -43,6 +43,35 @@ const REASON_WORDS: Record<string, string> = {
   in_service_batch: "away at the laundry",
   laundry_exception: "held by a reported laundry exception",
 };
+
+/**
+ * Watches and jewellery by CLASSIFICATION: the garment's `accessoryKind` attribute, set when the piece
+ * is created or imported. A name can hide what a piece is ("Seiko SKX007 diver"), so names are only a
+ * backstop for records that carry no classification yet.
+ */
+const WATCH_KINDS = new Set(["watch", "wristwatch", "smartwatch", "pocket_watch"]);
+const JEWELLERY_KINDS = new Set(["jewellery", "jewelry", "ring", "bracelet", "necklace", "chain", "pendant", "cufflinks", "earring", "brooch", "bangle", "tie_clip"]);
+const NAME_BACKSTOP = /\b(watch|watches|jewel\w*|bracelet|necklace|cufflinks?)\b/i;
+/** Wider name words, applied only to generic accessories (they would misread "chain-stitch" on a trouser). */
+const ACCESSORY_NAME_BACKSTOP = /\b(wristwatch|chronograph|timepiece|ring|signet|chain|pendant|earrings?|brooch|bangle)\b/i;
+
+export type AccessoryVerdict = "excluded" | "unclassified" | "allowed";
+
+/** Whether the owner's "no watches or jewellery" rule (its `excluded` words) covers this garment. */
+export function accessoryVerdict(g: Pick<PoolGarment, "name" | "category" | "roles" | "attributes">, excludedWords: string[]): AccessoryVerdict {
+  const words = new Set(excludedWords.map((w) => w.toLowerCase().replace(/^jewelry$/, "jewellery")));
+  const kind = typeof g.attributes.accessoryKind === "string" ? g.attributes.accessoryKind.trim().toLowerCase().replace(/[\s-]+/g, "_") : "";
+  if (kind) {
+    if (words.has(kind)) return "excluded";
+    if (words.has("watch") && WATCH_KINDS.has(kind)) return "excluded";
+    if (words.has("jewellery") && JEWELLERY_KINDS.has(kind)) return "excluded";
+    return "allowed";
+  }
+  if (NAME_BACKSTOP.test(g.name)) return "excluded";
+  // A generic accessory with no recorded kind cannot be shown NOT to be a watch or jewellery.
+  if (g.category === "accessory") return ACCESSORY_NAME_BACKSTOP.test(g.name) ? "excluded" : "unclassified";
+  return "allowed";
+}
 
 function v(code: string, message: string, garmentIds: string[], ruleKey: string | null = null, severity: "blocking" | "advisory" = "blocking"): OutfitViolation {
   return { code, message, garmentIds, severity, ruleKey };
@@ -97,7 +126,12 @@ export function garmentViolations(ctx: RecommendationContext, garmentId: string,
   }
 
   const ex = ctx.rules.excludedAccessories;
-  if (ex && /\b(watch|watches|jewel\w*|bracelet|necklace|cufflinks?)\b/i.test(g.name)) out.push(v("accessory_excluded", `${g.name} is not suggested: watches and jewellery are absent by choice`, [garmentId], ex.key));
+  if (ex) {
+    const verdict = accessoryVerdict(g, ex.words);
+    if (verdict === "excluded") out.push(v("accessory_excluded", `${g.name} is not suggested: watches and jewellery are absent by choice`, [garmentId], ex.key));
+    // Unclassified: never suggested by the service; the owner's own explicit pick is his to make.
+    else if (verdict === "unclassified") out.push(v("accessory_unclassified", `${g.name} has no accessory kind recorded, so it cannot be checked against the rule that watches and jewellery are never suggested`, [garmentId], ex.key, explicit.has(garmentId) ? "advisory" : "blocking"));
+  }
 
   if (ctx.brief.exclude.includes(garmentId)) out.push(v("excluded_by_brief", `${g.name} was excluded for this day`, [garmentId]));
 
@@ -179,15 +213,24 @@ export function validateCandidate(ctx: RecommendationContext, candidate: { slots
   const footwear = get("footwear");
 
   // 14-16 C: a jacket goes over a lightweight oxford only. Evaluated on the jacket-wearing (outdoor)
-  // interval, inclusive at both ends, never on the daily maximum.
+  // interval, inclusive at both ends, never on the daily maximum. EVERY layer under the jacket counts:
+  // a heavier shirt worn as the mid layer is exactly the "heavy shirt underneath" the profile rules out.
   const band = ctx.rules.jacketBand;
-  if (band && outer && top && (outer.attributes.jacketLike === true || outer.category === "outerwear")) {
+  if (band && outer && (outer.attributes.jacketLike === true || outer.category === "outerwear")) {
     const t = ctx.conditions.departureC;
-    const isRequired = top.attributes.fabricClass === band.requiredShirtFabricClass;
-    if (t === null) {
-      if (!isRequired) violations.push(v("jacket_band_unverified", `The ${band.minC}-${band.maxC} °C jacket rule could not be checked: the forecast is unavailable`, [outer.garmentId, top.garmentId], band.key, "advisory"));
-    } else if (t >= band.minC && t <= band.maxC && !isRequired) {
-      violations.push(v("jacket_band_requires_lightweight_oxford", `At ${t} °C outdoors a jacket goes over a lightweight oxford only; ${top.name} is not one`, [outer.garmentId, top.garmentId], band.key));
+    const under = [top, get("mid_layer")].filter((g): g is PoolGarment => !!g);
+    const offenders = under.filter((g) => g.attributes.fabricClass !== band.requiredShirtFabricClass);
+    if (offenders.length > 0) {
+      const names = offenders.map((g) => g.name).join(" and ");
+      const ids = [outer.garmentId, ...offenders.map((g) => g.garmentId)];
+      if (t === null) {
+        // Without a forecast the band cannot be ruled out, so the service does not offer the combination.
+        // A jacket the owner asked for by name is his decision: it is reported, not refused.
+        const asked = new Set([...(opts.explicitGarmentIds ?? []), ...ctx.brief.include]).has(outer.garmentId);
+        violations.push(v("jacket_band_unverified", `The ${band.minC}-${band.maxC} °C jacket rule could not be checked for ${outer.name} over ${names}: the forecast is unavailable`, ids, band.key, asked ? "advisory" : "blocking"));
+      } else if (t >= band.minC && t <= band.maxC) {
+        violations.push(v("jacket_band_requires_lightweight_oxford", `At ${t} °C outdoors a jacket goes over a lightweight oxford only; ${names} ${offenders.length === 1 ? "is not one" : "are not"}`, ids, band.key));
+      }
     }
   }
 

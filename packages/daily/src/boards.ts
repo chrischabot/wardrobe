@@ -14,7 +14,7 @@ import {
 } from "@garderobe/domain";
 import type { EntityVersion } from "@garderobe/contracts";
 import { assembleContext, calendarSnapshotById, dailySettings, latestWeatherSnapshot, weatherSnapshotById } from "./context.ts";
-import { factualReason, findReplacement } from "./compose.ts";
+import { factualReason, findReplacement, withPairedFootwear } from "./compose.ts";
 import { dayLineFor, loadBoard, loadOptions, loadRevision, pauseCovering, type BoardRow, type RevisionRow, type StoredOption } from "./document.ts";
 import { parseScope, type RecommendationContext } from "./model.ts";
 import { repairOptions } from "./repair.ts";
@@ -134,6 +134,8 @@ export function describeChanges(rc: RecommendationContext, before: StoredOption[
       else if (!old) out.push(`Option ${i + 1}: ${name(s.garmentId)} added`);
     }
     for (const s of prev.o.slots) if (!slotOf(o, s.role)) out.push(`Option ${i + 1}: ${name(s.garmentId)} removed${why.get(s.garmentId) ? ` (${why.get(s.garmentId)})` : ""}`);
+    for (const id of o.footwearAlternatives) if (!prev.o.footwearAlternatives.includes(id) && !prev.o.slots.some((s) => s.garmentId === id)) out.push(`Option ${i + 1}: ${name(id)} added as the alternative shoe`);
+    for (const id of prev.o.footwearAlternatives) if (!o.footwearAlternatives.includes(id) && !o.slots.some((s) => s.garmentId === id)) out.push(`Option ${i + 1}: ${name(id)} is no longer the alternative shoe${why.get(id) ? ` (${why.get(id)})` : ""}`);
   });
   const kept = new Set(after.map((o) => o.optionId).filter(Boolean));
   for (const { o, n } of beforeById.values()) {
@@ -184,6 +186,9 @@ export async function planRevisionWrite(ctx: CommandContext, draft: RevisionDraf
 
   if (existing) {
     preconditions.push({ label: `board ${boardId} unchanged since read`, sql: "(SELECT current_revision FROM boards WHERE user_id = ? AND board_id = ?) = ?", params: [ctx.userId, boardId, existing.current_revision], class: "internal" });
+    // Choosing an option does not advance the revision, so the selection this plan read is pinned too:
+    // a choice that lands between the read and the commit makes the command plan again from the new state.
+    preconditions.push({ label: `board ${boardId} selection unchanged since read`, sql: "(SELECT COALESCE(selected_option_id, '') FROM boards WHERE user_id = ? AND board_id = ?) = ?", params: [ctx.userId, boardId, existing.selected_option_id ?? ""], class: "internal" });
     statements.push(
       stmt(
         "UPDATE boards SET current_revision = ?, selected_option_id = ?, selected_footwear_id = ?, selected_at = ?, exposure_id = ?, needs_replenishment = ?, updated_at = ? WHERE user_id = ? AND board_id = ?",
@@ -270,6 +275,11 @@ export const boardPublish = define({
     }
     const automatic = ctx.envelope.authorization === "system_schedule" || ctx.envelope.authorization === "standing_policy";
     const existing = await loadBoard(ctx.db, ctx.userId, { date: p.localDate, scope: p.scope });
+    // The composer states which board it composed over (0 = none). If the owner made or changed the
+    // day's board meanwhile, the composition is stale as a whole and nothing is published over his.
+    if (p.expectedBoardRevision !== undefined && (existing?.current_revision ?? 0) !== p.expectedBoardRevision) {
+      throw new CommandError("precondition_failed", "the day's board changed while this one was being composed; nothing was published over it", { boardChanged: true, boardId: existing?.board_id ?? null, currentRevision: existing?.current_revision ?? 0 });
+    }
     if (existing?.status === "worn") throw new CommandError("precondition_failed", "the day's outfit is already recorded; the board is history and is not restyled", { boardId: existing.board_id });
     const suppression = await first<{ reason: string }>(ctx.db, "SELECT reason FROM board_suppressions WHERE user_id = ? AND scope = ? AND local_date = ? AND status = 'active'", ctx.userId, p.scope, p.localDate);
     if (suppression || existing?.status === "suppressed") throw new CommandError("precondition_failed", "this day's board was removed; restore it before publishing again", { localDate: p.localDate });
@@ -334,14 +344,35 @@ export const boardPublish = define({
     });
     // A dropped option is replaced from the complete reserves; the count is never padded.
     while (offered.length < Math.min(p.requestedCount, p.options.length) && reservePool.length > 0) offered.push({ ...reservePool.shift()!, changed: existing !== null });
-    if (offered.length === 0) {
+    const previousOffered = previous.filter((o) => o.state === "offered");
+    // An automatic run never replaces an outfit the owner has chosen while that outfit is still valid:
+    // the board is revised around the choice (reviseBoard), not recomposed over it.
+    if (automatic && existing?.selected_option_id && !offered.some((o) => o.optionId === existing.selected_option_id)) {
+      const chosen = previousOffered.find((o) => o.optionId === existing.selected_option_id);
+      if (chosen) {
+        const explicit = chosen.evidence.explicitGarmentIds ?? [];
+        const completed = withPairedFootwear(rc, chosen, { validate: { requirePairedFootwear: true, explicitGarmentIds: explicit } });
+        if (validateCandidate(rc, completed, { requirePairedFootwear: true, explicitGarmentIds: explicit }).valid) {
+          throw new CommandError("precondition_failed", "the owner has chosen an outfit for this day; a scheduled run keeps that choice and does not recompose the board over it", { selectionWouldBeLost: true, boardId: existing.board_id, selectedOptionId: existing.selected_option_id });
+        }
+      }
+    }
+    // Withdrawal: every option the board shows has become invalid and nothing can replace it. The
+    // caller publishes an explicitly empty revision so the board never keeps showing invalid outfits
+    // as current. It is refused while any shown option is still valid or repairable.
+    let withdrawal: string[] | null = null;
+    if (offered.length === 0 && existing && p.options.length === 0 && (p.reason === "repair" || p.reason === "replenish" || p.reason === "refresh") && previousOffered.length > 0) {
+      const outcome = repairOptions(rc, previous, p.requestedCount);
+      if (outcome.offered.length > 0) throw new CommandError("precondition_failed", "the board still has valid outfits; an empty revision was not published", { stillValid: outcome.offered.length });
+      withdrawal = outcome.changes;
+    }
+    if (offered.length === 0 && withdrawal === null) {
       throw new CommandError("precondition_failed", "no candidate is a valid outfit against the current wardrobe; nothing was published", { dropped });
     }
     const reserves = reservePool.slice(0, rc.daily.reserveCount);
 
-    const shortage = offered.length < p.requestedCount ? (p.notice ?? `${offered.length} valid ${offered.length === 1 ? "outfit" : "outfits"} instead of ${p.requestedCount}.`) : null;
-    const previousOffered = previous.filter((o) => o.state === "offered");
-    const changes = existing ? (p.reason === "compose" || p.reason === "rebuild" || p.reason === "resume" ? ["The board was recomposed."] : describeChanges(rc, previousOffered, offered)) : [];
+    const shortage = offered.length === 0 ? (p.notice ?? "No complete outfit is available for this day at the moment.") : offered.length < p.requestedCount ? (p.notice ?? `${offered.length} valid ${offered.length === 1 ? "outfit" : "outfits"} instead of ${p.requestedCount}.`) : null;
+    const changes = withdrawal ?? (existing ? (p.reason === "compose" || p.reason === "rebuild" || p.reason === "resume" ? ["The board was recomposed."] : describeChanges(rc, previousOffered, offered)) : []);
     const suitable = offered.filter((o) => o.suitsEventIds.length > 0).length;
     const event = rc.calendar?.events.find((e) => offered.some((o) => o.suitsEventIds.includes(e.eventId)));
     const numberWords = ["No", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight"];
@@ -380,7 +411,9 @@ export const boardPublish = define({
       );
     }
     return {
-      summary: `Board for ${p.localDate} published (revision ${write.revision}): ${offered.length} ${offered.length === 1 ? "outfit" : "outfits"}${offered.length < p.requestedCount ? ` of ${p.requestedCount} requested` : ""}${dropped.length ? `; ${dropped.length} stale or invalid candidate${dropped.length === 1 ? "" : "s"} not published` : ""}`,
+      summary: offered.length === 0
+        ? `Board for ${p.localDate} (revision ${write.revision}): every outfit was withdrawn; none is valid at the moment`
+        : `Board for ${p.localDate} published (revision ${write.revision}): ${offered.length} ${offered.length === 1 ? "outfit" : "outfits"}${offered.length < p.requestedCount ? ` of ${p.requestedCount} requested` : ""}${dropped.length ? `; ${dropped.length} stale or invalid candidate${dropped.length === 1 ? "" : "s"} not published` : ""}`,
       statements: write.statements,
       preconditions,
       affected: write.affected,
@@ -532,6 +565,7 @@ export const boardSwapSlot = define({
     if (p.role === "top" || p.role === "bottom") for (const o of others) { const id = slotOf(o, p.role); if (id) avoid.add(id); }
 
     let slots: OutfitSlot[];
+    let swappedAlternatives: string[];
     let validation: OutfitValidation;
     const previousId = slotOf(option, p.role);
     // Pieces the owner already put into this option himself stay admitted while they remain in it.
@@ -540,7 +574,10 @@ export const boardSwapSlot = define({
       // The owner's own pick: validated as given. It is an explicit request, which admits an occasional
       // piece - and never makes absent, restricted or too-warm stock acceptable.
       slots = previousId ? option.slots.map((s) => (s.role === p.role ? { role: p.role, garmentId: p.garmentId! } : s)) : [...option.slots, { role: p.role, garmentId: p.garmentId }];
-      validation = validateCandidate(rc, { slots, footwearAlternatives: option.footwearAlternatives.filter((id) => id !== p.garmentId) }, { requirePairedFootwear: true, explicitGarmentIds: [...keptExplicit, p.garmentId], ignoreBriefInclusions: true });
+      const explicitIds = [...keptExplicit, p.garmentId];
+      const completed = withPairedFootwear(rc, { slots, footwearAlternatives: option.footwearAlternatives.filter((id) => id !== p.garmentId) }, { validate: { requirePairedFootwear: true, explicitGarmentIds: explicitIds, ignoreBriefInclusions: true } });
+      swappedAlternatives = completed.footwearAlternatives;
+      validation = validateCandidate(rc, { slots, footwearAlternatives: swappedAlternatives }, { requirePairedFootwear: true, explicitGarmentIds: explicitIds, ignoreBriefInclusions: true });
       if (!validation.valid) {
         const blockers = validation.violations.filter((x) => x.severity === "blocking");
         throw new CommandError("precondition_failed", `that swap does not make a valid outfit: ${blockers.map((x) => x.message).join("; ")}; nothing was changed`, { violations: blockers });
@@ -549,9 +586,10 @@ export const boardSwapSlot = define({
       const found = findReplacement(rc, option, p.role, { avoidGarmentIds: avoid, validate: { ignoreBriefInclusions: true, explicitGarmentIds: keptExplicit } });
       if (!found) throw new CommandError("precondition_failed", `nothing else eligible can take that ${p.role.replace("_", " ")} slot today; the option is unchanged`);
       slots = found.slots;
+      swappedAlternatives = found.footwearAlternatives;
       validation = found.validation;
     }
-    const alternatives = option.footwearAlternatives.filter((id) => !slots.some((s) => s.garmentId === id));
+    const alternatives = swappedAlternatives.filter((id) => !slots.some((s) => s.garmentId === id));
     const swapped: DraftOption = {
       optionId: option.optionId,
       slots,
@@ -678,10 +716,19 @@ export const boardRestore = define({
       affected.push({ kind: "board", id: board.board_id, version: board.current_revision });
     }
     const project = !!board && board.status !== "worn" && board.local_date >= today && !(await pauseCovering(ctx.db, ctx.userId, p.localDate));
-    if (statements.length === 0 && !project) return { outcome: "noop", summary: `Nothing to restore for ${p.localDate}`, undo: { unavailableReason: "nothing changed" } };
     const targetKey = projectionTarget(p.scope, p.localDate);
+    // The restore itself lifts a delivery that was suppressed because the event was deleted in Calendar.
+    // It is state, not a flag on one effect: a later revision's effect supersedes this command's effect,
+    // and the projector must still deliver. `projected_revision` is cleared so the missing event is
+    // read as "not delivered yet", never again as "deleted by the owner".
+    const deleted = project ? await first<{ n: number }>(ctx.db, "SELECT COUNT(*) AS n FROM calendar_projections WHERE user_id = ? AND target_key = ? AND state = 'suppressed' AND suppression_reason = 'deleted_externally'", ctx.userId, targetKey) : null;
+    if ((deleted?.n ?? 0) > 0) {
+      statements.push(stmt("UPDATE calendar_projections SET state = 'pending', suppression_reason = NULL, projected_revision = NULL, etag = NULL, last_error = NULL, updated_at = ? WHERE user_id = ? AND target_key = ? AND state = 'suppressed' AND suppression_reason = 'deleted_externally'", ctx.now, ctx.userId, targetKey));
+    }
+    if (statements.length === 0 && !project) return { outcome: "noop", summary: `Nothing to restore for ${p.localDate}`, undo: { unavailableReason: "nothing changed" } };
+    const boardRestored = !!suppression || board?.status === "suppressed";
     return {
-      summary: statements.length > 0 ? `The board for ${p.localDate} was restored` : `Calendar delivery for ${p.localDate} was requested again`,
+      summary: boardRestored ? `The board for ${p.localDate} was restored` : `Calendar delivery for ${p.localDate} was requested again`,
       statements,
       affected,
       // An explicit restore also lifts a delivery that was suppressed because the event was deleted in Calendar.

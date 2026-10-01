@@ -15,7 +15,7 @@ import type { OutfitSlot } from "@garderobe/contracts/ext/daily";
 import { addDays, all, allIn, localDateOf, stmt, type BalanceRow, type CommandContext, type CommandPlan, type CommitHook, type DomainChanges, type PlanFragment, type Stmt } from "@garderobe/domain";
 import { assembleContext, calendarSnapshotById, weatherSnapshotById, type Overlay } from "./context.ts";
 import { boardNotice, describeChanges, optionEvidence, planRevisionWrite, revisionContext, storedToDraft, type DraftOption } from "./boards.ts";
-import { factualReason, findReplacement } from "./compose.ts";
+import { factualReason, findReplacement, withPairedFootwear } from "./compose.ts";
 import { loadOptions, loadRevision, pauseCovering, type BoardRow, type StoredOption } from "./document.ts";
 import { parseScope, type RecommendationContext } from "./model.ts";
 import { validateCandidate } from "./validate.ts";
@@ -39,6 +39,7 @@ function whyPhrase(rc: RecommendationContext, code: string, garmentId: string): 
   if (code === "unavailable" || code === "not_packed" || code === "unknown_garment") return "no longer available";
   if (code === "restricted" || code === "footwear_restricted") return "now restricted";
   if (code.startsWith("thermal") || code === "fabric_rule" || code === "outerwear_ceiling" || code === "jacket_band_requires_lightweight_oxford" || code === "too_warm_together") return "wrong for the forecast now";
+  if (code === "jacket_band_unverified") return "cannot be checked without a forecast";
   return "no longer valid";
 }
 
@@ -47,9 +48,30 @@ function whyPhrase(rc: RecommendationContext, code: string, garmentId: string): 
  * the affected piece, else promote a complete reserve, else withdraw the option. Pure.
  */
 export function repairOptions(rc: RecommendationContext, stored: StoredOption[], requestedCount: number): RepairOutcome {
-  const offered = stored.filter((o) => o.state === "offered");
-  const reserves = stored.filter((o) => o.state === "reserve");
   const optsFor = (o: StoredOption) => ({ requirePairedFootwear: true, ignoreBriefInclusions: false, explicitGarmentIds: o.evidence.explicitGarmentIds ?? [] });
+  // When the sneaker + welted format has come into force since an option was published (the owner
+  // reported the healing restriction over), the option is not broken: it only lacks its second shoe.
+  // The alternative is added and the option keeps its pieces, its ID and therefore the owner's selection.
+  const pairUsage = new Map<string, number>();
+  const paired = new Set<string>();
+  const prepared = stored.map((o) => {
+    const completed = withPairedFootwear(rc, o, { validate: optsFor(o), usage: pairUsage });
+    if (completed.added.length === 0) return o;
+    paired.add(o.optionId);
+    return { ...o, footwearAlternatives: completed.footwearAlternatives };
+  });
+  const originalOffered = stored.filter((o) => o.state === "offered");
+  const offered = prepared.filter((o) => o.state === "offered");
+  const reserves = prepared.filter((o) => o.state === "reserve");
+  const refreshed = (o: StoredOption, validation: ReturnType<typeof validateCandidate>): DraftOption => ({
+    optionId: o.optionId,
+    slots: o.slots,
+    footwearAlternatives: o.footwearAlternatives,
+    reason: o.reason,
+    suitsEventIds: o.suitsEventIds,
+    evidence: optionEvidence(validation, Number((validation.evidence as any).availability.jointAvailability), { source: o.evidence.source, explanationSource: o.evidence.explanationSource, removedClaims: o.evidence.removedClaims, explicitGarmentIds: o.evidence.explicitGarmentIds ?? [] }),
+    changed: true,
+  });
   const checks = offered.map((o) => ({ o, validation: validateCandidate(rc, o, optsFor(o)) }));
   const reserveChecks = reserves.map((o) => ({ o, validation: validateCandidate(rc, o, optsFor(o)) }));
   const usedTops = new Set<string>();
@@ -63,21 +85,23 @@ export function repairOptions(rc: RecommendationContext, stored: StoredOption[],
   }
   const why = new Map<string, string>();
   const next: DraftOption[] = [];
-  const spareReserves = reserveChecks.filter((c) => c.validation.valid).map((c) => c.o);
-  let changed = reserveChecks.some((c) => !c.validation.valid);
+  const spareReserves = reserveChecks.filter((c) => c.validation.valid).map((c) => ({ o: c.o, validation: c.validation }));
+  let changed = reserveChecks.some((c) => !c.validation.valid) || paired.size > 0;
   let withdrawn = 0;
 
   for (const { o, validation } of checks) {
     if (validation.valid) {
-      next.push(storedToDraft(o));
+      next.push(paired.has(o.optionId) ? refreshed(o, validation) : storedToDraft(o));
       continue;
     }
     changed = true;
     const blockers = validation.violations.filter((x) => x.severity === "blocking");
     const implicated = new Set<string>();
     for (const b of blockers) for (const id of b.garmentIds) {
+      // A missing second shoe is completed below; it never blames the shoe the option already has.
+      if (b.code === "paired_footwear_required") continue;
       // A combination rule names both pieces; the layer is what gives way, the base outfit stays.
-      if ((b.code === "jacket_band_requires_lightweight_oxford" || b.code === "too_warm_together") && slotOf(o, "outer") && b.garmentIds.includes(slotOf(o, "outer")!) && id !== slotOf(o, "outer")) continue;
+      if ((b.code === "jacket_band_requires_lightweight_oxford" || b.code === "jacket_band_unverified" || b.code === "too_warm_together") && slotOf(o, "outer") && b.garmentIds.includes(slotOf(o, "outer")!) && id !== slotOf(o, "outer")) continue;
       implicated.add(id);
       if (!why.has(id)) why.set(id, whyPhrase(rc, b.code, id));
     }
@@ -100,6 +124,11 @@ export function repairOptions(rc: RecommendationContext, stored: StoredOption[],
       }
       current = { slots: found.slots, footwearAlternatives: found.footwearAlternatives };
     }
+    // A replaced or removed shoe can leave the pair incomplete again: name the missing kind before the final check.
+    if (ok) {
+      const completed = withPairedFootwear(rc, current, { validate: opts, usage: pairUsage });
+      current = { slots: completed.slots, footwearAlternatives: completed.footwearAlternatives };
+    }
     const finalValidation = ok ? validateCandidate(rc, current, opts) : null;
     if (ok && finalValidation?.valid) {
       const t = slotOf(current, "top");
@@ -118,26 +147,26 @@ export function repairOptions(rc: RecommendationContext, stored: StoredOption[],
       continue;
     }
     // The option cannot be repaired piece by piece: a complete reserve takes its place, under its own identity.
-    const index = spareReserves.findIndex((r) => !usedTops.has(slotOf(r, "top") ?? ""));
+    const index = spareReserves.findIndex((r) => !usedTops.has(slotOf(r.o, "top") ?? ""));
     if (index >= 0) {
       const reserve = spareReserves.splice(index, 1)[0]!;
-      const t = slotOf(reserve, "top");
-      const b = slotOf(reserve, "bottom");
+      const t = slotOf(reserve.o, "top");
+      const b = slotOf(reserve.o, "bottom");
       if (t) usedTops.add(t);
       if (b) usedBottoms.add(b);
-      next.push({ ...storedToDraft(reserve, true) });
+      next.push(paired.has(reserve.o.optionId) ? refreshed(reserve.o, reserve.validation) : { ...storedToDraft(reserve.o, true) });
     } else {
       withdrawn++;
     }
   }
-  const keptReserves = spareReserves.filter((r) => !usedTops.has(slotOf(r, "top") ?? "")).map((r) => storedToDraft(r));
+  const keptReserves = spareReserves.filter((r) => !usedTops.has(slotOf(r.o, "top") ?? "")).map((r) => (paired.has(r.o.optionId) ? { ...refreshed(r.o, r.validation), changed: false } : storedToDraft(r.o)));
   if (keptReserves.length !== reserves.length) changed = true;
   const shortage = next.length < requestedCount
     ? next.length === 0
       ? "No complete outfit is available for this day at the moment."
       : `${next.length} valid ${next.length === 1 ? "outfit" : "outfits"} instead of ${requestedCount}: the others could not be replaced from eligible stock.`
     : null;
-  return { changed, offered: next, reserves: keptReserves, changes: changed ? describeChanges(rc, offered, next, why) : [], shortage, withdrawn };
+  return { changed, offered: next, reserves: keptReserves, changes: changed ? describeChanges(rc, originalOffered, next, why) : [], shortage, withdrawn };
 }
 
 /* ------------------------------------------------------------------ */
@@ -146,6 +175,26 @@ export function repairOptions(rc: RecommendationContext, stored: StoredOption[],
 
 const BALANCE_DELETE = "DELETE FROM stock_balances WHERE user_id = ? AND garment_id = ?";
 const BALANCE_INSERT = "INSERT INTO stock_balances (user_id, garment_id, bucket, ref, quantity, held)";
+
+/**
+ * The overlay reads the stock planner's materialization statements by their shape. That is a coupling
+ * to the foundation's SQL text, so it is checked on every command: a statement that writes
+ * `stock_balances` in any other shape means the overlay would be built from a wardrobe it does not
+ * understand. The hook then repairs nothing in the commit and flags the boards for the sweep, which
+ * reads committed state - a late repair, never a repair against the wrong stock.
+ */
+export function stockWritesRecognized(statements: readonly { sql: string }[]): boolean {
+  return statements.every((s) => {
+    const sql = s.sql.trim();
+    if (!/\b(INSERT\s+(OR\s+\w+\s+)?INTO|UPDATE|DELETE\s+FROM|REPLACE\s+INTO)\s+stock_balances\b/i.test(sql)) return true;
+    return sql.startsWith(BALANCE_DELETE) || sql.startsWith(BALANCE_INSERT);
+  });
+}
+
+/** Boards that offer fewer outfits than were asked for: a change in stock may let the sweep fill them again. */
+const FLAG_SHORT_BOARDS = `UPDATE boards SET needs_replenishment = 1, updated_at = ? WHERE user_id = ? AND status = 'active' AND local_date >= ? AND needs_replenishment = 0
+  AND (SELECT COUNT(*) FROM board_options o WHERE o.user_id = boards.user_id AND o.board_id = boards.board_id AND o.revision = boards.current_revision AND o.state = 'offered')
+    < (SELECT r.requested_count FROM board_revisions r WHERE r.user_id = boards.user_id AND r.board_id = boards.board_id AND r.revision = boards.current_revision)`;
 
 /**
  * What the wardrobe will look like once this command commits. Stock balances come from the stock
@@ -228,6 +277,13 @@ export const boardRepairHook: CommitHook = async (ctx, plan, changes): Promise<P
     statements.push(stmt("UPDATE boards SET needs_replenishment = 1, updated_at = ? WHERE user_id = ? AND status = 'active' AND local_date >= ?", ctx.now, ctx.userId, today));
     return fragment;
   }
+  if (!stockWritesRecognized(plan.statements ?? [])) {
+    statements.push(stmt("UPDATE boards SET needs_replenishment = 1, updated_at = ? WHERE user_id = ? AND status = 'active' AND local_date >= ?", ctx.now, ctx.userId, addDays(today, -1)));
+    fragment.repairs.push("Open boards: repair deferred to the background sweep (this command's stock changes could not be read inside the commit)");
+    return fragment;
+  }
+  // Stock or restrictions changed: a board left short (or emptied) earlier may be fillable again.
+  const shortFlag = stmt(FLAG_SHORT_BOARDS, ctx.now, ctx.userId, addDays(today, -1));
   if (!broad) {
     const hits = await allIn<{ board_id: string }>(
       ctx.db,
@@ -237,7 +293,10 @@ export const boardRepairHook: CommitHook = async (ctx, plan, changes): Promise<P
     );
     const ids = new Set(hits.map((h) => h.board_id));
     boards = boards.filter((b) => ids.has(b.board_id));
-    if (boards.length === 0) return statements.length > 0 ? fragment : undefined;
+    if (boards.length === 0) {
+      statements.push(shortFlag);
+      return fragment;
+    }
   }
 
   const overlay = overlayFromPlan(ctx, plan, changes);
@@ -290,6 +349,7 @@ export const boardRepairHook: CommitHook = async (ctx, plan, changes): Promise<P
     }
   }
   if (repaired.length > 0) fragment.result = { boardRepairs: repaired };
+  statements.push(shortFlag);
   if (flagOnly) statements.push(stmt("UPDATE boards SET needs_replenishment = 1, updated_at = ? WHERE user_id = ? AND status = 'active' AND local_date >= ?", ctx.now, ctx.userId, today));
   return fragment;
 };

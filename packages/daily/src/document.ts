@@ -9,6 +9,11 @@ import type { BoardDocument, BoardGarmentLine, BoardOption, DayConditions, Optio
 import { all, allIn, assertPrincipal, first, json, localDateOf, requireScope, toInstant, type Db, type Principal } from "@garderobe/domain";
 import { latestCalendarSnapshot, loadOwner, weatherSnapshotById, calendarSnapshotById } from "./context.ts";
 
+/** Beyond these ages a source no longer counts as the day's forecast or calendar, whatever its label said when it was read. */
+export const FORECAST_OUTDATED_MINUTES = 12 * 60;
+export const CALENDAR_OUTDATED_MINUTES = 24 * 60;
+const MAX_PHASE_ATTEMPTS_FOR_NOTICE = 5;
+
 export interface BoardRow {
   user_id: string;
   board_id: string;
@@ -127,7 +132,7 @@ function qualificationFor(evidence: OptionEvidence, names: Map<string, { name: s
   return name ? `${name} may already have been worn this week.` : "A piece here may already have been worn this week.";
 }
 
-export async function buildBoardDocument(db: Db, userId: string, board: BoardRow, revisionNumber?: number): Promise<BoardDocument> {
+export async function buildBoardDocument(db: Db, userId: string, board: BoardRow, revisionNumber?: number, opts: { nowMs?: number } = {}): Promise<BoardDocument> {
   const revisionNo = revisionNumber ?? board.current_revision;
   const revision = await loadRevision(db, userId, board.board_id, revisionNo);
   if (!revision) throw new Error(`board revision ${revisionNo} not found`);
@@ -161,14 +166,26 @@ export async function buildBoardDocument(db: Db, userId: string, board: BoardRow
 
   const weather = revision.weather_snapshot_id ? await weatherSnapshotById(db, userId, revision.weather_snapshot_id) : null;
   const calendar = revision.calendar_snapshot_id ? await calendarSnapshotById(db, userId, revision.calendar_snapshot_id) : null;
-  const weatherFreshness = weather?.freshness ?? "unavailable";
-  const calendarStatus = calendar?.status ?? "not_read";
+  let weatherFreshness: BoardDocument["freshness"]["weather"] = weather?.freshness ?? "unavailable";
+  let calendarStatus: BoardDocument["freshness"]["calendar"] = calendar?.status ?? "not_read";
+  // Freshness is a fact about NOW, not about the moment of the fetch: a label recorded as "fresh" does
+  // not stay fresh for a board whose refresh never ran. The ages come from the stored fetch and read times.
+  if (opts.nowMs !== undefined && isCurrent && board.status === "active") {
+    const ageMinutes = (iso: string | null | undefined) => (iso ? (opts.nowMs! - Date.parse(iso)) / 60_000 : null);
+    const weatherAge = ageMinutes(weather?.fetchedAt);
+    const calendarAge = ageMinutes(calendar?.readAt);
+    if (weatherFreshness === "fresh" && weatherAge !== null && weatherAge > FORECAST_OUTDATED_MINUTES) weatherFreshness = "stale";
+    if (calendarStatus === "ok" && calendarAge !== null && calendarAge > CALENDAR_OUTDATED_MINUTES) calendarStatus = "stale";
+  }
 
   let validity: BoardDocument["validity"] = "current";
   if (board.status === "worn") validity = "worn";
   else if (board.status === "suppressed") validity = "suppressed";
   else if (options.length < revision.requested_count) validity = "degraded";
   else if (weatherFreshness !== "fresh" || calendarStatus === "error" || calendarStatus === "stale") validity = "limited";
+  // Flagged: something changed (a rule, a setting, a brief, an undo, a swap made on an old forecast)
+  // that has not been checked against this board yet. Until the sweep has done so it is not "current".
+  else if (isCurrent && board.needs_replenishment === 1) validity = "limited";
 
   const targetKey = `outfit-event:${board.scope}:${board.local_date}`;
   const projection = await first<{ state: string; projected_revision: number | null }>(db, "SELECT state, projected_revision FROM calendar_projections WHERE user_id = ? AND target_key = ?", userId, targetKey);
@@ -218,12 +235,12 @@ export async function buildBoardDocument(db: Db, userId: string, board: BoardRow
   };
 }
 
-export async function getBoard(db: Db, principal: Principal, ref: BoardRef, opts: { revision?: number } = {}): Promise<BoardDocument | null> {
+export async function getBoard(db: Db, principal: Principal, ref: BoardRef, opts: { revision?: number; nowMs?: number } = {}): Promise<BoardDocument | null> {
   assertPrincipal(principal);
   requireScope(principal, "read");
   const board = await loadBoard(db, principal.userId, ref);
   if (!board) return null;
-  return buildBoardDocument(db, principal.userId, board, opts.revision);
+  return buildBoardDocument(db, principal.userId, board, opts.revision, { nowMs: opts.nowMs });
 }
 
 /** Today: the prepared board, the day's record and the service state. No inference call is made. */
@@ -236,7 +253,7 @@ export async function getToday(db: Db, principal: Principal, opts: { date?: stri
   const localDate = opts.date ?? localDateOf(nowMs, owner.settings.timezone);
   const scope = opts.scope ?? "home";
   const board = await loadBoard(db, userId, { date: localDate, scope });
-  const document = board ? await buildBoardDocument(db, userId, board) : null;
+  const document = board ? await buildBoardDocument(db, userId, board, undefined, { nowMs }) : null;
   const worn = await all<{ garment_id: string; name: string; colour: string | null; roles_json: string }>(
     db,
     "SELECT g.garment_id, g.name, g.colour, g.roles_json FROM daily_wears w JOIN garments g ON g.user_id = w.user_id AND g.garment_id = w.garment_id WHERE w.user_id = ? AND w.wearing_date = ? AND w.status = 'active' ORDER BY g.category, g.name",
@@ -248,7 +265,11 @@ export async function getToday(db: Db, principal: Principal, opts: { date?: stri
     if (paused) emptyReason = paused.resumeOn ? `Recommendations are paused until ${paused.resumeOn}.` : "Recommendations are paused.";
     else if (document?.validity === "suppressed") emptyReason = "This day's board was removed.";
     else if (document) emptyReason = document.notice ?? "No complete outfit is available for this day.";
-    else emptyReason = "No board has been prepared for this day yet.";
+    else {
+      // A scheduled run that gave up is said plainly, with what the owner can do about it.
+      const gaveUp = scope === "home" ? await first<{ n: number }>(db, "SELECT COUNT(*) AS n FROM day_runs WHERE user_id = ? AND local_date = ? AND status = 'failed' AND attempts >= ? AND phase IN ('evening_compose', 'morning_refresh', 'morning_publish')", userId, localDate, MAX_PHASE_ATTEMPTS_FOR_NOTICE) : null;
+      emptyReason = (gaveUp?.n ?? 0) > 0 ? "The board for this day could not be prepared: the scheduled run failed repeatedly and has stopped trying. Ask for outfits to compose it now." : "No board has been prepared for this day yet.";
+    }
   }
   return {
     localDate,

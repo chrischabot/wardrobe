@@ -64,7 +64,31 @@ phase times, wearing intervals, freshness thresholds, the outfit calendar and it
   `pending_reconciliation`: they are carried in validation evidence and are not enforced until the
   owner activates them. Activated rules of that shape are enforced at their boundary.
 - With no forecast, a jacket is only composed over a lightweight oxford, because the 14 to 16 C rule
-  cannot be ruled out; temperature checks are reported as unverified and the board says so.
+  cannot be ruled out; temperature checks are reported as unverified and the board says so. The
+  validator refuses the combination too (`jacket_band_unverified`, blocking) unless the owner named
+  the jacket himself, in which case it is a stated advisory. The rule covers every layer under the
+  jacket: the base shirt and a shirt or knit worn as the mid layer.
+- Watches and jewellery are recognised by the garment attribute `accessoryKind` (set at creation or
+  import), not by name: `watch`, `ring`, `chain`, `bracelet`, `necklace`, `cufflinks` and similar are
+  never part of an outfit. Names are only a backstop for records with no kind, and a generic
+  `accessory` with no kind is never offered by the service (`accessory_unclassified`); the owner can
+  still add it himself, as a stated advisory.
+- When the owner reports the healing restriction over, the sneaker and welted format comes into
+  force: every open board keeps its options, their IDs and his selection, and each option gains an
+  eligible welted alternative in the same commit.
+- A board whose options have all become invalid and cannot be replaced is published as an empty
+  revision with a plain notice; it is never left showing invalid outfits. A board flagged for a
+  recheck reads as `limited`, not `current`, until the sweep has checked it.
+- A scheduled run never replaces a board the owner made, changed or chose from while it was
+  composing: it states the board revision it composed over (`expectedBoardRevision`), and a chosen
+  outfit that is still valid is kept; the board is rechecked in place instead.
+- `board.restore` itself clears a delivery suppressed because the event was deleted in Calendar, so
+  the restore holds whatever revision is delivered next.
+- Freshness shown on a board is judged when it is read (pass `nowMs`): a forecast older than twelve
+  hours or a calendar read older than a day no longer reads as fresh.
+- A scheduled phase that fails five times stops; the fifth failure is reported once by the sweep
+  (`detail.gaveUp`) and Today says the board could not be prepared. The phase lease is three model
+  budgets plus a minute, at least five minutes.
 - Season words in the sheet ("Cold", "Warm-weather", ...) and the colour relations used by the
   deterministic composer are soft ranking preferences. They never reject an outfit and are not a
   claim about taste.

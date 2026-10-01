@@ -601,6 +601,41 @@ export async function composeBoard(ctx: RecommendationContext, opts: ComposeOpti
 }
 
 /**
+ * The sneaker + welted format (profile section 8.4): when it is in force and an outfit names only one
+ * kind, add an eligible shoe of the other kind as a footwear alternative. Every piece of the outfit
+ * stays as it is, so an option the owner has already seen - or chosen - keeps its identity when the
+ * format comes into force (the moment he reports his feet have healed). Returns the candidate unchanged
+ * when the format is not in force, the pair is already named, or nothing of the missing kind is eligible.
+ */
+export function withPairedFootwear(
+  ctx: RecommendationContext,
+  candidate: { slots: OutfitSlot[]; footwearAlternatives: string[] },
+  opts: { validate?: ValidateOptions; usage?: Map<string, number> } = {},
+): { slots: OutfitSlot[]; footwearAlternatives: string[]; added: string[] } {
+  const unchanged = { slots: candidate.slots, footwearAlternatives: candidate.footwearAlternatives, added: [] as string[] };
+  if (ctx.rules.pairedFootwear?.inForce !== true) return unchanged;
+  const main = ctx.garments.get(candidate.slots.find((s) => s.role === "footwear")?.garmentId ?? "");
+  if (!main) return unchanged;
+  const named = [main, ...candidate.footwearAlternatives.map((id) => ctx.garments.get(id)).filter((g): g is PoolGarment => !!g)];
+  const kinds = new Set(named.map((g) => String(g.attributes.footwearKind ?? "")));
+  const missing = ["sneaker", "welted"].filter((k) => !kinds.has(k));
+  if (missing.length === 0) return unchanged;
+  const inOutfit = new Set([...candidate.slots.map((s) => s.garmentId), ...candidate.footwearAlternatives]);
+  const eligible = eligibleFor(ctx, "footwear", opts.validate ?? {}).filter((g) => !inOutfit.has(g.garmentId));
+  const added: string[] = [];
+  for (const kind of missing) {
+    const best = eligible
+      .filter((g) => g.attributes.footwearKind === kind)
+      .map((g) => ({ g, score: rotation(ctx, g) - (opts.usage?.get(g.garmentId) ?? 0) * 1.5 + (g.attributes.breakingIn ? -0.5 : 0) + seededUnit(ctx.userId, ctx.localDate, "pair", g.garmentId) * 0.6 }))
+      .sort((a, b) => b.score - a.score || a.g.garmentId.localeCompare(b.g.garmentId))[0];
+    if (!best) continue;
+    added.push(best.g.garmentId);
+    opts.usage?.set(best.g.garmentId, (opts.usage.get(best.g.garmentId) ?? 0) + 1);
+  }
+  return added.length > 0 ? { slots: candidate.slots, footwearAlternatives: [...candidate.footwearAlternatives, ...added], added } : unchanged;
+}
+
+/**
  * Replace one slot of an outfit, keeping every other piece. Honours "never fall back to navy": a navy
  * replacement for a non-navy piece is taken only when nothing else validates.
  */
@@ -630,9 +665,11 @@ export function findReplacement(
     })
     .sort((a, b) => b.score - a.score || a.g.garmentId.localeCompare(b.g.garmentId));
   for (const { g } of ranked) {
-    const slots = option.slots.some((s) => s.role === role) ? option.slots.map((s) => (s.role === role ? { role, garmentId: g.garmentId } : s)) : [...option.slots, { role, garmentId: g.garmentId }];
-    const validation = validateCandidate(ctx, { slots, footwearAlternatives: option.footwearAlternatives }, validateOpts);
-    if (validation.valid) return { slots, footwearAlternatives: option.footwearAlternatives, validation, replacement: g };
+    const swapped = option.slots.some((s) => s.role === role) ? option.slots.map((s) => (s.role === role ? { role, garmentId: g.garmentId } : s)) : [...option.slots, { role, garmentId: g.garmentId }];
+    // An option published before the paired-shoe format came into force gains its alternative here.
+    const { slots, footwearAlternatives } = withPairedFootwear(ctx, { slots: swapped, footwearAlternatives: option.footwearAlternatives }, { validate: validateOpts });
+    const validation = validateCandidate(ctx, { slots, footwearAlternatives }, validateOpts);
+    if (validation.valid) return { slots, footwearAlternatives, validation, replacement: g };
   }
   return null;
 }
