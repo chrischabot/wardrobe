@@ -96,6 +96,7 @@ public enum GarderobeContract {
         "care.washed",
         "command.undo",
         "connection.record_discovery",
+        "connection.record_health",
         "connection.register",
         "connection.set_status",
         "connection.set_tool_groups",
@@ -132,6 +133,7 @@ public enum GarderobeContract {
         "lifecycle.open_project",
         "lifecycle.record_event",
         "lifecycle.update_project",
+        "mail.record_sync",
         "measurement.record",
         "media.authorize_upload",
         "media.decide_review",
@@ -149,12 +151,15 @@ public enum GarderobeContract {
         "purchase.link_line",
         "purchase.mark_delivered",
         "purchase.record_event",
+        "reminder.cancel",
+        "reminder.set",
         "research.save_note",
         "restriction.add",
         "restriction.resolve",
         "return.link_exchange",
         "return.open_case",
         "return.update_case",
+        "search.record_instance",
         "service.pause",
         "service.resume",
         "settings.update",
@@ -259,6 +264,7 @@ public struct AccountDeleteResponse: Codable, Sendable, Equatable {
     public enum State: String, Codable, Sendable, CaseIterable {
         case confirmationRequired = "confirmation_required"
         case disabledPendingDeletion = "disabled_pending_deletion"
+        case erased
         /// A member this client version does not know; the contract requires tolerating it.
         case unknown
 
@@ -838,6 +844,100 @@ public struct BackfillEstimate: Codable, Sendable, Equatable {
     }
 }
 
+public struct Backup: Codable, Sendable, Equatable {
+    public var backupId: String
+    public var runId: String
+    public var state: State
+    public var complete: Bool
+    public var takenAt: Instant?
+    public var requestedAt: Instant
+    public var finishedAt: Instant?
+    public var expiresAt: Instant?
+    public var byteLength: Int?
+    public var sha256: String?
+    public var components: [ComponentsItem]
+    public var restoreManifest: RestoreManifest?
+
+    public init(
+        backupId: String,
+        runId: String,
+        state: State,
+        complete: Bool,
+        takenAt: Instant? = nil,
+        requestedAt: Instant,
+        finishedAt: Instant? = nil,
+        expiresAt: Instant? = nil,
+        byteLength: Int? = nil,
+        sha256: String? = nil,
+        components: [ComponentsItem],
+        restoreManifest: RestoreManifest? = nil
+    ) {
+        self.backupId = backupId
+        self.runId = runId
+        self.state = state
+        self.complete = complete
+        self.takenAt = takenAt
+        self.requestedAt = requestedAt
+        self.finishedAt = finishedAt
+        self.expiresAt = expiresAt
+        self.byteLength = byteLength
+        self.sha256 = sha256
+        self.components = components
+        self.restoreManifest = restoreManifest
+    }
+
+    public enum State: String, Codable, Sendable, CaseIterable {
+        case queued
+        case running
+        case completed
+        case completedIncomplete = "completed_incomplete"
+        case failed
+        case expired
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+
+    public struct ComponentsItem: Codable, Sendable, Equatable {
+        public var name: String
+        public var state: String
+        public var records: Double
+        public var note: String?
+
+        public init(
+            name: String,
+            state: String,
+            records: Double,
+            note: String? = nil
+        ) {
+            self.name = name
+            self.state = state
+            self.records = records
+            self.note = note
+        }
+    }
+}
+
+public struct BackupList: Codable, Sendable, Equatable {
+    public var backups: [Backup]
+    public var retentionDays: Int
+    public var intervalHours: Double
+
+    public init(
+        backups: [Backup],
+        retentionDays: Int,
+        intervalHours: Double
+    ) {
+        self.backups = backups
+        self.retentionDays = retentionDays
+        self.intervalHours = intervalHours
+    }
+}
+
 public enum Basis: String, Codable, Sendable, CaseIterable {
     case observed
     case inferred
@@ -1112,6 +1212,7 @@ public struct BoardPublish: Codable, Sendable, Equatable {
     public var calendarSnapshotId: String?
     public var notice: String?
     public var composedAgainst: ComposedAgainst?
+    public var expectedBoardRevision: Int?
 
     public init(
         localDate: LocalDate,
@@ -1124,7 +1225,8 @@ public struct BoardPublish: Codable, Sendable, Equatable {
         weatherSnapshotId: String? = nil,
         calendarSnapshotId: String? = nil,
         notice: String? = nil,
-        composedAgainst: ComposedAgainst? = nil
+        composedAgainst: ComposedAgainst? = nil,
+        expectedBoardRevision: Int? = nil
     ) {
         self.localDate = localDate
         self.scope = scope
@@ -1137,6 +1239,7 @@ public struct BoardPublish: Codable, Sendable, Equatable {
         self.calendarSnapshotId = calendarSnapshotId
         self.notice = notice
         self.composedAgainst = composedAgainst
+        self.expectedBoardRevision = expectedBoardRevision
     }
 
     public enum Reason: String, Codable, Sendable, CaseIterable {
@@ -1781,6 +1884,7 @@ public struct CommandBoardPublish: Codable, Sendable, Equatable, GarderobeComman
     /// Server default when omitted: `null`.
     public var notice: String?
     public var composedAgainst: ComposedAgainst?
+    public var expectedBoardRevision: Int?
 
     public init(
         localDate: LocalDate,
@@ -1793,7 +1897,8 @@ public struct CommandBoardPublish: Codable, Sendable, Equatable, GarderobeComman
         weatherSnapshotId: String? = nil,
         calendarSnapshotId: String? = nil,
         notice: String? = nil,
-        composedAgainst: ComposedAgainst? = nil
+        composedAgainst: ComposedAgainst? = nil,
+        expectedBoardRevision: Int? = nil
     ) {
         self.localDate = localDate
         self.scope = scope
@@ -1806,6 +1911,7 @@ public struct CommandBoardPublish: Codable, Sendable, Equatable, GarderobeComman
         self.calendarSnapshotId = calendarSnapshotId
         self.notice = notice
         self.composedAgainst = composedAgainst
+        self.expectedBoardRevision = expectedBoardRevision
     }
 
     public enum Reason: String, Codable, Sendable, CaseIterable {
@@ -2070,6 +2176,47 @@ public struct CommandConnectionRecordDiscovery: Codable, Sendable, Equatable, Ga
     }
 }
 
+/// Payload of the `connection.record_health` command, as the client sends it (fields with a server default are optional).
+public struct CommandConnectionRecordHealth: Codable, Sendable, Equatable, GarderobeCommandPayload {
+    public static let commandType = "connection.record_health"
+
+    public var connectionId: String
+    public var ok: Bool
+    /// Server default when omitted: `false`.
+    public var authFailure: Bool?
+    /// Server default when omitted: `null`.
+    public var detail: String?
+    /// Server default when omitted: `"manual"`.
+    public var phase: Phase?
+
+    public init(
+        connectionId: String,
+        ok: Bool,
+        authFailure: Bool? = nil,
+        detail: String? = nil,
+        phase: Phase? = nil
+    ) {
+        self.connectionId = connectionId
+        self.ok = ok
+        self.authFailure = authFailure
+        self.detail = detail
+        self.phase = phase
+    }
+
+    public enum Phase: String, Codable, Sendable, CaseIterable {
+        case evening
+        case morning
+        case manual
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+}
+
 /// Payload of the `connection.register` command, as the client sends it (fields with a server default are optional).
 public struct CommandConnectionRegister: Codable, Sendable, Equatable, GarderobeCommandPayload {
     public static let commandType = "connection.register"
@@ -2083,6 +2230,8 @@ public struct CommandConnectionRegister: Codable, Sendable, Equatable, Garderobe
     public var secretRef: String?
     /// Server default when omitted: `[]`.
     public var scopes: [String]?
+    /// Server default when omitted: `null`.
+    public var expectedIssuer: String?
 
     public init(
         connectionId: String? = nil,
@@ -2091,7 +2240,8 @@ public struct CommandConnectionRegister: Codable, Sendable, Equatable, Garderobe
         endpoint: String,
         namespace: String,
         secretRef: String? = nil,
-        scopes: [String]? = nil
+        scopes: [String]? = nil,
+        expectedIssuer: String? = nil
     ) {
         self.connectionId = connectionId
         self.kind = kind
@@ -2100,6 +2250,7 @@ public struct CommandConnectionRegister: Codable, Sendable, Equatable, Garderobe
         self.namespace = namespace
         self.secretRef = secretRef
         self.scopes = scopes
+        self.expectedIssuer = expectedIssuer
     }
 }
 
@@ -3295,6 +3446,16 @@ public struct CommandInferenceReserve: Codable, Sendable, Equatable, GarderobeCo
     /// Server default when omitted: `null`.
     public var promptVersion: String?
     public var gatewayId: String
+    /// Server default when omitted: `null`.
+    public var schemaVersion: String?
+    /// Server default when omitted: `{}`.
+    public var effort: [String: JSONValue]?
+    /// Server default when omitted: `{}`.
+    public var evidence: [String: JSONValue]?
+    /// Server default when omitted: `0`.
+    public var maxOpenReservations: Int?
+    /// Server default when omitted: `0`.
+    public var discretionaryCeilingMicroUsd: Int?
 
     public init(
         reservationId: String,
@@ -3308,7 +3469,12 @@ public struct CommandInferenceReserve: Codable, Sendable, Equatable, GarderobeCo
         dailyLimitMicroUsd: Int,
         parent: Parent,
         promptVersion: String? = nil,
-        gatewayId: String
+        gatewayId: String,
+        schemaVersion: String? = nil,
+        effort: [String: JSONValue]? = nil,
+        evidence: [String: JSONValue]? = nil,
+        maxOpenReservations: Int? = nil,
+        discretionaryCeilingMicroUsd: Int? = nil
     ) {
         self.reservationId = reservationId
         self.runId = runId
@@ -3322,6 +3488,11 @@ public struct CommandInferenceReserve: Codable, Sendable, Equatable, GarderobeCo
         self.parent = parent
         self.promptVersion = promptVersion
         self.gatewayId = gatewayId
+        self.schemaVersion = schemaVersion
+        self.effort = effort
+        self.evidence = evidence
+        self.maxOpenReservations = maxOpenReservations
+        self.discretionaryCeilingMicroUsd = discretionaryCeilingMicroUsd
     }
 
     public struct Parent: Codable, Sendable, Equatable {
@@ -3865,6 +4036,96 @@ public struct CommandLifecycleUpdateProject: Codable, Sendable, Equatable, Garde
         try container.encodeIfPresent(self.nextAction, forKey: JSONCodingKey("nextAction"))
         try container.encodeIfPresent(self.details, forKey: JSONCodingKey("details"))
         try container.encodeIfPresent(self.state, forKey: JSONCodingKey("state"))
+    }
+}
+
+/// Payload of the `mail.record_sync` command, as the client sends it (fields with a server default are optional).
+public struct CommandMailRecordSync: Codable, Sendable, Equatable, GarderobeCommandPayload {
+    public static let commandType = "mail.record_sync"
+
+    public var connectionId: String
+    public var seen: [SeenItem]
+    /// Server default when omitted: `null`.
+    public var historyId: String?
+    /// Server default when omitted: `null`.
+    public var backfillFrom: LocalDate?
+    /// Server default when omitted: `null`.
+    public var backfillTo: LocalDate?
+    public var completion: Completion
+    /// Server default when omitted: `null`.
+    public var resume: Resume?
+
+    public init(
+        connectionId: String,
+        seen: [SeenItem],
+        historyId: String? = nil,
+        backfillFrom: LocalDate? = nil,
+        backfillTo: LocalDate? = nil,
+        completion: Completion,
+        resume: Resume? = nil
+    ) {
+        self.connectionId = connectionId
+        self.seen = seen
+        self.historyId = historyId
+        self.backfillFrom = backfillFrom
+        self.backfillTo = backfillTo
+        self.completion = completion
+        self.resume = resume
+    }
+
+    public struct SeenItem: Codable, Sendable, Equatable {
+        public var messageId: String
+        public var classified: Classified
+        /// Server default when omitted: `null`.
+        public var sentAt: Instant?
+
+        public init(
+            messageId: String,
+            classified: Classified,
+            sentAt: Instant? = nil
+        ) {
+            self.messageId = messageId
+            self.classified = classified
+            self.sentAt = sentAt
+        }
+
+        public enum Classified: String, Codable, Sendable, CaseIterable {
+            case order
+            case notOrder = "not_order"
+            case unreadable
+            /// A member this client version does not know; the contract requires tolerating it.
+            case unknown
+
+            public init(from decoder: Decoder) throws {
+                let rawValue = try decoder.singleValueContainer().decode(String.self)
+                self = Self(rawValue: rawValue) ?? .unknown
+            }
+        }
+    }
+
+    public enum Completion: String, Codable, Sendable, CaseIterable {
+        case complete
+        case partial
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+
+    public struct Resume: Codable, Sendable, Equatable {
+        public var queryIndex: Int
+        public var pageToken: String?
+
+        public init(
+            queryIndex: Int,
+            pageToken: String? = nil
+        ) {
+            self.queryIndex = queryIndex
+            self.pageToken = pageToken
+        }
     }
 }
 
@@ -4606,6 +4867,67 @@ public struct CommandReceipt: Codable, Sendable, Equatable {
     }
 }
 
+/// Payload of the `reminder.cancel` command, as the client sends it (fields with a server default are optional).
+public struct CommandReminderCancel: Codable, Sendable, Equatable, GarderobeCommandPayload {
+    public static let commandType = "reminder.cancel"
+
+    public var reminderId: String
+
+    public init(
+        reminderId: String
+    ) {
+        self.reminderId = reminderId
+    }
+}
+
+/// Payload of the `reminder.set` command, as the client sends it (fields with a server default are optional).
+public struct CommandReminderSet: Codable, Sendable, Equatable, GarderobeCommandPayload {
+    public static let commandType = "reminder.set"
+
+    public var reminderId: String?
+    public var kind: Kind
+    public var title: String
+    public var dueAt: Instant
+    /// Server default when omitted: `null`.
+    public var note: String?
+    /// Server default when omitted: `null`.
+    public var url: String?
+    /// Server default when omitted: `[0]`.
+    public var leadMinutes: [Int]?
+
+    public init(
+        reminderId: String? = nil,
+        kind: Kind,
+        title: String,
+        dueAt: Instant,
+        note: String? = nil,
+        url: String? = nil,
+        leadMinutes: [Int]? = nil
+    ) {
+        self.reminderId = reminderId
+        self.kind = kind
+        self.title = title
+        self.dueAt = dueAt
+        self.note = note
+        self.url = url
+        self.leadMinutes = leadMinutes
+    }
+
+    public enum Kind: String, Codable, Sendable, CaseIterable {
+        case drop
+        case saleWindow = "sale_window"
+        case restock
+        case other
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+}
+
 /// Payload of the `research.save_note` command, as the client sends it (fields with a server default are optional).
 public struct CommandResearchSaveNote: Codable, Sendable, Equatable, GarderobeCommandPayload {
     public static let commandType = "research.save_note"
@@ -4890,6 +5212,28 @@ public struct CommandReturnUpdateCase: Codable, Sendable, Equatable, GarderobeCo
         try container.encodeIfPresent(self.refundSourceRef, forKey: JSONCodingKey("refundSourceRef"))
         try container.encodeIfPresent(self.currency, forKey: JSONCodingKey("currency"))
         try container.encodeIfPresent(self.note, forKey: JSONCodingKey("note"))
+    }
+}
+
+/// Payload of the `search.record_instance` command, as the client sends it (fields with a server default are optional).
+public struct CommandSearchRecordInstance: Codable, Sendable, Equatable, GarderobeCommandPayload {
+    public static let commandType = "search.record_instance"
+
+    public var environment: String
+    public var instance: String
+    public var gatewayId: String
+    public var created: Bool
+
+    public init(
+        environment: String,
+        instance: String,
+        gatewayId: String,
+        created: Bool
+    ) {
+        self.environment = environment
+        self.instance = instance
+        self.gatewayId = gatewayId
+        self.created = created
     }
 }
 
@@ -6098,6 +6442,8 @@ public struct Connection: Codable, Sendable, Equatable {
     public var tools: [ToolsItem]
     public var enabledGroups: [String]
     public var lastDiscoveryAt: Instant?
+    public var expectedIssuer: String?
+    public var health: Health?
 
     public init(
         connectionId: String,
@@ -6113,7 +6459,9 @@ public struct Connection: Codable, Sendable, Equatable {
         schemaDigest: String? = nil,
         tools: [ToolsItem],
         enabledGroups: [String],
-        lastDiscoveryAt: Instant? = nil
+        lastDiscoveryAt: Instant? = nil,
+        expectedIssuer: String? = nil,
+        health: Health? = nil
     ) {
         self.connectionId = connectionId
         self.version = version
@@ -6129,6 +6477,8 @@ public struct Connection: Codable, Sendable, Equatable {
         self.tools = tools
         self.enabledGroups = enabledGroups
         self.lastDiscoveryAt = lastDiscoveryAt
+        self.expectedIssuer = expectedIssuer
+        self.health = health
     }
 
     public enum Status: String, Codable, Sendable, CaseIterable {
@@ -6164,6 +6514,25 @@ public struct Connection: Codable, Sendable, Equatable {
             self.enabled = enabled
             self.disabledReason = disabledReason
             self.group = group
+        }
+    }
+
+    public struct Health: Codable, Sendable, Equatable {
+        public var ok: Bool
+        public var checkedAt: Instant
+        public var detail: String?
+        public var phase: String
+
+        public init(
+            ok: Bool,
+            checkedAt: Instant,
+            detail: String? = nil,
+            phase: String
+        ) {
+            self.ok = ok
+            self.checkedAt = checkedAt
+            self.detail = detail
+            self.phase = phase
         }
     }
 }
@@ -6333,6 +6702,43 @@ public struct ConnectionRecordDiscovery: Codable, Sendable, Equatable {
     }
 }
 
+/// The `connection.record_health` payload as the server sees it after parsing (defaults applied).
+/// To send the command, use `CommandConnectionRecordHealth`.
+public struct ConnectionRecordHealth: Codable, Sendable, Equatable {
+    public var connectionId: String
+    public var ok: Bool
+    public var authFailure: Bool
+    public var detail: String?
+    public var phase: Phase
+
+    public init(
+        connectionId: String,
+        ok: Bool,
+        authFailure: Bool,
+        detail: String? = nil,
+        phase: Phase
+    ) {
+        self.connectionId = connectionId
+        self.ok = ok
+        self.authFailure = authFailure
+        self.detail = detail
+        self.phase = phase
+    }
+
+    public enum Phase: String, Codable, Sendable, CaseIterable {
+        case evening
+        case morning
+        case manual
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+}
+
 /// The `connection.register` payload as the server sees it after parsing (defaults applied).
 /// To send the command, use `CommandConnectionRegister`.
 public struct ConnectionRegister: Codable, Sendable, Equatable {
@@ -6343,6 +6749,7 @@ public struct ConnectionRegister: Codable, Sendable, Equatable {
     public var namespace: String
     public var secretRef: String?
     public var scopes: [String]
+    public var expectedIssuer: String?
 
     public init(
         connectionId: String? = nil,
@@ -6351,7 +6758,8 @@ public struct ConnectionRegister: Codable, Sendable, Equatable {
         endpoint: String,
         namespace: String,
         secretRef: String? = nil,
-        scopes: [String]
+        scopes: [String],
+        expectedIssuer: String? = nil
     ) {
         self.connectionId = connectionId
         self.kind = kind
@@ -6360,6 +6768,7 @@ public struct ConnectionRegister: Codable, Sendable, Equatable {
         self.namespace = namespace
         self.secretRef = secretRef
         self.scopes = scopes
+        self.expectedIssuer = expectedIssuer
     }
 }
 
@@ -6864,6 +7273,95 @@ public struct DayConditionsInput: Codable, Sendable, Equatable {
         try container.encode(self.rainLikelyFromHour, forKey: JSONCodingKey("rainLikelyFromHour"))
         try container.encode(self.maxWindGustKmh, forKey: JSONCodingKey("maxWindGustKmh"))
         try container.encodeIfPresent(self.segment, forKey: JSONCodingKey("segment"))
+    }
+}
+
+public struct Device: Codable, Sendable, Equatable {
+    public var deviceId: String
+    public var environment: String
+    public var status: Status
+    public var disabledReason: String?
+    public var updatedAt: Instant
+    public var lastDeliveryAt: Instant?
+
+    public init(
+        deviceId: String,
+        environment: String,
+        status: Status,
+        disabledReason: String? = nil,
+        updatedAt: Instant,
+        lastDeliveryAt: Instant? = nil
+    ) {
+        self.deviceId = deviceId
+        self.environment = environment
+        self.status = status
+        self.disabledReason = disabledReason
+        self.updatedAt = updatedAt
+        self.lastDeliveryAt = lastDeliveryAt
+    }
+
+    public enum Status: String, Codable, Sendable, CaseIterable {
+        case active
+        case disabled
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+}
+
+public struct DeviceList: Codable, Sendable, Equatable {
+    public var deliveryConfigured: Bool
+    public var devices: [Device]
+
+    public init(
+        deliveryConfigured: Bool,
+        devices: [Device]
+    ) {
+        self.deliveryConfigured = deliveryConfigured
+        self.devices = devices
+    }
+}
+
+public struct DeviceRegistration: Codable, Sendable, Equatable {
+    /// Stable per-installation identifier chosen by the app (not the token).
+    public var deviceId: String
+    public var token: String
+    public var environment: Environment
+
+    public init(
+        deviceId: String,
+        token: String,
+        environment: Environment
+    ) {
+        self.deviceId = deviceId
+        self.token = token
+        self.environment = environment
+    }
+
+    public enum Environment: String, Codable, Sendable, CaseIterable {
+        case development
+        case production
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+}
+
+public struct DeviceRemoved: Codable, Sendable, Equatable {
+    public var removed: Bool
+
+    public init(
+        removed: Bool
+    ) {
+        self.removed = removed
     }
 }
 
@@ -8929,6 +9427,11 @@ public struct InferenceReserve: Codable, Sendable, Equatable {
     public var parent: Parent
     public var promptVersion: String?
     public var gatewayId: String
+    public var schemaVersion: String?
+    public var effort: [String: JSONValue]
+    public var evidence: [String: JSONValue]
+    public var maxOpenReservations: Int
+    public var discretionaryCeilingMicroUsd: Int
 
     public init(
         reservationId: String,
@@ -8942,7 +9445,12 @@ public struct InferenceReserve: Codable, Sendable, Equatable {
         dailyLimitMicroUsd: Int,
         parent: Parent,
         promptVersion: String? = nil,
-        gatewayId: String
+        gatewayId: String,
+        schemaVersion: String? = nil,
+        effort: [String: JSONValue],
+        evidence: [String: JSONValue],
+        maxOpenReservations: Int,
+        discretionaryCeilingMicroUsd: Int
     ) {
         self.reservationId = reservationId
         self.runId = runId
@@ -8956,6 +9464,11 @@ public struct InferenceReserve: Codable, Sendable, Equatable {
         self.parent = parent
         self.promptVersion = promptVersion
         self.gatewayId = gatewayId
+        self.schemaVersion = schemaVersion
+        self.effort = effort
+        self.evidence = evidence
+        self.maxOpenReservations = maxOpenReservations
+        self.discretionaryCeilingMicroUsd = discretionaryCeilingMicroUsd
     }
 
     public struct Parent: Codable, Sendable, Equatable {
@@ -10082,6 +10595,90 @@ public typealias LocalDate = String
 
 public typealias LocalTime = String
 
+/// The `mail.record_sync` payload as the server sees it after parsing (defaults applied).
+/// To send the command, use `CommandMailRecordSync`.
+public struct MailRecordSync: Codable, Sendable, Equatable {
+    public var connectionId: String
+    public var seen: [SeenItem]
+    public var historyId: String?
+    public var backfillFrom: LocalDate?
+    public var backfillTo: LocalDate?
+    public var completion: Completion
+    public var resume: Resume?
+
+    public init(
+        connectionId: String,
+        seen: [SeenItem],
+        historyId: String? = nil,
+        backfillFrom: LocalDate? = nil,
+        backfillTo: LocalDate? = nil,
+        completion: Completion,
+        resume: Resume? = nil
+    ) {
+        self.connectionId = connectionId
+        self.seen = seen
+        self.historyId = historyId
+        self.backfillFrom = backfillFrom
+        self.backfillTo = backfillTo
+        self.completion = completion
+        self.resume = resume
+    }
+
+    public struct SeenItem: Codable, Sendable, Equatable {
+        public var messageId: String
+        public var classified: Classified
+        public var sentAt: Instant?
+
+        public init(
+            messageId: String,
+            classified: Classified,
+            sentAt: Instant? = nil
+        ) {
+            self.messageId = messageId
+            self.classified = classified
+            self.sentAt = sentAt
+        }
+
+        public enum Classified: String, Codable, Sendable, CaseIterable {
+            case order
+            case notOrder = "not_order"
+            case unreadable
+            /// A member this client version does not know; the contract requires tolerating it.
+            case unknown
+
+            public init(from decoder: Decoder) throws {
+                let rawValue = try decoder.singleValueContainer().decode(String.self)
+                self = Self(rawValue: rawValue) ?? .unknown
+            }
+        }
+    }
+
+    public enum Completion: String, Codable, Sendable, CaseIterable {
+        case complete
+        case partial
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+
+    public struct Resume: Codable, Sendable, Equatable {
+        public var queryIndex: Int
+        public var pageToken: String?
+
+        public init(
+            queryIndex: Int,
+            pageToken: String? = nil
+        ) {
+            self.queryIndex = queryIndex
+            self.pageToken = pageToken
+        }
+    }
+}
+
 public struct McpAskInput: Codable, Sendable, Equatable {
     public var message: String
     public var clientTurnId: String
@@ -10195,6 +10792,8 @@ public struct McpCommandOutput: Codable, Sendable, Equatable {
 public struct McpInventoryInput: Codable, Sendable, Equatable {
     /// Server default when omitted: `"items"`.
     public var view: McpInventoryView?
+    /// `selection`: which garments a bulk edit would cover. Read the result, then send its count as `expectedCount` of garment.bulk_correct.
+    public var selector: GarmentSelector?
     public var garmentId: String?
     /// `resolve`: an owner phrase to resolve to garments.
     public var phrase: String?
@@ -10212,6 +10811,7 @@ public struct McpInventoryInput: Codable, Sendable, Equatable {
 
     public init(
         view: McpInventoryView? = nil,
+        selector: GarmentSelector? = nil,
         garmentId: String? = nil,
         phrase: String? = nil,
         search: String? = nil,
@@ -10226,6 +10826,7 @@ public struct McpInventoryInput: Codable, Sendable, Equatable {
         cursor: String? = nil
     ) {
         self.view = view
+        self.selector = selector
         self.garmentId = garmentId
         self.phrase = phrase
         self.search = search
@@ -10307,6 +10908,7 @@ public enum McpInventoryView: String, Codable, Sendable, CaseIterable {
     case laundry
     case style
     case resolve
+    case selection
     case receipts
     case commandTypes = "command_types"
     case trips
@@ -11660,6 +12262,7 @@ public struct ModelProfile: Codable, Sendable, Equatable {
     public var maxOutputTokens: Int
     public var timeoutMs: Int
     public var price: Price
+    public var rateLimit: RateLimit
     public var dataPermissions: String
     public var fallbacks: [String]
     public var probes: [ModelProbe]
@@ -11679,6 +12282,7 @@ public struct ModelProfile: Codable, Sendable, Equatable {
         maxOutputTokens: Int,
         timeoutMs: Int,
         price: Price,
+        rateLimit: RateLimit,
         dataPermissions: String,
         fallbacks: [String],
         probes: [ModelProbe],
@@ -11697,6 +12301,7 @@ public struct ModelProfile: Codable, Sendable, Equatable {
         self.maxOutputTokens = maxOutputTokens
         self.timeoutMs = timeoutMs
         self.price = price
+        self.rateLimit = rateLimit
         self.dataPermissions = dataPermissions
         self.fallbacks = fallbacks
         self.probes = probes
@@ -11731,6 +12336,22 @@ public struct ModelProfile: Codable, Sendable, Equatable {
             self.observedOn = observedOn
         }
     }
+
+    public struct RateLimit: Codable, Sendable, Equatable {
+        public var requestsPerMinute: Double?
+        public var tokensPerMinute: Double?
+        public var observedOn: LocalDate?
+
+        public init(
+            requestsPerMinute: Double? = nil,
+            tokensPerMinute: Double? = nil,
+            observedOn: LocalDate? = nil
+        ) {
+            self.requestsPerMinute = requestsPerMinute
+            self.tokensPerMinute = tokensPerMinute
+            self.observedOn = observedOn
+        }
+    }
 }
 
 public enum ModuleName: String, Codable, Sendable, CaseIterable {
@@ -11754,6 +12375,7 @@ public struct OptionEvidence: Codable, Sendable, Equatable {
     public var source: Source
     public var explanationSource: ExplanationSource
     public var removedClaims: [String]
+    public var explicitGarmentIds: [GarmentId]
 
     public init(
         validation: OutfitValidation,
@@ -11761,7 +12383,8 @@ public struct OptionEvidence: Codable, Sendable, Equatable {
         availabilityModelVersion: String,
         source: Source,
         explanationSource: ExplanationSource,
-        removedClaims: [String]
+        removedClaims: [String],
+        explicitGarmentIds: [GarmentId]
     ) {
         self.validation = validation
         self.jointAvailability = jointAvailability
@@ -11769,6 +12392,7 @@ public struct OptionEvidence: Codable, Sendable, Equatable {
         self.source = source
         self.explanationSource = explanationSource
         self.removedClaims = removedClaims
+        self.explicitGarmentIds = explicitGarmentIds
     }
 
     public enum Source: String, Codable, Sendable, CaseIterable {
@@ -12776,6 +13400,8 @@ public struct PublishedOptionInput: Codable, Sendable, Equatable {
     public var explanationSource: ExplanationSource?
     /// Server default when omitted: `[]`.
     public var removedClaims: [String]?
+    /// Server default when omitted: `[]`.
+    public var explicitGarmentIds: [GarmentId]?
     /// Server default when omitted: `"deterministic"`.
     public var source: Source?
     /// Server default when omitted: `[]`.
@@ -12788,6 +13414,7 @@ public struct PublishedOptionInput: Codable, Sendable, Equatable {
         reason: String,
         explanationSource: ExplanationSource? = nil,
         removedClaims: [String]? = nil,
+        explicitGarmentIds: [GarmentId]? = nil,
         source: Source? = nil,
         suitsEventIds: [String]? = nil
     ) {
@@ -12797,6 +13424,7 @@ public struct PublishedOptionInput: Codable, Sendable, Equatable {
         self.reason = reason
         self.explanationSource = explanationSource
         self.removedClaims = removedClaims
+        self.explicitGarmentIds = explicitGarmentIds
         self.source = source
         self.suitsEventIds = suitsEventIds
     }
@@ -12960,6 +13588,8 @@ public struct RecallHit: Codable, Sendable, Equatable {
     public var judgements: [JudgementsItem]
     public var entityIds: [String]
     public var laterDevelopments: [LaterDevelopmentsItem]
+    public var surrounding: [SurroundingItem]
+    public var linkedInvestigations: [LinkedInvestigationsItem]
     public var link: String
     public var origin: Origin
 
@@ -12972,6 +13602,8 @@ public struct RecallHit: Codable, Sendable, Equatable {
         judgements: [JudgementsItem],
         entityIds: [String],
         laterDevelopments: [LaterDevelopmentsItem],
+        surrounding: [SurroundingItem],
+        linkedInvestigations: [LinkedInvestigationsItem],
         link: String,
         origin: Origin
     ) {
@@ -12983,6 +13615,8 @@ public struct RecallHit: Codable, Sendable, Equatable {
         self.judgements = judgements
         self.entityIds = entityIds
         self.laterDevelopments = laterDevelopments
+        self.surrounding = surrounding
+        self.linkedInvestigations = linkedInvestigations
         self.link = link
         self.origin = origin
     }
@@ -13043,6 +13677,38 @@ public struct RecallHit: Codable, Sendable, Equatable {
             self.messageId = messageId
             self.authoredAt = authoredAt
             self.quote = quote
+        }
+    }
+
+    public struct SurroundingItem: Codable, Sendable, Equatable {
+        public var messageId: String
+        public var speaker: String
+        public var authoredAt: Instant
+        public var quote: String
+
+        public init(
+            messageId: String,
+            speaker: String,
+            authoredAt: Instant,
+            quote: String
+        ) {
+            self.messageId = messageId
+            self.speaker = speaker
+            self.authoredAt = authoredAt
+            self.quote = quote
+        }
+    }
+
+    public struct LinkedInvestigationsItem: Codable, Sendable, Equatable {
+        public var productId: String
+        public var name: String
+
+        public init(
+            productId: String,
+            name: String
+        ) {
+            self.productId = productId
+            self.name = name
         }
     }
 
@@ -13588,6 +14254,105 @@ public struct RegisterConnectionResponse: Codable, Sendable, Equatable {
     }
 }
 
+public struct Reminder: Codable, Sendable, Equatable {
+    public var reminderId: String
+    public var version: Int
+    public var kind: String
+    public var title: String
+    public var note: String?
+    public var url: String?
+    public var dueAt: Instant
+    public var status: Status
+
+    public init(
+        reminderId: String,
+        version: Int,
+        kind: String,
+        title: String,
+        note: String? = nil,
+        url: String? = nil,
+        dueAt: Instant,
+        status: Status
+    ) {
+        self.reminderId = reminderId
+        self.version = version
+        self.kind = kind
+        self.title = title
+        self.note = note
+        self.url = url
+        self.dueAt = dueAt
+        self.status = status
+    }
+
+    public enum Status: String, Codable, Sendable, CaseIterable {
+        case active
+        case cancelled
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+}
+
+/// The `reminder.cancel` payload as the server sees it after parsing (defaults applied).
+/// To send the command, use `CommandReminderCancel`.
+public struct ReminderCancel: Codable, Sendable, Equatable {
+    public var reminderId: String
+
+    public init(
+        reminderId: String
+    ) {
+        self.reminderId = reminderId
+    }
+}
+
+/// The `reminder.set` payload as the server sees it after parsing (defaults applied).
+/// To send the command, use `CommandReminderSet`.
+public struct ReminderSet: Codable, Sendable, Equatable {
+    public var reminderId: String?
+    public var kind: Kind
+    public var title: String
+    public var dueAt: Instant
+    public var note: String?
+    public var url: String?
+    public var leadMinutes: [Int]
+
+    public init(
+        reminderId: String? = nil,
+        kind: Kind,
+        title: String,
+        dueAt: Instant,
+        note: String? = nil,
+        url: String? = nil,
+        leadMinutes: [Int]
+    ) {
+        self.reminderId = reminderId
+        self.kind = kind
+        self.title = title
+        self.dueAt = dueAt
+        self.note = note
+        self.url = url
+        self.leadMinutes = leadMinutes
+    }
+
+    public enum Kind: String, Codable, Sendable, CaseIterable {
+        case drop
+        case saleWindow = "sale_window"
+        case restock
+        case other
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+}
+
 public struct ResearchClaim: Codable, Sendable, Equatable {
     public var text: String
     public var status: Status
@@ -13781,6 +14546,63 @@ public struct ResolveQuery: Codable, Sendable, Equatable {
         phrase: String
     ) {
         self.phrase = phrase
+    }
+}
+
+/// format garderobe-restore-manifest/1: backupId, ownerRef, snapshot { takenAt, coherent, stores }, components, state, afterRestore
+public typealias RestoreManifest = [String: JSONValue]
+
+public struct RestoreReport: Codable, Sendable, Equatable {
+    public var complete: Bool
+    public var checks: [ChecksItem]
+    public var tombstonesReplayed: Int
+    public var verifiedAt: Instant
+
+    public init(
+        complete: Bool,
+        checks: [ChecksItem],
+        tombstonesReplayed: Int,
+        verifiedAt: Instant
+    ) {
+        self.complete = complete
+        self.checks = checks
+        self.tombstonesReplayed = tombstonesReplayed
+        self.verifiedAt = verifiedAt
+    }
+
+    public struct ChecksItem: Codable, Sendable, Equatable {
+        public var name: String
+        public var ok: Bool
+        public var expected: JSONValue?
+        public var actual: JSONValue?
+        public var note: String?
+
+        public init(
+            name: String,
+            ok: Bool,
+            expected: JSONValue? = nil,
+            actual: JSONValue? = nil,
+            note: String? = nil
+        ) {
+            self.name = name
+            self.ok = ok
+            self.expected = expected
+            self.actual = actual
+            self.note = note
+        }
+    }
+}
+
+public struct RestoreVerifyRequest: Codable, Sendable, Equatable {
+    public var restoreManifest: RestoreManifest
+    public var tombstones: TombstoneJournal?
+
+    public init(
+        restoreManifest: RestoreManifest,
+        tombstones: TombstoneJournal? = nil
+    ) {
+        self.restoreManifest = restoreManifest
+        self.tombstones = tombstones
     }
 }
 
@@ -14774,6 +15596,27 @@ public enum Scope: String, Codable, Sendable, CaseIterable {
     }
 }
 
+/// The `search.record_instance` payload as the server sees it after parsing (defaults applied).
+/// To send the command, use `CommandSearchRecordInstance`.
+public struct SearchRecordInstance: Codable, Sendable, Equatable {
+    public var environment: String
+    public var instance: String
+    public var gatewayId: String
+    public var created: Bool
+
+    public init(
+        environment: String,
+        instance: String,
+        gatewayId: String,
+        created: Bool
+    ) {
+        self.environment = environment
+        self.instance = instance
+        self.gatewayId = gatewayId
+        self.created = created
+    }
+}
+
 public struct ServiceLaundrySettings: Codable, Sendable, Equatable {
     public var weeklyResetEnabled: Bool
     public var collectionWeekday: IsoWeekday
@@ -15527,6 +16370,32 @@ public struct StudioPlanForDay: Codable, Sendable, Equatable {
     }
 }
 
+public struct StudioPreviewRequest: Codable, Sendable, Equatable {
+    public var clientRequestId: String
+    public var slots: [StudioSlotInput]
+
+    public init(
+        clientRequestId: String,
+        slots: [StudioSlotInput]
+    ) {
+        self.clientRequestId = clientRequestId
+        self.slots = slots
+    }
+}
+
+public struct StudioPreviewResponse: Codable, Sendable, Equatable {
+    public var receipt: CommandReceipt
+    public var manifestHash: String
+
+    public init(
+        receipt: CommandReceipt,
+        manifestHash: String
+    ) {
+        self.receipt = receipt
+        self.manifestHash = manifestHash
+    }
+}
+
 public struct StudioQuery: Codable, Sendable, Equatable {
     /// Server default when omitted: `"for_today"`.
     public var mode: StudioMode?
@@ -16005,6 +16874,44 @@ public struct StyleAmendment: Codable, Sendable, Equatable {
         case active
         case incorporated
         case retired
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+}
+
+public struct StyleConflictList: Codable, Sendable, Equatable {
+    public var conflicts: [StyleFactConflict]
+
+    public init(
+        conflicts: [StyleFactConflict]
+    ) {
+        self.conflicts = conflicts
+    }
+}
+
+public struct StyleConflictsQuery: Codable, Sendable, Equatable {
+    /// Server default when omitted: `"open"`.
+    public var status: Status?
+    public var documentId: String?
+
+    public init(
+        status: Status? = nil,
+        documentId: String? = nil
+    ) {
+        self.status = status
+        self.documentId = documentId
+    }
+
+    public enum Status: String, Codable, Sendable, CaseIterable {
+        case open
+        case resolved
+        case withdrawn
+        case all
         /// A member this client version does not know; the contract requires tolerating it.
         case unknown
 
@@ -16519,6 +17426,19 @@ public struct StyleImportDocument: Codable, Sendable, Equatable {
     }
 }
 
+public struct StylePreviewSaveRequest: Codable, Sendable, Equatable {
+    public var content: String
+    public var documentId: String?
+
+    public init(
+        content: String,
+        documentId: String? = nil
+    ) {
+        self.content = content
+        self.documentId = documentId
+    }
+}
+
 /// The `style.resolve_fact_conflict` payload as the server sees it after parsing (defaults applied).
 /// To send the command, use `CommandStyleResolveFactConflict`.
 public struct StyleResolveFactConflict: Codable, Sendable, Equatable {
@@ -16790,6 +17710,42 @@ public struct SuggestedOutfit: Codable, Sendable, Equatable {
     }
 }
 
+public struct SwapSlotRequest: Codable, Sendable, Equatable {
+    /// Stable ID: a retransmission returns the same receipt.
+    public var clientRequestId: String
+    public var optionId: String
+    public var role: Role
+    public var garmentId: String?
+    public var expectedRevision: Int?
+
+    public init(
+        clientRequestId: String,
+        optionId: String,
+        role: Role,
+        garmentId: String? = nil,
+        expectedRevision: Int? = nil
+    ) {
+        self.clientRequestId = clientRequestId
+        self.optionId = optionId
+        self.role = role
+        self.garmentId = garmentId
+        self.expectedRevision = expectedRevision
+    }
+}
+
+public struct SwapSlotResponse: Codable, Sendable, Equatable {
+    public var board: BoardDocument
+    public var receipt: CommandReceipt
+
+    public init(
+        board: BoardDocument,
+        receipt: CommandReceipt
+    ) {
+        self.board = board
+        self.receipt = receipt
+    }
+}
+
 public struct TemperaturePreview: Codable, Sendable, Equatable {
     /// Always `true`.
     public var simulation: Bool
@@ -16990,6 +17946,42 @@ public struct TodayView: Codable, Sendable, Equatable {
             self.pauseId = pauseId
             self.from = from
             self.resumeOn = resumeOn
+        }
+    }
+}
+
+public struct TombstoneJournal: Codable, Sendable, Equatable {
+    /// Always `"garderobe-tombstones/1"`.
+    public var format: String
+    public var ownerRef: String
+    public var writtenAt: Instant
+    public var tombstones: [TombstonesItem]
+
+    public init(
+        format: String,
+        ownerRef: String,
+        writtenAt: Instant,
+        tombstones: [TombstonesItem]
+    ) {
+        self.format = format
+        self.ownerRef = ownerRef
+        self.writtenAt = writtenAt
+        self.tombstones = tombstones
+    }
+
+    public struct TombstonesItem: Codable, Sendable, Equatable {
+        public var sourceKind: String
+        public var sourceId: String
+        public var requestedAt: String
+
+        public init(
+            sourceKind: String,
+            sourceId: String,
+            requestedAt: String
+        ) {
+            self.sourceKind = sourceKind
+            self.sourceId = sourceId
+            self.requestedAt = requestedAt
         }
     }
 }
@@ -17611,9 +18603,69 @@ public struct TurnGrant: Codable, Sendable, Equatable {
     }
 }
 
+public struct TurnImage: Codable, Sendable, Equatable {
+    public var assetId: String
+    public var role: RoleValue
+
+    public init(
+        assetId: String,
+        role: RoleValue
+    ) {
+        self.assetId = assetId
+        self.role = role
+    }
+
+    public enum RoleValue: String, Codable, Sendable, CaseIterable {
+        case selfie
+        case shopPhoto = "shop_photo"
+        case itemPhoto = "item_photo"
+        case receipt
+        case other
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+}
+
+public struct TurnImageInput: Codable, Sendable, Equatable {
+    public var assetId: String
+    /// Server default when omitted: `"other"`.
+    public var role: RoleValue?
+
+    public init(
+        assetId: String,
+        role: RoleValue? = nil
+    ) {
+        self.assetId = assetId
+        self.role = role
+    }
+
+    public enum RoleValue: String, Codable, Sendable, CaseIterable {
+        case selfie
+        case shopPhoto = "shop_photo"
+        case itemPhoto = "item_photo"
+        case receipt
+        case other
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+}
+
 public struct TurnInput: Codable, Sendable, Equatable {
     public var submissionId: String
-    public var text: String
+    /// Server default when omitted: `""`.
+    public var text: String?
+    /// Server default when omitted: `[]`.
+    public var images: [TurnImageInput]?
     /// Server default when omitted: `[]`.
     public var attachments: [TurnAttachmentInput]?
     /// Server default when omitted: `[]`.
@@ -17621,12 +18673,14 @@ public struct TurnInput: Codable, Sendable, Equatable {
 
     public init(
         submissionId: String,
-        text: String,
+        text: String? = nil,
+        images: [TurnImageInput]? = nil,
         attachments: [TurnAttachmentInput]? = nil,
         attachedRefs: [String]? = nil
     ) {
         self.submissionId = submissionId
         self.text = text
+        self.images = images
         self.attachments = attachments
         self.attachedRefs = attachedRefs
     }
@@ -17817,10 +18871,13 @@ public struct TurnRecord: Codable, Sendable, Equatable {
 public struct TurnRequest: Codable, Sendable, Equatable {
     /// Stable ID created before sending; a retransmission returns the same turn.
     public var clientTurnId: String
-    public var text: String
-    /// Finalized upload asset IDs only.
+    /// Server default when omitted: `""`.
+    public var text: String?
+    /// Finalized upload asset IDs only: photographs the assistant should look at.
     /// Server default when omitted: `[]`.
     public var attachmentIds: [String]?
+    /// Server default when omitted: `{}`.
+    public var imageRoles: [String: ImageRolesValue]?
     /// Server default when omitted: `[]`.
     public var attachedRefs: [AttachedRef]?
     /// Server default when omitted: `"chat"`.
@@ -17830,8 +18887,9 @@ public struct TurnRequest: Codable, Sendable, Equatable {
 
     public init(
         clientTurnId: String,
-        text: String,
+        text: String? = nil,
         attachmentIds: [String]? = nil,
+        imageRoles: [String: ImageRolesValue]? = nil,
         attachedRefs: [AttachedRef]? = nil,
         intent: TurnIntent? = nil,
         sharedUrl: String? = nil,
@@ -17840,10 +18898,26 @@ public struct TurnRequest: Codable, Sendable, Equatable {
         self.clientTurnId = clientTurnId
         self.text = text
         self.attachmentIds = attachmentIds
+        self.imageRoles = imageRoles
         self.attachedRefs = attachedRefs
         self.intent = intent
         self.sharedUrl = sharedUrl
         self.pastedText = pastedText
+    }
+
+    public enum ImageRolesValue: String, Codable, Sendable, CaseIterable {
+        case selfie
+        case shopPhoto = "shop_photo"
+        case itemPhoto = "item_photo"
+        case receipt
+        case other
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
     }
 }
 

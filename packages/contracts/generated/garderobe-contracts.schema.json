@@ -33,7 +33,8 @@
         "state": {
           "enum": [
             "confirmation_required",
-            "disabled_pending_deletion"
+            "disabled_pending_deletion",
+            "erased"
           ],
           "type": "string"
         }
@@ -703,6 +704,159 @@
       ],
       "type": "object"
     },
+    "Backup": {
+      "properties": {
+        "backupId": {
+          "type": "string"
+        },
+        "byteLength": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": -9007199254740991,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "components": {
+          "items": {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "note": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "records": {
+                "type": "number"
+              },
+              "state": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "state",
+              "records",
+              "note"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "expiresAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Instant"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "finishedAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Instant"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "requestedAt": {
+          "$ref": "#/$defs/Instant"
+        },
+        "restoreManifest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RestoreManifest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "runId": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "enum": [
+            "queued",
+            "running",
+            "completed",
+            "completed_incomplete",
+            "failed",
+            "expired"
+          ],
+          "type": "string"
+        },
+        "takenAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Instant"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "backupId",
+        "runId",
+        "state",
+        "complete",
+        "takenAt",
+        "requestedAt",
+        "finishedAt",
+        "expiresAt",
+        "byteLength",
+        "sha256",
+        "components",
+        "restoreManifest"
+      ],
+      "type": "object"
+    },
+    "BackupList": {
+      "properties": {
+        "backups": {
+          "items": {
+            "$ref": "#/$defs/Backup"
+          },
+          "type": "array"
+        },
+        "intervalHours": {
+          "type": "number"
+        },
+        "retentionDays": {
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "backups",
+        "retentionDays",
+        "intervalHours"
+      ],
+      "type": "object"
+    },
     "Basis": {
       "enum": [
         "observed",
@@ -1105,6 +1259,11 @@
             "styleRevision"
           ],
           "type": "object"
+        },
+        "expectedBoardRevision": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
         },
         "localDate": {
           "$ref": "#/$defs/LocalDate"
@@ -1847,6 +2006,11 @@
           ],
           "type": "object"
         },
+        "expectedBoardRevision": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
         "localDate": {
           "$ref": "#/$defs/LocalDate"
         },
@@ -2149,6 +2313,48 @@
       ],
       "type": "object"
     },
+    "CommandConnectionRecordHealth": {
+      "properties": {
+        "authFailure": {
+          "default": false,
+          "type": "boolean"
+        },
+        "connectionId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "maxLength": 300,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "phase": {
+          "default": "manual",
+          "enum": [
+            "evening",
+            "morning",
+            "manual"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectionId",
+        "ok"
+      ],
+      "type": "object"
+    },
     "CommandConnectionRegister": {
       "properties": {
         "connectionId": {
@@ -2159,6 +2365,18 @@
         "endpoint": {
           "format": "uri",
           "type": "string"
+        },
+        "expectedIssuer": {
+          "anyOf": [
+            {
+              "format": "uri",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "kind": {
           "$ref": "#/$defs/ConnectionKind"
@@ -3439,8 +3657,36 @@
           "minimum": 0,
           "type": "integer"
         },
+        "discretionaryCeilingMicroUsd": {
+          "default": 0,
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "effort": {
+          "additionalProperties": {},
+          "default": {},
+          "propertyNames": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "evidence": {
+          "additionalProperties": {},
+          "default": {},
+          "propertyNames": {
+            "type": "string"
+          },
+          "type": "object"
+        },
         "gatewayId": {
           "type": "string"
+        },
+        "maxOpenReservations": {
+          "default": 0,
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
         },
         "parent": {
           "properties": {
@@ -3487,6 +3733,13 @@
           "maxLength": 128,
           "minLength": 1,
           "type": "string"
+        },
+        "schemaVersion": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "task": {
           "$ref": "#/$defs/InferenceTask"
@@ -4022,6 +4275,123 @@
       },
       "required": [
         "projectId"
+      ],
+      "type": "object"
+    },
+    "CommandMailRecordSync": {
+      "properties": {
+        "backfillFrom": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocalDate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "backfillTo": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocalDate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "completion": {
+          "enum": [
+            "complete",
+            "partial"
+          ],
+          "type": "string"
+        },
+        "connectionId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "historyId": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resume": {
+          "anyOf": [
+            {
+              "properties": {
+                "pageToken": {
+                  "type": "string"
+                },
+                "queryIndex": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "queryIndex"
+              ],
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "seen": {
+          "items": {
+            "properties": {
+              "classified": {
+                "enum": [
+                  "order",
+                  "not_order",
+                  "unreadable"
+                ],
+                "type": "string"
+              },
+              "messageId": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "sentAt": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Instant"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "messageId",
+              "classified"
+            ],
+            "type": "object"
+          },
+          "maxItems": 500,
+          "type": "array"
+        }
+      },
+      "required": [
+        "connectionId",
+        "seen",
+        "completion"
       ],
       "type": "object"
     },
@@ -4949,6 +5319,87 @@
       ],
       "type": "object"
     },
+    "CommandReminderCancel": {
+      "properties": {
+        "reminderId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "reminderId"
+      ],
+      "type": "object"
+    },
+    "CommandReminderSet": {
+      "properties": {
+        "dueAt": {
+          "$ref": "#/$defs/Instant"
+        },
+        "kind": {
+          "enum": [
+            "drop",
+            "sale_window",
+            "restock",
+            "other"
+          ],
+          "type": "string"
+        },
+        "leadMinutes": {
+          "default": [
+            0
+          ],
+          "items": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 4,
+          "type": "array"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "maxLength": 1000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "reminderId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "format": "uri",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "kind",
+        "title",
+        "dueAt"
+      ],
+      "type": "object"
+    },
     "CommandResearchSaveNote": {
       "properties": {
         "body": {
@@ -5301,6 +5752,33 @@
       },
       "required": [
         "caseId"
+      ],
+      "type": "object"
+    },
+    "CommandSearchRecordInstance": {
+      "properties": {
+        "created": {
+          "type": "boolean"
+        },
+        "environment": {
+          "pattern": "^[a-z]+$",
+          "type": "string"
+        },
+        "gatewayId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "instance": {
+          "maxLength": 100,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "environment",
+        "instance",
+        "gatewayId",
+        "created"
       ],
       "type": "object"
     },
@@ -6703,6 +7181,45 @@
         "endpoint": {
           "type": "string"
         },
+        "expectedIssuer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "health": {
+          "anyOf": [
+            {
+              "properties": {
+                "checkedAt": {
+                  "$ref": "#/$defs/Instant"
+                },
+                "detail": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "ok": {
+                  "type": "boolean"
+                },
+                "phase": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "ok",
+                "checkedAt",
+                "detail",
+                "phase"
+              ],
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "kind": {
           "$ref": "#/$defs/ConnectionKind"
         },
@@ -6814,7 +7331,9 @@
         "schemaDigest",
         "tools",
         "enabledGroups",
-        "lastDiscoveryAt"
+        "lastDiscoveryAt",
+        "expectedIssuer",
+        "health"
       ],
       "type": "object"
     },
@@ -7024,6 +7543,51 @@
       ],
       "type": "object"
     },
+    "ConnectionRecordHealth": {
+      "properties": {
+        "authFailure": {
+          "default": false,
+          "type": "boolean"
+        },
+        "connectionId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "detail": {
+          "anyOf": [
+            {
+              "maxLength": 300,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "phase": {
+          "default": "manual",
+          "enum": [
+            "evening",
+            "morning",
+            "manual"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "connectionId",
+        "ok",
+        "authFailure",
+        "detail",
+        "phase"
+      ],
+      "type": "object"
+    },
     "ConnectionRegister": {
       "properties": {
         "connectionId": {
@@ -7034,6 +7598,18 @@
         "endpoint": {
           "format": "uri",
           "type": "string"
+        },
+        "expectedIssuer": {
+          "anyOf": [
+            {
+              "format": "uri",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "kind": {
           "$ref": "#/$defs/ConnectionKind"
@@ -7073,7 +7649,8 @@
         "endpoint",
         "namespace",
         "secretRef",
-        "scopes"
+        "scopes",
+        "expectedIssuer"
       ],
       "type": "object"
     },
@@ -7743,6 +8320,105 @@
         "precipitationMm",
         "rainLikelyFromHour",
         "maxWindGustKmh"
+      ],
+      "type": "object"
+    },
+    "Device": {
+      "properties": {
+        "deviceId": {
+          "type": "string"
+        },
+        "disabledReason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "environment": {
+          "type": "string"
+        },
+        "lastDeliveryAt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Instant"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "enum": [
+            "active",
+            "disabled"
+          ],
+          "type": "string"
+        },
+        "updatedAt": {
+          "$ref": "#/$defs/Instant"
+        }
+      },
+      "required": [
+        "deviceId",
+        "environment",
+        "status",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "DeviceList": {
+      "properties": {
+        "deliveryConfigured": {
+          "type": "boolean"
+        },
+        "devices": {
+          "items": {
+            "$ref": "#/$defs/Device"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "deliveryConfigured",
+        "devices"
+      ],
+      "type": "object"
+    },
+    "DeviceRegistration": {
+      "properties": {
+        "deviceId": {
+          "description": "Stable per-installation identifier chosen by the app (not the token).",
+          "maxLength": 128,
+          "minLength": 8,
+          "type": "string"
+        },
+        "environment": {
+          "enum": [
+            "development",
+            "production"
+          ],
+          "type": "string"
+        },
+        "token": {
+          "pattern": "^[0-9a-fA-F]{32,200}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "deviceId",
+        "token",
+        "environment"
+      ],
+      "type": "object"
+    },
+    "DeviceRemoved": {
+      "properties": {
+        "removed": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "removed"
       ],
       "type": "object"
     },
@@ -10446,8 +11122,36 @@
           "minimum": 0,
           "type": "integer"
         },
+        "discretionaryCeilingMicroUsd": {
+          "default": 0,
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "effort": {
+          "additionalProperties": {},
+          "default": {},
+          "propertyNames": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "evidence": {
+          "additionalProperties": {},
+          "default": {},
+          "propertyNames": {
+            "type": "string"
+          },
+          "type": "object"
+        },
         "gatewayId": {
           "type": "string"
+        },
+        "maxOpenReservations": {
+          "default": 0,
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
         },
         "parent": {
           "properties": {
@@ -10495,6 +11199,13 @@
           "minLength": 1,
           "type": "string"
         },
+        "schemaVersion": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "task": {
           "$ref": "#/$defs/InferenceTask"
         }
@@ -10511,7 +11222,12 @@
         "dailyLimitMicroUsd",
         "parent",
         "promptVersion",
-        "gatewayId"
+        "gatewayId",
+        "schemaVersion",
+        "effort",
+        "evidence",
+        "maxOpenReservations",
+        "discretionaryCeilingMicroUsd"
       ],
       "type": "object"
     },
@@ -11982,6 +12698,128 @@
       "pattern": "^\\d{2}:\\d{2}$",
       "type": "string"
     },
+    "MailRecordSync": {
+      "properties": {
+        "backfillFrom": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocalDate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "backfillTo": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LocalDate"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "completion": {
+          "enum": [
+            "complete",
+            "partial"
+          ],
+          "type": "string"
+        },
+        "connectionId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "historyId": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "resume": {
+          "anyOf": [
+            {
+              "properties": {
+                "pageToken": {
+                  "type": "string"
+                },
+                "queryIndex": {
+                  "maximum": 9007199254740991,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "queryIndex"
+              ],
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "seen": {
+          "items": {
+            "properties": {
+              "classified": {
+                "enum": [
+                  "order",
+                  "not_order",
+                  "unreadable"
+                ],
+                "type": "string"
+              },
+              "messageId": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "sentAt": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/Instant"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              }
+            },
+            "required": [
+              "messageId",
+              "classified",
+              "sentAt"
+            ],
+            "type": "object"
+          },
+          "maxItems": 500,
+          "type": "array"
+        }
+      },
+      "required": [
+        "connectionId",
+        "seen",
+        "historyId",
+        "backfillFrom",
+        "backfillTo",
+        "completion",
+        "resume"
+      ],
+      "type": "object"
+    },
     "McpAskInput": {
       "additionalProperties": false,
       "properties": {
@@ -12196,6 +13034,10 @@
         "search": {
           "type": "string"
         },
+        "selector": {
+          "$ref": "#/$defs/GarmentSelector",
+          "description": "`selection`: which garments a bulk edit would cover. Read the result, then send its count as `expectedCount` of garment.bulk_correct."
+        },
         "to": {
           "$ref": "#/$defs/LocalDate"
         },
@@ -12269,6 +13111,7 @@
         "laundry",
         "style",
         "resolve",
+        "selection",
         "receipts",
         "command_types",
         "trips",
@@ -14055,6 +14898,38 @@
         "provider": {
           "type": "string"
         },
+        "rateLimit": {
+          "properties": {
+            "observedOn": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/LocalDate"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "requestsPerMinute": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "tokensPerMinute": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "requestsPerMinute",
+            "tokensPerMinute",
+            "observedOn"
+          ],
+          "type": "object"
+        },
         "selectable": {
           "type": "boolean"
         },
@@ -14089,6 +14964,7 @@
         "maxOutputTokens",
         "timeoutMs",
         "price",
+        "rateLimit",
         "dataPermissions",
         "fallbacks",
         "probes",
@@ -14117,6 +14993,13 @@
             "factual"
           ],
           "type": "string"
+        },
+        "explicitGarmentIds": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/GarmentId"
+          },
+          "type": "array"
         },
         "jointAvailability": {
           "maximum": 1,
@@ -14150,7 +15033,8 @@
         "availabilityModelVersion",
         "source",
         "explanationSource",
-        "removedClaims"
+        "removedClaims",
+        "explicitGarmentIds"
       ],
       "type": "object"
     },
@@ -15548,6 +16432,13 @@
           ],
           "type": "string"
         },
+        "explicitGarmentIds": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/GarmentId"
+          },
+          "type": "array"
+        },
         "footwearAlternatives": {
           "default": [],
           "items": {
@@ -15874,6 +16765,24 @@
         "link": {
           "type": "string"
         },
+        "linkedInvestigations": {
+          "items": {
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "productId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "productId",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
         "messageId": {
           "type": "string"
         },
@@ -15894,6 +16803,32 @@
             "assistant"
           ],
           "type": "string"
+        },
+        "surrounding": {
+          "items": {
+            "properties": {
+              "authoredAt": {
+                "$ref": "#/$defs/Instant"
+              },
+              "messageId": {
+                "type": "string"
+              },
+              "quote": {
+                "type": "string"
+              },
+              "speaker": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "messageId",
+              "speaker",
+              "authoredAt",
+              "quote"
+            ],
+            "type": "object"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -15905,6 +16840,8 @@
         "judgements",
         "entityIds",
         "laterDevelopments",
+        "surrounding",
+        "linkedInvestigations",
         "link",
         "origin"
       ],
@@ -16588,6 +17525,141 @@
       ],
       "type": "object"
     },
+    "Reminder": {
+      "properties": {
+        "dueAt": {
+          "$ref": "#/$defs/Instant"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reminderId": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "active",
+            "cancelled"
+          ],
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "reminderId",
+        "version",
+        "kind",
+        "title",
+        "note",
+        "url",
+        "dueAt",
+        "status"
+      ],
+      "type": "object"
+    },
+    "ReminderCancel": {
+      "properties": {
+        "reminderId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "reminderId"
+      ],
+      "type": "object"
+    },
+    "ReminderSet": {
+      "properties": {
+        "dueAt": {
+          "$ref": "#/$defs/Instant"
+        },
+        "kind": {
+          "enum": [
+            "drop",
+            "sale_window",
+            "restock",
+            "other"
+          ],
+          "type": "string"
+        },
+        "leadMinutes": {
+          "default": [
+            0
+          ],
+          "items": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 4,
+          "type": "array"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "maxLength": 1000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "reminderId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "minLength": 1,
+          "type": "string"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "format": "uri",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "kind",
+        "title",
+        "dueAt",
+        "note",
+        "url",
+        "leadMinutes"
+      ],
+      "type": "object"
+    },
     "ResearchClaim": {
       "properties": {
         "status": {
@@ -16842,6 +17914,75 @@
       },
       "required": [
         "phrase"
+      ],
+      "type": "object"
+    },
+    "RestoreManifest": {
+      "additionalProperties": {},
+      "description": "format garderobe-restore-manifest/1: backupId, ownerRef, snapshot { takenAt, coherent, stores }, components, state, afterRestore",
+      "propertyNames": {
+        "type": "string"
+      },
+      "type": "object"
+    },
+    "RestoreReport": {
+      "properties": {
+        "checks": {
+          "items": {
+            "properties": {
+              "actual": {},
+              "expected": {},
+              "name": {
+                "type": "string"
+              },
+              "note": {
+                "type": "string"
+              },
+              "ok": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "name",
+              "ok",
+              "expected",
+              "actual"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "complete": {
+          "type": "boolean"
+        },
+        "tombstonesReplayed": {
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "verifiedAt": {
+          "$ref": "#/$defs/Instant"
+        }
+      },
+      "required": [
+        "complete",
+        "checks",
+        "tombstonesReplayed",
+        "verifiedAt"
+      ],
+      "type": "object"
+    },
+    "RestoreVerifyRequest": {
+      "properties": {
+        "restoreManifest": {
+          "$ref": "#/$defs/RestoreManifest"
+        },
+        "tombstones": {
+          "$ref": "#/$defs/TombstoneJournal"
+        }
+      },
+      "required": [
+        "restoreManifest"
       ],
       "type": "object"
     },
@@ -18125,6 +19266,33 @@
       ],
       "type": "string"
     },
+    "SearchRecordInstance": {
+      "properties": {
+        "created": {
+          "type": "boolean"
+        },
+        "environment": {
+          "pattern": "^[a-z]+$",
+          "type": "string"
+        },
+        "gatewayId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "instance": {
+          "maxLength": 100,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "environment",
+        "instance",
+        "gatewayId",
+        "created"
+      ],
+      "type": "object"
+    },
     "ServiceLaundrySettings": {
       "properties": {
         "baselineWeekday": {
@@ -19142,6 +20310,44 @@
       ],
       "type": "object"
     },
+    "StudioPreviewRequest": {
+      "properties": {
+        "clientRequestId": {
+          "maxLength": 128,
+          "minLength": 8,
+          "type": "string"
+        },
+        "slots": {
+          "items": {
+            "$ref": "#/$defs/StudioSlotInput"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "clientRequestId",
+        "slots"
+      ],
+      "type": "object"
+    },
+    "StudioPreviewResponse": {
+      "properties": {
+        "manifestHash": {
+          "maxLength": 64,
+          "minLength": 64,
+          "type": "string"
+        },
+        "receipt": {
+          "$ref": "#/$defs/CommandReceipt"
+        }
+      },
+      "required": [
+        "receipt",
+        "manifestHash"
+      ],
+      "type": "object"
+    },
     "StudioQuery": {
       "properties": {
         "date": {
@@ -19824,6 +21030,38 @@
       ],
       "type": "object"
     },
+    "StyleConflictList": {
+      "properties": {
+        "conflicts": {
+          "items": {
+            "$ref": "#/$defs/StyleFactConflict"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "conflicts"
+      ],
+      "type": "object"
+    },
+    "StyleConflictsQuery": {
+      "properties": {
+        "documentId": {
+          "type": "string"
+        },
+        "status": {
+          "default": "open",
+          "enum": [
+            "open",
+            "resolved",
+            "withdrawn",
+            "all"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
     "StyleContext": {
       "properties": {
         "amendments": {
@@ -20384,6 +21622,21 @@
       ],
       "type": "object"
     },
+    "StylePreviewSaveRequest": {
+      "properties": {
+        "content": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "documentId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "content"
+      ],
+      "type": "object"
+    },
     "StyleResolveFactConflict": {
       "properties": {
         "conflictId": {
@@ -20697,6 +21950,52 @@
       ],
       "type": "object"
     },
+    "SwapSlotRequest": {
+      "properties": {
+        "clientRequestId": {
+          "description": "Stable ID: a retransmission returns the same receipt.",
+          "maxLength": 128,
+          "minLength": 8,
+          "type": "string"
+        },
+        "expectedRevision": {
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991,
+          "type": "integer"
+        },
+        "garmentId": {
+          "type": "string"
+        },
+        "optionId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/Role"
+        }
+      },
+      "required": [
+        "clientRequestId",
+        "optionId",
+        "role"
+      ],
+      "type": "object"
+    },
+    "SwapSlotResponse": {
+      "properties": {
+        "board": {
+          "$ref": "#/$defs/BoardDocument"
+        },
+        "receipt": {
+          "$ref": "#/$defs/CommandReceipt"
+        }
+      },
+      "required": [
+        "board",
+        "receipt"
+      ],
+      "type": "object"
+    },
     "TemperaturePreview": {
       "properties": {
         "label": {
@@ -20941,6 +22240,49 @@
         "paused",
         "emptyReason",
         "readAt"
+      ],
+      "type": "object"
+    },
+    "TombstoneJournal": {
+      "properties": {
+        "format": {
+          "const": "garderobe-tombstones/1",
+          "type": "string"
+        },
+        "ownerRef": {
+          "type": "string"
+        },
+        "tombstones": {
+          "items": {
+            "properties": {
+              "requestedAt": {
+                "type": "string"
+              },
+              "sourceId": {
+                "type": "string"
+              },
+              "sourceKind": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "sourceKind",
+              "sourceId",
+              "requestedAt"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "writtenAt": {
+          "$ref": "#/$defs/Instant"
+        }
+      },
+      "required": [
+        "format",
+        "ownerRef",
+        "writtenAt",
+        "tombstones"
       ],
       "type": "object"
     },
@@ -21718,6 +23060,55 @@
       ],
       "type": "object"
     },
+    "TurnImage": {
+      "properties": {
+        "assetId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "role": {
+          "default": "other",
+          "enum": [
+            "selfie",
+            "shop_photo",
+            "item_photo",
+            "receipt",
+            "other"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "assetId",
+        "role"
+      ],
+      "type": "object"
+    },
+    "TurnImageInput": {
+      "properties": {
+        "assetId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "role": {
+          "default": "other",
+          "enum": [
+            "selfie",
+            "shop_photo",
+            "item_photo",
+            "receipt",
+            "other"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "assetId"
+      ],
+      "type": "object"
+    },
     "TurnInput": {
       "properties": {
         "attachedRefs": {
@@ -21737,20 +23128,27 @@
           "maxItems": 20,
           "type": "array"
         },
+        "images": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TurnImageInput"
+          },
+          "maxItems": 4,
+          "type": "array"
+        },
         "submissionId": {
           "maxLength": 128,
           "minLength": 8,
           "type": "string"
         },
         "text": {
+          "default": "",
           "maxLength": 20000,
-          "minLength": 1,
           "type": "string"
         }
       },
       "required": [
-        "submissionId",
-        "text"
+        "submissionId"
       ],
       "type": "object"
     },
@@ -22023,11 +23421,11 @@
         },
         "attachmentIds": {
           "default": [],
-          "description": "Finalized upload asset IDs only.",
+          "description": "Finalized upload asset IDs only: photographs the assistant should look at.",
           "items": {
             "type": "string"
           },
-          "maxItems": 12,
+          "maxItems": 4,
           "type": "array"
         },
         "clientTurnId": {
@@ -22035,6 +23433,23 @@
           "maxLength": 128,
           "minLength": 8,
           "type": "string"
+        },
+        "imageRoles": {
+          "additionalProperties": {
+            "enum": [
+              "selfie",
+              "shop_photo",
+              "item_photo",
+              "receipt",
+              "other"
+            ],
+            "type": "string"
+          },
+          "default": {},
+          "propertyNames": {
+            "type": "string"
+          },
+          "type": "object"
         },
         "intent": {
           "$ref": "#/$defs/TurnIntent",
@@ -22049,14 +23464,13 @@
           "type": "string"
         },
         "text": {
+          "default": "",
           "maxLength": 20000,
-          "minLength": 1,
           "type": "string"
         }
       },
       "required": [
-        "clientTurnId",
-        "text"
+        "clientTurnId"
       ],
       "type": "object"
     },
@@ -23264,6 +24678,7 @@
     "care.washed",
     "command.undo",
     "connection.record_discovery",
+    "connection.record_health",
     "connection.register",
     "connection.set_status",
     "connection.set_tool_groups",
@@ -23300,6 +24715,7 @@
     "lifecycle.open_project",
     "lifecycle.record_event",
     "lifecycle.update_project",
+    "mail.record_sync",
     "measurement.record",
     "media.authorize_upload",
     "media.decide_review",
@@ -23317,12 +24733,15 @@
     "purchase.link_line",
     "purchase.mark_delivered",
     "purchase.record_event",
+    "reminder.cancel",
+    "reminder.set",
     "research.save_note",
     "restriction.add",
     "restriction.resolve",
     "return.link_exchange",
     "return.open_case",
     "return.update_case",
+    "search.record_instance",
     "service.pause",
     "service.resume",
     "settings.update",
