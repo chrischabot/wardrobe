@@ -7,7 +7,7 @@
 import { getAgentByName } from "agents";
 import type { ClarificationAnswer, RecallResult, ResearchRequest, ResultDelivery, TranscriptPage, TurnEvent, TurnGrant, TurnInput, TurnRecord } from "@garderobe/contracts/ext/assistant";
 import { assertPrincipal, requireScope, type Principal } from "@garderobe/domain";
-import type { GarderobeAssistantBase } from "./agent/assistant.ts";
+import type { ConversationBackup, ConversationExport, GarderobeAssistantBase } from "./agent/assistant.ts";
 import type { RecallInput } from "./recall/index.ts";
 
 /** A request the conversation actor rejected (reused submission ID, invalid body, no pending question). Nothing was started. */
@@ -37,6 +37,13 @@ export interface AssistantClient {
   projectIndex(opts?: { fromStart?: boolean }): Promise<{ indexed: number; indexedPosition: number }>;
   exportConversation(): Promise<Awaited<ReturnType<GarderobeAssistantBase["exportConversation"]>>>;
   importConversation(data: Parameters<GarderobeAssistantBase["importConversation"]>[0]): Promise<{ imported: number }>;
+  /** Store watermarks for export and restore manifests. */
+  conversationWatermarks(): Promise<ConversationExport["watermarks"]>;
+  /** Operational backup: messages, compaction overlays with summaries, unsettled turns, watermarks. */
+  backupConversation(): Promise<ConversationBackup>;
+  restoreConversation(backup: ConversationBackup): Promise<Awaited<ReturnType<GarderobeAssistantBase["restoreConversation"]>>>;
+  /** Account deletion: wipe the actor's own storage and this owner's research task actors. Works for a disabled account. */
+  eraseEverything(): Promise<{ messages: number; compactionOverlays: number; taskActors: number }>;
 }
 
 export function assistantClient(env: { ASSISTANT: DurableObjectNamespace<any> }, principal: Principal): AssistantClient {
@@ -89,6 +96,16 @@ export function assistantClient(env: { ASSISTANT: DurableObjectNamespace<any> },
     importConversation: async (data) => {
       writer();
       return (await stub()).importConversation(data);
+    },
+    conversationWatermarks: async () => (await stub()).conversationWatermarks(),
+    backupConversation: async () => (await stub()).backupConversation(),
+    restoreConversation: async (backup) => {
+      writer();
+      return (await stub()).restoreConversation(backup);
+    },
+    eraseEverything: async () => {
+      writer();
+      return (await stub()).eraseEverything();
     },
   };
 }

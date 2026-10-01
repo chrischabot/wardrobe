@@ -25,6 +25,19 @@ export interface AssistantPorts {
   searchProviders?: SearchProvider[];
   extraction?: ExtractionRouter;
   searchIndex?: SearchIndexPort | null;
+  /**
+   * Read one of THIS owner's private images (media `openAssetImage`). Must throw when the asset does not
+   * exist for the principal's owner. Photo intake is refused when this port is absent.
+   */
+  openImage?: (principal: Principal, assetId: string) => Promise<{ bytes: Uint8Array; contentType: string }>;
+  /**
+   * Daily service decision context (`decisionContext` from @garderobe/daily): for a question about one slot of
+   * an actual outfit ("what socks with this?") it returns the outfit's facts, today's eligible pieces for
+   * that slot, the forecast and the hard rules, as a ready text block.
+   */
+  decisionContext?: (principal: Principal, input: { localDate?: string; outfit: { role: string; garmentId: string }[]; role: string; tripId?: string }) => Promise<{ text: string } & Record<string, unknown>>;
+  /** Tools of the owner's connected MCP connections, for on-demand description (never executed from here). */
+  describeConnectionTools?: (principal: Principal, connectionId: string) => Promise<{ name: string; description: string; inputSchema: unknown }[]>;
 }
 
 export interface TurnRuntime {
@@ -45,6 +58,12 @@ export interface TurnRuntime {
   conversationId: string;
   unindexedSource?: () => Promise<CanonicalMessage[]>;
   ports: AssistantPorts;
+  /** True once the owner stopped this turn: nothing further is dispatched. */
+  isCancelled?: () => Promise<boolean>;
+  /** One original conversation message by ID (text and bounded tool payloads). */
+  readOriginal?: (messageId: string) => Promise<Record<string, unknown> | null>;
+  /** Full-text search over the Think Session. */
+  sessionSearch?: (query: string, limit: number) => Promise<{ messageId: string }[]>;
   onReceipt(receipt: CommandReceipt): Promise<void> | void;
   onRefusal(refusal: { tool: string; code: string; message: string }): Promise<void> | void;
   onProposal(proposal: { type: string; summary: string; payload: Record<string, unknown> }): Promise<void> | void;
@@ -90,6 +109,11 @@ export async function commit(rt: TurnRuntime, req: CommitRequest): Promise<Commi
   if (rt.readOnly) {
     await rt.onProposal({ type: req.type, summary: req.proposalSummary, payload: req.payload });
     return { status: "proposed", summary: `Not done: this connection can only read. Proposed for the owner to confirm: ${req.proposalSummary}` };
+  }
+  if (await rt.isCancelled?.()) {
+    const refusal = { tool: req.tool, code: "cancelled", message: "the owner stopped this turn" };
+    await rt.onRefusal(refusal);
+    return { status: "refused", code: "cancelled", message: "Nothing was changed. The owner stopped this turn." };
   }
   const check = checkAuthority(rt, req.authority);
   if (!check.ok) {

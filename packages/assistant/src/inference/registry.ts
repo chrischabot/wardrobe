@@ -23,6 +23,8 @@ export interface ProfileSpec {
   maxOutputTokens: number;
   timeoutMs: number;
   price: { inputMicroUsdPerMTok: number; outputMicroUsdPerMTok: number; observedOn: string | null };
+  /** Provider rate limits; unknown until a deployment probe observes them. */
+  rateLimit?: { requestsPerMinute: number | null; tokensPerMinute: number | null; observedOn: string | null };
   dataPermissions: string;
   /** Why the profile cannot be used at all (for example an unverified model ID). */
   pendingReason: string | null;
@@ -246,6 +248,7 @@ export function toModelProfile(spec: ProfileSpec, probes: ProbeRow[], fallbacks:
     maxOutputTokens: spec.maxOutputTokens,
     timeoutMs: spec.timeoutMs,
     price: spec.price,
+    rateLimit: spec.rateLimit ?? { requestsPerMinute: null, tokensPerMinute: null, observedOn: null },
     dataPermissions: spec.dataPermissions,
     fallbacks,
     probes: rows,

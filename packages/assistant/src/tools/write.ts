@@ -362,7 +362,60 @@ export function buildWriteTools(rt: TurnRuntime): ToolSet {
       execute: async (i) => forModel(await commit(rt, { tool: "start_background_work", type: "job.create", payload: { kind: i.kind, title: i.title, params: i.params }, targets: [i.kind, i.title], authority: { level: "record" }, proposalSummary: `start "${i.title}" in the background` })),
     }),
 
+    search_mailbox_for_purchases: tool({
+      description: "\"What have I bought?\" over a period: start a mailbox investigation as a background job. It states the range it searched and whether that was complete. With logOrders false (a question) it only FINDS orders and keeps them as a draft. Set logOrders true only when the owner asked to log them (\"log the orders\"), with their words in ownerQuote.",
+      inputSchema: z.object({ from: DateStr, to: DateStr, merchants: z.array(z.string()).max(10).default([]), logOrders: z.boolean().default(false), ownerQuote: z.string().optional() }),
+      execute: async (i) => {
+        const title = `Purchases ${i.from} to ${i.to}${i.logOrders ? " (log the orders)" : ""}`;
+        return forModel(await commit(rt, {
+          tool: "search_mailbox_for_purchases", type: "job.create", targets: ["email_investigation", i.from, i.to, String(i.logOrders)],
+          payload: { kind: "email_investigation", title, params: { from: i.from, to: i.to, merchants: i.merchants, importAuthorizedBy: i.logOrders ? `message:${rt.userMessageId}` : null } },
+          // Finding is bookkeeping for the owner's question; logging needs the owner's own words.
+          authority: i.logOrders ? routine(i.ownerQuote) : { level: "record" }, proposalSummary: `search the mailbox for purchases from ${i.from} to ${i.to}${i.logOrders ? " and log the orders" : ""}`,
+        }));
+      },
+    }),
+    log_found_orders: tool({
+      description: "Log the orders a finished mailbox investigation found and kept as a draft, when the owner now asks to log them. Deduplicated by merchant, order number and line identity. Logged orders are INCOMING purchases, not arrivals; wardrobe records per line are made with log_order once the category is known.",
+      inputSchema: z.object({ jobId: z.string(), orderNumbers: z.array(z.string()).optional().describe("Only these; all found orders when omitted"), ownerQuote: Quote }),
+      execute: async (i) => {
+        const job = await first<{ state: string; progress_json: string }>(rt.db, "SELECT state, progress_json FROM assistant_jobs WHERE user_id = ? AND job_id = ? AND kind = 'email_investigation'", rt.principal.userId, i.jobId);
+        if (!job) return { status: "refused", code: "not_found", message: "Nothing was changed. There is no such mailbox investigation." };
+        const drafts = ((JSON.parse(job.progress_json || "{}") as { draftOrders?: Record<string, unknown>[] }).draftOrders ?? []).filter((o) => !i.orderNumbers || i.orderNumbers.includes(String(o["orderNumber"])));
+        if (drafts.length === 0) return { status: "refused", code: "nothing_to_log", message: "Nothing was changed. That investigation holds no matching found orders." };
+        const logged: unknown[] = [];
+        for (const o of drafts) {
+          const r = await commit(rt, {
+            tool: "log_found_orders", type: "purchase.import_order", targets: [`${String(o["merchantKey"])}:${String(o["orderNumber"])}`],
+            payload: { merchant: o["merchant"], merchantKey: o["merchantKey"], orderNumber: o["orderNumber"], orderedOn: o["orderedOn"] ?? null, currency: o["currency"] ?? null, totalMinor: o["totalMinor"] ?? null, channel: "email", lines: o["lines"], events: o["events"] ?? [], replaces: o["replaces"] ?? null, sourceRefs: [...((o["sourceRefs"] as string[] | undefined) ?? []), `message:${rt.userMessageId}`] },
+            authority: routine(i.ownerQuote), proposalSummary: `log the ${String(o["merchant"])} order ${String(o["orderNumber"])}`,
+          });
+          logged.push(forModel(r));
+        }
+        return { logged, note: "Ordered, not arrived. Nothing here is wearable until the owner says it arrived." };
+      },
+    }),
+
     /* ---------------- memory ---------------- */
+    set_reminder: tool({
+      description: "The owner asks to be reminded of a drop, a sale window or a restock at a time. Its own event: it never changes the daily outfit event. Give the time as an instant with offset.",
+      inputSchema: z.object({ kind: z.enum(["drop", "sale_window", "restock", "other"]), title: z.string().min(1).max(200), dueAt: z.string().describe("ISO instant, e.g. 2026-10-02T09:00:00+01:00"), note: z.string().max(1000).optional(), url: z.string().url().optional(), leadMinutes: z.array(z.number().int().min(0).max(20160)).max(4).default([0]), reminderId: z.string().optional().describe("An existing reminder to change"), ownerQuote: Quote }),
+      execute: async (i) => {
+        const dueMs = Date.parse(i.dueAt);
+        if (Number.isNaN(dueMs)) return { status: "refused", code: "invalid_time", message: "Nothing was changed. That is not a time; ask the owner when." };
+        return forModel(await commit(rt, { tool: "set_reminder", type: "reminder.set", payload: { ...(i.reminderId ? { reminderId: i.reminderId } : {}), kind: i.kind, title: i.title, dueAt: new Date(dueMs).toISOString(), note: i.note ?? null, url: i.url ?? null, leadMinutes: i.leadMinutes }, targets: [i.reminderId ?? i.title], authority: routine(i.ownerQuote), proposalSummary: `set a reminder: ${i.title} at ${i.dueAt}` }));
+      },
+    }),
+    cancel_reminder: tool({
+      description: "The owner asks to remove a reminder.",
+      inputSchema: z.object({ reminderId: z.string(), ownerQuote: Quote }),
+      execute: async (i) => forModel(await commit(rt, { tool: "cancel_reminder", type: "reminder.cancel", payload: { reminderId: i.reminderId }, targets: [i.reminderId], authority: routine(i.ownerQuote), proposalSummary: `remove reminder ${i.reminderId}` })),
+    }),
+    set_return_reminders: tool({
+      description: "The owner asks to stop or restart reminders for return deadlines. This is separate from pausing daily recommendations: a pause leaves return reminders on.",
+      inputSchema: z.object({ paused: z.boolean(), ownerQuote: Quote }),
+      execute: async (i) => forModel(await commit(rt, { tool: "set_return_reminders", type: "settings.update", payload: { patch: { extensions: { assistant: { returnRemindersPaused: i.paused } } } }, targets: ["settings"], authority: routine(i.ownerQuote), proposalSummary: `${i.paused ? "stop" : "restart"} return-deadline reminders` })),
+    }),
     remember: tool({
       description: "Remember a source-linked conclusion (a fit or purchase judgement, a preference, an unfinished investigation). If the OWNER said it, quote them and it is remembered as settled. Anything you inferred is saved only as a candidate for the owner to confirm. Never use this as an inventory: wardrobe facts live in the records.",
       inputSchema: z.object({ kind: z.enum(["fit_judgement", "purchase_judgement", "preference", "unfinished_investigation", "fact", "other"]), text: z.string().min(1), saidByOwner: z.boolean(), premises: z.array(z.object({ kind: z.string(), ref: z.string(), value: z.string().optional() })).default([]), entityIds: z.array(z.string()).default([]), ownerQuote: Quote.optional() }),

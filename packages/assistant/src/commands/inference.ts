@@ -1,11 +1,15 @@
 import { ASSISTANT_COMMANDS as C } from "@garderobe/contracts/ext/assistant";
-import { CommandError, all, define, first, stmt } from "@garderobe/domain";
+import { CommandError, all, define, first, stmt, toInstant } from "@garderobe/domain";
 import { NO_UNDO } from "./common.ts";
 import { TASK_SPECS, profileSpec, selectability, type ProbeRow } from "../inference/registry.ts";
 
 /** Committed spend of a budget class and day: settled actuals plus everything still reserved or uncertain. */
 const COMMITTED_SQL =
   "(SELECT COALESCE(SUM(CASE state WHEN 'settled' THEN actual_microusd WHEN 'released' THEN 0 ELSE reserved_microusd END), 0) FROM inference_reservations WHERE user_id = ? AND budget_class = ? AND budget_day = ?)";
+
+const ALL_COMMITTED_SQL =
+  "(SELECT COALESCE(SUM(CASE state WHEN 'settled' THEN actual_microusd WHEN 'released' THEN 0 ELSE reserved_microusd END), 0) FROM inference_reservations WHERE user_id = ? AND budget_day = ?)";
+const DISCRETIONARY = ["research", "image_backfill"];
 
 /**
  * Reserve spend BEFORE a model call is dispatched. The limit is enforced by a constraint-checked
@@ -30,12 +34,21 @@ export const inferenceReserve = define({
           params: [ctx.userId, p.budgetClass, p.budgetDay, p.reservedMicroUsd, p.dailyLimitMicroUsd],
           class: "state",
         },
+        // Discretionary work pauses first when the day's total spend approaches its limit, so daily
+        // assistance and the morning board keep their capacity.
+        ...(p.discretionaryCeilingMicroUsd > 0 && DISCRETIONARY.includes(p.budgetClass)
+          ? [{ label: `today's spend leaves room for optional ${p.budgetClass.replace(/_/g, " ")} work`, sql: `${ALL_COMMITTED_SQL} + ? <= ?`, params: [ctx.userId, p.budgetDay, p.reservedMicroUsd, p.discretionaryCeilingMicroUsd], class: "state" as const }]
+          : []),
+        // A cap on calls in flight. Reservations older than ten minutes are abandoned calls, not live ones.
+        ...(p.maxOpenReservations > 0
+          ? [{ label: "fewer model calls are in flight than the concurrency cap", sql: "(SELECT COUNT(*) FROM inference_reservations WHERE user_id = ? AND state = 'reserved' AND created_at > ?) < ?", params: [ctx.userId, toInstant(ctx.nowMs - 600_000), p.maxOpenReservations], class: "state" as const }]
+          : []),
       ],
       statements: [
         stmt(
-          `INSERT INTO inference_reservations (user_id, reservation_id, run_id, task, budget_class, profile_id, attempt, budget_day, reserved_microusd, state, parent_kind, parent_id, prompt_version, gateway_id, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?, ?, ?)`,
-          ctx.userId, p.reservationId, p.runId, p.task, p.budgetClass, p.profileId, p.attempt, p.budgetDay, p.reservedMicroUsd, p.parent.kind, p.parent.id, p.promptVersion, p.gatewayId, ctx.now,
+          `INSERT INTO inference_reservations (user_id, reservation_id, run_id, task, budget_class, profile_id, attempt, budget_day, reserved_microusd, state, parent_kind, parent_id, prompt_version, gateway_id, schema_version, effort_json, evidence_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?, ?, ?, ?, ?, ?)`,
+          ctx.userId, p.reservationId, p.runId, p.task, p.budgetClass, p.profileId, p.attempt, p.budgetDay, p.reservedMicroUsd, p.parent.kind, p.parent.id, p.promptVersion, p.gatewayId, p.schemaVersion, JSON.stringify(p.effort), JSON.stringify(p.evidence), ctx.now,
         ),
       ],
       result: { reservationId: p.reservationId, runId: p.runId },

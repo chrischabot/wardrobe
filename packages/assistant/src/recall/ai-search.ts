@@ -79,6 +79,15 @@ export async function provisionSearchInstance(namespace: AiSearchNamespace, envi
   return { instance: id, created: true };
 }
 
+/** Account deletion: remove the owner's whole AI Search instance. Reports `deleted: false` when there was none. */
+export async function eraseSearchInstance(namespace: AiSearchNamespace, environment: string, userId: string): Promise<{ instance: string; deleted: boolean }> {
+  const id = instanceNameFor(environment, userId);
+  const existing = await namespace.list({ search: id });
+  if (!existing.result.some((i) => i.id === id)) return { instance: id, deleted: false };
+  await namespace.delete(id);
+  return { instance: id, deleted: true };
+}
+
 export class AiSearchIndex implements SearchIndexPort {
   private readonly instance: AiSearchInstance;
 

@@ -36,6 +36,8 @@ export interface FakeRequest {
   toolNames: string[];
   /** Tool results visible to the model in this call, newest last. */
   toolResults: { toolName: string; output: unknown }[];
+  /** Image inputs the model received (media type and byte length), in order. */
+  images: { mediaType: string; byteLength: number; role: string }[];
   raw: LanguageModelV4CallOptions;
 }
 
@@ -66,7 +68,18 @@ export function describeRequest(options: LanguageModelV4CallOptions): FakeReques
       }
     }
   }
+  const images: FakeRequest["images"] = [];
+  for (const m of options.prompt as any[]) {
+    if (!Array.isArray(m.content)) continue;
+    for (const part of m.content) {
+      if (part?.type !== "file" || !String(part.mediaType ?? "").startsWith("image/")) continue;
+      const data = part.data?.data ?? part.data;
+      const byteLength = data instanceof Uint8Array ? data.length : typeof data === "string" ? Math.floor((data.length * 3) / 4) : (data?.byteLength ?? 0);
+      images.push({ mediaType: String(part.mediaType), byteLength, role: String(m.role) });
+    }
+  }
   return {
+    images,
     system: messages.filter((m) => m.role === "system").map((m) => m.text).join("\n"),
     messages,
     toolNames: (options.tools ?? []).map((t: any) => t.name),

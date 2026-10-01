@@ -19,8 +19,13 @@ import { first, json, type Db } from "@garderobe/domain";
 import { redactDeep } from "../policy/secrets.ts";
 import { ToolCatalog, assertPublicHttpsUrl, canExecute, namespacedToolName, redactSecretsInUrl, type DiscoveredTool, type SearchProvider, type TavilyExtractBackend } from "../research/index.ts";
 
+export type ConnectionErrorCode =
+  | "not_executable" | "tool_refused" | "transport" | "protocol" | "too_large" | "tool_error"
+  | "auth" | "forbidden" | "not_found" | "rate_limited" | "upstream" | "timeout" | "redirect_refused"
+  | "scope_not_granted" | "endpoint_not_allowed" | "call_limit" | "not_admitted" | "not_supported";
+
 export class ConnectionError extends Error {
-  constructor(readonly code: "not_executable" | "tool_refused" | "transport" | "protocol" | "too_large" | "tool_error", message: string) {
+  constructor(readonly code: ConnectionErrorCode, message: string) {
     super(message);
   }
 }
@@ -37,6 +42,8 @@ export interface McpClientOptions {
   /** Session-based protocol revisions need `initialize` first; stateless revisions do not. */
   sessionBased?: boolean;
   timeoutMs?: number;
+  /** Upper bound on requests through this client (one turn or one job): a runaway loop cannot exhaust the service's quota. */
+  maxCalls?: number;
 }
 
 export interface McpToolResult {
@@ -54,7 +61,14 @@ export class McpHttpClient {
     this.endpoint = assertPublicHttpsUrl(options.endpoint);
   }
 
+  private calls = 0;
+  get callsMade(): number {
+    return this.calls;
+  }
+
   private async rpc(method: string, params: Record<string, unknown>, notification = false): Promise<any> {
+    if (this.options.maxCalls !== undefined && this.calls >= this.options.maxCalls) throw new ConnectionError("call_limit", "the call limit for this connection was reached in this run");
+    this.calls++;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.options.timeoutMs ?? DEFAULT_MCP_TIMEOUT_MS);
     try {
@@ -72,6 +86,8 @@ export class McpHttpClient {
       if (session) this.sessionId = session;
       if (notification) return null;
       if (response.status >= 300 && response.status < 400) throw new ConnectionError("transport", "the service answered with a redirect, which is not followed");
+      if (response.status === 401 || response.status === 403) throw new ConnectionError("auth", "the service rejected the credential; the owner needs to reconnect");
+      if (response.status === 429) throw new ConnectionError("rate_limited", "the service's rate limit was reached");
       if (!response.ok) throw new ConnectionError("transport", `the service answered ${response.status}`);
       const body = await response.text();
       if (body.length > MAX_MCP_RESPONSE_BYTES) throw new ConnectionError("too_large", "the service's answer exceeded the size limit");

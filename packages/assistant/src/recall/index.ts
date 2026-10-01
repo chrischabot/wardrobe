@@ -204,6 +204,8 @@ export interface RecallDeps {
   /** Canonical messages after the index watermark, read directly from the source history. */
   unindexedSource?: () => Promise<CanonicalMessage[]>;
   searchIndex?: SearchIndexPort | null;
+  /** Think Session full-text search: exact words in the source history, including material not yet indexed. */
+  sessionSearch?: (query: string, limit: number) => Promise<{ messageId: string }[]>;
 }
 
 const CAVEAT = "These are things said in conversation. Liking, ordering or discussing something in the past does not mean it is owned or in stock now; check the wardrobe records for that.";
@@ -270,6 +272,17 @@ export async function recall(db: Db, principal: Principal, input: RecallInput, d
     }
   }
 
+  // Session FTS confirms exact wording in the source history. It only raises rows that are already current
+  // canonical candidates, so a forgotten or out-of-range message cannot enter through it.
+  const ftsIds = new Set<string>();
+  if (deps.sessionSearch && qWords.length > 0) {
+    try {
+      for (const hit of await deps.sessionSearch(qWords.join(" "), 40)) ftsIds.add(hit.messageId);
+    } catch {
+      // The index and the direct tail read stay available.
+    }
+  }
+
   const wantEntities = new Set(input.entityIds ?? []);
   const scored = candidates
     .filter((c) => !forgotten.has(c.message_id))
@@ -284,6 +297,7 @@ export async function recall(db: Db, principal: Principal, input: RecallInput, d
       const matchingJudgement = judgement ? js.some((j) => j.kind === judgement && (!speaker || j.speaker === speaker)) : false;
       if (judgement) score += matchingJudgement ? 4 : 0;
       if (c.origin === "both") score += 2;
+      if (ftsIds.has(c.message_id)) score += 2;
       const topicOk = topicTerms.length === 0 || topicTerms.some((t) => terms.has(t));
       const entityOk = wantEntities.size === 0 || entityIds.some((e) => wantEntities.has(e));
       const judgementOk = !judgement || matchingJudgement;
@@ -293,6 +307,9 @@ export async function recall(db: Db, principal: Principal, input: RecallInput, d
     .sort((a, b) => b.score - a.score || (a.c.authored_at < b.c.authored_at ? 1 : -1))
     .slice(0, limit);
 
+  const positions = [...new Set(scored.flatMap(({ c }) => [c.position - 1, c.position + 1]))].filter((n) => n > 0);
+  const byPosition = positions.length > 0 ? await all<{ message_id: string; position: number; speaker: string; authored_at: string; excerpt: string }>(db, `SELECT message_id, position, speaker, authored_at, excerpt FROM conversation_index WHERE user_id = ? AND conversation_id = ? AND position IN (${positions.map(() => "?").join(",")})`, userId, deps.conversationId, ...positions) : [];
+  const productNames = new Map((await all<{ product_id: string; name: string }>(db, "SELECT product_id, name FROM products WHERE user_id = ?", userId)).map((p) => [p.product_id, p.name]));
   const hits: RecallHit[] = scored.map(({ c, js, entityIds }) => {
     const myTerms = new Set(c.terms.split(" ").filter((t) => t.length > 3 && !t.startsWith("topic:")));
     const myTopics = c.terms.split(" ").filter((t) => t.startsWith("topic:"));
@@ -308,7 +325,10 @@ export async function recall(db: Db, principal: Principal, input: RecallInput, d
       })
       .slice(0, 5)
       .map((j) => ({ kind: j.kind, messageId: j.message_id, authoredAt: j.authored_at, quote: j.subject }));
+    const neighbours = byPosition.filter((n) => Math.abs(n.position - c.position) === 1 && !forgotten.has(n.message_id));
     return {
+      surrounding: neighbours.map((n) => ({ messageId: n.message_id, speaker: n.speaker, authoredAt: n.authored_at, quote: n.excerpt.slice(0, 400) })),
+      linkedInvestigations: entityIds.filter((e) => productNames.has(e)).map((e) => ({ productId: e, name: productNames.get(e)! })),
       messageId: c.message_id,
       authoredAt: c.authored_at,
       channel: c.channel,

@@ -1,6 +1,6 @@
 /** Shared setup for the assistant tests: real D1, real command service, real owner data, the real Durable Object. */
 import { env } from "cloudflare:test";
-import { createFoundationRegistry, listInventory, type Principal } from "@garderobe/domain";
+import { createFoundationRegistry, listInventory, type CommandRegistry, type Principal } from "@garderobe/domain";
 import { createHarness, type Harness, type TestOwner } from "@garderobe/domain/testing";
 import type { ModelOperation } from "@garderobe/contracts/ext/assistant";
 import { assistantClient, registerAssistant, type AssistantClient } from "../src/index.ts";
@@ -28,11 +28,13 @@ export async function passProbes(h: Harness, owner: TestOwner, profileId: string
   }
 }
 
-export async function createWorld(opts: { real?: boolean; probes?: string[]; startAt?: string } = {}): Promise<World> {
+export async function createWorld(opts: { real?: boolean; probes?: string[]; startAt?: string; extend?: (registry: CommandRegistry) => void } = {}): Promise<World> {
   resetFakeModels();
   setTestPorts({});
   setTestNow(opts.startAt ?? START);
-  const h = await createHarness({ registry: registerAssistant(createFoundationRegistry()), startAt: opts.startAt ?? START });
+  const registry = registerAssistant(createFoundationRegistry());
+  opts.extend?.(registry);
+  const h = await createHarness({ registry, startAt: opts.startAt ?? START });
   const owner = opts.real === false ? await h.createSyntheticOwner() : (await h.createRealOwner()).owner;
   for (const profileId of opts.probes ?? ["deepseek-v41-flash"]) await passProbes(h, owner, profileId);
   const clientFor = (principal: Principal) => assistantClient(env as never, principal);

@@ -24,7 +24,8 @@ import {
   type Db,
   type Principal,
 } from "@garderobe/domain";
-import { listComfortFeedback, listLifecycleProjects, listMemoryConclusions, listReturnCases } from "../queries.ts";
+import { listComfortFeedback, listLifecycleProjects, listMemoryConclusions, listReminders, listReturnCases } from "../queries.ts";
+import { recheckPremises } from "../analysis.ts";
 
 export const ASSISTANT_PROMPT_VERSION = "garderobe-assistant/1.0.0";
 
@@ -90,6 +91,9 @@ export async function assembleMandatoryContext(db: Db, principal: Principal, opt
   const returns = await listReturnCases(db, principal, { open: true });
   const projects = await listLifecycleProjects(db, principal, { open: true });
   const memories = await listMemoryConclusions(db, principal, { statuses: ["active"] });
+  // Premises behind remembered fit and purchase judgements are compared with the current records on every turn.
+  const premiseChecks = await recheckPremises(db, principal, memories);
+  const reminders = await listReminders(db, principal);
 
   const parts: { label: string; text: string }[] = [];
   const add = (label: string, text: string) => parts.push({ label, text: section(label, text) });
@@ -183,8 +187,22 @@ export async function assembleMandatoryContext(db: Db, principal: Principal, opt
   );
   add(
     "REMEMBERED CONCLUSIONS (source-linked; recheck their premises before relying on them; never proof of stock)",
-    memories.slice(0, 60).map((m) => `- [${m.conclusionId}] (${m.kind}, said by ${m.speaker}) ${m.text}`).join("\n"),
+    memories
+      .slice(0, 60)
+      .map((m) => {
+        const checks = premiseChecks.filter((c) => c.conclusionId === m.conclusionId);
+        const stale = checks.filter((c) => c.status === "changed" || c.status === "gone");
+        const note =
+          checks.length === 0
+            ? ""
+            : stale.length > 0
+              ? ` | PREMISE NO LONGER HOLDS: ${stale.map((c) => `${c.premise.kind} ${c.premise.ref} was ${c.premise.value ?? "recorded"}, now ${c.current ?? "no longer on record"}`).join("; ")}. Do not rely on this conclusion; redo the judgement from current records.`
+              : ` | premises rechecked against current records: ${checks.map((c) => `${c.premise.kind} ${c.premise.ref} ${c.status === "holds" ? "holds" : "could not be checked"}`).join("; ")}`;
+        return `- [${m.conclusionId}] (${m.kind}, said by ${m.speaker}) ${m.text}${note}`;
+      })
+      .join("\n"),
   );
+  if (reminders.length > 0) add("REMINDERS THE OWNER SET", reminders.map((r) => `- [${r.reminderId}] ${r.kind}: ${r.title} at ${r.dueAt}`).join("\n"));
 
   if (opts.attachedRefs && opts.attachedRefs.length > 0) {
     const resolved: string[] = [];

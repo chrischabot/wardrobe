@@ -7,6 +7,7 @@ import { feedbackHandlers } from "./feedback.ts";
 import { memoryHandlers } from "./memory.ts";
 import { inferenceHandlers } from "./inference.ts";
 import { connectionHandlers, jobHandlers } from "./connections.ts";
+import { reminderHandlers } from "./reminders.ts";
 
 export const ASSISTANT_HANDLERS = [
   ...purchaseHandlers,
@@ -18,6 +19,7 @@ export const ASSISTANT_HANDLERS = [
   ...inferenceHandlers,
   ...connectionHandlers,
   ...jobHandlers,
+  ...reminderHandlers,
 ];
 
 const RESOLVERS: [kind: string, table: string, idColumn: string][] = [
@@ -29,6 +31,7 @@ const RESOLVERS: [kind: string, table: string, idColumn: string][] = [
   ["memory_conclusion", "memory_conclusions", "conclusion_id"],
   ["research_note", "research_notes", "note_id"],
   ["product", "products", "product_id"],
+  ["reminder", "reminders", "reminder_id"],
 ];
 
 /**

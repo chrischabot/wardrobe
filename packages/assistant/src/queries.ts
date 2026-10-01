@@ -10,6 +10,7 @@ import type {
   LifecycleProject,
   MemoryConclusion,
   Order,
+  Reminder,
   ReturnCase,
   ReturnTerms,
 } from "@garderobe/contracts/ext/assistant";
@@ -253,7 +254,15 @@ export async function listConnections(db: Db, principal: Principal): Promise<Con
     tools: json(r.tools_json, []),
     enabledGroups: json(r.enabled_groups_json, []),
     lastDiscoveryAt: r.last_discovery_at,
+    expectedIssuer: r.expected_issuer ?? null,
+    health: json(r.health_json, null),
   }));
+}
+
+export async function listReminders(db: Db, principal: Principal, opts: { includeCancelled?: boolean } = {}): Promise<Reminder[]> {
+  const userId = guard(principal);
+  const rows = await all<any>(db, `SELECT * FROM reminders WHERE user_id = ? ${opts.includeCancelled ? "" : "AND status = 'active'"} ORDER BY due_at`, userId);
+  return rows.map((r) => ({ reminderId: r.reminder_id, version: r.version, kind: r.kind, title: r.title, note: r.note, url: r.url, dueAt: r.due_at, status: r.status }));
 }
 
 export async function listJobs(db: Db, principal: Principal, opts: { states?: string[] } = {}): Promise<Job[]> {
@@ -322,4 +331,20 @@ export async function getInferenceOverview(db: Db, principal: Principal, opts: {
     }),
     breakers: breakers.map((b) => ({ profileId: b.profile_id, state: b.state, failures: b.failures, openedAt: b.opened_at })),
   };
+}
+
+/**
+ * Whether a queued return-deadline reminder should be delivered now. Return reminders are their own control
+ * (`settings.extensions.assistant.returnRemindersPaused`): pausing daily recommendations does not touch them,
+ * and turning them off does not pause recommendations. A reminder for a finished case is never delivered.
+ */
+export async function returnReminderDelivery(db: Db, principal: Principal, payload: { caseId: string }): Promise<{ deliver: boolean; reason: string | null }> {
+  const userId = guard(principal);
+  const { settings } = await getSettings(db, principal);
+  const control = (settings.extensions as { assistant?: { returnRemindersPaused?: boolean } }).assistant;
+  if (control?.returnRemindersPaused === true) return { deliver: false, reason: "the owner turned return reminders off" };
+  const row = await first<{ state: string }>(db, "SELECT state FROM return_cases WHERE user_id = ? AND case_id = ?", userId, payload.caseId);
+  if (!row) return { deliver: false, reason: "the return no longer exists" };
+  if (["refunded", "exchanged", "closed", "cancelled"].includes(row.state)) return { deliver: false, reason: `the return is ${row.state}` };
+  return { deliver: true, reason: null };
 }

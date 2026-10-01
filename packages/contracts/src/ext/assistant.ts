@@ -35,12 +35,21 @@ export type TurnAttachment = z.infer<typeof TurnAttachment>;
 export const TurnChannel = z.enum(["ios", "web", "mcp"]);
 export type TurnChannel = z.infer<typeof TurnChannel>;
 
+/** A finalized upload from the visual wardrobe's upload path, given to the assistant as real image input. */
+export const TurnImage = z.object({
+  assetId: z.string().min(1).max(128),
+  role: z.enum(["selfie", "shop_photo", "item_photo", "receipt", "other"]).default("other"),
+});
+export type TurnImage = z.infer<typeof TurnImage>;
+
 /** What a client submits to start a conversational turn. The owner comes from the authenticated connection. */
 export const TurnInput = z.object({
   /** Stable client submission ID created before sending; retransmission returns the same turn. */
   submissionId: z.string().min(8).max(128),
-  /** Only what the owner typed or said. */
-  text: z.string().min(1).max(20_000),
+  /** Only what the owner typed or said. May be empty when a photograph is sent on its own; then nothing can be changed. */
+  text: z.string().max(20_000).default(""),
+  /** Photographs already uploaded and finalized. A photograph is evidence to look at, never an instruction or an authorization. */
+  images: z.array(TurnImage).max(4).default([]),
   attachments: z.array(TurnAttachment).max(20).default([]),
   /** Attached item/outfit identity ("Ask about this"); resolved by trusted code, never guessed by a model. */
   attachedRefs: z.array(z.string().max(160)).max(20).default([]),
@@ -170,6 +179,10 @@ export const RecallHit = z.object({
   entityIds: z.array(z.string()),
   /** Later facts that qualify this one (a return, a fit reversal, a correction), reported separately. */
   laterDevelopments: z.array(z.object({ kind: z.string(), messageId: z.string().nullable(), authoredAt: Instant.nullable(), quote: z.string() })),
+  /** The original messages immediately before and after, for context. */
+  surrounding: z.array(z.object({ messageId: z.string(), speaker: z.string(), authoredAt: Instant, quote: z.string() })),
+  /** Shopping candidates (product investigations) this message names. */
+  linkedInvestigations: z.array(z.object({ productId: z.string(), name: z.string() })),
   /** Opens this point in the continuous stream. */
   link: z.string(),
   origin: z.enum(["source_history", "ai_search", "both"]),
@@ -716,6 +729,8 @@ export const ModelProfile = z.object({
   timeoutMs: z.number().int().positive(),
   /** Price hypothesis used for reservations, in micro-USD per million tokens, with its observation date. */
   price: z.object({ inputMicroUsdPerMTok: z.number().nonnegative(), outputMicroUsdPerMTok: z.number().nonnegative(), observedOn: LocalDate.nullable() }),
+  /** Provider rate limits as observed by a probe; null until one records them. */
+  rateLimit: z.object({ requestsPerMinute: z.number().nullable(), tokensPerMinute: z.number().nullable(), observedOn: LocalDate.nullable() }),
   dataPermissions: z.string(),
   fallbacks: z.array(z.string()),
   probes: z.array(ModelProbe),
@@ -748,6 +763,14 @@ export const InferenceReserve = z.object({
   parent: z.object({ kind: z.enum(["turn", "job", "workflow", "compaction"]), id: z.string() }),
   promptVersion: z.string().nullable().default(null),
   gatewayId: z.string(),
+  /** Run evidence: schema version of any structured output, the exact effort parameters sent, and the input versions (profile hash, wardrobe and style revisions). */
+  schemaVersion: z.string().nullable().default(null),
+  effort: z.record(z.string(), z.unknown()).default({}),
+  evidence: z.record(z.string(), z.unknown()).default({}),
+  /** At most this many calls may be in flight for the owner; 0 = no cap. */
+  maxOpenReservations: z.number().int().nonnegative().default(0),
+  /** Discretionary work (research, image backfill) is refused once the day's spend across all classes reaches this; 0 = no ceiling. */
+  discretionaryCeilingMicroUsd: z.number().int().nonnegative().default(0),
 });
 
 /** Settle a reservation against reported usage, release it, or keep it as uncertain until reconciliation. */
@@ -800,6 +823,66 @@ export const ConnectionRegister = z.object({
   /** NAME of the secret binding holding the credential. Never the credential itself. */
   secretRef: z.string().max(120).nullable().default(null),
   scopes: z.array(z.string()).default([]),
+  /** Authorization issuer the connection's credential must come from (for example https://accounts.google.com). */
+  expectedIssuer: z.string().url().nullable().default(null),
+});
+
+/** Result of a health check run before the evening preparation and the morning delivery. */
+export const ConnectionRecordHealth = z.object({
+  connectionId: Id,
+  ok: z.boolean(),
+  /** True when the service rejected the credential: the connection then needs the owner to sign in again. */
+  authFailure: z.boolean().default(false),
+  detail: z.string().max(300).nullable().default(null),
+  phase: z.enum(["evening", "morning", "manual"]).default("manual"),
+});
+
+/* ------------------------------------------------------------------ */
+/* Reminders set from conversation                                      */
+/* ------------------------------------------------------------------ */
+
+/** A reminder for a drop, a sale or another window: a managed event type distinct from outfit delivery. */
+export const ReminderSet = z.object({
+  reminderId: Id.optional(),
+  kind: z.enum(["drop", "sale_window", "restock", "other"]),
+  title: z.string().min(1).max(200),
+  dueAt: Instant,
+  note: z.string().max(1000).nullable().default(null),
+  url: z.string().url().nullable().default(null),
+  /** Also remind this many minutes before the time (0 = at the time). */
+  leadMinutes: z.array(z.number().int().nonnegative()).max(4).default([0]),
+});
+export const ReminderCancel = z.object({ reminderId: Id });
+
+export const Reminder = z.object({
+  reminderId: z.string(),
+  version: z.number().int().positive(),
+  kind: z.string(),
+  title: z.string(),
+  note: z.string().nullable(),
+  url: z.string().nullable(),
+  dueAt: Instant,
+  status: z.enum(["active", "cancelled"]),
+});
+export type Reminder = z.infer<typeof Reminder>;
+
+/** Progress of a mailbox synchronization: which messages were read (identifiers only) and where the next run starts. */
+export const MailRecordSync = z.object({
+  connectionId: Id,
+  seen: z.array(z.object({ messageId: z.string().min(1).max(200), classified: z.enum(["order", "not_order", "unreadable"]), sentAt: Instant.nullable().default(null) })).max(500),
+  historyId: z.string().max(100).nullable().default(null),
+  backfillFrom: LocalDate.nullable().default(null),
+  backfillTo: LocalDate.nullable().default(null),
+  completion: z.enum(["complete", "partial"]),
+  resume: z.object({ queryIndex: z.number().int().nonnegative(), pageToken: z.string().optional() }).nullable().default(null),
+});
+
+/** Administrative record that an owner's private AI Search instance exists in an environment. */
+export const SearchRecordInstance = z.object({
+  environment: z.string().regex(/^[a-z]+$/),
+  instance: z.string().min(1).max(100),
+  gatewayId: z.string().min(1),
+  created: z.boolean(),
 });
 
 export const ConnectionRecordDiscovery = z.object({
@@ -827,6 +910,8 @@ export const Connection = z.object({
   tools: z.array(z.object({ name: z.string(), description: z.string().nullable(), enabled: z.boolean(), disabledReason: z.string().nullable(), group: z.string().nullable() })),
   enabledGroups: z.array(z.string()),
   lastDiscoveryAt: Instant.nullable(),
+  expectedIssuer: z.string().nullable(),
+  health: z.object({ ok: z.boolean(), checkedAt: Instant, detail: z.string().nullable(), phase: z.string() }).nullable(),
 });
 export type Connection = z.infer<typeof Connection>;
 
@@ -913,6 +998,11 @@ export const ASSISTANT_COMMANDS = {
   "connection.record_discovery": ConnectionRecordDiscovery,
   "connection.set_tool_groups": ConnectionSetToolGroups,
   "connection.set_status": ConnectionSetStatus,
+  "connection.record_health": ConnectionRecordHealth,
+  "reminder.set": ReminderSet,
+  "reminder.cancel": ReminderCancel,
+  "search.record_instance": SearchRecordInstance,
+  "mail.record_sync": MailRecordSync,
   "job.create": JobCreate,
   "job.update": JobUpdate,
 } as const;

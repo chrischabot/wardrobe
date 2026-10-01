@@ -25,12 +25,29 @@ function render(m: CompactionMessage): string {
   for (const p of m.parts) {
     if (p.type === "text" && p.text) lines.push(p.text);
     else if (p.type.startsWith("tool-") || p.toolName) {
-      // Large tool payloads are not replayed into the summary input; their receipts stay in the ledger.
+      // A large tool payload is not replayed into the summary input. The original message keeps it, and the
+      // summary carries a reference the next turn can open with read_message (see archivedPayloads below).
       const name = p.toolName ?? p.type.slice(5);
-      lines.push(`[tool ${name}: ${JSON.stringify(p.output ?? p.input ?? {}).slice(0, 600)}]`);
+      const payload = JSON.stringify(p.output ?? p.input ?? {});
+      lines.push(payload.length > LARGE_PAYLOAD_CHARS ? `[tool ${name}: ${payload.slice(0, 300)} ... (${payload.length} characters, archived in message ${m.id})]` : `[tool ${name}: ${payload}]`);
     }
   }
   return `${m.role === "user" ? "OWNER" : "ASSISTANT"} (${m.id}): ${lines.join("\n")}`;
+}
+
+/** Tool payloads above this size are referenced from the summary instead of being summarized inline. */
+export const LARGE_PAYLOAD_CHARS = 2_000;
+
+function archivedPayloads(messages: CompactionMessage[]): { messageId: string; tool: string; chars: number }[] {
+  const out: { messageId: string; tool: string; chars: number }[] = [];
+  for (const m of messages) {
+    for (const p of m.parts) {
+      if (!(p.type.startsWith("tool-") || p.toolName)) continue;
+      const chars = JSON.stringify(p.output ?? p.input ?? {}).length;
+      if (chars > LARGE_PAYLOAD_CHARS) out.push({ messageId: m.id, tool: p.toolName ?? p.type.slice(5), chars });
+    }
+  }
+  return out;
 }
 
 function hasPendingToolCall(m: CompactionMessage): boolean {
@@ -43,6 +60,9 @@ export interface BuiltCompaction {
   coveredIds: string[];
   summary: string;
   profileId: string;
+  /** Rough token estimate of the covered stretch (characters / 3.5). */
+  coveredTokens: number;
+  archived: { messageId: string; tool: string; chars: number }[];
 }
 
 export async function buildCompaction(input: {
@@ -65,12 +85,14 @@ export async function buildCompaction(input: {
 
   const ids = [...new Set(source.match(ID_PATTERN) ?? [])];
   const urls = [...new Set(source.match(URL_PATTERN) ?? [])].slice(0, 60);
+  const archived = archivedPayloads(covered);
   const appendix = [
+    archived.length > 0 ? `Archived tool results (open one with read_message and its message ID): ${archived.slice(0, 40).map((a) => `${a.tool} in ${a.messageId} (${a.chars} characters)`).join("; ")}` : "",
     ids.length > 0 ? `Record and command IDs referenced in this stretch (exact): ${ids.join(", ")}` : "",
     urls.length > 0 ? `Source links cited in this stretch: ${urls.join(" ")}` : "",
     `This summary covers messages ${covered[0]!.id} to ${covered[covered.length - 1]!.id}. The original messages remain available; committed changes are in the receipts ledger and are never repeated from this summary.`,
   ]
     .filter(Boolean)
     .join("\n");
-  return { fromMessageId: covered[0]!.id, toMessageId: covered[covered.length - 1]!.id, coveredIds: covered.map((m) => m.id), summary: `${body}\n\n${appendix}`, profileId };
+  return { fromMessageId: covered[0]!.id, toMessageId: covered[covered.length - 1]!.id, coveredIds: covered.map((m) => m.id), summary: `${body}\n\n${appendix}`, profileId, coveredTokens: Math.ceil(JSON.stringify(covered).length / 3.5), archived };
 }

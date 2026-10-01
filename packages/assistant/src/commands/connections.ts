@@ -43,8 +43,8 @@ export const connectionRegister = define({
       statements: [
         stmt("DELETE FROM connections WHERE user_id = ? AND namespace = ? AND status = 'revoked'", ctx.userId, p.namespace),
         stmt(
-          "INSERT INTO connections (user_id, connection_id, version, kind, label, endpoint, namespace, secret_ref, scopes_json, status, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, 'registered', ?, ?)",
-          ctx.userId, connectionId, p.kind, p.label, endpoint, p.namespace, p.secretRef, JSON.stringify(p.scopes), ctx.now, ctx.now,
+          "INSERT INTO connections (user_id, connection_id, version, kind, label, endpoint, namespace, secret_ref, scopes_json, expected_issuer, status, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 'registered', ?, ?)",
+          ctx.userId, connectionId, p.kind, p.label, endpoint, p.namespace, p.secretRef, JSON.stringify(p.scopes), p.expectedIssuer, ctx.now, ctx.now,
         ),
       ],
       affected: [{ kind: "connection", id: connectionId, version: 1 }],
@@ -136,6 +136,35 @@ export const connectionSetStatus = define({
   },
 });
 
+/**
+ * A health check result (run before the evening preparation and the morning delivery). A rejected credential
+ * puts the connection into one reconnect state; other functions are unaffected. A healthy check never
+ * reconnects a revoked or signed-out connection: only the owner does that.
+ */
+export const connectionRecordHealth = define({
+  type: "connection.record_health",
+  schema: C["connection.record_health"],
+  class: "system",
+  requiredScope: "write",
+  allowedAuthorizations: ["standing_policy", "system_schedule", "owner_tap", "owner_statement"],
+  async plan(ctx, p) {
+    const row = await first<ConnectionRow>(ctx.db, "SELECT connection_id, version, label, status, tools_json FROM connections WHERE user_id = ? AND connection_id = ?", ctx.userId, p.connectionId);
+    if (!row) throw new CommandError("not_found", `no connection '${p.connectionId}'`);
+    const health = { ok: p.ok, checkedAt: ctx.now, detail: p.detail, phase: p.phase };
+    const needsOwner = p.authFailure && row.status === "connected";
+    return {
+      summary: p.ok ? `${row.label} is healthy` : needsOwner ? `${row.label} needs you to sign in again; other functions keep working` : `${row.label} did not answer${p.detail ? `: ${p.detail}` : ""}`,
+      statements: [
+        stmt("UPDATE connections SET version = version + 1, health_json = ?, status = ?, status_reason = ?, updated_at = ? WHERE user_id = ? AND connection_id = ?", JSON.stringify(health), needsOwner ? "needs_reauthorization" : row.status, needsOwner ? "the service rejected the stored authorization" : null, ctx.now, ctx.userId, p.connectionId),
+      ],
+      preconditions: [unchanged(ctx.userId, row)],
+      affected: [{ kind: "connection", id: p.connectionId, version: row.version + 1 }],
+      result: { connectionId: p.connectionId, ok: p.ok, status: needsOwner ? "needs_reauthorization" : row.status },
+      undo: NO_UNDO("a health record is superseded by the next check"),
+    };
+  },
+});
+
 /* ------------------------------------------------------------------ */
 /* Background jobs                                                      */
 /* ------------------------------------------------------------------ */
@@ -213,5 +242,5 @@ export const jobUpdate = define({
   },
 });
 
-export const connectionHandlers = [connectionRegister, connectionRecordDiscovery, connectionSetToolGroups, connectionSetStatus];
+export const connectionHandlers = [connectionRegister, connectionRecordDiscovery, connectionSetToolGroups, connectionSetStatus, connectionRecordHealth];
 export const jobHandlers = [jobCreate, jobUpdate];

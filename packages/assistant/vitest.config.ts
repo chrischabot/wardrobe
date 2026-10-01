@@ -13,7 +13,12 @@ export default defineConfig(async () => ({
         durableObjects: {
           ASSISTANT: { className: "TestAssistant", useSQLite: true },
         },
+        // Photo intake tests upload through the REAL media package: local R2 and a local queue producer.
+        r2Buckets: ["MEDIA_BUCKET"],
+        queueProducers: { MEDIA_QUEUE: { queueName: "garderobe-assistant-test-media" } },
       },
+      // Test-only signing value for media upload tokens; deployments provide their own Worker secret.
+      bindings: { MEDIA_SIGNING_KEY: "assistant-test-only-media-signing-value-0001" },
     }),
   ],
   test: {
