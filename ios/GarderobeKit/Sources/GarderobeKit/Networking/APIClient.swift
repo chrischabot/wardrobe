@@ -138,6 +138,14 @@ public final class APIClient: Sendable {
     public func returns() async throws -> ReturnList { try await get("/v1/returns") }
     public func orders() async throws -> OrderList { try await get("/v1/orders") }
     public func projects() async throws -> ProjectList { try await get("/v1/projects") }
+
+    /// Changes a connected assistant proposed and the owner has to decide.
+    public func proposals(_ query: ProposalsQuery = ProposalsQuery()) async throws -> ProposalList {
+        try await get("/v1/proposals", query: APIClient.item("state", query.state?.rawValue))
+    }
+    public func decideProposal(id: String, _ request: ProposalDecisionRequest) async throws -> ProposalDecisionResponse {
+        try await post("/v1/proposals/\(APIClient.segment(id))/decision", body: request)
+    }
     public func feedback(garmentId: String? = nil) async throws -> FeedbackList { try await get("/v1/feedback", query: APIClient.item("garmentId", garmentId)) }
     /// The weather snapshot behind the board's weather line: hourly basis, source and fetch time.
     public func weather(date: LocalDate? = nil) async throws -> WeatherSnapshot { try await get("/v1/weather", query: APIClient.item("date", date)) }
