@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { APP_ORIGIN, ApiClient, newIdentity, provisionOwner, testApp, type TestOwner } from "../src/testing/index.ts";
 import { checkRemoteUrl, redactText, redactUrl } from "../src/connections/endpoints.ts";
 import { connectionAuthorization, googleAccessToken } from "../src/connections/service.ts";
+import { assistantPortsFor } from "../src/lanes/index.ts";
 
 /*
  * Third-party connections through the real Worker. Google's OAuth and Calendar endpoints are the
@@ -117,6 +118,68 @@ describe("a connection with a key", () => {
     const row = await app.db.prepare("SELECT ciphertext FROM connection_credentials WHERE user_id = ? AND connection_id = ?").bind(owner.userId, body.connection.connectionId).first<{ ciphertext: string | null }>();
     expect(row!.ciphertext).toBeNull();
     expect((await app.assistant!.connections(owner.systemPrincipal)).find((c) => c.connectionId === body.connection.connectionId)!.status).toBe("revoked");
+  });
+});
+
+describe("a tool service's capabilities (remote MCP service: LABELLED FIXTURE, not Tavily)", () => {
+  it("records what the service really offers, uses only groups the owner enabled, sends the key only as a header, and stops at disconnect", async () => {
+    const secret = "tvly-FIXTUREKEY-0123456789abcdef";
+    await fixtureCalls();
+    const registered = (await (await register(owner.api, { kind: "tavily", name: "Page search", auth: { type: "secret", secret } })).json()) as any;
+    const id = registered.connection.connectionId as string;
+
+    // Discovery ran against the service: the offered groups are listed, nothing is enabled by default,
+    // and the provider-side research agent is not offered as a capability at all.
+    const capability = Object.fromEntries(registered.connection.capabilities.map((c: any) => [c.key, c]));
+    expect(Object.keys(capability).sort()).toEqual(["tools:extract", "tools:search"]);
+    expect(capability["tools:search"]).toMatchObject({ enabled: false, available: true, effect: "read" });
+    expect(capability["tools:search"].label).toContain("fixture_search");
+    expect(registered.connection.protocol).toBe("2026-07-28");
+    expect(registered.connection.issue).toBeNull();
+    const app = await testApp();
+    const entry = (await app.assistant!.connections(owner.systemPrincipal)).find((c) => c.connectionId === id)!;
+    expect(entry.schemaDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect(entry.tools.find((t) => t.name === "fixture_research")).toMatchObject({ enabled: false });
+    const discovery = (await fixtureCalls()).filter((c) => c.method === "MCP").map((c) => JSON.parse(c.body));
+    expect(discovery.every((c) => c.method === "tools/list" && c.authorized === true)).toBe(true);
+
+    // The assistant's search port: nothing is sent while the owner has not enabled the group.
+    const search = assistantPortsFor(app.env, owner.userId).searchProviders![0]!;
+    await expect(search.search("shetland crewneck")).rejects.toMatchObject({ code: "not_executable" });
+    expect((await fixtureCalls()).map((c) => JSON.parse(c.body)).filter((c) => c.method === "tools/call")).toEqual([]);
+
+    // A capability the service does not offer cannot be switched on.
+    const refused = await owner.api.post(`/v1/connections/${id}/capabilities`, { enabled: ["tools:admin"] });
+    expect(refused.status).toBe(400);
+    expect((await errorOf(refused)).details.allowed.sort()).toEqual(["tools:extract", "tools:search"]);
+
+    const enabled = await owner.api.json("POST", `/v1/connections/${id}/capabilities`, { enabled: ["tools:search"] });
+    expect(Object.fromEntries(enabled.capabilities.map((c: any) => [c.key, c.enabled]))).toEqual({ "tools:search": true, "tools:extract": false });
+    await fixtureCalls();
+    const found = await search.search("shetland crewneck");
+    expect(found.results).toHaveLength(1);
+    expect(found.results[0]!.title).toBe("Shetland crewneck");
+    expect(found.results[0]!.url).not.toContain("LEAKEDKEY123456"); // a key-bearing result URL is redacted
+    const sent = (await fixtureCalls()).map((c) => JSON.parse(c.body)).filter((c) => c.method === "tools/call");
+    expect(sent).toEqual([{ method: "tools/call", tool: "fixture_search", arguments: { query: "shetland crewneck" }, protocol: "2026-07-28", authorized: true }]);
+    expect(JSON.stringify(sent)).not.toContain("tvly-");
+
+    // Another owner's assistant has no such connection: nothing is called and no key is borrowed.
+    await expect(assistantPortsFor(app.env, other.userId).searchProviders![0]!.search("shetland crewneck")).rejects.toMatchObject({ code: "not_executable" });
+    expect(await fixtureCalls()).toEqual([]);
+
+    // Disconnect: the very next search is refused and nothing reaches the service.
+    await owner.api.json("POST", `/v1/connections/${id}/disconnect`, {});
+    await expect(search.search("again")).rejects.toMatchObject({ code: "not_executable" });
+    expect((await fixtureCalls()).filter((c) => c.method === "MCP")).toEqual([]);
+  });
+
+  it("reports a service that cannot be reached as one retry state, enables nothing, and leaves sign-in and the wardrobe working", async () => {
+    const registered = (await (await register(owner.api, { kind: "exa", name: "Unreachable search", auth: { type: "secret", secret: "exa-key-unreachable-1" } })).json()) as any;
+    expect(registered.connection.capabilities).toEqual([]);
+    expect(registered.connection.issue).toMatchObject({ action: "retry" });
+    expect((await owner.api.get("/v1/wardrobe?limit=1")).status).toBe(200);
+    await owner.api.json("POST", `/v1/connections/${registered.connection.connectionId}/disconnect`, {});
   });
 });
 

@@ -60,11 +60,39 @@ const jsonResponse = (body: unknown, status = 200) => new Response(JSON.stringif
  *   - calendar list: a primary calendar and a second one; create: id `outfits-<name>`; get: 200 for an
  *     id starting with `outfits-`, else 404.
  *   - `GET /__calls` returns (and clears) the log of requests received, so a test can assert what was sent.
- * Every other host answers 503 `outbound network is disabled in tests`: weather and remote MCP servers
- * are therefore reported by the application as unavailable, which is the real behaviour for an outage.
+ *
+ * `https://mcp.tavily.com/mcp` is a LABELLED STAND-IN for a remote MCP tool service (it is not Tavily and
+ * proves nothing about Tavily's real tools or responses): it speaks JSON-RPC, requires a bearer key that
+ * starts with `tvly-`, lists a search tool, an extract tool and a provider-side research agent, answers
+ * `fixture_search` with one result whose URL carries a key (to prove redaction), and logs every request
+ * (method, tool, arguments, protocol header, whether the key was present) to the same `/__calls` log.
+ * Every other host answers 503 `outbound network is disabled in tests`: weather and other remote MCP
+ * servers are therefore reported by the application as unavailable, which is the real behaviour for an outage.
  */
+export const MCP_FIXTURE_URL = "https://mcp.tavily.com/mcp";
+const MCP_FIXTURE_TOOLS = [
+  { name: "fixture_search", description: "Search the web for pages.", inputSchema: { type: "object", properties: { query: { type: "string" }, include_answer: { type: "boolean" } }, required: ["query"] } },
+  { name: "fixture_extract", description: "Extract the content of pages.", inputSchema: { type: "object", properties: { urls: { type: "array", items: { type: "string" } }, extract_depth: { type: "string" } }, required: ["urls"] } },
+  { name: "fixture_research", description: "A deep research agent that writes a report.", inputSchema: { type: "object", properties: { input: { type: "string" } } } },
+];
+
+async function mcpFixture(request: Request): Promise<Response> {
+  const text = await request.text();
+  const body = JSON.parse(text) as { id?: number; method: string; params?: { name?: string; arguments?: Record<string, unknown> } };
+  const authorized = (request.headers.get("Authorization") ?? "").startsWith("Bearer tvly-");
+  calls.push({ method: "MCP", url: request.url, body: JSON.stringify({ method: body.method, tool: body.params?.name ?? null, arguments: body.params?.arguments ?? null, protocol: request.headers.get("Mcp-Protocol-Version"), authorized }) });
+  if (!authorized) return jsonResponse({ error: "unauthorized" }, 401);
+  const reply = (result: unknown) => jsonResponse({ jsonrpc: "2.0", id: body.id, result });
+  if (body.method === "tools/list") return reply({ tools: MCP_FIXTURE_TOOLS });
+  if (body.method === "tools/call" && body.params?.name === "fixture_search") {
+    return reply({ content: [{ type: "text", text: JSON.stringify({ results: [{ url: "https://shop.example.com/crewneck?api_key=LEAKEDKEY123456", title: "Shetland crewneck", content: `Fixture result for ${String(body.params.arguments?.query)}` }] }) }] });
+  }
+  return jsonResponse({ jsonrpc: "2.0", id: body.id, error: { code: -32601, message: "not part of the fixture" } });
+}
+
 export async function fixtureOutbound(request: Request): Promise<Response> {
   const url = new URL(request.url);
+  if (url.origin + url.pathname === MCP_FIXTURE_URL && request.method === "POST") return mcpFixture(request);
   if (url.origin !== GOOGLE_FIXTURE_ORIGIN) return jsonResponse({ error: "outbound network is disabled in tests", host: url.host }, 503);
   if (url.pathname === "/__calls") return jsonResponse(calls.splice(0, calls.length));
   const body = request.method === "GET" ? "" : await request.text();

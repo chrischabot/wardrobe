@@ -105,6 +105,9 @@ export function guardedFetch(inner: typeof fetch = fetch): typeof fetch {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const check = checkRemoteUrl(url, { allowQuery: true });
     if (!check.ok) throw new ApiException("invalid_command", MESSAGES[check.reason!] ?? "that address is not allowed", { reason: check.reason });
-    return inner(input as RequestInfo, { ...init, redirect: "error" });
+    // The Workers runtime accepts only "follow" and "manual"; a redirect is refused here instead of followed.
+    const response = await inner(input as RequestInfo, { ...init, redirect: "manual" });
+    if (response.status >= 300 && response.status < 400) throw new Error("the service answered with a redirect, which is not followed");
+    return response;
   }) as typeof fetch;
 }

@@ -18,7 +18,8 @@ import {
   weatherForecast,
   type DailyDeps,
 } from "@garderobe/daily";
-import { getSettings, localDateOf } from "@garderobe/domain";
+import { createCompositionModel, createGatewayModelService, listComfortFeedback } from "@garderobe/assistant";
+import { getSettings, localDateOf, type Principal } from "@garderobe/domain";
 import { googleAccessToken } from "../connections/service.ts";
 import { ApiException } from "../errors.ts";
 import type { DailyPort } from "../ports.ts";
@@ -28,6 +29,14 @@ import type { LaneContext } from "./index.ts";
  * The daily service, mounted. Weather comes from Open-Meteo; Calendar reading and writing use the
  * owner's Google connection through this workstream's credential vault, each with its own capability
  * (a missing or revoked grant yields `null`, which the daily service reports as "not connected").
+ *
+ * Composition: a request made for one owner (a recommendation, a packing proposal, the replenishment
+ * after that owner's command) uses the assistant workstream's composition model through AI Gateway,
+ * budgeted to that owner; it yields no candidates on budget exhaustion, outage or when no model profile
+ * has passed its probes, and the daily service's deterministic composer then fills the board. The
+ * scheduled sweep covers every owner with one set of dependencies and the composition request does not
+ * name its owner, so scheduled preparation uses the deterministic composer (spend is never attributed
+ * to the wrong owner). The owner's comfort observations are read from the assistant's store.
  */
 export function createDailyPort(ctx: LaneContext): DailyPort {
   const { env, db } = ctx;
@@ -35,19 +44,32 @@ export function createDailyPort(ctx: LaneContext): DailyPort {
   const calendarBase = env.GOOGLE_API_BASE_URL ? `${env.GOOGLE_API_BASE_URL.replace(/\/+$/, "")}/calendar/v3` : undefined;
   const reader = createGoogleCalendar({ fetch: outbound, getAccessToken: (userId) => googleAccessToken(env, db, userId, "calendar.read", ctx.now()), ...(calendarBase ? { baseUrl: calendarBase } : {}) });
   const writer = createGoogleCalendar({ fetch: outbound, getAccessToken: (userId) => googleAccessToken(env, db, userId, "calendar.write_outfit_calendar", ctx.now()), ...(calendarBase ? { baseUrl: calendarBase } : {}) });
-  const deps: DailyDeps = {
+  const shared: DailyDeps = {
     db,
     commands: ctx.service,
     clock: ctx.now,
     weather: { provider: createOpenMeteoProvider({ fetch: outbound, now: ctx.now }), geocoder: createOpenMeteoGeocoder({ fetch: outbound }) },
     calendar: { reader, writer },
     model: null,
+    comfort: (principal) => listComfortFeedback(db, principal) as never,
   };
+  const deps = shared;
+  const modelFor = (principal: Principal): DailyDeps["model"] => {
+    if (!env.AI || !env.AI_GATEWAY_ID) return null;
+    try {
+      return createCompositionModel(createGatewayModelService({ DB: env.DB, AI: env.AI as never, AI_GATEWAY_ID: env.AI_GATEWAY_ID, ENVIRONMENT: env.ENVIRONMENT }, ctx.service, ctx.now), { userId: principal.userId }) as never;
+    } catch (error) {
+      // A gateway that is not one of this deployment's is a configuration error, not a reason to fail the request.
+      console.warn("composition model unavailable", String((error as Error)?.message ?? error));
+      return null;
+    }
+  };
+  const depsFor = (principal: Principal): DailyDeps => ({ ...shared, model: modelFor(principal) });
   return {
     register: registerDaily,
     today: (principal, query) => getToday(db, principal, { ...(query.date ? { date: query.date } : {}), ...(query.scope ? { scope: query.scope } : {}), nowMs: ctx.now() }),
     recommend: async (principal, input) => {
-      const result = await recommend(deps, principal, {
+      const result = await recommend(depsFor(principal), principal, {
         clientRequestId: input.clientRequestId,
         ...(input.date ? { date: input.date } : {}),
         ...(input.brief ? { brief: { text: input.brief } } : {}),
@@ -65,7 +87,7 @@ export function createDailyPort(ctx: LaneContext): DailyPort {
       return trip;
     },
     pause: (principal) => getPauseState(db, principal),
-    proposePacking: (principal, input) => proposePacking(deps, principal, input),
+    proposePacking: (principal, input) => proposePacking(depsFor(principal), principal, input),
     temperaturePreview: (principal, temperatureC) => temperaturePreview(db, principal, { temperatureC, nowMs: ctx.now() }),
     weather: async (principal, date) => {
       const localDate = date ?? localDateOf(ctx.now(), (await getSettings(db, principal)).settings.timezone);
@@ -73,7 +95,7 @@ export function createDailyPort(ctx: LaneContext): DailyPort {
     },
     boardHtml: (principal, input) => renderBoardHtml(db, principal, { ...(input.date ? { date: input.date } : {}), baseUrl: input.baseUrl, nowMs: ctx.now() }),
     afterCommit: async (principal) => {
-      if (principal.scopes.includes("write") || principal.scopes.includes("admin")) await replenishBoards(deps, principal, { nowMs: ctx.now() });
+      if (principal.scopes.includes("write") || principal.scopes.includes("admin")) await replenishBoards(depsFor(principal), principal, { nowMs: ctx.now() });
     },
     scheduled: (nowMs) => runDueJobs(deps, { nowMs }),
     exportData: (principal) => exportDailyData(db, principal),

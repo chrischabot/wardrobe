@@ -3,6 +3,8 @@ import { outfitValidator, registerDaily, validateOutfit } from "@garderobe/daily
 import { CommandError, createFoundationRegistry, type CommandRegistry, type CommandService, type Db } from "@garderobe/domain";
 import { depsFromBindings, registerMedia, type MediaDeps } from "@garderobe/media";
 import type { Env } from "../env.ts";
+import { connectionAuthorization } from "../connections/service.ts";
+import { outboundPorts } from "../connections/outbound.ts";
 import type { AssistantPort, DailyPort, MediaPort } from "../ports.ts";
 import { createAssistantPort } from "./assistant.ts";
 import { createDailyPort } from "./daily.ts";
@@ -66,14 +68,20 @@ export function composedRegistry(): CommandRegistry {
   return registry;
 }
 
-// The conversation actor executes its commands on the same composed registry and may validate outfits
-// with the daily service and search the owner's own AI Search instance.
+// The conversation actor executes its commands on the same composed registry, may validate outfits with
+// the daily service, search the owner's own AI Search instance, and search or read the web through the
+// owner's connected tool services (credentials are resolved per connection at dispatch time).
+export function assistantPortsFor(env: Env, userId: string) {
+  return {
+    validateOutfit: validateOutfit as never,
+    searchIndex: env.AI_SEARCH ? new AiSearchIndex(env.AI_SEARCH as never, env.ENVIRONMENT ?? "dev", userId) : null,
+    ...outboundPorts({ db: env.DB, userId, now: () => Date.now(), authorizeFor: (connectionId) => () => connectionAuthorization(env, env.DB, userId, `cred_${connectionId}`) }),
+  };
+}
+
 configureAssistant({
   registry: composedRegistry,
-  ports: (env, userId) => ({
-    validateOutfit: validateOutfit as never,
-    searchIndex: env.AI_SEARCH ? new AiSearchIndex(env.AI_SEARCH, env.ENVIRONMENT ?? "dev", userId) : null,
-  }),
+  ports: (env, userId) => assistantPortsFor(env as unknown as Env, userId),
 });
 
 /** Ports to the mounted modules. A module whose bindings are absent is reported as unavailable, never faked. */

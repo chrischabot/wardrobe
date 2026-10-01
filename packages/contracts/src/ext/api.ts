@@ -107,6 +107,7 @@ export const API_ROUTES: readonly RouteSpec[] = [
   r("GET", "/v1/runs/{id}", "access", "read", null, "Run", "Durable progress or result"),
   r("GET", "/v1/runs/{id}/events", "access", "read", "RunEventsQuery", "RunEvent (text/event-stream)", "Server-sent events with ordered event IDs"),
   r("POST", "/v1/runs/{id}/cancel", "access", "write", null, "RunCancelResponse", "Cancel remaining work; returns committed effects and what was stopped"),
+  r("POST", "/v1/runs/{id}/resume", "access", "write", null, "Run", "Run again a run that failed with error.resumable = true (budget, no usable model, provider outage); committed changes are not repeated"),
   r("POST", "/v1/runs/{id}/input", "access", "write", "RunInputRequest", "Run", "Answer a needs_input request (same pending-action record as MCP input_required)"),
   // Media
   r("POST", "/v1/uploads", "access", "write", "UploadRequest", "UploadAuthorizationResponse", "Authorize a bounded media upload"),
@@ -1003,7 +1004,7 @@ export const McpResearchOutput = z.object({ runId: z.string(), state: RunState, 
 
 export const McpRunInput = z.strictObject({
   runId: z.string(),
-  action: z.enum(["status", "respond", "cancel"]).default("status"),
+  action: z.enum(["status", "respond", "cancel", "resume"]).default("status"),
   inputId: z.string().optional(),
   choiceId: z.string().optional(),
   text: z.string().max(4000).optional(),

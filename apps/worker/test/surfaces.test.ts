@@ -219,6 +219,11 @@ describe("Conversation", () => {
     expect((await stranger.api.get(`/v1/runs/${accepted.runId}`)).status).toBe(404);
     expect((await stranger.api.get(`/v1/runs/${accepted.runId}/events`)).status).toBe(404);
     expect((await stranger.api.post(`/v1/runs/${accepted.runId}/cancel`)).status).toBe(404);
+    expect((await stranger.api.post(`/v1/runs/${accepted.runId}/resume`)).status).toBe(404);
+    // Resuming a run that already finished changes nothing: the same settled run, no second reply.
+    const resumedRun = await owner.api.json("POST", `/v1/runs/${accepted.runId}/resume`);
+    expect(resumedRun.state).toBe("completed");
+    expect(resumedRun.lastEventId).toBe(ids.at(-1));
     expect((await stranger.api.json("GET", "/v1/conversation/messages")).messages).toEqual([]);
   });
 

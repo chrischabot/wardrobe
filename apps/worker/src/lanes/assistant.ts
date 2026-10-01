@@ -10,6 +10,8 @@ import {
   listOrders,
   listReturnCases,
   registerAssistant,
+  runAssistantMaintenance,
+  AiSearchIndex,
   SubmissionReuseError,
 } from "@garderobe/assistant";
 import type { Principal } from "@garderobe/domain";
@@ -150,6 +152,20 @@ export function createAssistantPort(ctx: LaneContext): AssistantPort {
       return { run, stopped };
     },
     answerInput: async (principal, runId, answer) => runOf(principal, await guard(() => client(principal).answerClarification(runId, answer))),
+    resumeRun: async (principal, runId) => {
+      const record = await guard(() => client(principal).resumeTurn(runId));
+      if (!record) throw new ApiException("not_found", "that run was not found");
+      return runOf(principal, record);
+    },
+    maintenance: (nowMs) =>
+      runAssistantMaintenance({
+        db,
+        service: ctx.service,
+        env: { ASSISTANT: env.ASSISTANT as never },
+        gatewayId: env.AI_GATEWAY_ID ?? "unconfigured",
+        nowMs,
+        searchIndexFor: (userId) => (env.AI_SEARCH ? new AiSearchIndex(env.AI_SEARCH as never, env.ENVIRONMENT ?? "dev", userId) : null),
+      }),
     transcript: (principal, query) => guard(() => client(principal).transcript(query)),
     recall: (principal, query) => guard(() => client(principal).recallSearch(query as never)),
     startResearch: async (principal, request) => {

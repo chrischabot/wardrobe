@@ -76,6 +76,10 @@ export interface AssistantPort {
   runEvents(principal: Principal, runId: string, afterEventId: number): Promise<{ events: ApiRunEvent[]; expired: boolean }>;
   cancelRun(principal: Principal, runId: string): Promise<{ run: ApiRun; stopped: string[] }>;
   answerInput(principal: Principal, runId: string, input: { inputId: string; choiceId?: string; text?: string }): Promise<ApiRun>;
+  /** Run again a turn that stopped for a resumable reason (budget, no usable model, provider outage). */
+  resumeRun(principal: Principal, runId: string): Promise<ApiRun>;
+  /** Background duties: deliver finished jobs, complete erasures, catch up the recall and search indexes. */
+  maintenance(nowMs: number): Promise<unknown>;
   transcript(principal: Principal, query: { before?: string; after?: string; around?: string; limit: number }): Promise<TranscriptPage>;
   recall(principal: Principal, query: RecallQuery): Promise<RecallResult>;
   startResearch(principal: Principal, input: { submissionId: string; topic: string; kind: "product" | "history" | "purchases" | "general"; url?: string }): Promise<{ runId: string; state: ApiRunState; replayed: boolean }>;

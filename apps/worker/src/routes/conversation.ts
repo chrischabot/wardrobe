@@ -7,7 +7,7 @@ import { ApiException } from "../errors.ts";
 import { json, readJson, readQuery } from "../http.ts";
 import type { TurnSubmission } from "../ports.ts";
 import { owner, type RouteDef } from "../router.ts";
-import { answerRunInput, cancelRun, getRun, registerAssistantRun, streamRunEvents } from "../runs.ts";
+import { answerRunInput, cancelRun, getRun, registerAssistantRun, resumeRun, streamRunEvents } from "../runs.ts";
 
 type Ref = z.infer<typeof AttachedRef>;
 
@@ -96,6 +96,8 @@ export function conversationRoutes(): RouteDef[] {
       const result = await cancelRun(app, session.principal, params.id!);
       return json({ run: result.run, committed: result.run.receipts, stopped: result.stopped });
     }),
+
+    owner("POST", "/v1/runs/{id}/resume", "write", async ({ app, session, params }) => json(await resumeRun(app, session.principal, params.id!))),
 
     owner("POST", "/v1/runs/{id}/input", "write", async ({ app, session, params, request }) => json(await answerRunInput(app, session.principal, params.id!, await readJson(request, RunInputRequest)))),
   ];

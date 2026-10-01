@@ -35,7 +35,7 @@ import type { ApiRun } from "../ports.ts";
 import { startResearch, submitTurn, toSubmission } from "../routes/conversation.ts";
 import { describeCommandTypes, executeCommand, isConsequential, listReceipts, readItem } from "../routes/core.ts";
 import { readToday, runRecommendation } from "../routes/daily.ts";
-import { answerRunInput, cancelRun, getRun, registerAssistantRun } from "../runs.ts";
+import { answerRunInput, cancelRun, getRun, registerAssistantRun, resumeRun } from "../runs.ts";
 
 /** Who is calling, established by the OAuth grant before any tool runs. */
 export interface McpCaller {
@@ -373,6 +373,10 @@ export function buildMcpServer(app: App, caller: McpCaller): McpServer {
         if (args.action === "cancel") {
           const result = await cancelRun(app, principal, args.runId);
           return ok({ run: result.run, stopped: result.stopped }, `Run ${args.runId} is ${result.run.state}. ${result.stopped.join(" ")}`);
+        }
+        if (args.action === "resume") {
+          const run = await resumeRun(app, principal, args.runId);
+          return ok({ run, stopped: [] }, `Run ${args.runId} is ${run.state}.`);
         }
         if (args.action === "respond") {
           if (!args.inputId) throw new ApiException("invalid_command", "action 'respond' needs inputId");

@@ -8,6 +8,8 @@ import { codeHash, randomBytes, randomToken, seal, sha256Hex, toBase64Url, unsea
 import type { Env } from "../env.ts";
 import { ApiException } from "../errors.ts";
 import { assertRemoteUrl, guardedFetch, redactText, redactUrl } from "./endpoints.ts";
+import { describeTools, discoverRemoteTools, forgetTools, GROUP_LABELS, protocolLabel } from "./outbound.ts";
+import { research } from "@garderobe/assistant";
 
 type Connection = z.infer<typeof ApiConnection>;
 type Capability = z.infer<typeof ConnectionCapability>;
@@ -15,6 +17,7 @@ type RegisterInput = z.output<typeof RegisterConnectionRequest>;
 type GoogleCapability = (typeof GOOGLE_CAPABILITIES)[number];
 
 const OAUTH_STATE_TTL_MS = 10 * 60_000;
+const DISCOVERY_RETRY_MS = 5 * 60_000;
 
 /**
  * Capability -> provider scopes (the narrowest that work). Reading uses the event and calendar-list
@@ -184,8 +187,10 @@ async function syncToAssistant(app: App, principal: Principal, profile: ProfileR
     entries.push({ connectionId: profile.connection_id, kind: profile.kind, label: profile.name, endpoint: profile.endpoint, namespace: profile.namespace, scopes: capabilities.filter((c) => c.enabled).map((c) => c.key) });
   }
   const stamp = `${profile.version}`;
+  // The registry keeps one live entry per connection; registering is only for an entry it does not have.
+  const live = new Set((await app.assistant!.connections(principal)).filter((c) => c.status !== "revoked").map((c) => c.connectionId));
   for (const entry of entries) {
-    if (status === "connected") {
+    if (status === "connected" && !live.has(entry.connectionId)) {
       await assistantCommand(app, principal, "connection.register", { ...entry, secretRef: profile.auth_type === "none" ? null : secretRefOf(profile.connection_id) }, `connection:${entry.connectionId}:register:${await sha256Hex(JSON.stringify(entry))}`);
     }
     try {
@@ -367,9 +372,47 @@ export async function registerConnection(app: App, session: OwnerSession, input:
     audit.statement,
   );
   await db.batch(statements.map((s) => prepare(db, s)));
-  const profile = await loadProfile(db, userId, connectionId);
   await reconcileRegistry(app, session.principal);
-  return { connection: toConnection(profile), authorizationUrl, replayed: false };
+  return { connection: toConnection(await loadProfile(db, userId, connectionId)), authorizationUrl, replayed: false };
+}
+
+/**
+ * Ask a connected tool service what it offers and record exactly that: the assistant's registry gets
+ * the discovered tools with the digest of their real schemas, and the connection's capabilities become
+ * the discovered tool groups. A group the owner has not chosen stays off. Returns false when the service
+ * could not be reached, which is reported on the connection and tried again on the next request.
+ */
+async function discoverCapabilities(app: App, principal: Principal, profile: ProfileRow): Promise<boolean> {
+  const { db } = app;
+  const userId = principal.userId;
+  const now = toInstant(app.now());
+  forgetTools(userId, profile.connection_id);
+  try {
+    const found = await discoverRemoteTools(profile.endpoint!, profile.protocol, () => connectionAuthorization(app.env, db, userId, secretRefOf(profile.connection_id), app.now()), profile.auth_type !== "none");
+    const described = describeTools(found.tools);
+    const digest = await research.computeSchemaDigest(found.tools);
+    await assistantCommand(app, principal, "connection.record_discovery", { connectionId: profile.connection_id, protocolVersion: found.protocol, schemaDigest: digest, tools: described }, `connection:${profile.connection_id}:discovery:${digest}:${profile.version}`);
+    const current = parseJson<Capability[]>(profile.capabilities_json, []);
+    const capabilities: Capability[] = [...new Set(described.filter((t) => t.enabled).map((t) => t.group))].map((group) => {
+      const key = `tools:${group}`;
+      const names = described.filter((t) => t.enabled && t.group === group).map((t) => t.name);
+      // What a tool outside the known read-only groups does is not known, so it is shown as able to change things.
+      return { key, label: `${GROUP_LABELS[group] ?? group} (${names.join(", ")})`.slice(0, 200), effect: group === "other" ? ("write" as const) : ("read" as const), enabled: current.find((c) => c.key === key)?.enabled ?? false, available: true };
+    });
+    for (const c of current) if (!capabilities.some((k) => k.key === c.key)) capabilities.push({ ...c, available: false });
+    await prepare(db, profileUpdate(userId, profile.connection_id, { capabilities, protocol: protocolLabel(found.protocol), issue: null, lastSuccessAt: now }, now)).run();
+    // The owner's earlier choice of groups is applied to what was discovered now.
+    const offered = new Set(described.map((t) => t.group));
+    const enabledGroups = capabilities.filter((c) => c.enabled && c.available).map((c) => c.key.replace(/^tools:/, "")).filter((g) => offered.has(g));
+    await assistantCommand(app, principal, "connection.set_tool_groups", { connectionId: profile.connection_id, enabledGroups }, `connection:${profile.connection_id}:groups:${digest}:${profile.version}`);
+    return true;
+  } catch (error) {
+    console.warn("connection discovery failed", redactText(String((error as Error)?.message ?? error)));
+    // Recorded without advancing the version, so the next request tries again.
+    const issue: Connection["issue"] = { at: now, capability: null, message: `${profile.name} could not be reached to list its tools. Nothing from it is used until it answers.`, action: "retry" };
+    await prepare(db, stmt("UPDATE connection_profiles SET issue_json = ?, last_checked_at = ? WHERE user_id = ? AND connection_id = ?", JSON.stringify(issue), now, userId, profile.connection_id)).run();
+    return false;
+  }
 }
 
 /**
@@ -384,10 +427,21 @@ export async function reconcileRegistry(app: App, principal: Principal): Promise
   const rows = await all<ProfileRow>(app.db, `SELECT ${PROFILE_COLUMNS} FROM connection_profiles WHERE user_id = ? AND mirrored_version != version AND state != 'pending_authorization'`, principal.userId);
   for (const profile of rows) {
     try {
-      if (profile.state === "connected") await syncToAssistant(app, principal, profile, "connected", null);
-      else if (profile.state === "disconnected") await syncToAssistant(app, principal, profile, "revoked", "owner_disconnect");
-      else await syncToAssistant(app, principal, profile, "needs_reauthorization", parseJson<{ message?: string } | null>(profile.issue_json, null)?.message ?? null);
-      await prepare(app.db, stmt("UPDATE connection_profiles SET mirrored_version = ? WHERE user_id = ? AND connection_id = ? AND version = ?", profile.version, principal.userId, profile.connection_id, profile.version)).run();
+      let version = profile.version;
+      if (profile.state === "connected") {
+        // A service that did not answer is asked again at most every five minutes, not on every request.
+        const waiting = parseJson<{ action?: string } | null>(profile.issue_json, null)?.action === "retry" && profile.last_checked_at !== null && app.now() - Date.parse(profile.last_checked_at) < DISCOVERY_RETRY_MS;
+        if (waiting) continue;
+        await syncToAssistant(app, principal, profile, "connected", null);
+        if (profile.kind !== "google_workspace" && profile.endpoint) {
+          if (!(await discoverCapabilities(app, principal, profile))) continue;
+          version = (await loadProfile(app.db, principal.userId, profile.connection_id)).version;
+        }
+      } else if (profile.state === "disconnected") {
+        forgetTools(principal.userId, profile.connection_id);
+        await syncToAssistant(app, principal, profile, "revoked", "owner_disconnect");
+      } else await syncToAssistant(app, principal, profile, "needs_reauthorization", parseJson<{ message?: string } | null>(profile.issue_json, null)?.message ?? null);
+      await prepare(app.db, stmt("UPDATE connection_profiles SET mirrored_version = ? WHERE user_id = ? AND connection_id = ? AND version = ?", version, principal.userId, profile.connection_id, version)).run();
     } catch (error) {
       console.warn("connection registry mirror failed", redactText(String((error as Error)?.message ?? error)));
     }
@@ -543,19 +597,16 @@ export async function setCapabilities(app: App, session: OwnerSession, connectio
       issue = { at: now, capability: missing.key, message: `"${missing.label}" needs your permission in Google. Reconnect to allow it.`, action: "reconnect" };
     }
   } else {
-    capabilities = input.enabled.map((key) => current.find((c) => c.key === key) ?? { key, label: key, effect: "read" as const, enabled: true, available: true }).map((c) => ({ ...c, enabled: true }));
-    for (const c of current) if (!input.enabled.includes(c.key)) capabilities.push({ ...c, enabled: false });
+    // Only tool groups the service was actually found to offer can be chosen.
+    const unknown = input.enabled.filter((key) => !current.some((c) => c.key === key && c.available));
+    if (unknown.length > 0) throw new ApiException("invalid_command", "this connection does not offer that capability", { unknown, allowed: current.filter((c) => c.available).map((c) => c.key) });
+    capabilities = current.map((c) => ({ ...c, enabled: input.enabled.includes(c.key) }));
   }
   const audit = await auditStatement({ userId: session.userId, kind: "connection.capabilities", outcome: "ok", identity: session.identity, channel: session.principal.channel, detail: { connectionId, enabled: input.enabled }, nowMs: app.now() });
   await app.db.batch([profileUpdate(session.userId, connectionId, { capabilities, state, issue }, now), audit.statement].map((s) => prepare(app.db, s)));
-  const updated = await loadProfile(app.db, session.userId, connectionId);
-  if (updated.kind !== "google_workspace") {
-    await assistantCommand(app, session.principal, "connection.set_tool_groups", { connectionId, enabledGroups: input.enabled.map((k) => k.replace(/^tools:/, "")) }, `connection:${connectionId}:groups:${updated.version}`).catch((error) => {
-      console.warn("tool group mirror failed", redactText(String((error as Error)?.message ?? error)));
-    });
-  }
+  // Rediscovery (below) applies the chosen groups to the assistant's registry and checks they are still offered.
   await reconcileRegistry(app, session.principal);
-  return toConnection(updated);
+  return toConnection(await loadProfile(app.db, session.userId, connectionId));
 }
 
 /**

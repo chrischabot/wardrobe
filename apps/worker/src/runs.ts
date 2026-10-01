@@ -208,6 +208,13 @@ export async function cancelRun(app: App, principal: Principal, runId: string): 
   return { run: rowToRun(await loadRow(app.db, principal.userId, runId)), stopped: [`The ${row.kind} was stopped before it finished.`] };
 }
 
+export async function resumeRun(app: App, principal: Principal, runId: string): Promise<ApiRun> {
+  const row = await loadRow(app.db, principal.userId, runId);
+  if (row.provider !== "assistant") throw new ApiException("precondition_failed", "this run cannot be resumed; start it again");
+  const run = await requireAssistant(app, "conversation runs").resumeRun(principal, runId);
+  return { ...run, kind: row.kind };
+}
+
 export async function answerRunInput(app: App, principal: Principal, runId: string, input: { inputId: string; choiceId?: string; text?: string }): Promise<ApiRun> {
   const row = await loadRow(app.db, principal.userId, runId);
   if (row.provider !== "assistant") throw new ApiException("precondition_failed", "this run is not waiting for input");

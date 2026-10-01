@@ -49,13 +49,14 @@ export default {
     return oauthProviderFor(env, applicationFetch).fetch(request, env, ctx);
   },
 
-  /** Cron: the daily service's due phases and calendar projections, media maintenance, and expiry sweeps. */
+  /** Cron: the daily service's due phases and calendar projections, media and assistant maintenance, and expiry sweeps. */
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     const app = appFor(env);
     const nowMs = app.now();
     const jobs: Promise<unknown>[] = [sweepExpired(app, nowMs), oauthProviderFor(env, applicationFetch).purgeExpiredData(env)];
     if (app.daily) jobs.push(app.daily.scheduled(nowMs));
     if (app.media) jobs.push(app.media.scheduled(nowMs));
+    if (app.assistant) jobs.push(app.assistant.maintenance(nowMs));
     ctx.waitUntil(
       Promise.allSettled(jobs).then((results) => {
         for (const r of results) if (r.status === "rejected") console.error("scheduled work failed", String((r.reason as Error)?.message ?? r.reason));
