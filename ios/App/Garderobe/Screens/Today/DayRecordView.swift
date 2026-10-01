@@ -57,38 +57,80 @@ struct DayRecordView: View {
             .secondaryAction()
             .controlSize(.large)
             .disabled(today.isSubmitting)
-            if today.runId != nil {
-                Label("Your request is being prepared.", systemImage: "hourglass").font(.subheadline)
-            }
+            anotherStatus
             if let note = today.extraNote {
                 Text(note).font(.subheadline)
             }
-            ForEach(today.extraOptions) { option in extra(option) }
+            ForEach(today.extraPresentations) { option in extra(option) }
+            if !today.extraPresentations.isEmpty {
+                Button("Put these away") { today.dismissAnother() }
+                    .touchTarget()
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .task { await today.resumeAnother() }
+    }
+
+    /// Where the request stands. Being prepared is never worded as done.
+    @ViewBuilder private var anotherStatus: some View {
+        switch app.today.anotherState {
+        case .idle, .ready:
+            EmptyView()
+        case .preparing(let activity):
+            Label(activity ?? "Your request is being prepared.", systemImage: "hourglass").font(.subheadline)
+        case .failed(let message):
+            Label(message, systemImage: "exclamationmark.triangle").font(.subheadline)
+        case .connectionLost:
+            VStack(alignment: .leading, spacing: Metrics.unit * 2) {
+                Label("The connection was lost. Your request is still being prepared.", systemImage: "wifi.slash").font(.subheadline)
+                Button("Check again") { Task { await app.today.resumeAnother() } }.touchTarget()
+            }
+        }
     }
 
     /// An outfit returned by the explicit request. Shown beside the record, never merged into it.
-    private func extra(_ option: BoardOption) -> some View {
+    private func extra(_ option: OptionPresentation) -> some View {
         VStack(alignment: .leading, spacing: Metrics.unit * 4) {
-            OutfitComposition(garments: option.garments, label: "\(option.name). \(Phrases.list(option.garments.map(\.name))). \(option.reason)")
-            Text(option.name).font(.title3.weight(.semibold)).accessibilityAddTraits(.isHeader)
-            Text(option.reason)
+            OutfitComposition(garments: option.visibleGarments, label: option.accessibilityLabel)
+            Text(option.option.name).font(.title3.weight(.semibold)).accessibilityAddTraits(.isHeader)
+            Text(option.option.reason)
             VStack(alignment: .leading, spacing: Metrics.unit * 3) {
-                ForEach(option.garments) { line in Text(line.name).font(.body) }
+                ForEach(option.visibleGarments) { line in Text(line.name).font(.body) }
             }
-            if let qualification = option.qualification {
+            if let qualification = option.option.qualification {
                 Label(qualification, systemImage: "info.circle").font(.subheadline).foregroundStyle(.secondary)
             }
+            if !option.footwearChoices.isEmpty {
+                VStack(alignment: .leading, spacing: Metrics.unit) {
+                    Text("Shoes").font(.subheadline).foregroundStyle(.secondary)
+                    ForEach(option.footwearChoices) { choice in
+                        let selected = choice.garmentId == option.selectedFootwearId
+                        Button {
+                            app.today.pickFootwear(optionId: option.id, garmentId: choice.garmentId)
+                        } label: {
+                            Label(choice.name, systemImage: selected ? "checkmark.circle.fill" : "circle")
+                                .frame(maxWidth: .infinity, minHeight: Metrics.touch, alignment: .leading)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                    }
+                }
+            }
+            if let flourish = option.option.flourish {
+                Toggle("Wearing the \(flourish.name) too", isOn: Binding(
+                    get: { option.flourishWorn },
+                    set: { app.today.setFlourishWorn($0, optionId: option.id) }))
+            }
             Button {
-                Task { await app.today.wore(garments: option.garments.map { (id: $0.garmentId, name: $0.name) }) }
+                Task { await app.today.woreExtra(optionId: option.id) }
             } label: {
                 Label("I wore this", systemImage: "tshirt").frame(maxWidth: .infinity)
             }
             .secondaryAction()
             .controlSize(.large)
             .disabled(app.today.isSubmitting)
-            .accessibilityHint("Records \(Phrases.list(option.garments.map(\.name))) as worn today, in addition to today's record.")
+            .accessibilityHint("Records \(Phrases.list(option.wearNames)) as worn today, in addition to today's record.")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentSurface()

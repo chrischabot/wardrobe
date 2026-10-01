@@ -145,17 +145,51 @@ struct TodayModelTests {
         #expect(env.center.receipts.count == 1)
     }
 
-    @Test("Swap changes one slot of one option and lets the backend choose the replacement")
+    @Test("Online, a swap goes through the swap route against the revision on screen and its receipt is kept like any other")
     func swapOneSlot() async throws {
-        let (_, transport, env, _, _) = setup()
+        let (router, transport, env, _, _) = setup()
         let model = TodayModel(environment: env)
         await model.open()
-        await model.swap(optionId: "opt_a", role: .top)
-        let command = try #require(transport.commands.first)
-        #expect(command["type"]?.stringValue == "board.swap_slot")
-        #expect(command["payload"]?["role"]?.stringValue == "top")
-        #expect(command["payload"]?["optionId"]?.stringValue == "opt_a")
-        #expect(command["payload"]?["garmentId"] == nil)
+        router.on("POST", "/v1/boards/brd_test/swap") { _ in
+            router.json("GET", "/v1/today", Synthetic.todayResponse(board: Synthetic.board(revision: 4)))
+            return TestSupport.json(["board": Synthetic.board(revision: 4), "receipt": TestSupport.receipt(commandId: "cmd_swap", type: "board.swap_slot", summary: "Swapped", undoAvailable: false)])
+        }
+        let outcome = await model.swap(optionId: "opt_a", role: .top)
+        #expect(outcome?.receipt?.commandId == "cmd_swap")
+        let body = TestSupport.body(try #require(transport.requests("POST", "/v1/boards/brd_test/swap").first))
+        #expect(body["optionId"]?.stringValue == "opt_a" && body["role"]?.stringValue == "top")
+        #expect(body["expectedRevision"]?.intValue == 3)
+        #expect(body["garmentId"] == nil)                                // the backend chooses the replacement
+        #expect(body["clientRequestId"]?.stringValue?.isEmpty == false)
+        #expect(transport.commands.isEmpty)                              // not sent a second time as a command
+        #expect(env.center.receipts.first?.id == "cmd_swap")
+        #expect(model.board?.revision == 4)
+    }
+
+    @Test("Offline, the same swap waits on the phone as a command; a refused swap is shown as refused and the current board is loaded")
+    func swapOfflineAndRefused() async throws {
+        let (router, transport, env, _, _) = setup()
+        let model = TodayModel(environment: env)
+        await model.open()
+        router.offline.value = true
+        let queued = await model.swap(optionId: "opt_a", role: .top, to: "gmt_test_knit")
+        #expect(queued == .queued)
+        let waiting = try #require(env.center.pending.first)
+        #expect(waiting.envelope.type == "board.swap_slot")
+        #expect(waiting.envelope.payload["garmentId"]?.stringValue == "gmt_test_knit")
+        #expect(waiting.envelope.expectedVersions?["board:brd_test"] == 3)
+
+        let (router2, transport2, env2, _, _) = setup()
+        let second = TodayModel(environment: env2)
+        await second.open()
+        router2.on("POST", "/v1/boards/brd_test/swap") { _ in TestSupport.error("conflict", "The board changed; showing the current one.", status: 409) }
+        router2.json("GET", "/v1/today", Synthetic.todayResponse(board: Synthetic.board(revision: 5)))
+        let refused = await second.swap(optionId: "opt_a", role: .top)
+        guard case .rejected(let error)? = refused else { Issue.record("expected a refusal"); return }
+        #expect(error.code == .conflict)
+        #expect(second.board?.revision == 5)
+        #expect(transport2.commands.isEmpty && env2.center.pending.isEmpty) // a refusal is not retried as a command
+        _ = transport
     }
 
     @Test("A board that moved on refuses the edit with a conflict and Today reloads the current board")
@@ -191,6 +225,37 @@ struct TodayModelTests {
         #expect(model.options.count == 2)
         #expect(model.sourceNotes == ["Calendar is disconnected."])
         #expect(model.calendarAction == "Reconnect Calendar in Settings.")
+    }
+
+    @Test("A board with no complete outfit says so in the backend's words, and the owner can ask for outfits; a paused day offers no such request")
+    func degradedBoardAndComposeNow() async throws {
+        let notice = "No complete outfit is available for this day at the moment."
+        let (router, transport, env, _, _) = setup(board: Synthetic.board(options: [], validity: "degraded", notice: notice))
+        let model = TodayModel(environment: env, sleep: { _ in })
+        await model.open()
+        #expect(model.options.isEmpty)
+        #expect(model.emptyStatement == notice)
+        #expect(model.canAskForOutfits)
+
+        router.on("POST", "/v1/recommendations") { _ in
+            router.json("GET", "/v1/today", Synthetic.todayResponse(board: Synthetic.board(revision: 4)))
+            return TestSupport.json(["state": "completed", "runId": .null, "localDate": .string(Synthetic.today), "options": .array(Synthetic.standardOptions), "board": Synthetic.board(revision: 4),
+                                     "insufficient": false, "note": .null, "wardrobeRevision": 5, "readAt": .string(Synthetic.now)])
+        }
+        await model.askForOutfits()
+        let sent = TestSupport.body(try #require(transport.requests("POST", "/v1/recommendations").first))
+        #expect(sent["mode"]?.stringValue == "board")                    // publishes the day's board, unlike a preview
+        #expect(model.composeState == .ready)
+        #expect(model.options.count == 2 && model.emptyStatement == nil)
+        #expect(!model.canAskForOutfits)
+
+        let (pausedRouter, pausedTransport, pausedEnv, _, _) = setup()
+        pausedRouter.json("GET", "/v1/today", Synthetic.todayResponse(status: "paused", paused: ["pauseId": "p", "from": "2026-09-14", "resumeOn": .null]))
+        let paused = TodayModel(environment: pausedEnv)
+        await paused.open()
+        #expect(!paused.canAskForOutfits)
+        await paused.askForOutfits()
+        #expect(pausedTransport.requests("POST", "/v1/recommendations").isEmpty)
     }
 
     @Test("A paused service explains why there is no board")

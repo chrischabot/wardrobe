@@ -9,6 +9,7 @@ struct TripScreen: View {
     @Environment(\.dismiss) private var dismiss
     let tripId: String
     @State private var confirmsCancel = false
+    @State private var showsPicker = false
 
     init(tripId: String) { self.tripId = tripId }
 
@@ -93,13 +94,17 @@ struct TripScreen: View {
             Button { Task { await trips.packedProposal(trip) } } label: { Label("Packed", systemImage: "suitcase") }
                 .disabled(trips.isWorking || trip.proposal == nil)
                 .accessibilityHint("Records everything on the proposed list that is not packed yet as in the bag.")
+            Button { showsPicker = true } label: { Label("Pack other items", systemImage: "plus.circle") }
+                .disabled(trips.isWorking)
+                .accessibilityHint("Choose garments and how many of each went into the bag.")
+                .sheet(isPresented: $showsPicker) { PackingPickerSheet(tripId: trip.tripId) }
             Button { Task { await trips.unpacked(trip) } } label: { Label("Unpacked", systemImage: "house") }
                 .disabled(trips.isWorking)
                 .accessibilityHint("Records the clothes as home again. It does not mark anything clean.")
         } header: {
             Text("Packed")
         } footer: {
-            Text("What is physically in the bag. Packed records the proposed list as packed. Unpacked brings the clothes home without marking anything clean; a wash report or the next care cycle does that.")
+            Text("What is physically in the bag. Packed records the proposed list as packed; Pack other items records what you choose. Unpacked brings the clothes home without marking anything clean; a wash report or the next care cycle does that.")
         }
     }
 

@@ -62,6 +62,7 @@ struct MediaReviewScreen: View {
         VStack(alignment: .leading, spacing: Metrics.unit * 2) {
             Text(item.garmentName)
                 .font(.headline)
+            CandidateImageView(item: item)
             Text(item.question)
             if let page = item.pageUrl, let url = URL(string: page) {
                 Link(destination: url) {

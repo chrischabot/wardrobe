@@ -129,6 +129,8 @@ public final class APIClient: Sendable {
         try await get("/v1/today", query: APIClient.item("date", date) + APIClient.item("scope", scope))
     }
     public func recommend(_ request: RecommendRequest) async throws -> RecommendResponse { try await post("/v1/recommendations", body: request) }
+    /// Swaps one slot of a board option; the backend refreshes an old forecast first.
+    public func swap(boardId: String, _ request: SwapSlotRequest) async throws -> SwapSlotResponse { try await post("/v1/boards/\(APIClient.segment(boardId))/swap", body: request) }
     public func dailyRecord(date: LocalDate) async throws -> DailyRecord { try await get("/v1/days/\(APIClient.segment(date))") }
     public func serviceState() async throws -> ServiceState { try await get("/v1/service") }
     public func trips() async throws -> TripList { try await get("/v1/trips") }

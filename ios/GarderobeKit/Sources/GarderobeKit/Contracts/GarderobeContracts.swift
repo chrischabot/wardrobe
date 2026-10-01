@@ -133,6 +133,7 @@ public enum GarderobeContract {
         "lifecycle.open_project",
         "lifecycle.record_event",
         "lifecycle.update_project",
+        "mail.record_sync",
         "measurement.record",
         "media.authorize_upload",
         "media.decide_review",
@@ -263,6 +264,7 @@ public struct AccountDeleteResponse: Codable, Sendable, Equatable {
     public enum State: String, Codable, Sendable, CaseIterable {
         case confirmationRequired = "confirmation_required"
         case disabledPendingDeletion = "disabled_pending_deletion"
+        case erased
         /// A member this client version does not know; the contract requires tolerating it.
         case unknown
 
@@ -842,6 +844,100 @@ public struct BackfillEstimate: Codable, Sendable, Equatable {
     }
 }
 
+public struct Backup: Codable, Sendable, Equatable {
+    public var backupId: String
+    public var runId: String
+    public var state: State
+    public var complete: Bool
+    public var takenAt: Instant?
+    public var requestedAt: Instant
+    public var finishedAt: Instant?
+    public var expiresAt: Instant?
+    public var byteLength: Int?
+    public var sha256: String?
+    public var components: [ComponentsItem]
+    public var restoreManifest: RestoreManifest?
+
+    public init(
+        backupId: String,
+        runId: String,
+        state: State,
+        complete: Bool,
+        takenAt: Instant? = nil,
+        requestedAt: Instant,
+        finishedAt: Instant? = nil,
+        expiresAt: Instant? = nil,
+        byteLength: Int? = nil,
+        sha256: String? = nil,
+        components: [ComponentsItem],
+        restoreManifest: RestoreManifest? = nil
+    ) {
+        self.backupId = backupId
+        self.runId = runId
+        self.state = state
+        self.complete = complete
+        self.takenAt = takenAt
+        self.requestedAt = requestedAt
+        self.finishedAt = finishedAt
+        self.expiresAt = expiresAt
+        self.byteLength = byteLength
+        self.sha256 = sha256
+        self.components = components
+        self.restoreManifest = restoreManifest
+    }
+
+    public enum State: String, Codable, Sendable, CaseIterable {
+        case queued
+        case running
+        case completed
+        case completedIncomplete = "completed_incomplete"
+        case failed
+        case expired
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+
+    public struct ComponentsItem: Codable, Sendable, Equatable {
+        public var name: String
+        public var state: String
+        public var records: Double
+        public var note: String?
+
+        public init(
+            name: String,
+            state: String,
+            records: Double,
+            note: String? = nil
+        ) {
+            self.name = name
+            self.state = state
+            self.records = records
+            self.note = note
+        }
+    }
+}
+
+public struct BackupList: Codable, Sendable, Equatable {
+    public var backups: [Backup]
+    public var retentionDays: Int
+    public var intervalHours: Double
+
+    public init(
+        backups: [Backup],
+        retentionDays: Int,
+        intervalHours: Double
+    ) {
+        self.backups = backups
+        self.retentionDays = retentionDays
+        self.intervalHours = intervalHours
+    }
+}
+
 public enum Basis: String, Codable, Sendable, CaseIterable {
     case observed
     case inferred
@@ -1116,6 +1212,7 @@ public struct BoardPublish: Codable, Sendable, Equatable {
     public var calendarSnapshotId: String?
     public var notice: String?
     public var composedAgainst: ComposedAgainst?
+    public var expectedBoardRevision: Int?
 
     public init(
         localDate: LocalDate,
@@ -1128,7 +1225,8 @@ public struct BoardPublish: Codable, Sendable, Equatable {
         weatherSnapshotId: String? = nil,
         calendarSnapshotId: String? = nil,
         notice: String? = nil,
-        composedAgainst: ComposedAgainst? = nil
+        composedAgainst: ComposedAgainst? = nil,
+        expectedBoardRevision: Int? = nil
     ) {
         self.localDate = localDate
         self.scope = scope
@@ -1141,6 +1239,7 @@ public struct BoardPublish: Codable, Sendable, Equatable {
         self.calendarSnapshotId = calendarSnapshotId
         self.notice = notice
         self.composedAgainst = composedAgainst
+        self.expectedBoardRevision = expectedBoardRevision
     }
 
     public enum Reason: String, Codable, Sendable, CaseIterable {
@@ -1785,6 +1884,7 @@ public struct CommandBoardPublish: Codable, Sendable, Equatable, GarderobeComman
     /// Server default when omitted: `null`.
     public var notice: String?
     public var composedAgainst: ComposedAgainst?
+    public var expectedBoardRevision: Int?
 
     public init(
         localDate: LocalDate,
@@ -1797,7 +1897,8 @@ public struct CommandBoardPublish: Codable, Sendable, Equatable, GarderobeComman
         weatherSnapshotId: String? = nil,
         calendarSnapshotId: String? = nil,
         notice: String? = nil,
-        composedAgainst: ComposedAgainst? = nil
+        composedAgainst: ComposedAgainst? = nil,
+        expectedBoardRevision: Int? = nil
     ) {
         self.localDate = localDate
         self.scope = scope
@@ -1810,6 +1911,7 @@ public struct CommandBoardPublish: Codable, Sendable, Equatable, GarderobeComman
         self.calendarSnapshotId = calendarSnapshotId
         self.notice = notice
         self.composedAgainst = composedAgainst
+        self.expectedBoardRevision = expectedBoardRevision
     }
 
     public enum Reason: String, Codable, Sendable, CaseIterable {
@@ -3934,6 +4036,96 @@ public struct CommandLifecycleUpdateProject: Codable, Sendable, Equatable, Garde
         try container.encodeIfPresent(self.nextAction, forKey: JSONCodingKey("nextAction"))
         try container.encodeIfPresent(self.details, forKey: JSONCodingKey("details"))
         try container.encodeIfPresent(self.state, forKey: JSONCodingKey("state"))
+    }
+}
+
+/// Payload of the `mail.record_sync` command, as the client sends it (fields with a server default are optional).
+public struct CommandMailRecordSync: Codable, Sendable, Equatable, GarderobeCommandPayload {
+    public static let commandType = "mail.record_sync"
+
+    public var connectionId: String
+    public var seen: [SeenItem]
+    /// Server default when omitted: `null`.
+    public var historyId: String?
+    /// Server default when omitted: `null`.
+    public var backfillFrom: LocalDate?
+    /// Server default when omitted: `null`.
+    public var backfillTo: LocalDate?
+    public var completion: Completion
+    /// Server default when omitted: `null`.
+    public var resume: Resume?
+
+    public init(
+        connectionId: String,
+        seen: [SeenItem],
+        historyId: String? = nil,
+        backfillFrom: LocalDate? = nil,
+        backfillTo: LocalDate? = nil,
+        completion: Completion,
+        resume: Resume? = nil
+    ) {
+        self.connectionId = connectionId
+        self.seen = seen
+        self.historyId = historyId
+        self.backfillFrom = backfillFrom
+        self.backfillTo = backfillTo
+        self.completion = completion
+        self.resume = resume
+    }
+
+    public struct SeenItem: Codable, Sendable, Equatable {
+        public var messageId: String
+        public var classified: Classified
+        /// Server default when omitted: `null`.
+        public var sentAt: Instant?
+
+        public init(
+            messageId: String,
+            classified: Classified,
+            sentAt: Instant? = nil
+        ) {
+            self.messageId = messageId
+            self.classified = classified
+            self.sentAt = sentAt
+        }
+
+        public enum Classified: String, Codable, Sendable, CaseIterable {
+            case order
+            case notOrder = "not_order"
+            case unreadable
+            /// A member this client version does not know; the contract requires tolerating it.
+            case unknown
+
+            public init(from decoder: Decoder) throws {
+                let rawValue = try decoder.singleValueContainer().decode(String.self)
+                self = Self(rawValue: rawValue) ?? .unknown
+            }
+        }
+    }
+
+    public enum Completion: String, Codable, Sendable, CaseIterable {
+        case complete
+        case partial
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+
+    public struct Resume: Codable, Sendable, Equatable {
+        public var queryIndex: Int
+        public var pageToken: String?
+
+        public init(
+            queryIndex: Int,
+            pageToken: String? = nil
+        ) {
+            self.queryIndex = queryIndex
+            self.pageToken = pageToken
+        }
     }
 }
 
@@ -7081,6 +7273,95 @@ public struct DayConditionsInput: Codable, Sendable, Equatable {
         try container.encode(self.rainLikelyFromHour, forKey: JSONCodingKey("rainLikelyFromHour"))
         try container.encode(self.maxWindGustKmh, forKey: JSONCodingKey("maxWindGustKmh"))
         try container.encodeIfPresent(self.segment, forKey: JSONCodingKey("segment"))
+    }
+}
+
+public struct Device: Codable, Sendable, Equatable {
+    public var deviceId: String
+    public var environment: String
+    public var status: Status
+    public var disabledReason: String?
+    public var updatedAt: Instant
+    public var lastDeliveryAt: Instant?
+
+    public init(
+        deviceId: String,
+        environment: String,
+        status: Status,
+        disabledReason: String? = nil,
+        updatedAt: Instant,
+        lastDeliveryAt: Instant? = nil
+    ) {
+        self.deviceId = deviceId
+        self.environment = environment
+        self.status = status
+        self.disabledReason = disabledReason
+        self.updatedAt = updatedAt
+        self.lastDeliveryAt = lastDeliveryAt
+    }
+
+    public enum Status: String, Codable, Sendable, CaseIterable {
+        case active
+        case disabled
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+}
+
+public struct DeviceList: Codable, Sendable, Equatable {
+    public var deliveryConfigured: Bool
+    public var devices: [Device]
+
+    public init(
+        deliveryConfigured: Bool,
+        devices: [Device]
+    ) {
+        self.deliveryConfigured = deliveryConfigured
+        self.devices = devices
+    }
+}
+
+public struct DeviceRegistration: Codable, Sendable, Equatable {
+    /// Stable per-installation identifier chosen by the app (not the token).
+    public var deviceId: String
+    public var token: String
+    public var environment: Environment
+
+    public init(
+        deviceId: String,
+        token: String,
+        environment: Environment
+    ) {
+        self.deviceId = deviceId
+        self.token = token
+        self.environment = environment
+    }
+
+    public enum Environment: String, Codable, Sendable, CaseIterable {
+        case development
+        case production
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+}
+
+public struct DeviceRemoved: Codable, Sendable, Equatable {
+    public var removed: Bool
+
+    public init(
+        removed: Bool
+    ) {
+        self.removed = removed
     }
 }
 
@@ -10313,6 +10594,90 @@ public struct LinkedIdentity: Codable, Sendable, Equatable {
 public typealias LocalDate = String
 
 public typealias LocalTime = String
+
+/// The `mail.record_sync` payload as the server sees it after parsing (defaults applied).
+/// To send the command, use `CommandMailRecordSync`.
+public struct MailRecordSync: Codable, Sendable, Equatable {
+    public var connectionId: String
+    public var seen: [SeenItem]
+    public var historyId: String?
+    public var backfillFrom: LocalDate?
+    public var backfillTo: LocalDate?
+    public var completion: Completion
+    public var resume: Resume?
+
+    public init(
+        connectionId: String,
+        seen: [SeenItem],
+        historyId: String? = nil,
+        backfillFrom: LocalDate? = nil,
+        backfillTo: LocalDate? = nil,
+        completion: Completion,
+        resume: Resume? = nil
+    ) {
+        self.connectionId = connectionId
+        self.seen = seen
+        self.historyId = historyId
+        self.backfillFrom = backfillFrom
+        self.backfillTo = backfillTo
+        self.completion = completion
+        self.resume = resume
+    }
+
+    public struct SeenItem: Codable, Sendable, Equatable {
+        public var messageId: String
+        public var classified: Classified
+        public var sentAt: Instant?
+
+        public init(
+            messageId: String,
+            classified: Classified,
+            sentAt: Instant? = nil
+        ) {
+            self.messageId = messageId
+            self.classified = classified
+            self.sentAt = sentAt
+        }
+
+        public enum Classified: String, Codable, Sendable, CaseIterable {
+            case order
+            case notOrder = "not_order"
+            case unreadable
+            /// A member this client version does not know; the contract requires tolerating it.
+            case unknown
+
+            public init(from decoder: Decoder) throws {
+                let rawValue = try decoder.singleValueContainer().decode(String.self)
+                self = Self(rawValue: rawValue) ?? .unknown
+            }
+        }
+    }
+
+    public enum Completion: String, Codable, Sendable, CaseIterable {
+        case complete
+        case partial
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+
+    public struct Resume: Codable, Sendable, Equatable {
+        public var queryIndex: Int
+        public var pageToken: String?
+
+        public init(
+            queryIndex: Int,
+            pageToken: String? = nil
+        ) {
+            self.queryIndex = queryIndex
+            self.pageToken = pageToken
+        }
+    }
+}
 
 public struct McpAskInput: Codable, Sendable, Equatable {
     public var message: String
@@ -14184,6 +14549,63 @@ public struct ResolveQuery: Codable, Sendable, Equatable {
     }
 }
 
+/// format garderobe-restore-manifest/1: backupId, ownerRef, snapshot { takenAt, coherent, stores }, components, state, afterRestore
+public typealias RestoreManifest = [String: JSONValue]
+
+public struct RestoreReport: Codable, Sendable, Equatable {
+    public var complete: Bool
+    public var checks: [ChecksItem]
+    public var tombstonesReplayed: Int
+    public var verifiedAt: Instant
+
+    public init(
+        complete: Bool,
+        checks: [ChecksItem],
+        tombstonesReplayed: Int,
+        verifiedAt: Instant
+    ) {
+        self.complete = complete
+        self.checks = checks
+        self.tombstonesReplayed = tombstonesReplayed
+        self.verifiedAt = verifiedAt
+    }
+
+    public struct ChecksItem: Codable, Sendable, Equatable {
+        public var name: String
+        public var ok: Bool
+        public var expected: JSONValue?
+        public var actual: JSONValue?
+        public var note: String?
+
+        public init(
+            name: String,
+            ok: Bool,
+            expected: JSONValue? = nil,
+            actual: JSONValue? = nil,
+            note: String? = nil
+        ) {
+            self.name = name
+            self.ok = ok
+            self.expected = expected
+            self.actual = actual
+            self.note = note
+        }
+    }
+}
+
+public struct RestoreVerifyRequest: Codable, Sendable, Equatable {
+    public var restoreManifest: RestoreManifest
+    public var tombstones: TombstoneJournal?
+
+    public init(
+        restoreManifest: RestoreManifest,
+        tombstones: TombstoneJournal? = nil
+    ) {
+        self.restoreManifest = restoreManifest
+        self.tombstones = tombstones
+    }
+}
+
 public struct Restriction: Codable, Sendable, Equatable {
     public var restrictionId: String
     public var kind: RestrictionKind
@@ -15948,6 +16370,32 @@ public struct StudioPlanForDay: Codable, Sendable, Equatable {
     }
 }
 
+public struct StudioPreviewRequest: Codable, Sendable, Equatable {
+    public var clientRequestId: String
+    public var slots: [StudioSlotInput]
+
+    public init(
+        clientRequestId: String,
+        slots: [StudioSlotInput]
+    ) {
+        self.clientRequestId = clientRequestId
+        self.slots = slots
+    }
+}
+
+public struct StudioPreviewResponse: Codable, Sendable, Equatable {
+    public var receipt: CommandReceipt
+    public var manifestHash: String
+
+    public init(
+        receipt: CommandReceipt,
+        manifestHash: String
+    ) {
+        self.receipt = receipt
+        self.manifestHash = manifestHash
+    }
+}
+
 public struct StudioQuery: Codable, Sendable, Equatable {
     /// Server default when omitted: `"for_today"`.
     public var mode: StudioMode?
@@ -17262,6 +17710,42 @@ public struct SuggestedOutfit: Codable, Sendable, Equatable {
     }
 }
 
+public struct SwapSlotRequest: Codable, Sendable, Equatable {
+    /// Stable ID: a retransmission returns the same receipt.
+    public var clientRequestId: String
+    public var optionId: String
+    public var role: Role
+    public var garmentId: String?
+    public var expectedRevision: Int?
+
+    public init(
+        clientRequestId: String,
+        optionId: String,
+        role: Role,
+        garmentId: String? = nil,
+        expectedRevision: Int? = nil
+    ) {
+        self.clientRequestId = clientRequestId
+        self.optionId = optionId
+        self.role = role
+        self.garmentId = garmentId
+        self.expectedRevision = expectedRevision
+    }
+}
+
+public struct SwapSlotResponse: Codable, Sendable, Equatable {
+    public var board: BoardDocument
+    public var receipt: CommandReceipt
+
+    public init(
+        board: BoardDocument,
+        receipt: CommandReceipt
+    ) {
+        self.board = board
+        self.receipt = receipt
+    }
+}
+
 public struct TemperaturePreview: Codable, Sendable, Equatable {
     /// Always `true`.
     public var simulation: Bool
@@ -17462,6 +17946,42 @@ public struct TodayView: Codable, Sendable, Equatable {
             self.pauseId = pauseId
             self.from = from
             self.resumeOn = resumeOn
+        }
+    }
+}
+
+public struct TombstoneJournal: Codable, Sendable, Equatable {
+    /// Always `"garderobe-tombstones/1"`.
+    public var format: String
+    public var ownerRef: String
+    public var writtenAt: Instant
+    public var tombstones: [TombstonesItem]
+
+    public init(
+        format: String,
+        ownerRef: String,
+        writtenAt: Instant,
+        tombstones: [TombstonesItem]
+    ) {
+        self.format = format
+        self.ownerRef = ownerRef
+        self.writtenAt = writtenAt
+        self.tombstones = tombstones
+    }
+
+    public struct TombstonesItem: Codable, Sendable, Equatable {
+        public var sourceKind: String
+        public var sourceId: String
+        public var requestedAt: String
+
+        public init(
+            sourceKind: String,
+            sourceId: String,
+            requestedAt: String
+        ) {
+            self.sourceKind = sourceKind
+            self.sourceId = sourceId
+            self.requestedAt = requestedAt
         }
     }
 }
@@ -18351,10 +18871,13 @@ public struct TurnRecord: Codable, Sendable, Equatable {
 public struct TurnRequest: Codable, Sendable, Equatable {
     /// Stable ID created before sending; a retransmission returns the same turn.
     public var clientTurnId: String
-    public var text: String
-    /// Finalized upload asset IDs only.
+    /// Server default when omitted: `""`.
+    public var text: String?
+    /// Finalized upload asset IDs only: photographs the assistant should look at.
     /// Server default when omitted: `[]`.
     public var attachmentIds: [String]?
+    /// Server default when omitted: `{}`.
+    public var imageRoles: [String: ImageRolesValue]?
     /// Server default when omitted: `[]`.
     public var attachedRefs: [AttachedRef]?
     /// Server default when omitted: `"chat"`.
@@ -18364,8 +18887,9 @@ public struct TurnRequest: Codable, Sendable, Equatable {
 
     public init(
         clientTurnId: String,
-        text: String,
+        text: String? = nil,
         attachmentIds: [String]? = nil,
+        imageRoles: [String: ImageRolesValue]? = nil,
         attachedRefs: [AttachedRef]? = nil,
         intent: TurnIntent? = nil,
         sharedUrl: String? = nil,
@@ -18374,10 +18898,26 @@ public struct TurnRequest: Codable, Sendable, Equatable {
         self.clientTurnId = clientTurnId
         self.text = text
         self.attachmentIds = attachmentIds
+        self.imageRoles = imageRoles
         self.attachedRefs = attachedRefs
         self.intent = intent
         self.sharedUrl = sharedUrl
         self.pastedText = pastedText
+    }
+
+    public enum ImageRolesValue: String, Codable, Sendable, CaseIterable {
+        case selfie
+        case shopPhoto = "shop_photo"
+        case itemPhoto = "item_photo"
+        case receipt
+        case other
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
     }
 }
 

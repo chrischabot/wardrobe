@@ -86,10 +86,14 @@ public final class CommandCenter {
     private var replaying = false
     private var observers: [(CommandReceipt) -> Void] = []
     private static let receiptLimit = 200
+    /// Commands undone from this phone whose full receipt is not held here (older transcript
+    /// cards): undone command ID to the undo's command ID.
+    public private(set) var undoneElsewhere: [String: String] = [:]
 
     public init(api: APIClient, queue: CommandQueue, store: RestorationStore, time: TimeSource, ids: IdentifierSource) {
         self.api = api; self.queue = queue; self.store = store; self.time = time; self.ids = ids
         receipts = store.load("receipts", as: [ReceiptRecord].self) ?? []
+        undoneElsewhere = store.load("receipts.undone", as: [String: String].self) ?? [:]
         wardrobeRevision = receipts.map(\.receipt.wardrobeRevision).max() ?? 0
     }
 
@@ -200,10 +204,14 @@ public final class CommandCenter {
         receipts.removeAll { $0.id == record.id }
         receipts.insert(record, at: 0)
         if receipts.count > CommandCenter.receiptLimit { receipts.removeLast(receipts.count - CommandCenter.receiptLimit) }
-        if entry.envelope.type == CommandCommandUndo.commandType, let undone = entry.envelope.payload["commandId"]?.stringValue,
-           let i = receipts.firstIndex(where: { $0.id == undone }) {
-            receipts[i].undoneBy = receipt.commandId
-            receipts[i].receipt.undo = CommandReceipt.Undo(available: false, reason: "Already undone.")
+        if entry.envelope.type == CommandCommandUndo.commandType, let undone = entry.envelope.payload["commandId"]?.stringValue {
+            if let i = receipts.firstIndex(where: { $0.id == undone }) {
+                receipts[i].undoneBy = receipt.commandId
+                receipts[i].receipt.undo = CommandReceipt.Undo(available: false, reason: "Already undone.")
+            } else {
+                undoneElsewhere[undone] = receipt.commandId
+                store.save("receipts.undone", undoneElsewhere)
+            }
         }
         store.save("receipts", receipts)
         wardrobeRevision = max(wardrobeRevision, receipt.wardrobeRevision)
@@ -219,11 +227,60 @@ public final class CommandCenter {
 
     // MARK: Undo and receipts
 
+    /// Records a verified receipt that a dedicated route returned (a swap, a calendar setup),
+    /// exactly as if the command had been confirmed through the queue: it joins the history,
+    /// raises the undo banner when reversible, and refreshes the reads.
+    public func adopt(_ receipt: CommandReceipt, label: String) {
+        let record = ReceiptRecord(receipt: receipt, label: label, receivedAt: time.now(), undoneBy: nil)
+        receipts.removeAll { $0.id == record.id }
+        receipts.insert(record, at: 0)
+        if receipts.count > CommandCenter.receiptLimit { receipts.removeLast(receipts.count - CommandCenter.receiptLimit) }
+        store.save("receipts", receipts)
+        wardrobeRevision = max(wardrobeRevision, receipt.wardrobeRevision)
+        if receipt.undo.available { banner = UndoBanner(record: record, expiresAt: time.now().addingTimeInterval(UndoBanner.duration)) }
+        for observer in observers { observer(receipt) }
+    }
+
     /// Undo is a compensating command that the backend rechecks; the receipt is never deleted.
     @discardableResult
     public func undo(_ record: ReceiptRecord) async -> SubmissionOutcome {
         if banner?.record.id == record.id { banner = nil }
         return await submit(CommandDraft(CommandCommandUndo(commandId: record.receipt.commandId), label: "Undo: \(record.label)"))
+    }
+
+    /// What Undo can do for a receipt a run reported in the transcript.
+    public enum ReferenceUndoState: Sendable, Equatable {
+        /// The backend reported the command as reversible and nothing here says otherwise.
+        case available
+        /// An undo for it is saved on this phone and has not been confirmed yet.
+        case waiting
+        case undone
+        /// The backend reported it as not reversible.
+        case unavailable
+    }
+
+    private func undoIsQueued(for commandId: String) -> Bool {
+        pending.contains { $0.envelope.type == CommandCommandUndo.commandType && $0.envelope.payload["commandId"]?.stringValue == commandId }
+    }
+
+    public func undoState(for ref: RunReceiptRef) -> ReferenceUndoState {
+        if undoIsQueued(for: ref.commandId) { return .waiting }
+        if let record = receipts.first(where: { $0.id == ref.commandId }) {
+            if record.undoneBy != nil { return .undone }
+            return record.receipt.undo.available ? .available : .unavailable
+        }
+        if undoneElsewhere[ref.commandId] != nil { return .undone }
+        return ref.undoAvailable && ref.type != CommandCommandUndo.commandType ? .available : .unavailable
+    }
+
+    /// Undo for a receipt shown in an older transcript message, by its command ID. The same
+    /// compensating command as the banner's; the backend rechecks whether it still applies.
+    /// Asking twice sends one undo.
+    @discardableResult
+    public func undo(_ ref: RunReceiptRef) async -> SubmissionOutcome? {
+        guard undoState(for: ref) == .available else { return nil }
+        if banner?.record.id == ref.commandId { banner = nil }
+        return await submit(CommandDraft(CommandCommandUndo(commandId: ref.commandId), label: "Undo: \(ref.summary)"))
     }
 
     /// Hides the banner once its eight seconds have passed. The receipt itself is kept.

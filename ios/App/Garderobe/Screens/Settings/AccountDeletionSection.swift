@@ -24,8 +24,8 @@ struct AccountDeletionSection: View {
                     .disabled(account.isWorking)
                     Button("Keep my account") { account.cancelDeletion() }
                         .disabled(account.isWorking)
-                case .disabledPendingDeletion:
-                    Label("Deletion is confirmed. The account is now disabled.", systemImage: "trash")
+                case .disabledPendingDeletion, .erased:
+                    Label("Deletion is confirmed.", systemImage: "trash")
                 case .unknown:
                     Button("Close") { account.cancelDeletion() }
                 }

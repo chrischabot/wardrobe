@@ -85,6 +85,9 @@ func collect() async throws -> [Sample] {
     await t.amend(remove: [items[0].id], add: [items[1].id], reason: "Changed after lunch")
     await t.setBrief("Something a little sharper today")
     await t.requestAnother(brief: "Dinner out", count: 2)
+    _ = try? await env.api.recommend(RecommendRequest(clientRequestId: env.ids.next("compose"), date: env.today, mode: .board))
+    _ = try? await env.api.swap(boardId: board.boardId, SwapSlotRequest(clientRequestId: env.ids.next("swap"), optionId: first.id, role: .top, garmentId: nil, expectedRevision: board.revision))
+    await env.center.submit(CommandDraft(CommandStyleRetireBrief(briefId: "brf_example"), label: "Cleared today's brief"))
 
     func pick(_ predicate: (InventoryItem) -> Bool) -> InventoryItem { items.first(where: predicate) ?? items[0] }
     let shirt = pick { $0.garment.category == .shirt }
@@ -142,6 +145,12 @@ func collect() async throws -> [Sample] {
                     occasions: [], luggage: nil, laundry: [], status: .planned, packed: [], proposal: nil)
     await trips.proposePacking(trip)
     await trips.packed(trip, items: [(shirt.id, 1), (socks.id, 2)])
+    let picker = PackingPickerModel(environment: env, trips: trips, tripId: trip.tripId, candidates: items)
+    picker.setQuantity(1, for: shirt.id)
+    await picker.pack()
+    await ProjectsModel(environment: env).open()
+    await env.center.undo(RunReceiptRef(commandId: "cmd_older_example", type: "care.mark_dirty", outcome: "committed", summary: "Marked for the wash", undoAvailable: true))
+    _ = try? await env.api.asset(id: "ast_example", width: 320)
     await trips.unpacked(trip)
     await trips.wore(trip, day: PackingDayPlan(localDate: draft.departsOn, segment: .evening, occasion: "Dinner", slots: [OutfitSlot(role: .top, garmentId: shirt.id)], reason: ""))
     await trips.cancel(trip)

@@ -58,6 +58,7 @@ public final class AppModel {
     public let laundry: LaundryModel
     public let trips: TripsModel
     public let returns: ReturnsModel
+    public let projects: ProjectsModel
     public let settings: SettingsModel
     public let recovery: RecoveryStatusModel
     public let export: ExportModel
@@ -88,6 +89,7 @@ public final class AppModel {
         laundry = LaundryModel(environment: environment)
         trips = TripsModel(environment: environment)
         returns = ReturnsModel(environment: environment)
+        projects = ProjectsModel(environment: environment)
         let settings = SettingsModel(environment: environment)
         self.settings = settings
         recovery = RecoveryStatusModel(environment: environment)
@@ -308,6 +310,18 @@ public final class GarmentImageLoader {
     }
 
     public func cached(forGarment garmentId: String, width: Int) -> Data? { environment.media.data(for: "item:\(garmentId):\(width)") }
+
+    /// The image a review question is about: the candidate asset itself, so the owner decides
+    /// on what he sees. An asset's bytes do not change, so cached bytes are used as they are.
+    /// Nil when the candidate has no stored asset or it cannot be read.
+    public func data(forCandidate item: MediaReviewItem, width: Int) async -> Data? {
+        guard let assetId = item.assetId else { return nil }
+        let key = "asset:\(assetId):\(width)"
+        if missing.contains(key) { return nil }
+        if let cached = environment.media.data(for: key) { return cached }
+        let api = environment.api
+        return await load(key) { try await api.asset(id: assetId, width: width) }
+    }
 
     private func load(_ key: String, _ fetch: @escaping @Sendable () async throws -> Data) async -> Data? {
         if let task = inFlight[key] { return await task.value }

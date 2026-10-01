@@ -133,13 +133,46 @@ struct OwnerMorningJourney {
         let brief = await today.setBrief("Something a little sharper today")
         #expect(brief?.receipt?.type == "style.set_brief")
         let before = try #require(today.options.first)
+        let boardBefore = try #require(today.board)
         let swapped = await today.swap(optionId: before.id, role: .top)
         #expect(swapped?.receipt?.type == "board.swap_slot")
+        #expect(center.receipts.first?.id == swapped?.receipt?.commandId)        // the route's receipt joins the history
         let after = try #require(today.options.first)
         #expect(after.id == before.id) // the option keeps its durable identity
         #expect(after.visibleGarments.first { $0.role == .top }?.garmentId != before.visibleGarments.first { $0.role == .top }?.garmentId)
         #expect(after.visibleGarments.filter { $0.role != .top } == before.visibleGarments.filter { $0.role != .top })
-        #expect((today.board?.revision ?? 0) > board.revision) // a swap publishes a later revision; how many is the backend's business
+        // The swap itself is exactly one new revision (confirmed by the daily thread). A later
+        // revision may follow on the next read: the background recheck of a board whose forecast
+        // could not be read, which refills reserves and leaves what is offered unchanged.
+        #expect(swapped?.receipt?.result["revision"]?.intValue == boardBefore.revision + 1)
+        let current = try #require(today.board)
+        #expect(current.revision >= boardBefore.revision + 1)
+        if current.revision > boardBefore.revision + 1 {
+            #expect([.repair, .replenish, .refresh].contains(current.reason))
+            #expect(current.changes.isEmpty)
+        } else {
+            #expect(current.reason == .swap)
+        }
+        #expect(current.options.map(\.optionId) == boardBefore.options.map(\.optionId))
+        #expect(Array(current.options.dropFirst()) == Array(boardBefore.options.dropFirst()))   // every other option is untouched
+        #expect(current.selection == boardBefore.selection)
+
+        // An explicit request for another outfit: a preview beside the board; nothing is recorded by it.
+        let commandsBefore = j.backend.log.filter { $0.path == "/v1/commands" }.count
+        await today.requestAnother(brief: "Dinner out")
+        #expect(today.anotherState == .ready)
+        #expect(!today.extraPresentations.isEmpty)
+        #expect(today.extraPresentations.allSatisfy { $0.visibleGarments.filter { $0.role == .footwear }.count <= 1 })
+        #expect(today.board?.revision == current.revision)
+        #expect(j.backend.log.filter { $0.path == "/v1/commands" }.count == commandsBefore)
+
+        // Clearing the day's brief retires the active brief the style context lists for today.
+        #expect(today.briefText != nil)
+        let cleared = await today.clearBrief()
+        #expect(cleared?.receipt?.type == "style.retire_brief")
+        #expect(today.briefText == nil)
+        let again = await today.clearBrief()
+        #expect(again == nil)
 
         #expect(j.backend.isAtEnd)
         #expect(j.backend.unexpected.isEmpty, "requests the real backend never answered: \(j.backend.unexpected)")

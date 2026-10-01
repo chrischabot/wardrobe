@@ -22,6 +22,17 @@ struct DayBriefSheet: View {
                 } footer: {
                     Text("Optional. A brief applies to \(app.today.dateLine) only and never changes your standing style.")
                 }
+                if app.today.briefText != nil {
+                    Section {
+                        Button("Clear today's brief", role: .destructive) { Task { await clear() } }
+                            .disabled(app.today.isSubmitting)
+                        if let note = app.today.briefNote {
+                            Text(note).font(.footnote).foregroundStyle(.secondary)
+                        }
+                    } footer: {
+                        Text("Removes the brief for today. Your standing style is not changed.")
+                    }
+                }
                 if outcome != nil {
                     Section { OutcomeLine(outcome: outcome) }
                 }
@@ -39,8 +50,17 @@ struct DayBriefSheet: View {
                 // Start from the brief the board was composed with; later edits are the owner's own.
                 guard !loaded else { return }
                 loaded = true
-                text = app.today.board?.brief.text ?? ""
+                text = app.today.briefText ?? ""
             }
+            .task { await app.today.style.refresh() }
+        }
+    }
+
+    private func clear() async {
+        outcome = await app.today.clearBrief()
+        switch outcome {
+        case .confirmed?, .queued?: dismiss()
+        default: break
         }
     }
 

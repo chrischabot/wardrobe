@@ -268,7 +268,19 @@ public final class AccountModel {
     public func confirmDeletion() async {
         guard let token = deletion?.confirmationToken else { return }
         await run { self.deletion = try await self.environment.api.deleteAccount(confirmationToken: token) }
+        // A confirmed deletion erases everything on the backend; nothing of it stays on the phone.
+        if deletion?.state == .erased || deletion?.state == .disabledPendingDeletion {
+            erasedNotice = deletion?.consequence
+            await session?.signOut()
+            environment.cache.removeAll()
+            deletion = nil; visibleKit = nil; recoveryResult = nil; recoveryTransaction = nil; linkTicket = nil
+            state = .signedOut
+        }
     }
+
+    /// What the backend said the confirmed deletion did, shown once on the sign-in screen.
+    public private(set) var erasedNotice: String?
+    public func dismissErasedNotice() { erasedNotice = nil }
 
     public func cancelDeletion() { deletion = nil }
 }
