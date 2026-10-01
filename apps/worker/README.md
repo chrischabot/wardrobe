@@ -13,15 +13,17 @@ Access-trust routes are refused on any other hostname. An Access assertion is no
 
 ## Routes (specification section 13 and 15)
 
-- **Today and daily service**: `GET /v1/today`, `POST /v1/recommendations`, `GET /v1/days/{date}`, `GET /v1/weather`, `GET /v1/service` (pause state), `GET /v1/trips`, `GET /v1/trips/{id}`, `POST /v1/trips/{id}/packing-proposal`, `GET /board`, `GET /board/{date}`.
-- **Wardrobe**: `GET /v1/wardrobe` (explicit total, cursor, `complete`), `GET /v1/wardrobe/resolve`, `POST /v1/wardrobe/selection` (which garments a bulk correction would cover), `GET /v1/wardrobe/temperature-preview`, `GET /v1/availability`, `GET /v1/items/{id}`, `GET /v1/items/{id}/image`, `GET /v1/laundry`, `GET /v1/style`, `POST /v1/style/preview-save` (what a profile save would do to structured facts), `GET /v1/style/conflicts`, `GET /v1/settings`.
-- **Studio**: `GET /v1/studio`, `POST /v1/studio/validate`, `POST /v1/studio/suggest`, `POST /v1/studio/compose`.
+- **Today and daily service**: `GET /v1/today`, `POST /v1/recommendations` (answers within the call, or with `state: "running"` and a run to follow when composing takes longer than the inline budget), `POST /v1/boards/{id}/swap`, `GET /v1/days/{date}`, `GET /v1/weather`, `GET /v1/service` (pause state), `GET /v1/trips`, `GET /v1/trips/{id}`, `POST /v1/trips/{id}/packing-proposal`, `GET /board`, `GET /board/{date}`.
+- **Wardrobe**: `GET /v1/wardrobe` (explicit total, cursor, `complete`), `GET /v1/wardrobe/resolve`, `POST /v1/wardrobe/selection` (which garments a bulk correction would cover), `GET /v1/wardrobe/temperature-preview`, `GET /v1/availability`, `GET /v1/items/{id}`, `GET /v1/items/{id}/image`, `GET /v1/laundry`, `GET /v1/style` (`?date=` for that day's briefs with their IDs), `POST /v1/style/preview-save` (what a profile save would do to structured facts), `GET /v1/style/conflicts`, `GET /v1/settings`.
+- **Studio**: `GET /v1/studio`, `POST /v1/studio/validate`, `POST /v1/studio/suggest`, `POST /v1/studio/compose`, `POST /v1/studio/previews`, `GET /v1/studio/compositions/{id}`, `GET /v1/studio/compositions/{id}/preview` (PNG only). Validation is always the daily service's validator with the owner's rules.
 - **Commands**: `POST /v1/commands` (idempotency key, expected versions, verified receipt), `POST /v1/commands/batch` (offline replay), `GET /v1/commands`, `GET /v1/commands/{id}`, `GET /v1/command-types`. Laundry, wears, trips, returns, feedback, pause and resume are all commands on this route.
 - **Conversation and runs**: `POST /v1/conversation/turns`, `GET /v1/conversation/messages`, `POST /v1/recall/search`, `POST /v1/research`, `GET /v1/orders`, `GET /v1/returns`, `GET /v1/projects`, `GET /v1/feedback`, `GET /v1/runs/{id}`, `GET /v1/runs/{id}/events` (server-sent events, `Last-Event-ID` or `after`), `POST /v1/runs/{id}/cancel`, `POST /v1/runs/{id}/resume`, `POST /v1/runs/{id}/input`.
-- **Capture and media**: `POST /v1/uploads`, `PUT /v1/uploads/{id}/content`, `POST /v1/uploads/{id}/complete`, `GET /v1/uploads/{id}`, `GET /v1/media/renditions/{id}`, `GET /v1/media/assets/{id}`, `GET /v1/media/photos-needed`, `GET /v1/media/review`.
+- **Capture and media**: `POST /v1/uploads`, `PUT /v1/uploads/{id}/content`, `POST /v1/uploads/{id}/complete`, `GET /v1/uploads/{id}`, `GET /v1/media/renditions/{id}`, `GET /v1/media/assets/{id}`, `POST /v1/media/renditions/{id}/sign` (a short-lived URL for one of the owner's own renditions), `GET /v1/media/signed/{token}` (authenticated by that token alone; every failure is the same 404), `GET /v1/media/photos-needed`, `GET /v1/media/review`. Every image response carries `Content-Security-Policy: default-src 'none'; sandbox` and `nosniff`.
+- **Notifications**: `GET /v1/devices`, `POST /v1/devices`, `POST /v1/devices/{id}/remove` (the device token is stored encrypted and never returned).
 - **Connections**: `GET /v1/connections`, `POST /v1/connections`, `POST /v1/connections/{id}/reconnect`, `POST /v1/connections/{id}/capabilities`, `POST /v1/connections/{id}/disconnect`, `GET /v1/connections/{id}/calendars`, `POST /v1/connections/{id}/outfit-calendar`, `GET /connections/callback`.
 - **Identity and recovery**: `GET /v1/me`, `GET /v1/meta`, `POST /auth/claim`, `POST /v1/identities/link`, `POST /auth/link/complete`, `POST /v1/identities/unlink`, `POST /v1/recovery-kit`, `POST /auth/recovery/start`, `POST /auth/recovery/complete`, `POST /v1/sessions/revoke`, `GET /v1/recovery`, `POST /v1/account/delete`, `GET /v1/assistants`, `POST /v1/assistants/{id}/disconnect`.
 - **Export and import**: `POST /v1/exports`, `GET /v1/exports`, `GET /v1/exports/{id}`, `POST /v1/exports/{id}/ticket`, `GET /v1/exports/{id}/download`, `POST /v1/imports`, `GET /v1/imports/{id}`.
+- **Backups and restore**: `GET /v1/backups`, `POST /v1/backups`, `POST /v1/backups/{id}/ticket`, `GET /v1/backups/tombstones`, `POST /v1/restore/verify`.
 
 Errors are `{ error: { code, message, details } }` with the codes in `ApiErrorCode`. A module whose bindings are absent answers `module_unavailable`; there are no placeholder routes.
 
@@ -41,6 +43,14 @@ Protocol `2026-07-28` (stateless, `@modelcontextprotocol/server` 2.0.0), with a 
 
 Resources: `garderobe://guide`, `garderobe://style/profile`, `garderobe://commands`. Correctness never depends on reading them.
 
+What a connected assistant cannot do, enforced on the one command registry (`src/lanes/index.ts`), so it holds for every tool:
+
+- **Lift a restriction.** `restriction.resolve` is refused on the MCP channel, and no assistant may undo the command that recorded a restriction. The owner lifts a restriction in the app or in their own Garderobe conversation.
+- **Change what the owner owns, the profile or measurements on relayed text.** When the backend assistant acts on a message that arrived through `garderobe_ask` or `garderobe_research`, the commands in `NOT_ON_RELAYED_TEXT` (creating, receiving, retiring or merging a garment, stock reconciliation, profile amendments, rules and directions, measurements) are refused with reason `relayed_text_not_owner_statement`. The words a connected model sends cannot be verified as the owner's. A write connection still has `garderobe_command`, where the change is an explicit typed command.
+- **Restore or erase.** Import, restore and account operations are app routes under Access, not tools.
+
+MCP Tasks: the specification says "Use the Tasks extension where both peers support it; otherwise return a normal result containing the Garderobe run handle." The installed server SDK (`@modelcontextprotocol/server` 2.0.0) states that task methods are 2025-11-25 wire vocabulary with no SDK runtime, so this server cannot be a peer that supports it; long operations return run handles (`garderobe_run`).
+
 ## Running locally
 
 From the repository root, install once with `bash tools/sandbox-install.sh` (or `npm install`). Then, in `apps/worker`:
@@ -48,8 +58,10 @@ From the repository root, install once with `bash tools/sandbox-install.sh` (or 
 ```
 npm run dev              # first run sets up: local keys, .dev.vars, D1 migrations, the real owner profile and inventory
 npm run dev -- reset     # delete local state and set up again
+npm run dev -- empty-owner   # (Worker stopped) create an empty owner and an invitation, as a restore target
 npm run dev:token        # a local sign-in token (one hour); add -- --header or -- --claim
 npm run smoke:mcp        # 19 checks against the running Worker; exit 1 on any failure
+node scripts/restore-drill.mjs --local --target-invitation <code>   # backup, restore into the empty owner, verify
 ```
 
 - App/API: `http://localhost:8787`. MCP: `http://127.0.0.1:8787/mcp`. The two hostnames are kept apart as in a deployment, so call the API on `localhost`.
@@ -72,30 +84,49 @@ await mcp.close();
 
 `@garderobe/worker/testing/vitest-config` exports `garderobeWorkerTestPlugin()` (D1, KV, two R2 buckets, queue, the conversation Durable Object, and a fixture for outbound requests). `@garderobe/worker/testing` exports `provisionOwner({ real })`, `ApiClient`, `connectMcp(owner, { write, era, onElicit })`, `toolResult`, `publishBoard`, `uploadImage`, `readSse`, `enableFakeModel` and others.
 
+## Scheduled work (cron, every five minutes)
+
+In this order: connection health, then the daily service's due phases and calendar projections; alongside them expiry sweeps, unfinished account erasures, backups, media maintenance, the assistant's maintenance and its background jobs; then notifications and reminder events.
+
+- **Connection health** (`src/scheduled/assistant.ts`): each connected service is probed once before the evening composition and once before the morning delivery of a day. A rejected credential becomes one reconnect state on that connection; nothing else is affected.
+- **Background jobs**: `assistant.run_job` effects are run by the assistant's own runner with the owner's Google grant (mailbox investigations, sheet-import previews). The spreadsheet grant is read-only.
+- **Notifications** (`src/notifications/service.ts`): APNs token-based provider API. Kinds: morning board, reminders, return reminders. Each is re-checked before it is sent, sent once per device with a collapse identifier, retried on an outage, and never recorded as delivered when no device is registered. Secrets: `APNS_TEAM_ID`, `APNS_KEY_ID`, `APNS_PRIVATE_KEY`, `APNS_TOPIC`. Without them nothing is claimed and the effects stay pending.
+- **Reminder events**: a reminder set in conversation is written as one event on the owner's dedicated outfit calendar, read back before it is recorded as projected, updated in place when the reminder changes and deleted when it is removed. An owner with no outfit calendar gets no event and the effect is recorded as cancelled.
+- **Backups** (`src/backup/service.ts`): one per active owner per day under `backups/<owner>/` in the export bucket, kept 35 days (the newest complete one is never expired), each with a restore manifest (snapshot times per store, components, a state digest with the conversation's projection watermarks). A journal of what the owner deleted since (forgotten sources and deleted images) is kept beside the backups and replayed on restore, so a restore never brings back what was deleted. `POST /v1/restore/verify` compares the restored owner with the manifest check by check. Sign-ins, credentials and assistant grants are not in a backup by design.
+
+## Account deletion
+
+A confirmed `POST /v1/account/delete` erases the owner's stored data: third-party grants are revoked, the conversation actor and its research task actors and the owner's search instance are erased, cached thumbnails and every media object are deleted, then export packages, backups and journals, and finally every row of every table that has a `user_id`, in one transaction. The assistant's and the visual wardrobe's steps run before the rows are deleted because they find their stores through those rows. What remains is one `account_erasures` row with a keyed hash and counts. An erasure that fails part-way stays pending and the scheduled sweep finishes it. Forgetting a single source (`conversation.forget_source`) is a different operation owned by the assistant workstream; this package does not describe it as complete erasure of every copy.
+
 ## Checks
 
 ```
 npm run typecheck        # in apps/worker
-npm test                 # in apps/worker: 9 files, 112 tests
+npm test                 # in apps/worker: 16 files, 168 tests
 npm test                 # in the repository root: typecheck and tests of every workspace
 ```
 
 ## Stand-ins used by the tests
 
 - **Cloudflare Access**: assertions are signed with a key generated per test run and verified by the Worker's real verification code. Real Access with Google was not exercised.
-- **Language model**: the assistant workstream's labelled fake model. No test here calls a real model.
-- **Google OAuth and Calendar**: the labelled fixture `https://google.fixture.test` (`src/testing/vitest-config.ts`).
-- **Remote MCP tool service**: a labelled fixture at `https://mcp.tavily.com/mcp`; it is not Tavily.
+- **Language model**: the assistant workstream's labelled fake model, and a labelled test double for the composition model in the scheduled sweep. No test here calls a real model.
+- **Google OAuth, Calendar, Sheets, Gmail and Drive**: the labelled fixture `https://google.fixture.test` (`src/testing/vitest-config.ts`), including a synthetic spreadsheet and an in-memory event store.
+- **Remote MCP tool service**: a labelled fixture at `https://mcp.tavily.com/mcp`; it is not Tavily. **OAuth MCP service**: the labelled fixture `https://oauth-tools.example.org`.
+- **APNs**: the labelled fixture `https://apns.fixture.test`, which verifies the provider token's signature and headers; it is not Apple.
+- **Browser Rendering**: a labelled fake binding inside one test; there is no such binding locally.
 - **All other outbound requests** answer 503, so weather is reported as unavailable.
-- **MCP client in tests** is the SDK client over in-process `fetch`; the smoke script uses real HTTP against `wrangler dev`.
+- **MCP client in tests** is the SDK client over in-process `fetch`; the smoke script and the restore drill use real HTTP against `wrangler dev`.
 
-## Not done or not verified here
+## Not verified here
 
-- Scheduled backups, a restore manifest and a restore drill (checklist S15-047, S15-048). The portable export and import are a separate feature and are done.
-- Account deletion disables the account and its grants; erasing stored data is an operator step that is not implemented.
-- `garderobe_recommend` never returns a running run: the daily service completes within the call.
-- The MCP Tasks extension is not used; long operations return run handles.
-- Scheduled board preparation uses the deterministic composer; the AI Gateway composition model is used only for requests made for one owner.
-- Delivery of the morning notification to a device (APNs) is not wired.
-- Browser rendering for page retrieval is not wired; that method reports itself unavailable.
-- Needs the development deployment or a device: real Cloudflare Access with Google and Managed OAuth for the native app, consent, refresh, revoke and reconnect with real Claude and ChatGPT clients, client metadata documents with a real client, a real Google grant over several days, real Exa and Tavily endpoints, and server-sent events on a physical iPhone.
+Everything in this package is implemented; these parts have only been exercised against the stand-ins above and need the development deployment or a device:
+
+- Real Cloudflare Access with Google and Managed OAuth for the native app; an Access bypass for `/connections/callback` and `/v1/media/signed/*` (both carry their own authentication).
+- Consent, refresh, scope denial, revoke and reconnect with real Claude and ChatGPT clients; client metadata documents with a real client.
+- A real Google grant over several days (Calendar, Sheets, Gmail), real Exa and Tavily endpoints and a real OAuth MCP service.
+- APNs with the real team key and a real device.
+- The Browser Rendering binding (`"browser": { "binding": "BROWSER" }`), AI Gateway for the composition model in the scheduled sweep and for mailbox investigations, and deletion of the AI Search instance on account erasure (none of these bindings exist locally).
+- The restore drill on real resources (`scripts/restore-drill.mjs --base ...` with two Access identities and an empty target owner) and backup retention on real R2.
+- Server-sent events on a physical iPhone.
+
+Limits to know about: a recommendation that continues as a run finishes inside the request's `waitUntil` lifetime; one that is lost is reported as failed after ten minutes, not resumed. Cached thumbnails are purged in the data centre that handles the erasure and lapse elsewhere within 24 hours; they are unreachable meanwhile.

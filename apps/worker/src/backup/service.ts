@@ -32,6 +32,12 @@ export const BACKUP_INTERVAL_MS = 24 * 3_600_000;
 const BACKUPS_PER_SWEEP = 2;
 
 export const tombstoneJournalKey = (userId: string) => `backups/${userId}/tombstones.json`;
+/**
+ * A second copy of the journal, named by the owner's keyed reference (the only owner identity a backup
+ * package carries). A restore in this deployment finds it from the package alone, so images deleted
+ * after the backup are never written back to storage. It is erased with the account.
+ */
+export const journalByOwnerRefKey = (ownerRef: string) => `backup-journals/${ownerRef}/tombstones.json`;
 
 /* ------------------------------------------------------------------ */
 /* The state digest: what a restore must reproduce                      */
@@ -186,15 +192,30 @@ export interface TombstoneJournal {
   ownerRef: string;
   writtenAt: string;
   tombstones: { sourceKind: string; sourceId: string; requestedAt: string }[];
+  /** The visual wardrobe's deletion journal (`garderobe-media-deletions/1`), when that module is installed. */
+  mediaDeletions?: Record<string, unknown>;
 }
 
 export async function readTombstones(app: App, userId: string, nowMs: number): Promise<TombstoneJournal> {
   const rows = (await tableExists(app.db, "source_tombstones")) ? await all<{ source_kind: string; source_id: string; requested_at: string }>(app.db, "SELECT source_kind, source_id, requested_at FROM source_tombstones WHERE user_id = ? ORDER BY requested_at, source_kind, source_id", userId) : [];
-  return { format: "garderobe-tombstones/1", ownerRef: await ownerRefOf(app.env, userId), writtenAt: toInstant(nowMs), tombstones: rows.map((r) => ({ sourceKind: r.source_kind, sourceId: r.source_id, requestedAt: r.requested_at })) };
+  const reader = createPrincipal({ userId, actor: "system", channel: "system", scopes: ["read", "write"], authRef: "backup:journal" });
+  const mediaDeletions = app.media ? await app.media.listDeletions(reader) : null;
+  return { format: "garderobe-tombstones/1", ownerRef: await ownerRefOf(app.env, userId), writtenAt: toInstant(nowMs), tombstones: rows.map((r) => ({ sourceKind: r.source_kind, sourceId: r.source_id, requestedAt: r.requested_at })), ...(mediaDeletions ? { mediaDeletions } : {}) };
 }
 
 async function writeTombstoneJournal(app: App, userId: string, nowMs: number): Promise<void> {
-  await app.env.EXPORT_BUCKET.put(tombstoneJournalKey(userId), JSON.stringify(await readTombstones(app, userId, nowMs)), { httpMetadata: { contentType: "application/json" } });
+  const journal = JSON.stringify(await readTombstones(app, userId, nowMs));
+  await app.env.EXPORT_BUCKET.put(tombstoneJournalKey(userId), journal, { httpMetadata: { contentType: "application/json" } });
+  await app.env.EXPORT_BUCKET.put(journalByOwnerRefKey(await ownerRefOf(app.env, userId)), journal, { httpMetadata: { contentType: "application/json" } });
+}
+
+/** The journal kept in this deployment for the owner a backup package came from, or null. */
+export async function journalForOwnerRef(app: App, ownerRef: string): Promise<TombstoneJournal | null> {
+  if (!/^[A-Za-z0-9_-]{16,128}$/.test(ownerRef)) return null;
+  const object = await app.env.EXPORT_BUCKET.get(journalByOwnerRefKey(ownerRef));
+  if (!object) return null;
+  const journal = parseJson<TombstoneJournal | null>(await object.text(), null);
+  return journal && journal.format === "garderobe-tombstones/1" && journal.ownerRef === ownerRef ? journal : null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -238,7 +259,7 @@ const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.str
  * bring the derived indexes up to date, then compare the owner's state with the restore manifest. The
  * restore is only reported complete when every check holds.
  */
-export async function verifyRestore(app: App, session: OwnerSession, input: { restoreManifest: Record<string, unknown>; tombstones?: TombstoneJournal | null }): Promise<{ complete: boolean; checks: RestoreCheck[]; tombstonesReplayed: number; verifiedAt: string }> {
+export async function verifyRestore(app: App, session: OwnerSession, input: { restoreManifest: Record<string, unknown>; tombstones?: TombstoneJournal | null }): Promise<{ complete: boolean; checks: RestoreCheck[]; tombstonesReplayed: number; mediaDeletionsReplayed: { assetsDeleted: number; originalsPurged: number }; verifiedAt: string }> {
   const manifest = input.restoreManifest as { format?: string; ownerRef?: string; state?: StateDigest };
   if (manifest.format !== RESTORE_MANIFEST_FORMAT || !manifest.state) throw new ApiException("invalid_command", "that is not a Garderobe restore manifest");
   const expected = manifest.state;
@@ -261,6 +282,13 @@ export async function verifyRestore(app: App, session: OwnerSession, input: { re
       }
     }
   }
+  // Images deleted (and originals purged) after the backup was taken are deleted again, through the command
+  // service, before the media check; the purge of their stored files is dispatched with the other media jobs.
+  let mediaReplayed = { assetsDeleted: 0, originalsPurged: 0 };
+  if (journal?.mediaDeletions && app.media) {
+    mediaReplayed = await app.media.replayDeletions(principal, journal.mediaDeletions);
+    await app.media.afterCommit();
+  }
   // Erasures and the recall index are brought up to date before the comparison (and before search is relied on).
   if (app.assistant) await app.assistant.maintenance(app.now());
 
@@ -273,7 +301,18 @@ export async function verifyRestore(app: App, session: OwnerSession, input: { re
   check("style versions with their content hashes", expected.style.versions, actual.style.versions);
   check("style rules, amendments and open conflicts", { rules: expected.style.rules, amendments: expected.style.amendments, factConflicts: expected.style.factConflicts }, { rules: actual.style.rules, amendments: actual.style.amendments, factConflicts: actual.style.factConflicts });
   check("ledger revisions", { wardrobeRevision: expected.ledger.wardrobeRevision, styleRevision: expected.ledger.styleRevision }, { wardrobeRevision: actual.ledger.wardrobeRevision, styleRevision: actual.ledger.styleRevision });
+  // Deleted images keep their records (marked deleted), so the counts are compared as they are; what the
+  // journal says is gone must not be readable again.
   check("media assets and renditions", expected.media, actual.media);
+  if (journal?.mediaDeletions && app.media) {
+    const named = ((journal.mediaDeletions as { deletedAssets?: { assetId: string }[] }).deletedAssets ?? []).map((d) => d.assetId);
+    const readable: string[] = [];
+    for (const assetId of named) {
+      const opened = await app.media.openAsset(principal, assetId, { variant: "display" }).then(() => true, () => false);
+      if (opened) readable.push(assetId);
+    }
+    checks.push({ name: "images deleted after the backup stay deleted", ok: readable.length === 0, expected: [], actual: readable, note: `${named.length} deleted image(s) in the journal; ${mediaReplayed.assetsDeleted} had come back with the backup and were deleted again` });
+  }
   check("boards and trips", expected.boards, actual.boards);
   check("pending turns", expected.pendingTurns, actual.pendingTurns);
   const messages = (c: Record<string, unknown> | null) => (c ? { messageCount: c.messageCount ?? null, lastMessageId: c.lastMessageId ?? null, compactionOverlays: c.compactionOverlays ?? null } : null);
@@ -297,5 +336,5 @@ export async function verifyRestore(app: App, session: OwnerSession, input: { re
   const settled = (e: Record<string, number>) => Object.fromEntries(Object.entries(e).filter(([state]) => !["pending", "in_progress", "cancelled"].includes(state)));
   check("completed effects keep their recorded outcome", settled(expected.effects), settled(actual.effects));
   checks.push({ name: "sign-ins, connections and assistant grants", ok: true, expected: expected.notRestored, actual: actual.notRestored, note: "not restored by design: sign in through claim or recovery and reconnect services" });
-  return { complete: checks.every((c) => c.ok), checks, tombstonesReplayed: replayed, verifiedAt: toInstant(app.now()) };
+  return { complete: checks.every((c) => c.ok), checks, tombstonesReplayed: replayed, mediaDeletionsReplayed: mediaReplayed, verifiedAt: toInstant(app.now()) };
 }

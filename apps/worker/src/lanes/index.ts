@@ -80,6 +80,60 @@ function guardRestrictionLifts(r: CommandRegistry): void {
   };
 }
 
+/**
+ * Commands the assistant actor may not run on text that a connected assistant relayed (`garderobe_ask`,
+ * `garderobe_research`). In the app the assistant acts on the owner's own typed or spoken words; on the
+ * MCP channel the "owner's words" are whatever the connected model sent, which cannot be verified as
+ * the owner's and may itself come from a page or a document that model read. So what the owner owns,
+ * the owner's profile and measurements, and the hard constraints do not change on relayed text:
+ * the assistant can answer and can propose, and a connected assistant with the write permission still
+ * has the typed `garderobe_command` tool, where the change is an explicit, schema-checked command that
+ * its own user approved rather than something a sentence was interpreted into.
+ */
+export const NOT_ON_RELAYED_TEXT: readonly string[] = [
+  "garment.create",
+  "garment.receive",
+  "garment.retire",
+  "garment.merge",
+  "garment.remove_fabricated",
+  "garment.bulk_correct",
+  "stock.reconcile",
+  "style.add_amendment",
+  "style.set_amendment_status",
+  "style.save_document",
+  "style.import_document",
+  "style.upsert_rule",
+  "style.add_direction",
+  "style.retire_direction",
+  "style.resolve_fact_conflict",
+  "measurement.record",
+];
+
+const relayedTurn = (ctx: { principal: Principal; envelope: { source: { channel?: string; parentKind?: string | null } } }): boolean =>
+  ctx.principal.actor === "assistant" && (ctx.principal.channel === "mcp" || ctx.envelope.source.channel === "mcp") && ctx.envelope.source.parentKind === "turn";
+
+function guardRelayedText(r: CommandRegistry): void {
+  const refuse = (): never => {
+    throw new CommandError("forbidden", "this cannot be changed from a message relayed by a connected assistant; the owner changes it in the Garderobe app, or the connected assistant sends it as an explicit garderobe_command", { reason: "relayed_text_not_owner_statement" });
+  };
+  for (const type of NOT_ON_RELAYED_TEXT) {
+    if (!r.has(type)) continue;
+    const definition = r.get(type);
+    const plan = definition.plan;
+    definition.plan = async (ctx, payload) => (relayedTurn(ctx as never) ? refuse() : plan.call(definition, ctx, payload));
+  }
+  // Undoing one of those commands is the same change in the other direction.
+  const undo = r.get("command.undo");
+  const planUndo = undo.plan;
+  undo.plan = async (ctx, payload) => {
+    if (relayedTurn(ctx as never)) {
+      const target = await first<{ type: string }>(ctx.db, "SELECT type FROM commands WHERE user_id = ? AND command_id = ?", ctx.userId, (payload as { commandId: string }).commandId);
+      if (target && NOT_ON_RELAYED_TEXT.includes(target.type)) refuse();
+    }
+    return planUndo.call(undo, ctx, payload);
+  };
+}
+
 let registry: CommandRegistry | null = null;
 
 /**
@@ -97,6 +151,7 @@ export function composedRegistry(): CommandRegistry {
       return mediaDepsFor(bound);
     });
     guardRestrictionLifts(r);
+    guardRelayedText(r);
     registry = r;
   }
   return registry;

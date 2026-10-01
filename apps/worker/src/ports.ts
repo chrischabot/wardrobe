@@ -112,7 +112,8 @@ export interface MediaBody {
 
 export interface MediaExport {
   records: unknown;
-  assets: { assetId: string; renditionId: string | null; kind: string; r2Key: string; contentType: string; byteLength: number; sha256: string }[];
+  /** `file` is a package-relative path of one stored file of this owner (never a storage key). */
+  assets: { assetId: string; renditionId: string | null; kind: string; file: string; contentType: string; byteLength: number; sha256: string }[];
 }
 
 export interface MediaPort {
@@ -129,8 +130,16 @@ export interface MediaPort {
   garmentImage(principal: Principal, garmentId: string): Promise<GarmentImageRef | null>;
   openRendition(principal: Principal, renditionId: string, width?: number): Promise<MediaBody>;
   openAsset(principal: Principal, assetId: string, opts: { variant?: "display" | "original" | "cutout" | "catalogue"; width?: number }): Promise<MediaBody>;
-  /** Raw stored object of an asset, for the portable export. */
-  readExportAsset(principal: Principal, r2Key: string): Promise<ArrayBuffer | null>;
+  /** A short-lived URL for one of the caller's own renditions (never for Calendar or shared text). */
+  signRendition(principal: Principal, renditionId: string, opts: { width?: number; ttlSeconds?: number }): Promise<{ url: string; renditionId: string; width: number | null; expiresAt: string }>;
+  /** Serve a signed URL. Authenticated by the token alone; every failure is the same 404. */
+  serveSigned(token: string, request: Request): Promise<Response>;
+  /** Images deleted and originals purged, for the journal kept beside the backups. */
+  listDeletions(principal: Principal): Promise<Record<string, unknown>>;
+  /** Delete again, through the command service, whatever a restored backup brought back. Safe to repeat. */
+  replayDeletions(principal: Principal, journal: Record<string, unknown>): Promise<{ assetsDeleted: number; originalsPurged: number }>;
+  /** Stored bytes of one of the caller's own exported files, for the portable export. */
+  readExportAsset(principal: Principal, file: string): Promise<ArrayBuffer | null>;
   photosNeeded(principal: Principal): Promise<PhotosNeededItem[]>;
   review(principal: Principal): Promise<MediaReview>;
   studio(principal: Principal, query: { mode: "for_today" | "explore"; date?: string }): Promise<StudioSelectors>;
@@ -150,5 +159,6 @@ export interface MediaPort {
   exportData(principal: Principal): Promise<MediaExport>;
   /** Account erasure: purge cached thumbnails, then delete every object under the owner's prefix. Runs before the rows are deleted. */
   eraseOwner(userId: string): Promise<{ objects: number; cachedThumbnails: number }>;
-  importData(principal: Principal, records: unknown, readAsset: (exportedKey: string) => Promise<ArrayBuffer | null>): Promise<unknown>;
+  /** Requires the admin scope before anything is read or stored. With `deletions`, files of images deleted after the package was made are never written back. */
+  importData(principal: Principal, records: unknown, readAsset: (exportedKey: string) => Promise<ArrayBuffer | null>, deletions?: Record<string, unknown> | null): Promise<unknown>;
 }

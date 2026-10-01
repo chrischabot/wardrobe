@@ -17996,6 +17996,25 @@
         "complete": {
           "type": "boolean"
         },
+        "mediaDeletionsReplayed": {
+          "properties": {
+            "assetsDeleted": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "originalsPurged": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "assetsDeleted",
+            "originalsPurged"
+          ],
+          "type": "object"
+        },
         "tombstonesReplayed": {
           "maximum": 9007199254740991,
           "minimum": 0,
@@ -18009,6 +18028,7 @@
         "complete",
         "checks",
         "tombstonesReplayed",
+        "mediaDeletionsReplayed",
         "verifiedAt"
       ],
       "type": "object"
@@ -19525,6 +19545,22 @@
       "required": [
         "patch"
       ],
+      "type": "object"
+    },
+    "SignRenditionRequest": {
+      "properties": {
+        "ttlSeconds": {
+          "maximum": 3600,
+          "minimum": 30,
+          "type": "integer"
+        },
+        "width": {
+          "description": "One of 160, 320, 640, 1280.",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        }
+      },
       "type": "object"
     },
     "SignedMediaUrl": {
@@ -22289,6 +22325,13 @@
         "format": {
           "const": "garderobe-tombstones/1",
           "type": "string"
+        },
+        "mediaDeletions": {
+          "additionalProperties": {},
+          "propertyNames": {
+            "type": "string"
+          },
+          "type": "object"
         },
         "ownerRef": {
           "type": "string"

@@ -54,6 +54,19 @@ export async function discoverRemoteTools(endpoint: string, recorded: string | n
   throw failure;
 }
 
+/**
+ * Health probe of one connected tool service: list its tools with the connection's own credential (no
+ * tool is called, nothing is cached). Throws the assistant client's `ConnectionError`; code `auth`
+ * means the service rejected the credential.
+ */
+export async function probeConnection(db: Db, userId: string, connectionId: string, authorize: Authorize): Promise<void> {
+  const row = await first<ConnectedRow>(db, "SELECT connection_id, endpoint, protocol, auth_type, namespace FROM connection_profiles WHERE user_id = ? AND connection_id = ? AND state = 'connected' AND kind != 'google_workspace' AND endpoint IS NOT NULL", userId, connectionId);
+  if (!row) throw new ConnectionError("not_executable", "this connection is not connected");
+  const requiresCredential = row.auth_type !== "none";
+  if (requiresCredential && !(await authorize())) throw new ConnectionError("auth", "this connection has no usable credential");
+  await clientFor(row.endpoint, isCompat(row.protocol) ? OUTBOUND_COMPAT_PROTOCOL : OUTBOUND_PROTOCOL, authorize, requiresCredential).listTools();
+}
+
 const GROUPS = ["search", "fetch", "extract", "map", "crawl"] as const;
 export const GROUP_LABELS: Record<string, string> = { search: "Search the web", fetch: "Fetch pages", extract: "Read pages", map: "Map a site", crawl: "Crawl a site", other: "Other tools" };
 

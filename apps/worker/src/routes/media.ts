@@ -1,9 +1,10 @@
-import { AssetImageQuery, ImageQuery, StudioComposeRequest, StudioOutfitRequest, StudioPreviewRequest, StudioQuery, UploadRequest } from "@garderobe/contracts/ext/api";
+import { AssetImageQuery, ImageQuery, SignRenditionRequest, StudioComposeRequest, StudioOutfitRequest, StudioPreviewRequest, StudioQuery, UploadRequest } from "@garderobe/contracts/ext/api";
 import { afterCommit } from "../app.ts";
 import { MEDIA_THUMBNAIL_WIDTHS } from "@garderobe/contracts/ext/media";
 import { requireMedia } from "../app.ts";
 import { ApiException } from "../errors.ts";
 import { BASE_HEADERS, json, readJson, readQuery } from "../http.ts";
+import { IMAGE_RESPONSE_HEADERS as IMAGE_SAFETY } from "../lanes/media.ts";
 import type { MediaBody } from "../ports.ts";
 import { owner, selfAuthenticated, type RouteDef } from "../router.ts";
 
@@ -16,13 +17,21 @@ function width(value: number | undefined): number | undefined {
 }
 
 /** Private image bytes: owner-authenticated, never publicly cacheable, never framed or sniffed. */
+/** Headers of an image response: the API's base set, then the visual wardrobe's image set, then this response's own (one value per name). */
+function imageHeaders(own: Record<string, string>): Headers {
+  const headers = new Headers(BASE_HEADERS);
+  for (const [name, value] of [...Object.entries(IMAGE_SAFETY), ...Object.entries(own)]) headers.set(name, value);
+  return headers;
+}
+
 function imageResponse(request: Request, media: MediaBody): Response {
-  const headers: Record<string, string> = { ...BASE_HEADERS, "Content-Type": media.contentType, "Cache-Control": "private, max-age=300", "Content-Disposition": "inline" };
+  // The visual wardrobe's header set: no script, no frame, no sniffing, whatever the stored bytes claim to be.
+  const headers = imageHeaders({ "Content-Type": media.contentType, "Cache-Control": "private, max-age=300" });
   if (media.etag) {
-    headers.ETag = media.etag;
+    headers.set("ETag", media.etag);
     if (request.headers.get("If-None-Match") === media.etag) return new Response(null, { status: 304, headers });
   }
-  if (media.byteLength !== null) headers["Content-Length"] = String(media.byteLength);
+  if (media.byteLength !== null) headers.set("Content-Length", String(media.byteLength));
   return new Response(media.body, { status: 200, headers });
 }
 
@@ -61,6 +70,25 @@ export function mediaRoutes(): RouteDef[] {
     owner("GET", "/v1/media/renditions/{id}", "read", async ({ app, session, params, url, request }) =>
       imageResponse(request, await requireMedia(app, "images").openRendition(session.principal, params.id!, width(readQuery(url, ImageQuery).width))),
     ),
+
+    /*
+     * Signed delivery, for an image view that cannot attach the sign-in to its request. The owner asks for
+     * a URL for one of their own renditions; the URL carries a short-lived token bound to that owner,
+     * rendition and width. The visual wardrobe answers every failure (bad or expired token, deleted image,
+     * disabled account) with the same 404, so a URL reveals nothing about what exists.
+     */
+    owner("POST", "/v1/media/renditions/{id}/sign", "read", async ({ app, session, params, request }) => {
+      const body = await readJson(request, SignRenditionRequest);
+      const w = width(body.width);
+      return json(await requireMedia(app, "images").signRendition(session.principal, params.id!, { ...(w ? { width: w } : {}), ...(body.ttlSeconds ? { ttlSeconds: body.ttlSeconds } : {}) }));
+    }),
+
+    selfAuthenticated("GET", "/v1/media/signed/{token}", "ticket", async ({ app, params, request }) => {
+      const response = await requireMedia(app, "images").serveSigned(params.token!, request);
+      const headers = new Headers(response.headers);
+      for (const [name, value] of Object.entries(IMAGE_SAFETY)) headers.set(name, value);
+      return new Response(response.body, { status: response.status, headers });
+    }),
 
     owner("GET", "/v1/media/assets/{id}", "read", async ({ app, session, params, url, request }) => {
       const q = readQuery(url, AssetImageQuery);
@@ -105,7 +133,7 @@ export function mediaRoutes(): RouteDef[] {
 
     owner("GET", "/v1/studio/compositions/{id}/preview", "read", async ({ app, session, params }) => {
       const image = await requireMedia(app, "Studio previews").openPreview(session.principal, params.id!);
-      return new Response(image.body, { status: 200, headers: { ...BASE_HEADERS, "Content-Type": image.contentType, "Cache-Control": "private, max-age=300", ETag: image.etag, "X-Content-Type-Options": "nosniff" } });
+      return new Response(image.body, { status: 200, headers: imageHeaders({ "Content-Type": image.contentType, "Cache-Control": "private, max-age=300", ETag: image.etag }) });
     }),
   ];
 }

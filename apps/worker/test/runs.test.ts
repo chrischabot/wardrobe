@@ -201,6 +201,51 @@ describe("cancelling a turn that is still running", () => {
   });
 });
 
+describe("garderobe_run over MCP", () => {
+  it("answers the assistant's question and cancels a run, with the same durable state the app sees", async () => {
+    const mcp = await connectMcp(owner, { write: true });
+    // The assistant asks one question; the run waits for the answer without any open stream.
+    model.script({ toolCalls: [{ toolName: "ask_owner", input: { question: "Which blazer do you mean?", choices: [{ id: "navy", label: "The navy one" }, { id: "grey", label: "The grey one" }] } }] }, { text: "One moment." });
+    const asked = toolResult(await mcp.client.callTool({ name: "garderobe_ask", arguments: { message: "what goes with the blazer?", clientTurnId: `turn-${crypto.randomUUID()}`, mode: "wait" } }));
+    expect(asked.ok, JSON.stringify(asked.error)).toBe(true);
+    const waiting = toolResult(await mcp.client.callTool({ name: "garderobe_run", arguments: { runId: asked.data.runId } }));
+    expect(waiting.data.run.state).toBe("needs_input");
+    expect(waiting.data.run.pendingInput.question).toBe("Which blazer do you mean?");
+    const read = async (runId: string) => toolResult(await mcp.client.callTool({ name: "garderobe_run", arguments: { runId } })).data.run;
+    // The app sees the same pending question on the same run.
+    expect((await owner.api.json("GET", `/v1/runs/${asked.data.runId}`)).pendingInput.inputId).toBe(waiting.data.run.pendingInput.inputId);
+
+    model.script({ text: "With the navy blazer, the grey flannels." });
+    const answered = toolResult(await mcp.client.callTool({ name: "garderobe_run", arguments: { runId: asked.data.runId, action: "respond", inputId: waiting.data.run.pendingInput.inputId, choiceId: "navy" } }));
+    expect(answered.ok, JSON.stringify(answered.error)).toBe(true);
+    let settled = answered.data.run;
+    for (let i = 0; i < 100 && !["completed", "failed"].includes(settled.state); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      settled = await read(answered.data.run.runId);
+    }
+    expect(settled.state).toBe("completed");
+    expect(settled.result.reply.text ?? settled.result.reply).toContain("navy blazer");
+    // The run the answer continued as can be followed from the app as well.
+    expect((await owner.api.json("GET", `/v1/runs/${answered.data.run.runId}`)).state).toBe("completed");
+    // An answer to a question that is no longer open is refused, not applied twice.
+    const again = toolResult(await mcp.client.callTool({ name: "garderobe_run", arguments: { runId: asked.data.runId, action: "respond", inputId: waiting.data.run.pendingInput.inputId, choiceId: "grey" } }));
+    expect(again.ok).toBe(false);
+
+    // Cancel: a second question is left open, then the connected assistant stops the run.
+    model.script({ toolCalls: [{ toolName: "ask_owner", input: { question: "Which trousers?", choices: [] } }] }, { text: "One moment." });
+    const second = toolResult(await mcp.client.callTool({ name: "garderobe_ask", arguments: { message: "and the trousers?", clientTurnId: `turn-${crypto.randomUUID()}`, mode: "wait" } }));
+    const cancelled = toolResult(await mcp.client.callTool({ name: "garderobe_run", arguments: { runId: second.data.runId, action: "cancel" } }));
+    expect(cancelled.ok, JSON.stringify(cancelled.error)).toBe(true);
+    expect(cancelled.data.run.state).toBe("cancelled");
+    expect((await read(second.data.runId)).state).toBe("cancelled");
+    // Another owner's connection cannot read, answer or cancel it.
+    const other = await connectMcp(stranger, { write: true });
+    for (const action of ["status", "cancel", "resume"]) expect(toolResult(await other.client.callTool({ name: "garderobe_run", arguments: { runId: second.data.runId, action } })).ok).toBe(false);
+    await other.close();
+    await mcp.close();
+  });
+});
+
 describe("research through the MCP tool", () => {
   it("starts a durable investigation and returns its sources, verdict and comparison from the records it wrote", async () => {
     model.script(

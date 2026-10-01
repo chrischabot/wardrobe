@@ -14602,17 +14602,20 @@ public struct RestoreReport: Codable, Sendable, Equatable {
     public var complete: Bool
     public var checks: [ChecksItem]
     public var tombstonesReplayed: Int
+    public var mediaDeletionsReplayed: MediaDeletionsReplayed
     public var verifiedAt: Instant
 
     public init(
         complete: Bool,
         checks: [ChecksItem],
         tombstonesReplayed: Int,
+        mediaDeletionsReplayed: MediaDeletionsReplayed,
         verifiedAt: Instant
     ) {
         self.complete = complete
         self.checks = checks
         self.tombstonesReplayed = tombstonesReplayed
+        self.mediaDeletionsReplayed = mediaDeletionsReplayed
         self.verifiedAt = verifiedAt
     }
 
@@ -14635,6 +14638,19 @@ public struct RestoreReport: Codable, Sendable, Equatable {
             self.expected = expected
             self.actual = actual
             self.note = note
+        }
+    }
+
+    public struct MediaDeletionsReplayed: Codable, Sendable, Equatable {
+        public var assetsDeleted: Int
+        public var originalsPurged: Int
+
+        public init(
+            assetsDeleted: Int,
+            originalsPurged: Int
+        ) {
+            self.assetsDeleted = assetsDeleted
+            self.originalsPurged = originalsPurged
         }
     }
 }
@@ -15796,6 +15812,20 @@ public struct SettingsUpdate: Codable, Sendable, Equatable {
         patch: [String: JSONValue]
     ) {
         self.patch = patch
+    }
+}
+
+public struct SignRenditionRequest: Codable, Sendable, Equatable {
+    /// One of 160, 320, 640, 1280.
+    public var width: Int?
+    public var ttlSeconds: Int?
+
+    public init(
+        width: Int? = nil,
+        ttlSeconds: Int? = nil
+    ) {
+        self.width = width
+        self.ttlSeconds = ttlSeconds
     }
 }
 
@@ -18002,17 +18032,20 @@ public struct TombstoneJournal: Codable, Sendable, Equatable {
     public var ownerRef: String
     public var writtenAt: Instant
     public var tombstones: [TombstonesItem]
+    public var mediaDeletions: [String: JSONValue]?
 
     public init(
         format: String,
         ownerRef: String,
         writtenAt: Instant,
-        tombstones: [TombstonesItem]
+        tombstones: [TombstonesItem],
+        mediaDeletions: [String: JSONValue]? = nil
     ) {
         self.format = format
         self.ownerRef = ownerRef
         self.writtenAt = writtenAt
         self.tombstones = tombstones
+        self.mediaDeletions = mediaDeletions
     }
 
     public struct TombstonesItem: Codable, Sendable, Equatable {

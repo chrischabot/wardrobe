@@ -95,7 +95,9 @@ export async function eraseAccount(app: App, userId: string, nowMs: number): Pro
     // These read the owner's rows, so they run before the rows are deleted.
     stores.conversation = app.assistant ? await app.assistant.eraseOwner(system) : "assistant not installed";
     stores.media = app.media ? await app.media.eraseOwner(userId) : "visual wardrobe not installed";
-    stores.exportsAndBackups = { objects: (await deletePrefix(env.EXPORT_BUCKET, `exports/${userId}/`)) + (await deletePrefix(env.EXPORT_BUCKET, `backups/${userId}/`)) };
+    stores.exportsAndBackups = {
+      objects: (await deletePrefix(env.EXPORT_BUCKET, `exports/${userId}/`)) + (await deletePrefix(env.EXPORT_BUCKET, `backups/${userId}/`)) + (await deletePrefix(env.EXPORT_BUCKET, `backup-journals/${ownerRef}/`)),
+    };
 
     const tables = await ownerTables(db);
     const counts: Record<string, number> = {};
