@@ -30,7 +30,8 @@ final class GarderobeUITests: XCTestCase {
                 let value = String(text[range])
                 if seen.insert(value).inserted { parts.append(value) }
             }
-            issue.compactDescription += " | on screen: " + String(parts.joined(separator: "; ").prefix(1800))
+            // The end of the hierarchy is what is in front (a sheet, a pushed screen).
+            issue.compactDescription += " | on screen (last of \(parts.count)): " + String(parts.joined(separator: "; ").suffix(1000))
         }
         super.record(issue)
     }
@@ -223,7 +224,12 @@ final class GarderobeUITests: XCTestCase {
         launch()
         XCTAssertTrue(element(AXID.accountButton).waitForExistence(timeout: 10))
         element(AXID.accountButton).tap()
-        for identifier in [AXID.settingsMyStyle, AXID.settingsConnections, AXID.settingsAssistants, AXID.settingsExport, AXID.settingsRecovery] {
+        for identifier in [AXID.settingsMyStyle, AXID.settingsConnections, AXID.settingsAssistants] {
+            XCTAssertTrue(element(identifier).waitForExistence(timeout: 5), "\(identifier) is missing from Settings")
+        }
+        // The rest of the list is below the fold; rows exist once scrolled to.
+        app.swipeUp()
+        for identifier in [AXID.settingsRecovery, AXID.settingsExport] {
             XCTAssertTrue(element(identifier).waitForExistence(timeout: 5), "\(identifier) is missing from Settings")
         }
     }

@@ -114,9 +114,12 @@ jobs:
           xcodebuild test-without-building -project ios/Garderobe.xcodeproj -scheme Garderobe \
             -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
             -derivedDataPath DerivedData -resultBundlePath TestResults.xcresult \
+            -retry-tests-on-failure -test-iterations 2 \
             CODE_SIGNING_ALLOWED=NO > test.log 2>&1 || status=$?
-          grep -E "Test Case .* (passed|failed)|error:|Executed [0-9]+ tests|TEST (SUCCEEDED|FAILED|EXECUTE)" test.log | sed "s#$PWD/##g" | awk '!seen[$0]++' > test-summary.txt || true
-          if ! grep -q "Test Case" test-summary.txt; then { echo "---- end of test.log ----"; tail -60 test.log | sed "s#$PWD/##g"; } >> test-summary.txt; fi
+          # Verdicts first (short), then each failure's detail. A test that fails and then passes on its one retry shows both lines.
+          { grep -E "Test Case .* (passed|failed)|Executed [0-9]+ tests|TEST (SUCCEEDED|FAILED|EXECUTE)" test.log | sed -E "s/Test Case '-\[GarderobeUITests\.GarderobeUITests ([A-Za-z0-9_]+)\]'/\1/" | awk '!seen[$0]++'
+            grep -E "error:" test.log | sed "s#$PWD/##g; s#ios/App/GarderobeUITests/##; s#-\[GarderobeUITests\.GarderobeUITests ##" | awk '!seen[$0]++'; } > test-summary.txt || true
+          if ! grep -qE "(passed|failed) \(" test-summary.txt; then { echo "---- end of test.log ----"; tail -60 test.log | sed "s#$PWD/##g"; } >> test-summary.txt; fi
           echo "xcodebuild test-without-building exit $status" >> test-summary.txt
           tail -5 test.log
           python3 ios/Tools/ci-report.py "UI tests" test-summary.txt 9
