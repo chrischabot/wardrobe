@@ -6,7 +6,7 @@ import XCTest
 ///   xcodebuild test -project ios/Garderobe.xcodeproj -scheme Garderobe \
 ///     -destination 'platform=iOS Simulator,name=<an installed iPhone simulator>'
 ///
-/// They have NOT been run in the environment this project was built in (no macOS toolchain).
+/// They run on a macOS runner through `.github/workflows/ios.yml` (manual trigger).
 final class GarderobeUITests: XCTestCase {
     private var app: XCUIApplication!
 
@@ -14,6 +14,25 @@ final class GarderobeUITests: XCTestCase {
         continueAfterFailure = false
         app = XCUIApplication()
         app.launchArguments = ["-GarderobeDemo", "-GarderobeResetState"]
+    }
+
+    /// A failure also says what was on screen (identifiers and labels), because a run on a hosted
+    /// machine leaves nothing else to look at.
+    override func record(_ issue: XCTIssue) {
+        var issue = issue
+        if let app, app.state == .runningForeground {
+            var seen = Set<String>()
+            var parts: [String] = []
+            let pattern = try? NSRegularExpression(pattern: "(identifier|label): '([^']{1,60})")
+            let text = app.debugDescription
+            pattern?.enumerateMatches(in: text, range: NSRange(text.startIndex..., in: text)) { match, _, _ in
+                guard let match, let range = Range(match.range(at: 2), in: text) else { return }
+                let value = String(text[range])
+                if seen.insert(value).inserted { parts.append(value) }
+            }
+            issue.compactDescription += " | on screen: " + String(parts.joined(separator: "; ").prefix(1800))
+        }
+        super.record(issue)
     }
 
     private func launch(textSize: String? = nil, extra: [String] = []) {
@@ -107,7 +126,7 @@ final class GarderobeUITests: XCTestCase {
         XCTAssertGreaterThan(items.count, 0)
         items.firstMatch.tap()
         XCTAssertTrue(element(AXID.itemStatus).waitForExistence(timeout: 10))
-        XCTAssertTrue(element(AXID.itemAsk).exists || app.buttons["Ask about this"].exists)
+        XCTAssertTrue(element(AXID.itemAsk).exists)
     }
 
     func testTheWardrobeGridBecomesAListAtAccessibilityTextSizes() {
@@ -126,8 +145,7 @@ final class GarderobeUITests: XCTestCase {
         XCTAssertTrue(tab("Wardrobe").waitForExistence(timeout: 10))
         tab("Wardrobe").tap()
         let laundry = element(AXID.laundryButton)
-        if !laundry.waitForExistence(timeout: 3) { app.navigationBars.buttons.matching(NSPredicate(format: "label CONTAINS[c] 'more'")).firstMatch.tap() }
-        XCTAssertTrue(laundry.waitForExistence(timeout: 5))
+        XCTAssertTrue(laundry.waitForExistence(timeout: 10))
         laundry.tap()
         for identifier in [AXID.laundryCollected, AXID.laundryReturned, AXID.laundryStillAway, AXID.laundrySocksWashed] {
             XCTAssertTrue(element(identifier).waitForExistence(timeout: 5), "\(identifier) is missing from the Laundry sheet")
@@ -215,22 +233,30 @@ final class GarderobeUITests: XCTestCase {
     func testAccessibilityAuditOfTheFourDestinations() throws {
         launch()
         XCTAssertTrue(tab("Today").waitForExistence(timeout: 10))
+        // Every issue on every destination is collected and reported together.
+        var found: [String] = []
         for title in ["Today", "Wardrobe", "Studio", "Conversation"] {
             tab(title).tap()
             // Contrast, hit-region size, element description, Dynamic Type clipping and traits.
-            try app.performAccessibilityAudit()
+            try app.performAccessibilityAudit { issue in
+                let element = issue.element
+                let name = [element?.identifier, element?.label].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "/")
+                found.append("\(title): \(issue.compactDescription) [\(element.map { String(describing: $0.elementType.rawValue) } ?? "-") \(name.prefix(70))]")
+                return true
+            }
         }
+        XCTAssertTrue(found.isEmpty, "\(found.count) accessibility audit issues: " + found.joined(separator: " || "))
     }
 
-    func testTheCachedTodayViewAppearsWithinOneSecondOfLaunch() {
+    /// On relaunch Today is on screen by the time the app has finished launching. This is a
+    /// simulator observation; the specification's one-second target is measured on a device.
+    func testTodayIsOnScreenWhenARelaunchFinishes() {
         launch()
         XCTAssertTrue(element(AXID.todayDate).waitForExistence(timeout: 10))
         app.terminate()
-        let start = Date()
         app.launchArguments = ["-GarderobeDemo"]
-        app.launch()
-        XCTAssertTrue(element(AXID.todayDate).waitForExistence(timeout: 5))
-        // A coarse bound that includes process launch; the specification's target is one second for the cached view.
-        XCTAssertLessThan(Date().timeIntervalSince(start), 5)
+        app.launch() // returns once the app is running and idle
+        XCTAssertTrue(element(AXID.todayDate).waitForExistence(timeout: 1), "Today was not on screen one second after the relaunch finished")
+        XCTAssertTrue(element(AXID.todayCarousel).exists || element(AXID.todayComparisonList).exists)
     }
 }

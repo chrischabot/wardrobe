@@ -183,9 +183,26 @@ enum AppBootstrap {
     static func makeDemo() -> AppModel? {
         guard let cassette = try? Cassette.bundled("owner-morning") else { return nil }
         let time = ManualTimeSource(instant: cassette.clock)
-        let environment = AppEnvironment(transport: FixtureBackend(cassette: cassette, mode: .demo), tokens: StaticAccessToken("demo"), store: InMemoryKeyValueStore(),
+        let environment = AppEnvironment(transport: FixtureBackend(cassette: cassette, mode: .demo), tokens: StaticAccessToken("demo"), store: demoStore(),
                                          time: time, isDemo: true, timeZone: TimeZone(identifier: cassette.timezone) ?? .current)
         return AppModel(environment: environment, session: nil, shareInbox: nil)
+    }
+}
+
+extension AppBootstrap {
+    /// What the demo keeps between launches: where the owner was and what he was typing, so
+    /// restoration behaves as in the real app. Recorded data, receipts and queued actions never
+    /// carry over, because every demo launch replays the recording from its start.
+    private static let demoRestoredKeys: Set<String> = ["restore.app.tab", "restore.app.paths", "restore.conversation.draft", "restore.conversation.draftRefs",
+                                                        "restore.conversation.anchor", "restore.studio.state", "restore.today.comparison",
+                                                        "restore.wardrobe.filters", "restore.wardrobe.list"]
+
+    static func demoStore() -> KeyValueStore {
+        let directory = AppConfiguration.load().storageDirectory("demo")
+        if ProcessInfo.processInfo.arguments.contains(resetArgument) { try? FileManager.default.removeItem(at: directory) }
+        guard let store = try? FileKeyValueStore(directory: directory) else { return InMemoryKeyValueStore() }
+        for key in store.keys(prefix: "") where !demoRestoredKeys.contains(key) { store.remove(key) }
+        return store
     }
 }
 

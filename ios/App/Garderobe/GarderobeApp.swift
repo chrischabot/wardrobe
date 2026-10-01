@@ -99,17 +99,21 @@ struct MainTabs: View {
     private func destination<Content: View>(_ tab: AppTab, @ViewBuilder content: () -> Content) -> some View {
         NavigationStack(path: Binding(get: { app.path(for: tab) }, set: { app.setPath($0, for: tab) })) {
             content()
+                .modifier(BannerInsets())
                 .navigationDestination(for: AppRoute.self) { route in
-                    switch route {
-                    case .item(let garmentId): ItemScreen(garmentId: garmentId)
-                    case .trips: TripsScreen()
-                    case .trip(let tripId): TripScreen(tripId: tripId)
-                    case .returns: ReturnsScreen()
-                    case .reconcile(let category): ReconcileScreen(category: category)
-                    case .bulkEdit: BulkEditScreen()
-                    case .temperaturePreview: TemperaturePreviewScreen()
-                    case .projects: ProjectsScreen()
+                    Group {
+                        switch route {
+                        case .item(let garmentId): ItemScreen(garmentId: garmentId)
+                        case .trips: TripsScreen()
+                        case .trip(let tripId): TripScreen(tripId: tripId)
+                        case .returns: ReturnsScreen()
+                        case .reconcile(let category): ReconcileScreen(category: category)
+                        case .bulkEdit: BulkEditScreen()
+                        case .temperaturePreview: TemperaturePreviewScreen()
+                        case .projects: ProjectsScreen()
+                        }
                     }
+                    .modifier(BannerInsets())
                 }
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
@@ -122,7 +126,16 @@ struct MainTabs: View {
                     }
                 }
         }
-        .safeAreaInset(edge: .top, spacing: 0) { StatusBannerView() }
-        .safeAreaInset(edge: .bottom, spacing: Metrics.unit * 2) { UndoBannerView() }
+    }
+}
+
+/// The status banner under the navigation bar and the undo banner above the tab bar, on every
+/// screen of a destination. They sit inside the navigation stack so they never cover the bar's
+/// own controls.
+private struct BannerInsets: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .safeAreaInset(edge: .top, spacing: 0) { StatusBannerView() }
+            .safeAreaInset(edge: .bottom, spacing: Metrics.unit * 2) { UndoBannerView() }
     }
 }
