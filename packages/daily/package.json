@@ -1,0 +1,21 @@
+{
+  "name": "@garderobe/daily",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Daily service: mandatory context, outfit validation and composition, boards and repair, weather and calendar adapters, scheduled phases, trips, pause and resume.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "verify:contracts": "node --experimental-transform-types scripts/verify-open-meteo.ts && node --experimental-strip-types scripts/verify-google-calendar.ts"
+  },
+  "dependencies": {
+    "@garderobe/contracts": "1.0.0",
+    "@garderobe/domain": "1.0.0",
+    "zod": "4.6.5"
+  }
+}
