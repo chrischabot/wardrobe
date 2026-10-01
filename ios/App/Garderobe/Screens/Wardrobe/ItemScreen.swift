@@ -27,16 +27,6 @@ struct ItemScreen: View {
             await app.returns.open()
         }
         .refreshable { await model?.refresh() }
-        .toolbar {
-            ToolbarItem(placement: .secondaryAction) {
-                Button {
-                    if let model, let garment = model.garment { app.askAbout(model.askAboutReference, label: garment.name) }
-                } label: {
-                    Label("Ask about this", systemImage: "bubble.left")
-                }
-                .accessibilityIdentifier(AXID.itemAsk)
-            }
-        }
     }
 
     @ViewBuilder private func content(_ model: ItemModel) -> some View {
@@ -49,6 +39,13 @@ struct ItemScreen: View {
                     if let quantity = model.quantityLine { Text(quantity).font(.subheadline).foregroundStyle(.secondary) }
                     FreshnessLabel(text: model.freshnessLine, freshness: model.item.freshness)
                     OutcomeLine(outcome: model.lastOutcome)
+                    Button {
+                        app.askAbout(model.askAboutReference, label: garment.name)
+                    } label: {
+                        Label("Ask about this", systemImage: "bubble.left")
+                    }
+                    .secondaryAction()
+                    .accessibilityIdentifier(AXID.itemAsk)
                 }
                 ItemActionsSection(model: model)
                 ItemAvailabilitySection(model: model)

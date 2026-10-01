@@ -97,7 +97,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO > build.log 2>&1 || status=$?
           # The distinct compiler and build-system errors, with the checkout path removed.
           grep -E "(error|fatal error):|^xcodebuild: error|^error:|BUILD (SUCCEEDED|FAILED)|TEST BUILD (SUCCEEDED|FAILED)" build.log | sed "s#$PWD/##g" | awk '!seen[$0]++' > build-errors.txt || true
-          if ! grep -qE "\.swift:[0-9]+" build-errors.txt; then
+          if [ "$status" != 0 ] && ! grep -qE "\.swift:[0-9]+" build-errors.txt; then
             # Not a compile failure: show how the build ended (destinations, project problems).
             { echo "---- end of build.log ----"; tail -60 build.log | sed "s#$PWD/##g"; } >> build-errors.txt
           fi
@@ -115,7 +115,7 @@ jobs:
             -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
             -derivedDataPath DerivedData -resultBundlePath TestResults.xcresult \
             CODE_SIGNING_ALLOWED=NO > test.log 2>&1 || status=$?
-          grep -E "Test Case .* (passed|failed)|error:|Executed [0-9]+ tests|TEST (SUCCEEDED|FAILED|EXECUTE)" test.log | sed "s#$PWD/##g" > test-summary.txt || true
+          grep -E "Test Case .* (passed|failed)|error:|Executed [0-9]+ tests|TEST (SUCCEEDED|FAILED|EXECUTE)" test.log | sed "s#$PWD/##g" | awk '!seen[$0]++' > test-summary.txt || true
           if ! grep -q "Test Case" test-summary.txt; then { echo "---- end of test.log ----"; tail -60 test.log | sed "s#$PWD/##g"; } >> test-summary.txt; fi
           echo "xcodebuild test-without-building exit $status" >> test-summary.txt
           tail -5 test.log

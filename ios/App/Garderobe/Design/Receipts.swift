@@ -93,7 +93,8 @@ struct UndoBannerView: View {
                 AccessibilityNotification.Announcement("\(banner.record.receipt.summary). Undo available.").post()
                 let remaining = banner.expiresAt.timeIntervalSince(app.environment.time.now())
                 if remaining > 0 { try? await Task.sleep(nanoseconds: UInt64(remaining * 1_000_000_000)) }
-                if !Task.isCancelled { center.expireBanner() }
+                // The eight seconds are counted here, on the device's own clock.
+                if !Task.isCancelled, center.banner?.record.id == banner.record.id { center.dismissBanner() }
             }
         }
     }

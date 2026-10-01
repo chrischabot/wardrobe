@@ -38,6 +38,9 @@ struct WardrobeScreen: View {
                     .accessibilityIdentifier(AXID.wardrobeCounts)
             }
             FreshnessLabel(text: app.wardrobe.freshnessLine, freshness: app.wardrobe.snapshot.freshness)
+            Button { app.sheet = .laundry } label: { Label("Laundry", systemImage: "washer") }
+                .secondaryAction()
+                .accessibilityIdentifier(AXID.laundryButton)
             if app.wardrobe.isSearchingSavedCopy {
                 Label("Offline: searching the wardrobe saved on this phone.", systemImage: "wifi.slash")
                     .font(.footnote).foregroundStyle(.secondary)
@@ -72,8 +75,6 @@ struct WardrobeScreen: View {
                 Label(app.wardrobe.prefersList ? "Show as grid" : "Show as list", systemImage: app.wardrobe.prefersList ? "square.grid.2x2" : "list.bullet")
             }
             .accessibilityIdentifier(AXID.wardrobeLayoutToggle)
-            Button { app.sheet = .laundry } label: { Label("Laundry", systemImage: "washer") }
-                .accessibilityIdentifier(AXID.laundryButton)
             Button { app.push(.temperaturePreview) } label: { Label("Temperature preview", systemImage: "thermometer.medium") }
             Menu {
                 ForEach(app.wardrobe.categories, id: \.self) { category in
