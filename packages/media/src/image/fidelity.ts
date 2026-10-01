@@ -4,7 +4,7 @@
  */
 import { colourDistributionDistance, dominantColours, labDistance, rgbToLab } from "./colour.ts";
 import { estimateBackground, uniformBackgroundCutout } from "./cutout.ts";
-import { alphaBounds, cropRaster, fitWithin, resizeRaster, type Raster, type Rgb } from "./raster.ts";
+import { alphaBounds, cloneRaster, cropRaster, fitWithin, resizeRaster, type Raster, type Rgb } from "./raster.ts";
 
 export type FidelityCheckName = "garment_identity" | "dominant_colours" | "important_details" | "clipping" | "halos" | "missing_components";
 
@@ -42,6 +42,8 @@ export const FIDELITY_THRESHOLDS = {
   identityIouEdit: 0.82,
   /** Maximum mean colour difference (deltaE) between kept pixels and their source pixels (cutout mode). */
   pixelPreservationDeltaE: 3,
+  /** Maximum mean colour difference when an edit is compared in place against the original pixels. */
+  editInPlaceDeltaE: 8,
   /** Maximum palette distance (see colourDistributionDistance). */
   paletteDistance: 8,
   /** Minimum share of interior blocks whose detail statistics agree. */
@@ -250,9 +252,21 @@ function round(n: number): number {
  */
 export function checkFidelity(original: Raster, derived: Raster, opts: FidelityOptions): FidelityReport {
   const T = FIDELITY_THRESHOLDS;
-  const o = foregroundOf(original, opts.originalForeground);
+  let o = foregroundOf(original, opts.originalForeground);
   const d = foregroundOf(derived);
-  const sameFrame = opts.mode === "cutout" && Math.abs(original.width / original.height - derived.width / derived.height) < 0.01;
+  const sameAspect = Math.abs(original.width / original.height - derived.width / derived.height) < 0.01;
+  // An edit of a photograph whose garment outline cannot be established independently (a cluttered
+  // background) is compared in place: the edit's own outline is laid over the original frame. An edit that
+  // moved or re-posed the garment then disagrees with the original pixels and is rejected - the
+  // conservative outcome when nothing else can vouch for it.
+  const borrowedOutline = opts.mode === "edit" && !o.independent && d.independent && sameAspect;
+  if (borrowedOutline) {
+    const outline = d.raster.width === original.width && d.raster.height === original.height ? d.raster : resizeRaster(d.raster, original.width, original.height);
+    const masked = cloneRaster(original);
+    for (let p = 0; p < original.width * original.height; p++) masked.data[p * 4 + 3] = outline.data[p * 4 + 3]!;
+    o = { raster: masked, independent: false, background: o.background };
+  }
+  const sameFrame = (opts.mode === "cutout" || borrowedOutline) && sameAspect;
   const og = toGrid(o.raster, !sameFrame);
   const dg = toGrid(d.raster, !sameFrame);
   const om = maskOf(og.grid);
@@ -284,8 +298,9 @@ export function checkFidelity(original: Raster, derived: Raster, opts: FidelityO
       preservation = n === 0 ? 0 : sum / n;
     }
     if (!o.independent) {
-      const passed = dCount > 0 && (!sameFrame || preservation <= T.pixelPreservationDeltaE);
-      checks.push({ name: "garment_identity", passed, score: round(sameFrame ? preservation : 0), threshold: T.pixelPreservationDeltaE, detail: "no independent silhouette of the original was available; only pixel preservation of the kept area was verified" });
+      const limit = borrowedOutline ? T.editInPlaceDeltaE : T.pixelPreservationDeltaE;
+      const passed = dCount > 0 && (!sameFrame || preservation <= limit);
+      checks.push({ name: "garment_identity", passed, score: round(sameFrame ? preservation : 0), threshold: limit, detail: `no independent silhouette of the original was available; ${borrowedOutline ? "the edit was compared in place against the original pixels" : "only pixel preservation of the kept area was verified"} (mean colour difference ${round(preservation)})` });
     } else {
       const score = iou * (sameFrame ? 1 : aspectAgreement);
       const passed = score >= threshold && (!sameFrame || preservation <= T.pixelPreservationDeltaE);
