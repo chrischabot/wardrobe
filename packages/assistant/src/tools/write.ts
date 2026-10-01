@@ -439,7 +439,22 @@ export function buildWriteTools(rt: TurnRuntime): ToolSet {
     undo: tool({
       description: "Undo a previous change by its command ID when the owner asks. Undo is a new compensating command with its own receipt.",
       inputSchema: z.object({ commandId: z.string(), ownerQuote: Quote }),
-      execute: async (i) => forModel(await commit(rt, { tool: "undo", type: "command.undo", payload: { commandId: i.commandId, reason: null }, targets: [i.commandId], authority: routine(i.ownerQuote), proposalSummary: `undo ${i.commandId}` })),
+      execute: async (i) => {
+        const target = await first<{ type: string; authorization_basis: string }>(rt.db, "SELECT type, authorization_basis FROM commands WHERE user_id = ? AND command_id = ?", rt.principal.userId, i.commandId);
+        const refuse = async (code: string, message: string) => {
+          await rt.onRefusal({ tool: "undo", code, message });
+          return { status: "refused", code, message: `Nothing was changed. ${message}` };
+        };
+        if (!target) return refuse("not_found", "there is no such change to undo");
+        // Undo is never a side door around a hard constraint. Undoing the command that ADDED a restriction would
+        // lift it without the owner's statement that its condition ended, so it is not available here at all.
+        if (target.type === "restriction.add") return refuse("restriction_not_lifted_by_undo", "a restriction is lifted only when the owner says its condition has ended (resolve_restriction), never by undoing the command that recorded it");
+        // Imported records (the profile, its hard rules, the inventory) are corrected by the owner, not undone from conversation.
+        if (target.authorization_basis === "data_import") return refuse("imported_record", "imported records are not undone from conversation; the owner can correct the specific fact instead");
+        // Rules, profile amendments and settings: the owner's full statement, not a passing word.
+        const guarded = target.type.startsWith("style.") || target.type.startsWith("settings.") || target.type.startsWith("restriction.");
+        return forModel(await commit(rt, { tool: "undo", type: "command.undo", payload: { commandId: i.commandId, reason: null }, targets: [i.commandId], authority: guarded ? sensitive(i.ownerQuote) : routine(i.ownerQuote), proposalSummary: `undo ${i.commandId}` }));
+      },
     }),
 
     /* ---------------- clarification ---------------- */
