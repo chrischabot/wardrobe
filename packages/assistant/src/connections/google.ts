@@ -239,7 +239,7 @@ export function purchaseQueries(input: { from: string; to: string; merchants?: s
   const day = (d: string) => d.replace(/-/g, "/");
   const range = `after:${day(input.from)} before:${day(input.to)}`;
   const base = [`${range} subject:(order OR receipt OR confirmation OR invoice)`, `${range} subject:(dispatched OR shipped OR delivered OR refund OR return)`];
-  const merchants = (input.merchants ?? []).map((m) => m.replace(/[^\p{L}\p{N} .&'-]/gu, " ").trim()).filter(Boolean).slice(0, 10);
+  const merchants = (input.merchants ?? []).map((m) => m.replace(/[^\p{L}\p{N} .&'-]/gu, " ").replace(/\s+/g, " ").trim()).filter(Boolean).slice(0, 10);
   return [...merchants.map((m) => `${range} from:("${m}")`), ...base];
 }
 

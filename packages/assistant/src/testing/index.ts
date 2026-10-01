@@ -54,3 +54,4 @@ export class TestAssistant extends GarderobeAssistantBase {
     return ports.value;
   }
 }
+export * from "./fake-google.ts";

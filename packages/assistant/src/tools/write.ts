@@ -6,7 +6,7 @@
  */
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
-import { all, first, listRestrictions } from "@garderobe/domain";
+import { all, first, listRestrictions, toInstant } from "@garderobe/domain";
 import { lineKeyFor, normalizeMerchantKey, toMinor } from "../research/index.ts";
 import { checkAuthority, commit, forModel, ownerSource, type CommitResult, type TurnRuntime } from "./runtime.ts";
 
@@ -403,7 +403,7 @@ export function buildWriteTools(rt: TurnRuntime): ToolSet {
       execute: async (i) => {
         const dueMs = Date.parse(i.dueAt);
         if (Number.isNaN(dueMs)) return { status: "refused", code: "invalid_time", message: "Nothing was changed. That is not a time; ask the owner when." };
-        return forModel(await commit(rt, { tool: "set_reminder", type: "reminder.set", payload: { ...(i.reminderId ? { reminderId: i.reminderId } : {}), kind: i.kind, title: i.title, dueAt: new Date(dueMs).toISOString(), note: i.note ?? null, url: i.url ?? null, leadMinutes: i.leadMinutes }, targets: [i.reminderId ?? i.title], authority: routine(i.ownerQuote), proposalSummary: `set a reminder: ${i.title} at ${i.dueAt}` }));
+        return forModel(await commit(rt, { tool: "set_reminder", type: "reminder.set", payload: { ...(i.reminderId ? { reminderId: i.reminderId } : {}), kind: i.kind, title: i.title, dueAt: toInstant(dueMs), note: i.note ?? null, url: i.url ?? null, leadMinutes: i.leadMinutes }, targets: [i.reminderId ?? i.title], authority: routine(i.ownerQuote), proposalSummary: `set a reminder: ${i.title} at ${i.dueAt}` }));
       },
     }),
     cancel_reminder: tool({

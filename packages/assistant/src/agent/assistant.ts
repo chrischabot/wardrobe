@@ -101,6 +101,15 @@ const DEFAULT_FIXED_CONTEXT_TOKENS = 24_000;
 /** Think workspace tools a research task may use. The shell tool is never exposed. */
 const WORKSPACE_FILE_TOOLS = ["read", "write", "edit", "list", "find", "grep", "delete"];
 
+/**
+ * 65% of the usable input allowance: the window, less the reserved output, less room for the next bounded
+ * tool result, less the mandatory context that is always sent. Never below a small floor.
+ */
+export function compactionThresholdFor(input: { contextTokens: number; maxOutputTokens: number; fixedContextTokens: number }): number {
+  const usable = input.contextTokens - input.maxOutputTokens - NEXT_TOOL_RESULT_TOKENS - input.fixedContextTokens;
+  return Math.max(MIN_COMPACTION_TOKENS, Math.floor(usable * COMPACTION_FRACTION));
+}
+
 function schemaJson(schema: unknown): unknown {
   try {
     return z.toJSONSchema(schema as z.ZodType);
@@ -293,8 +302,7 @@ export abstract class GarderobeAssistantBase extends Think<any> {
     const windows = task.candidates.map((id) => PROFILE_SPECS.find((p) => p.profileId === id)).filter((p): p is ProfileSpec => !!p && !p.pendingReason).map((p) => p.contextTokens);
     const smallest = windows.length > 0 ? Math.min(...windows) : 128_000;
     const fixed = Number(this.stateGet("fixed_context_tokens") ?? DEFAULT_FIXED_CONTEXT_TOKENS);
-    const usable = smallest - task.maxOutputTokens - NEXT_TOOL_RESULT_TOKENS - fixed;
-    return Math.max(MIN_COMPACTION_TOKENS, Math.floor(usable * COMPACTION_FRACTION));
+    return compactionThresholdFor({ contextTokens: smallest, maxOutputTokens: task.maxOutputTokens, fixedContextTokens: fixed });
   }
 
   private async compact(messages: { id: string; role: string; parts: { type: string; text?: string }[] }[]) {
@@ -444,7 +452,11 @@ export abstract class GarderobeAssistantBase extends Think<any> {
       ...(images.length > 0 ? { requiredOperations: ["vision" as const] } : {}),
       // What the answer was built from, kept with every reservation of the turn.
       evidence: { ...context.versions, mandatoryTokens: context.estimatedTokens, toolSchemaTokens: toolTokens, historyTokens, images: imageRefs.map((i) => i.assetId), channel: row.channel },
-      onAttempt: (info) => void updateTurn(db, userId, row.turn_id, { model_profile: info.profileId }, this.now()),
+      onAttempt: (info) => {
+        // A new attempt supersedes an earlier failure of this turn (fallback, or the retry after an overflow compaction).
+        this.turnFailures.delete(row.turn_id);
+        void updateTurn(db, userId, row.turn_id, { model_profile: info.profileId }, this.now());
+      },
       // Think reports a failed turn as a string; the typed failure is kept here so the turn can be marked resumable.
       onFailure: (error) => void this.turnFailures.set(row.turn_id, this.describeFailure(error)),
     });

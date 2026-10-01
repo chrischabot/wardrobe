@@ -9,7 +9,7 @@
  *   - reads `(db, principal, ...)` and export/import helpers.
  */
 export { registerAssistant, ASSISTANT_HANDLERS } from "./commands/index.ts";
-export { GarderobeAssistant, GarderobeAssistantBase, configureAssistant, type AssistantConfiguration, type AssistantEnv, type ConversationBackup, type ConversationExport } from "./agent/assistant.ts";
+export { GarderobeAssistant, GarderobeAssistantBase, compactionThresholdFor, configureAssistant, type AssistantConfiguration, type AssistantEnv, type ConversationBackup, type ConversationExport } from "./agent/assistant.ts";
 export { SubmissionReuseError } from "./agent/turns.ts";
 export { assistantClient, AssistantRequestError, type AssistantClient } from "./client.ts";
 export * from "./queries.ts";
