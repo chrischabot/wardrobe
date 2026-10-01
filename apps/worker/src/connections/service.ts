@@ -610,6 +610,34 @@ export async function setCapabilities(app: App, session: OwnerSession, connectio
 }
 
 /**
+ * Ask each provider to revoke what this owner granted (account erasure). Best effort by nature: the
+ * stored credentials are deleted regardless, so a provider that could not be reached holds a grant
+ * nothing here can use any more.
+ */
+export async function revokeAllRemoteGrants(env: Env, db: Db, userId: string): Promise<{ attempted: number; revoked: number }> {
+  const rows = await all<ProfileRow>(db, `SELECT ${PROFILE_COLUMNS} FROM connection_profiles WHERE user_id = ? AND state != 'disconnected'`, userId);
+  let attempted = 0;
+  let revoked = 0;
+  for (const profile of rows) {
+    const credential = await readCredential(env, db, userId, profile.connection_id).catch(() => null);
+    if (!credential) continue;
+    if (credential.value.type === "google") {
+      attempted++;
+      try {
+        const response = await fetch(googleRevokeUrl(env), { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ token: credential.value.refreshToken }) });
+        if (response.ok) revoked++;
+      } catch {
+        // reported through the counts
+      }
+    } else if (credential.value.type === "mcp_oauth" && profile.endpoint) {
+      attempted++;
+      if ((await revokeMcpToken(profile.endpoint, credential.value).catch(() => "failed" as const)) === "revoked") revoked++;
+    }
+  }
+  return { attempted, revoked };
+}
+
+/**
  * Disconnect: stop future calls (profile and assistant registry are marked first), remove the stored
  * credential, then try to revoke at the provider and report honestly what happened there.
  */

@@ -48,7 +48,7 @@ export function identityRoutes(): RouteDef[] {
 
     owner("POST", "/v1/account/delete", "admin", async ({ app, session, request }) => {
       const { confirmationToken } = await readJson(request, AccountDeleteRequest);
-      return json(await requestAccountDeletion(app.db, app.env, session, confirmationToken, app.now()));
+      return json(await requestAccountDeletion(app, session, confirmationToken, app.now()));
     }),
 
     owner("GET", "/v1/assistants", "read", async ({ app, session }) => json({ grants: await listGrants(app.db, session.userId) })),

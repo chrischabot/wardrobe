@@ -94,6 +94,8 @@ export interface AssistantPort {
   inference(principal: Principal): Promise<InferenceOverview>;
   connections(principal: Principal): Promise<Connection[]>;
   exportData(principal: Principal): Promise<{ records: unknown; conversation: unknown }>;
+  /** Account erasure: wipe the conversation actor, its task actors and the owner's search instance. Runs before the rows are deleted. */
+  eraseOwner(principal: Principal): Promise<Record<string, unknown>>;
   importData(principal: Principal, data: { records: unknown; conversation: unknown }): Promise<unknown>;
 }
 
@@ -138,5 +140,7 @@ export interface MediaPort {
   scheduled(nowMs: number): Promise<unknown>;
   queue(batch: MessageBatch<unknown>): Promise<void>;
   exportData(principal: Principal): Promise<MediaExport>;
+  /** Account erasure: purge cached thumbnails, then delete every object under the owner's prefix. Runs before the rows are deleted. */
+  eraseOwner(userId: string): Promise<{ objects: number; cachedThumbnails: number }>;
   importData(principal: Principal, records: unknown, readAsset: (exportedKey: string) => Promise<ArrayBuffer | null>): Promise<unknown>;
 }

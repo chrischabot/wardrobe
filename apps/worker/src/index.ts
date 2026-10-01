@@ -16,6 +16,7 @@ import { errorResponse, json } from "./http.ts";
 import { oauthProviderFor } from "./mcp/handler.ts";
 import { appRouter } from "./routes/index.ts";
 import { sweepExpired } from "./maintenance.ts";
+import { resumeErasures } from "./identity/erasure.ts";
 import { GarderobeAssistant as AssistantActor } from "@garderobe/assistant";
 import { bindEnv } from "./lanes/index.ts";
 
@@ -53,7 +54,7 @@ export default {
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     const app = appFor(env);
     const nowMs = app.now();
-    const jobs: Promise<unknown>[] = [sweepExpired(app, nowMs), oauthProviderFor(env, applicationFetch).purgeExpiredData(env)];
+    const jobs: Promise<unknown>[] = [sweepExpired(app, nowMs), oauthProviderFor(env, applicationFetch).purgeExpiredData(env), resumeErasures(app, nowMs)];
     if (app.daily) jobs.push(app.daily.scheduled(nowMs));
     if (app.media) jobs.push(app.media.scheduled(nowMs));
     if (app.assistant) jobs.push(app.assistant.maintenance(nowMs));

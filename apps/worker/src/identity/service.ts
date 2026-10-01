@@ -5,6 +5,8 @@ import type { VerifiedIdentity } from "../auth/access.ts";
 import { auditStatement, findIdentity, identityHash, rateLimit, type OwnerSession } from "../auth/session.ts";
 import { RECOVERY_KDF, codeHash, randomBytes, randomToken, recoveryVerifier, timingSafeEqual, toBase32, toBase64Url } from "../crypto.ts";
 import type { Env } from "../env.ts";
+import type { App } from "../app.ts";
+import { eraseAccount, erasureRecordStatement } from "./erasure.ts";
 import { ApiException } from "../errors.ts";
 import { revokeAllGrantStatements, revokeProviderGrants } from "../mcp/grants.ts";
 
@@ -493,15 +495,15 @@ export async function completeRecovery(
 /* ------------------------------------------------------------------ */
 
 const DELETION_CONSEQUENCE =
-  "Confirming disables this account immediately: sign-in, scheduled preparation, calendar updates and connected assistants stop. The stored wardrobe is then erased by the operator's deletion procedure. Export your wardrobe first if you want a copy. This is not the same as unlinking a sign-in.";
+  "Confirming deletes this account for good: sign-in, scheduled preparation, calendar updates and connected assistants stop at once, and the stored wardrobe, conversation, photographs, exports, backups, connections and sign-in links are erased. It cannot be undone. Export your wardrobe first if you want a copy. This is not the same as unlinking a sign-in.";
 
 export async function requestAccountDeletion(
-  db: Db,
-  env: Env,
+  app: App,
   session: OwnerSession,
   confirmationToken: string | undefined,
   nowMs: number,
-): Promise<{ state: "confirmation_required" | "disabled_pending_deletion"; confirmationToken: string | null; expiresAt: string | null; consequence: string }> {
+): Promise<{ state: "confirmation_required" | "disabled_pending_deletion" | "erased"; confirmationToken: string | null; expiresAt: string | null; consequence: string }> {
+  const { db, env } = app;
   await rateLimit(db, `account-delete:${session.userId}`, 10, 3600, nowMs);
   const now = toInstant(nowMs);
   if (!confirmationToken) {
@@ -536,11 +538,15 @@ export async function requestAccountDeletion(
       stmt("UPDATE users SET status = 'disabled' WHERE user_id = ?", session.userId),
       floorStatement(session.userId, nowMs + 1000, "account_deletion", null, nowMs),
       ...revokeAllGrantStatements(session.userId, "account_deletion", now),
+      await erasureRecordStatement(env, session.userId, nowMs),
       audit.statement,
       guardCleanup(id),
     ],
     () => new ApiException("confirmation_required", "that confirmation was already used"),
   );
   await revokeProviderGrants(env, session.userId);
-  return { state: "disabled_pending_deletion", confirmationToken: null, expiresAt: null, consequence: DELETION_CONSEQUENCE };
+  // The account is disabled from this point whatever happens next; erasure that cannot finish here is
+  // finished by the scheduled sweep.
+  const erasure = await eraseAccount(app, session.userId, nowMs);
+  return { state: erasure.state === "erased" ? "erased" : "disabled_pending_deletion", confirmationToken: null, expiresAt: null, consequence: DELETION_CONSEQUENCE };
 }

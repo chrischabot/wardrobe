@@ -218,7 +218,7 @@ describe("recovering after losing the sign-in", () => {
 });
 
 describe("account deletion is its own confirmed operation", () => {
-  it("needs the confirmation step, then disables the account and its assistants", async () => {
+  it("needs the confirmation step, then deletes the account and refuses its assistants", async () => {
     const owner = await provisionOwner();
     const assistant = await connectMcp(owner, { write: false, clientName: "Assistant of a deleted account" });
     const token = assistant.oauth.snapshot().accessToken;
@@ -228,10 +228,11 @@ describe("account deletion is its own confirmed operation", () => {
     expect((await owner.api.get("/v1/me")).status).toBe(200);
     expect((await owner.api.post("/v1/account/delete", { confirmationToken: "GRDD-not-the-token" })).status).toBe(409);
     const confirmed = await owner.api.json("POST", "/v1/account/delete", { confirmationToken: asked.confirmationToken });
-    expect(confirmed.state).toBe("disabled_pending_deletion");
+    expect(confirmed.state).toBe("erased");
     const after = await owner.api.get("/v1/me");
     expect(after.status).toBe(403);
-    expect((await errorOf(after)).code).toBe("account_disabled");
+    // Nothing is left to be disabled: the sign-in no longer belongs to any account.
+    expect((await errorOf(after)).code).toBe("identity_not_linked");
     const mcp = await SELF.fetch(`${MCP_ORIGIN}/mcp`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", Authorization: `Bearer ${token}` }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
     expect(mcp.status).toBe(401);
   });

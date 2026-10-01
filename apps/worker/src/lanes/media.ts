@@ -19,6 +19,7 @@ import {
   openAssetImage,
   openRendition,
   ownerPrefix,
+  purgeOwnerMediaCache,
   receiveUploadContent,
   registerMedia,
   runMediaMaintenance,
@@ -85,5 +86,19 @@ export function createMediaPort(ctx: LaneContext, deps: MediaDeps): MediaPort {
       return { records: data, assets: data.assets };
     },
     importData: (principal, records, readAsset) => importMediaData(rt, principal, records as never, readAsset),
+    eraseOwner: async (userId) => {
+      // The cache keys are derived from the owner's rendition records, so this runs before any row is deleted.
+      const cache = await purgeOwnerMediaCache(rt, userId);
+      let objects = 0;
+      let cursor: string | undefined;
+      do {
+        const page = await deps.bucket.list({ prefix: ownerPrefix(userId), ...(cursor ? { cursor } : {}), limit: 500 });
+        const keys = page.objects.map((o) => o.key);
+        if (keys.length > 0) await deps.bucket.delete(keys);
+        objects += keys.length;
+        cursor = page.truncated ? page.cursor : undefined;
+      } while (cursor);
+      return { objects, cachedThumbnails: cache.purged };
+    },
   };
 }

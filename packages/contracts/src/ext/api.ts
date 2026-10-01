@@ -314,7 +314,8 @@ export const AccountDeleteRequest = z.object({
   confirmationToken: z.string().optional(),
 });
 export const AccountDeleteResponse = z.object({
-  state: z.enum(["confirmation_required", "disabled_pending_deletion"]),
+  /** `erased`: every stored record is gone. `disabled_pending_deletion`: the account is disabled and erasure is being finished in the background. */
+  state: z.enum(["confirmation_required", "disabled_pending_deletion", "erased"]),
   confirmationToken: z.string().nullable(),
   expiresAt: Instant.nullable(),
   consequence: z.string(),

@@ -2,6 +2,7 @@ import type { TurnEvent, TurnRecord } from "@garderobe/contracts/ext/assistant";
 import {
   assistantClient,
   exportAssistantData,
+  eraseSearchInstance,
   getInferenceOverview,
   importAssistantData,
   listComfortFeedback,
@@ -179,6 +180,11 @@ export function createAssistantPort(ctx: LaneContext): AssistantPort {
     inference: (principal) => getInferenceOverview(db, principal, { gatewayId: env.AI_GATEWAY_ID ?? null, nowMs: ctx.now() }),
     connections: (principal) => listConnections(db, principal),
     exportData: async (principal) => ({ records: await exportAssistantData(db, principal), conversation: await client(principal).exportConversation() }),
+    eraseOwner: async (principal) => {
+      const actor = await client(principal).eraseEverything();
+      const search = env.AI_SEARCH ? await eraseSearchInstance(env.AI_SEARCH as never, env.ENVIRONMENT ?? "dev", principal.userId) : { instance: null, deleted: false };
+      return { ...actor, searchInstanceDeleted: search.deleted };
+    },
     importData: async (principal, data) => {
       const records = await importAssistantData(db, principal, data.records as never);
       const conversation = data.conversation ? await client(principal).importConversation(data.conversation as never) : null;
