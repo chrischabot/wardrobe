@@ -126,7 +126,7 @@ describe("a tool service's capabilities (remote MCP service: LABELLED FIXTURE, n
     const tail = crypto.randomUUID().slice(-8);
     const secret = `tvly-FIXTUREKEY-0123456789-${tail}`;
     // The fixture is shared by test files that run at the same time: only this key's requests are read.
-    const mcpCalls = async () => (await fixtureCalls()).filter((c) => c.method === "MCP").map((c) => JSON.parse(c.body)).filter((c) => c.client === tail);
+    const mcpCalls = async () => ((await (await fetch("https://google.fixture.test/__calls?method=MCP")).json()) as { body: string }[]).map((c) => JSON.parse(c.body)).filter((c) => c.client === tail);
     await fixtureCalls();
     const registered = (await (await register(owner.api, { kind: "tavily", name: "Page search", auth: { type: "secret", secret } })).json()) as any;
     const id = registered.connection.connectionId as string;
@@ -184,6 +184,81 @@ describe("a tool service's capabilities (remote MCP service: LABELLED FIXTURE, n
     expect(registered.connection.issue).toMatchObject({ action: "retry" });
     expect((await owner.api.get("/v1/wardrobe?limit=1")).status).toBe(200);
     await owner.api.json("POST", `/v1/connections/${registered.connection.connectionId}/disconnect`, {});
+  });
+});
+
+describe("an owner-added tool service that signs in with OAuth (LABELLED FIXTURE authorization server and MCP endpoint)", () => {
+  const ENDPOINT = "https://oauth-tools.example.org/mcp";
+  const oauthCalls = async () => ((await (await fetch("https://google.fixture.test/__calls?origin=https://oauth-tools.example.org")).json()) as { method: string; body: string }[]).map((c) => ({ kind: c.method, ...JSON.parse(c.body) }));
+  const callback = (state: string, params: Record<string, string>) => SELF.fetch(`${APP_ORIGIN}/connections/callback?${new URLSearchParams({ state, ...params })}`, { redirect: "manual" });
+
+  it("discovers the authorization server, registers as a public client, completes PKCE, keeps tokens encrypted, refreshes and revokes", async () => {
+    await oauthCalls();
+    const started = (await (await register(owner.api, { kind: "mcp", name: "Fixture tools", endpoint: ENDPOINT, auth: { type: "oauth" } })).json()) as any;
+    expect(started.connection.state, JSON.stringify(started)).toBe("pending_authorization");
+    const id = started.connection.connectionId as string;
+    const authorize = new URL(started.authorizationUrl);
+    expect(authorize.origin + authorize.pathname).toBe("https://oauth-tools.example.org/authorize");
+    expect(authorize.searchParams.get("response_type")).toBe("code");
+    expect(authorize.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(authorize.searchParams.get("redirect_uri")).toBe(`${APP_ORIGIN}/connections/callback`);
+    expect(authorize.searchParams.get("resource")).toBe(ENDPOINT); // the token is bound to this service
+    const challenge = authorize.searchParams.get("code_challenge")!;
+    const state = authorize.searchParams.get("state")!;
+    const registration = (await oauthCalls()).find((c) => c.endpoint === "register");
+    expect(registration).toMatchObject({ authMethod: "none", redirectUris: [`${APP_ORIGIN}/connections/callback`] }); // a public client: no secret
+
+    // Nothing is usable before the owner has authorized.
+    const app = await testApp();
+    expect(await connectionAuthorization(app.env, app.db, owner.userId, `cred_${id}`)).toBeNull();
+
+    // A response that claims to come from another issuer is refused, and its state cannot be used again.
+    const forged = await callback(state, { code: `pkce:${challenge}`, iss: "https://evil.example.org" });
+    expect(await forged.text()).toContain("was not connected");
+    expect((await owner.api.json("GET", "/v1/connections")).connections.find((c: any) => c.connectionId === id).state).toBe("needs_reconnect");
+    expect(await (await callback(state, { code: `pkce:${challenge}`, iss: "https://oauth-tools.example.org" })).text()).toContain("already used");
+
+    // Reconnect starts a fresh transaction; a code that does not match the PKCE challenge is refused by the service.
+    const again = await owner.api.json("POST", `/v1/connections/${id}/reconnect`, {});
+    const second = new URL(again.authorizationUrl);
+    expect(second.searchParams.get("state")).not.toBe(state);
+    const wrongCode = await callback(second.searchParams.get("state")!, { code: `pkce:${challenge}`, iss: "https://oauth-tools.example.org" });
+    expect(await wrongCode.text()).toContain("was not connected");
+
+    const third = new URL((await owner.api.json("POST", `/v1/connections/${id}/reconnect`, {})).authorizationUrl);
+    await oauthCalls();
+    const done = await callback(third.searchParams.get("state")!, { code: `pkce:${third.searchParams.get("code_challenge")}`, iss: "https://oauth-tools.example.org" });
+    expect(await done.text()).toContain("is connected");
+    const exchange = (await oauthCalls()).find((c) => c.endpoint === "token");
+    expect(exchange).toMatchObject({ grant: "authorization_code", hasVerifier: true, resource: ENDPOINT, redirectUri: `${APP_ORIGIN}/connections/callback` });
+
+    // The owner's next request finishes the connection: the service is asked for its tools with the new token.
+    const listed = (await owner.api.json("GET", "/v1/connections")).connections.find((c: any) => c.connectionId === id);
+    expect(listed).toMatchObject({ state: "connected", authType: "oauth", issue: null });
+    expect(listed.capabilities.map((c: any) => c.key).sort()).toEqual(["tools:extract", "tools:search"]);
+    expect((await oauthCalls()).filter((c) => c.kind === "MCP").every((c) => c.authorized === true)).toBe(true);
+
+    // Tokens: encrypted at rest, never in a response, and usable only for this owner's connection.
+    for (const table of ["connection_credentials", "connection_profiles", "account_audit", "commands", "connection_oauth_states"]) {
+      expect(JSON.stringify((await app.db.prepare(`SELECT * FROM ${table}`).all()).results), table).not.toContain("fixture-oauth-");
+    }
+    expect(JSON.stringify(await owner.api.json("GET", "/v1/connections"))).not.toContain("fixture-oauth-");
+    const header = await connectionAuthorization(app.env, app.db, owner.userId, `cred_${id}`);
+    expect(header!.value).toMatch(/^Bearer fixture-oauth-access-\d+$/);
+    expect(await connectionAuthorization(app.env, app.db, other.userId, `cred_${id}`)).toBeNull();
+
+    // Near expiry the token is refreshed with the same client and resource, and the new one is what is used.
+    await oauthCalls();
+    const refreshed = await connectionAuthorization(app.env, app.db, owner.userId, `cred_${id}`, Date.now() + 2 * 3_600_000);
+    expect(refreshed!.value).not.toBe(header!.value);
+    expect((await oauthCalls()).find((c) => c.endpoint === "token")).toMatchObject({ grant: "refresh_token", resource: ENDPOINT, clientId: exchange.clientId });
+
+    // Disconnect: the credential is removed and the service is asked to revoke the grant.
+    await oauthCalls();
+    const disconnected = await owner.api.json("POST", `/v1/connections/${id}/disconnect`, {});
+    expect(disconnected).toMatchObject({ credentialsRemoved: true, remoteRevocation: "revoked" });
+    expect((await oauthCalls()).find((c) => c.endpoint === "revoke")).toMatchObject({ tokenKind: "refresh", clientId: exchange.clientId });
+    expect(await connectionAuthorization(app.env, app.db, owner.userId, `cred_${id}`)).toBeNull();
   });
 });
 

@@ -7,6 +7,8 @@ import { OWNER_SCOPES, identityHash, type OwnerSession } from "../auth/session.t
 import { json, readJson } from "../http.ts";
 import { claimAccount, completeLink, completeRecovery, createLinkTicket, describeMe, issueRecoveryKit, requestAccountDeletion, revokeSessions, startRecovery, unlinkIdentityById } from "../identity/service.ts";
 import { disconnectGrant, listGrants } from "../mcp/grants.ts";
+import { listDevices, registerDevice, removeDevice } from "../notifications/service.ts";
+import { DeviceRegistration } from "@garderobe/contracts/ext/api";
 import { identityOnly, owner, type RouteDef } from "../router.ts";
 
 /** A session for an identity that was linked during this very request. */
@@ -52,6 +54,13 @@ export function identityRoutes(): RouteDef[] {
     }),
 
     owner("GET", "/v1/assistants", "read", async ({ app, session }) => json({ grants: await listGrants(app.db, session.userId) })),
+
+    /* Devices that receive notifications. The device token is a delivery credential: stored encrypted, never returned. */
+    owner("GET", "/v1/devices", "read", async ({ app, session }) => json(await listDevices(app, session.userId))),
+
+    owner("POST", "/v1/devices", "write", async ({ app, session, request }) => json(await registerDevice(app, session.userId, await readJson(request, DeviceRegistration)))),
+
+    owner("POST", "/v1/devices/{id}/remove", "write", async ({ app, session, params }) => json(await removeDevice(app.db, session.userId, params.id!))),
 
     owner("POST", "/v1/assistants/{id}/disconnect", "admin", async ({ app, session, params }) => json(await disconnectGrant(app.db, app.env, session, params.id!, app.now()))),
 

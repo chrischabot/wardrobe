@@ -1,10 +1,10 @@
 import { registerAssistant, configureAssistant, AiSearchIndex } from "@garderobe/assistant";
 import { outfitValidator, registerDaily, validateOutfit } from "@garderobe/daily";
-import { CommandError, createFoundationRegistry, first, type CommandRegistry, type CommandService, type Db } from "@garderobe/domain";
+import { CommandError, createFoundationRegistry, first, type CommandRegistry, type CommandService, type Db, type Principal } from "@garderobe/domain";
 import { depsFromBindings, registerMedia, type MediaDeps } from "@garderobe/media";
 import type { Env } from "../env.ts";
 import { connectionAuthorization } from "../connections/service.ts";
-import { outboundPorts } from "../connections/outbound.ts";
+import { listConnectionTools, outboundPorts, type OutboundDeps } from "../connections/outbound.ts";
 import type { AssistantPort, DailyPort, MediaPort } from "../ports.ts";
 import { createAssistantPort } from "./assistant.ts";
 import { createDailyPort } from "./daily.ts";
@@ -102,14 +102,35 @@ export function composedRegistry(): CommandRegistry {
   return registry;
 }
 
-// The conversation actor executes its commands on the same composed registry, may validate outfits with
-// the daily service, search the owner's own AI Search instance, and search or read the web through the
-// owner's connected tool services (credentials are resolved per connection at dispatch time).
+// The conversation actor executes its commands on the same composed registry, may validate outfits and
+// read decision context with the daily service, look at the owner's own photographs through the visual
+// wardrobe, search the owner's own AI Search instance, and search or read the web through the owner's
+// connected tool services (credentials are resolved per connection at dispatch time) and, when the
+// deployment has the binding, a rendering browser.
 export function assistantPortsFor(env: Env, userId: string) {
+  const outbound: OutboundDeps = { db: env.DB, userId, now: () => Date.now(), browser: env.BROWSER, authorizeFor: (connectionId) => () => connectionAuthorization(env, env.DB, userId, `cred_${connectionId}`) };
+  // The application is composed after this module is loaded, so it is looked up when a port is used.
+  const application = async () => (await import("../app.ts")).appFor(env);
   return {
     validateOutfit: validateOutfit as never,
     searchIndex: env.AI_SEARCH ? new AiSearchIndex(env.AI_SEARCH as never, env.ENVIRONMENT ?? "dev", userId) : null,
-    ...outboundPorts({ db: env.DB, userId, now: () => Date.now(), authorizeFor: (connectionId) => () => connectionAuthorization(env, env.DB, userId, `cred_${connectionId}`) }),
+    ...outboundPorts(outbound),
+    describeConnectionTools: (principal: Principal, connectionId: string) => (principal.userId === userId ? listConnectionTools(outbound, connectionId) : Promise.resolve([])),
+    decisionContext: async (principal: Principal, input: { localDate?: string; outfit: { role: string; garmentId: string }[]; role: string; tripId?: string }) => {
+      const app = await application();
+      if (!app.daily) throw new CommandError("precondition_failed", "the daily service is not installed in this deployment");
+      return (await app.daily.decisionContext(principal, input)) as never;
+    },
+    ...(mediaConfigured(env)
+      ? {
+          openImage: async (principal: Principal, assetId: string) => {
+            const app = await application();
+            const image = await app.media!.openAsset(principal, assetId, { variant: "display" });
+            const bytes = image.body instanceof ArrayBuffer ? new Uint8Array(image.body) : new Uint8Array(await new Response(image.body).arrayBuffer());
+            return { bytes, contentType: image.contentType };
+          },
+        }
+      : {}),
   };
 }
 

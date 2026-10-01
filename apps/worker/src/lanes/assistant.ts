@@ -107,7 +107,7 @@ function toEvent(runId: string, e: TurnEvent): ApiRunEvent {
 export function createAssistantPort(ctx: LaneContext): AssistantPort {
   const { env, db } = ctx;
   const client = (principal: Principal) => assistantClient({ ASSISTANT: env.ASSISTANT as never }, principal);
-  const input = (s: TurnSubmission) => ({ submissionId: s.submissionId, text: s.text, attachments: s.attachments, attachedRefs: s.attachedRefs });
+  const input = (s: TurnSubmission) => ({ submissionId: s.submissionId, text: s.text, images: s.images, attachments: s.attachments, attachedRefs: s.attachedRefs });
   const guard = async <T>(run: () => Promise<T>): Promise<T> => {
     try {
       return await run();

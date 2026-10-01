@@ -29,7 +29,7 @@ const INTENT_NOTES: Record<string, string | null> = {
  * a shared link, pasted text and photographs arrive as attachments, which the assistant treats as
  * data and which can never authorize a change.
  */
-export function toSubmission(input: { clientTurnId: string; text: string; attachmentIds: string[]; attachedRefs: Ref[]; intent: string; sharedUrl?: string; pastedText?: string }): TurnSubmission {
+export function toSubmission(input: { clientTurnId: string; text: string; attachmentIds: string[]; imageRoles?: Record<string, TurnSubmission["images"][number]["role"]>; attachedRefs: Ref[]; intent: string; sharedUrl?: string; pastedText?: string }): TurnSubmission {
   const attachments: TurnSubmission["attachments"] = [];
   if (input.sharedUrl) attachments.push({ kind: "web_page", source: input.sharedUrl, text: `Shared link: ${input.sharedUrl}` });
   if (input.pastedText) attachments.push({ kind: "pasted_text", source: null, text: input.pastedText });
@@ -38,8 +38,10 @@ export function toSubmission(input: { clientTurnId: string; text: string; attach
   return {
     submissionId: input.clientTurnId,
     text: input.text,
+    // Finalized photographs are passed for the assistant to look at; a photograph never authorizes a change.
+    images: input.attachmentIds.map((assetId) => ({ assetId, role: input.imageRoles?.[assetId] ?? "other" })),
     attachments,
-    attachedRefs: [...encodeRefs(input.attachedRefs), ...input.attachmentIds.map((id) => `upload:${id}`)],
+    attachedRefs: encodeRefs(input.attachedRefs),
   };
 }
 

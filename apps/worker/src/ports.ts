@@ -62,6 +62,7 @@ export interface DailyPort {
 export interface TurnSubmission {
   submissionId: string;
   text: string;
+  images: { assetId: string; role: "selfie" | "shop_photo" | "item_photo" | "receipt" | "other" }[];
   attachments: { kind: "pasted_text" | "web_page" | "image_description" | "other"; source: string | null; text: string }[];
   attachedRefs: string[];
 }

@@ -58,6 +58,15 @@ export interface Env {
   GOOGLE_API_BASE_URL?: string;
   /** Milliseconds a recommendation may take inside its request before it continues as a durable run (default 20000). */
   RECOMMEND_INLINE_MS?: string;
+  /** Browser Rendering binding (page retrieval for research). Optional: without it that method reports itself unavailable. */
+  BROWSER?: unknown;
+  /** APNs token-based provider credentials (Apple developer team, key ID, the .p8 key as PKCS#8 PEM) and the app's bundle ID. */
+  APNS_TEAM_ID?: string;
+  APNS_KEY_ID?: string;
+  APNS_PRIVATE_KEY?: string;
+  APNS_TOPIC?: string;
+  /** Replaces Apple's host. Honoured only when ENVIRONMENT is local or test. */
+  APNS_BASE_URL?: string;
   /** Universal-link prefix the system browser returns to after a connection flow. */
   APP_RETURN_URL?: string;
 }

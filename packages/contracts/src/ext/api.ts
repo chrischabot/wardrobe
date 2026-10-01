@@ -86,7 +86,7 @@ export const API_ROUTES: readonly RouteSpec[] = [
   r("GET", "/v1/items/{id}", "access", "read", null, "ItemResponse", "An item with its facts, availability, media and known combinations"),
   r("GET", "/v1/items/{id}/image", "access", "read", "ImageQuery", "binary", "The garment's preferred display image; 404 when no real image exists"),
   r("GET", "/v1/laundry", "access", "read", null, "LaundryStateResponse", "Service laundry and hand-wash state with batch membership"),
-  r("GET", "/v1/style", "access", "read", null, "StyleContext", "Profile, amendments, rules, directions, briefs and open fact conflicts"),
+  r("GET", "/v1/style", "access", "read", "AvailabilityQuery", "StyleContext", "Profile, amendments, rules, directions, open fact conflicts, and the briefs for a date (default: the owner's local today)"),
   r("POST", "/v1/style/preview-save", "access", "read", "StylePreviewSaveRequest", "StyleFactDiff", "What saving this profile text would do to the structured facts (no mutation); shown before Save in My style"),
   r("GET", "/v1/style/conflicts", "access", "read", "StyleConflictsQuery", "StyleConflictList", "Conflicts between the saved profile text and structured facts; open by default"),
   // Studio
@@ -137,6 +137,9 @@ export const API_ROUTES: readonly RouteSpec[] = [
   r("GET", "/v1/settings", "access", "read", null, "SettingsResponse", "Profile and delivery configuration, effective model profile, budget, version"),
   r("GET", "/v1/assistants", "access", "read", null, "AssistantGrantList", "Connected assistants (MCP grants) with permissions and last use"),
   r("POST", "/v1/assistants/{id}/disconnect", "access", "admin", null, "AssistantGrant", "Revoke an MCP grant immediately"),
+  r("GET", "/v1/devices", "access", "read", null, "DeviceList", "Devices registered for notifications, and whether delivery is configured"),
+  r("POST", "/v1/devices", "access", "write", "DeviceRegistration", "Device", "Register or refresh this device's notification token (never returned)"),
+  r("POST", "/v1/devices/{id}/remove", "access", "write", null, "DeviceRemoved", "Stop notifications to a device"),
   r("GET", "/v1/recovery", "access", "read", null, "RecoveryStatus", "Recovery screen: last board, last confirmed Calendar projection, pending work, connection issues"),
   // Identity, recovery kit, account
   r("POST", "/v1/identities/link", "access", "admin", null, "IdentityLinkTicket", "Authenticated owner starts linking a second identity"),
@@ -326,6 +329,20 @@ export const AccountDeleteResponse = z.object({
   expiresAt: Instant.nullable(),
   consequence: z.string(),
 });
+
+/* ================================================================== */
+/* Notification devices                                                */
+/* ================================================================== */
+
+/** `POST /v1/devices`: the APNs device token as hexadecimal, and which APNs environment issued it. */
+export const DeviceRegistration = z.object({
+  deviceId: z.string().min(8).max(128).describe("Stable per-installation identifier chosen by the app (not the token)."),
+  token: z.string().regex(/^[0-9a-fA-F]{32,200}$/),
+  environment: z.enum(["development", "production"]),
+});
+export const Device = z.object({ deviceId: z.string(), environment: z.string(), status: z.enum(["active", "disabled"]), disabledReason: z.string().nullable().optional(), updatedAt: Instant, lastDeliveryAt: Instant.nullable().optional() });
+export const DeviceList = z.object({ deliveryConfigured: z.boolean(), devices: z.array(Device) });
+export const DeviceRemoved = z.object({ removed: z.boolean() });
 
 /* ================================================================== */
 /* Backups and restore                                                 */
@@ -571,9 +588,11 @@ export const TurnIntent = z.enum(["chat", "add_item", "identify", "what_i_wore",
 
 export const TurnRequest = z.object({
   clientTurnId: z.string().min(8).max(128).describe("Stable ID created before sending; a retransmission returns the same turn."),
-  /** Only what the owner typed or said. */
-  text: z.string().min(1).max(20000),
-  attachmentIds: z.array(z.string()).max(12).default([]).describe("Finalized upload asset IDs only."),
+  /** Only what the owner typed or said. May be empty when a photograph is sent on its own; then nothing can be changed. */
+  text: z.string().max(20000).default(""),
+  attachmentIds: z.array(z.string()).max(4).default([]).describe("Finalized upload asset IDs only: photographs the assistant should look at."),
+  /** What each attached photograph is, when the capture sheet knows (same order is not required; matched by asset ID). */
+  imageRoles: z.record(z.string(), z.enum(["selfie", "shop_photo", "item_photo", "receipt", "other"])).default({}),
   attachedRefs: z.array(AttachedRef).max(12).default([]),
   /** Capture-sheet intent. Encoded in request policy: a photo or a question never authorizes a mutation by itself. */
   intent: TurnIntent.default("chat"),
@@ -581,7 +600,7 @@ export const TurnRequest = z.object({
   sharedUrl: z.string().url().optional(),
   /** Pasted or forwarded third-party text: data for the assistant to read; it can never authorize a change. */
   pastedText: z.string().max(200000).optional(),
-});
+}).refine((t) => t.text.trim().length > 0 || t.attachmentIds.length > 0, "a turn needs text or a photograph");
 export type TurnRequest = z.input<typeof TurnRequest>;
 export const TurnResponse = z.object({
   turnId: z.string(),

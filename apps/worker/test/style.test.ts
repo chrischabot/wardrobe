@@ -101,6 +101,22 @@ describe("Save in My style", () => {
     expect((await owner.api.json("GET", "/v1/style")).document.version).toBe(style.document.version);
   });
 
+  it("returns the day's brief with its identifier, so the app can clear a brief it did not set", async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+    const set = await owner.api.command("style.set_brief", { localDate: tomorrow, text: "Dinner with clients: no trainers", source: { kind: "owner_statement" } });
+    expect(set.status, await set.clone().text()).toBe(200);
+    const forDay = await owner.api.json("GET", `/v1/style?date=${tomorrow}`);
+    expect(forDay.briefs).toHaveLength(1);
+    expect(forDay.briefs[0]).toMatchObject({ localDate: tomorrow, text: "Dinner with clients: no trainers" });
+    expect(forDay.briefs[0].briefId).toBeTruthy();
+    // Without a date it is the owner's local today (the brief above is for another day).
+    expect((await owner.api.json("GET", "/v1/style")).briefs.filter((b: any) => b.localDate === tomorrow && today !== tomorrow)).toEqual([]);
+    const cleared = await owner.api.command("style.retire_brief", { briefId: forDay.briefs[0].briefId });
+    expect(cleared.status, await cleared.clone().text()).toBe(200);
+    expect((await owner.api.json("GET", `/v1/style?date=${tomorrow}`)).briefs).toEqual([]);
+  });
+
   it("another owner sees none of it", async () => {
     const stranger = await provisionOwner();
     expect((await stranger.api.json("GET", "/v1/style/conflicts")).conflicts).toEqual([]);

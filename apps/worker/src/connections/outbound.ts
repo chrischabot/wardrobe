@@ -7,8 +7,8 @@
  * and the connection's credential, decrypted at dispatch time and sent as a header of that connection
  * only. Nothing here decides what a tool may do.
  */
-import { ConnectionError, extractBackendFor, McpHttpClient, research, searchProviderFor, type AssistantPorts } from "@garderobe/assistant";
-import { all, type Db } from "@garderobe/domain";
+import { ConnectionError, createBrowserRunBackend, extractBackendFor, McpHttpClient, research, searchProviderFor, type AssistantPorts } from "@garderobe/assistant";
+import { all, first, type Db } from "@garderobe/domain";
 import { guardedFetch } from "./endpoints.ts";
 
 export type DiscoveredTool = research.DiscoveredTool;
@@ -99,15 +99,30 @@ export interface OutboundDeps {
   db: Db;
   userId: string;
   now(): number;
+  /** The Browser Rendering binding, when this deployment has one. */
+  browser?: unknown;
   /** The credential resolver for one connection of this owner (by its secret reference). */
   authorizeFor(connectionId: string): Authorize;
+}
+
+/** The discovered tools of one connected service of this owner, with their input schemas (for the assistant's tool browser). */
+export async function listConnectionTools(deps: OutboundDeps, connectionId: string): Promise<{ name: string; description: string; inputSchema: unknown }[]> {
+  const row = await first<ConnectedRow>(deps.db, "SELECT connection_id, endpoint, protocol, auth_type, namespace FROM connection_profiles WHERE user_id = ? AND connection_id = ? AND state = 'connected' AND kind != 'google_workspace' AND endpoint IS NOT NULL", deps.userId, connectionId);
+  if (!row) return [];
+  const key = `${deps.userId}\u0000${row.connection_id}`;
+  let cached = toolCache.get(key);
+  if (!cached || deps.now() - cached.at > TOOL_CACHE_MS) {
+    cached = { tools: await clientFor(row.endpoint, isCompat(row.protocol) ? OUTBOUND_COMPAT_PROTOCOL : OUTBOUND_PROTOCOL, deps.authorizeFor(row.connection_id), row.auth_type !== "none").listTools(), at: deps.now() };
+    toolCache.set(key, cached);
+  }
+  return cached.tools.map((t) => ({ name: t.name, description: t.description ?? "", inputSchema: t.inputSchema }));
 }
 
 /**
  * The assistant's search and page-retrieval ports over the owner's connected services. Connections are
  * looked up when a tool is actually called, so a connection added or removed mid-conversation takes
  * effect on the next call; the assistant's guard still re-reads status and enabled groups per dispatch.
- * Rendering a page in a browser is not configured in this build, so that method reports itself unavailable.
+ * Pages are rendered in a browser through the Browser Rendering binding when the deployment has one.
  */
 export function outboundPorts(deps: OutboundDeps): Pick<AssistantPorts, "searchProviders" | "extraction"> {
   const runtimes = async () => {
@@ -174,11 +189,14 @@ export function outboundPorts(deps: OutboundDeps): Pick<AssistantPorts, "searchP
           throw failure ?? new ConnectionError("not_executable", "no page-retrieval connection is connected and enabled");
         },
       },
-      browser: {
-        async render() {
-          throw new ConnectionError("not_executable", "browser rendering is not configured in this deployment");
-        },
-      },
+      // Rendering in a real browser, when the deployment has the binding; otherwise the method says so.
+      browser: deps.browser
+        ? createBrowserRunBackend(deps.browser as never, { maxCalls: 12 })
+        : {
+            async render() {
+              throw new ConnectionError("not_executable", "browser rendering is not configured in this deployment");
+            },
+          },
     }),
   };
 }

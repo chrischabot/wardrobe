@@ -22,6 +22,7 @@ import {
   isCommandError,
   listInventory,
   listStyleFactConflicts,
+  localDateOf,
   previewGarmentSelection,
   previewStyleSave,
   resolveAlias,
@@ -187,7 +188,12 @@ export function coreRoutes(): RouteDef[] {
 
     owner("GET", "/v1/laundry", "read", async ({ app, session }) => json({ ...(await getLaundryState(app.db, session.principal)), readAt: now(app) })),
 
-    owner("GET", "/v1/style", "read", async ({ app, session }) => json(await getStyleContext(app.db, session.principal))),
+    // Temporary briefs are dated, so the profile is read for a day: the one asked for, or the owner's local today.
+    owner("GET", "/v1/style", "read", async ({ app, session, url }) => {
+      const { date } = readQuery(url, AvailabilityQuery);
+      const forDate = date ?? localDateOf(app.now(), (await getSettings(app.db, session.principal)).settings.timezone);
+      return json(await getStyleContext(app.db, session.principal, { forDate }));
+    }),
 
     owner("POST", "/v1/style/preview-save", "read", async ({ app, session, request }) => {
       const body = await readJson(request, StylePreviewSaveRequest);

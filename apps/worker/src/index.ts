@@ -18,6 +18,7 @@ import { appRouter } from "./routes/index.ts";
 import { sweepExpired } from "./maintenance.ts";
 import { resumeErasures } from "./identity/erasure.ts";
 import { runScheduledBackups } from "./backup/service.ts";
+import { deliverNotifications } from "./notifications/service.ts";
 import { GarderobeAssistant as AssistantActor } from "@garderobe/assistant";
 import { bindEnv } from "./lanes/index.ts";
 
@@ -59,6 +60,12 @@ export default {
     if (app.daily) jobs.push(app.daily.scheduled(nowMs));
     if (app.media) jobs.push(app.media.scheduled(nowMs));
     if (app.assistant) jobs.push(app.assistant.maintenance(nowMs));
+    // After the daily phases above have queued this sweep's reminders, due notifications are sent.
+    ctx.waitUntil(
+      Promise.allSettled(jobs)
+        .then(() => deliverNotifications(app, app.now()))
+        .catch((error) => console.error("notification delivery failed", String((error as Error)?.message ?? error))),
+    );
     ctx.waitUntil(
       Promise.allSettled(jobs).then((results) => {
         for (const r of results) if (r.status === "rejected") console.error("scheduled work failed", String((r.reason as Error)?.message ?? r.reason));

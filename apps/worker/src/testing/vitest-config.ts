@@ -16,7 +16,7 @@
  *   - Google's OAuth and Calendar endpoints: the labelled fixture `fixtureOutbound` below;
  *   - every other outbound request (weather, remote MCP servers): answered 503, i.e. an outage.
  */
-import { generateKeyPairSync, randomBytes } from "node:crypto";
+import { createPublicKey, generateKeyPairSync, randomBytes, verify as verifySignature, type KeyObject } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { garderobeWorkersPlugin } from "@garderobe/domain/testing/vitest-config";
@@ -93,11 +93,128 @@ async function mcpFixture(request: Request): Promise<Response> {
   return jsonResponse({ jsonrpc: "2.0", id: body.id, error: { code: -32601, message: "not part of the fixture" } });
 }
 
+/**
+ * `https://oauth-tools.example.org` is a LABELLED STAND-IN for an owner-added MCP service that uses
+ * OAuth (example.org is a reserved name; this is no real service and proves nothing about one). It
+ * publishes protected-resource and authorization-server metadata, registers clients dynamically, and
+ * its token endpoint checks PKCE for real: the authorization code a test presents is `pkce:<the
+ * code_challenge from the authorization URL>`, and the code verifier the Worker sends must hash to it.
+ * Access tokens are `fixture-oauth-access-<n>` and are required by its `/mcp` endpoint. Every request
+ * is logged to `/__calls` with method `OAUTH` (or `MCP`), without token values.
+ */
+export const OAUTH_MCP_FIXTURE_ORIGIN = "https://oauth-tools.example.org";
+let oauthTokens = 0;
+
+async function oauthMcpFixture(request: Request, url: URL): Promise<Response> {
+  const origin = OAUTH_MCP_FIXTURE_ORIGIN;
+  const log = (what: Record<string, unknown>) => calls.push({ method: "OAUTH", url: url.toString(), body: JSON.stringify(what) });
+  if (url.pathname.startsWith("/.well-known/oauth-protected-resource")) return jsonResponse({ resource: `${origin}/mcp`, authorization_servers: [origin] });
+  if (url.pathname.startsWith("/.well-known/oauth-authorization-server")) {
+    return jsonResponse({
+      issuer: origin,
+      authorization_endpoint: `${origin}/authorize`,
+      token_endpoint: `${origin}/token`,
+      registration_endpoint: `${origin}/register`,
+      revocation_endpoint: `${origin}/revoke`,
+      response_types_supported: ["code"],
+      grant_types_supported: ["authorization_code", "refresh_token"],
+      code_challenge_methods_supported: ["S256"],
+      token_endpoint_auth_methods_supported: ["none"],
+      authorization_response_iss_parameter_supported: true,
+    });
+  }
+  if (url.pathname === "/register" && request.method === "POST") {
+    const metadata = (await request.json()) as Record<string, unknown>;
+    log({ endpoint: "register", redirectUris: metadata.redirect_uris, authMethod: metadata.token_endpoint_auth_method });
+    return jsonResponse({ ...metadata, client_id: `fixture-oauth-client-${crypto.randomUUID().slice(0, 8)}`, client_id_issued_at: Math.floor(Date.now() / 1000) }, 201);
+  }
+  if (url.pathname === "/token" && request.method === "POST") {
+    const form = new URLSearchParams(await request.text());
+    const grant = form.get("grant_type");
+    log({ endpoint: "token", grant, clientId: form.get("client_id"), resource: form.get("resource"), redirectUri: form.get("redirect_uri"), hasVerifier: form.has("code_verifier") });
+    if (grant === "refresh_token") {
+      if (!(form.get("refresh_token") ?? "").startsWith("fixture-oauth-refresh-")) return jsonResponse({ error: "invalid_grant" }, 400);
+      return jsonResponse({ access_token: `fixture-oauth-access-${++oauthTokens}`, refresh_token: `fixture-oauth-refresh-${oauthTokens}`, expires_in: 3600, token_type: "Bearer" });
+    }
+    const code = form.get("code") ?? "";
+    const verifier = form.get("code_verifier") ?? "";
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
+    const challenge = btoa(String.fromCharCode(...digest)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    if (!code.startsWith("pkce:") || code.slice(5) !== challenge) return jsonResponse({ error: "invalid_grant", error_description: "PKCE verification failed" }, 400);
+    return jsonResponse({ access_token: `fixture-oauth-access-${++oauthTokens}`, refresh_token: `fixture-oauth-refresh-${oauthTokens}`, expires_in: 3600, token_type: "Bearer" });
+  }
+  if (url.pathname === "/revoke" && request.method === "POST") {
+    const form = new URLSearchParams(await request.text());
+    log({ endpoint: "revoke", clientId: form.get("client_id"), tokenKind: (form.get("token") ?? "").startsWith("fixture-oauth-refresh-") ? "refresh" : "other" });
+    return jsonResponse({});
+  }
+  if (url.pathname === "/mcp" && request.method === "POST") {
+    const bearer = request.headers.get("Authorization") ?? "";
+    const body = JSON.parse(await request.text()) as { id?: number; method: string; params?: { name?: string; arguments?: Record<string, unknown> } };
+    const authorized = bearer.startsWith("Bearer fixture-oauth-access-");
+    calls.push({ method: "MCP", url: url.toString(), body: JSON.stringify({ method: body.method, tool: body.params?.name ?? null, arguments: body.params?.arguments ?? null, protocol: request.headers.get("Mcp-Protocol-Version"), authorized, client: "oauth" }) });
+    if (!authorized) return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401, headers: { "Content-Type": "application/json", "WWW-Authenticate": `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"` } });
+    if (body.method === "tools/list") return jsonResponse({ jsonrpc: "2.0", id: body.id, result: { tools: MCP_FIXTURE_TOOLS } });
+    return jsonResponse({ jsonrpc: "2.0", id: body.id, error: { code: -32601, message: "not part of the fixture" } });
+  }
+  return jsonResponse({ error: "not part of the fixture" }, 404);
+}
+
+/**
+ * `https://apns.fixture.test` is a LABELLED STAND-IN for Apple's push service (it is not APNs and
+ * proves nothing about Apple's behaviour). It checks what a provider must send: an ES256 provider token
+ * whose signature verifies against this run's test key, with the team as issuer and the key ID in the
+ * header, plus the topic, push type and collapse identifier headers. The device token chooses the
+ * answer: one starting `dead` is 410 Unregistered, one starting `5e5e` is 503, anything else is 200.
+ * Requests are logged to `/__calls` with method `APNS` (the device token is logged by prefix only).
+ */
+export const APNS_FIXTURE_ORIGIN = "https://apns.fixture.test";
+export const TEST_APNS = { teamId: "TESTTEAM01", keyId: "TESTKEY001", topic: "com.example.garderobe.test" };
+let apnsPublicKey: KeyObject | null = null;
+
+async function apnsFixture(request: Request, url: URL): Promise<Response> {
+  const deviceToken = url.pathname.split("/").at(-1) ?? "";
+  const bearer = (request.headers.get("authorization") ?? "").replace(/^bearer /i, "");
+  const [h, p, s] = bearer.split(".");
+  let providerTokenValid = false;
+  try {
+    const header = JSON.parse(Buffer.from(h!, "base64url").toString()) as { alg?: string; kid?: string };
+    const claims = JSON.parse(Buffer.from(p!, "base64url").toString()) as { iss?: string; iat?: number };
+    const signed = verifySignature("sha256", Buffer.from(`${h}.${p}`), { key: apnsPublicKey!, dsaEncoding: "ieee-p1363" }, Buffer.from(s!, "base64url"));
+    providerTokenValid = signed && header.alg === "ES256" && header.kid === TEST_APNS.keyId && claims.iss === TEST_APNS.teamId && Math.abs(Date.now() / 1000 - (claims.iat ?? 0)) < 3600;
+  } catch {
+    providerTokenValid = false;
+  }
+  const payload = JSON.parse(await request.text());
+  calls.push({
+    method: "APNS",
+    url: `${url.origin}/3/device/${deviceToken.slice(0, 8)}`,
+    body: JSON.stringify({ providerTokenValid, topic: request.headers.get("apns-topic"), pushType: request.headers.get("apns-push-type"), collapseId: request.headers.get("apns-collapse-id"), expiration: request.headers.get("apns-expiration"), payload }),
+  });
+  if (!providerTokenValid) return jsonResponse({ reason: "InvalidProviderToken" }, 403);
+  if (request.headers.get("apns-topic") !== TEST_APNS.topic) return jsonResponse({ reason: "DeviceTokenNotForTopic" }, 400);
+  if (deviceToken.startsWith("dead")) return jsonResponse({ reason: "Unregistered" }, 410);
+  if (deviceToken.startsWith("5e5e")) return jsonResponse({ reason: "ServiceUnavailable" }, 503);
+  return new Response(null, { status: 200 });
+}
+
 export async function fixtureOutbound(request: Request): Promise<Response> {
   const url = new URL(request.url);
+  if (url.origin === APNS_FIXTURE_ORIGIN && url.pathname.startsWith("/3/device/")) return apnsFixture(request, url);
+  if (url.origin === OAUTH_MCP_FIXTURE_ORIGIN) return oauthMcpFixture(request, url);
   if (url.origin + url.pathname === MCP_FIXTURE_URL && request.method === "POST") return mcpFixture(request);
   if (url.origin !== GOOGLE_FIXTURE_ORIGIN) return jsonResponse({ error: "outbound network is disabled in tests", host: url.host }, 503);
-  if (url.pathname === "/__calls") return jsonResponse(calls.splice(0, calls.length));
+  if (url.pathname === "/__calls") {
+    // Test files run at the same time against this one log, so a reader takes only its own kind of entry:
+    // `?method=APNS|MCP|OAUTH` or `?origin=<origin>`; with neither, the Google fixture's requests.
+    const method = url.searchParams.get("method");
+    const origin = url.searchParams.get("origin");
+    const special = new Set(["APNS", "MCP", "OAUTH"]);
+    const wanted = (c: { method: string; url: string }) => (origin ? new URL(c.url).origin === origin : method ? c.method === method : !special.has(c.method) && new URL(c.url).origin === GOOGLE_FIXTURE_ORIGIN);
+    const taken = calls.filter(wanted);
+    for (const entry of taken) calls.splice(calls.indexOf(entry), 1);
+    return jsonResponse(taken);
+  }
   const body = request.method === "GET" ? "" : await request.text();
   calls.push({ method: request.method, url: url.toString(), body });
   const form = new URLSearchParams(body);
@@ -142,6 +259,9 @@ export async function garderobeWorkerTestPlugin(options: WorkerTestPluginOptions
   // A second key pair that the Worker does NOT trust, for forged-assertion tests.
   const untrusted = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const untrustedJwk = { ...(await exportJWK(untrusted.privateKey)), kid, alg: "RS256" };
+  // A test key for the notification provider token; the fixture verifies signatures against its public half.
+  const apns = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  apnsPublicKey = createPublicKey(apns.publicKey.export({ type: "spki", format: "pem" }));
   return garderobeWorkersPlugin({
     main: options.main ?? path.join(here, "worker-entry.ts"),
     miniflare: {
@@ -175,6 +295,11 @@ export async function garderobeWorkerTestPlugin(options: WorkerTestPluginOptions
       GOOGLE_OAUTH_REVOKE_URL: `${GOOGLE_FIXTURE_ORIGIN}/revoke`,
       GOOGLE_API_BASE_URL: GOOGLE_FIXTURE_ORIGIN,
       APP_RETURN_URL: "https://app.garderobe.test/connections",
+      APNS_TEAM_ID: TEST_APNS.teamId,
+      APNS_KEY_ID: TEST_APNS.keyId,
+      APNS_TOPIC: TEST_APNS.topic,
+      APNS_PRIVATE_KEY: String(apns.privateKey.export({ type: "pkcs8", format: "pem" })),
+      APNS_BASE_URL: APNS_FIXTURE_ORIGIN,
       ...(options.bindings ?? {}),
     },
   });

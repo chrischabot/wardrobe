@@ -19,7 +19,6 @@ let victimExport: { exportId: string; ticketUrl: string };
 const before: Record<string, any> = {};
 
 const sha256 = async (bytes: ArrayBuffer) => [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map((b) => b.toString(16).padStart(2, "0")).join("");
-const fixtureCalls = async (): Promise<{ method: string; url: string; body: string }[]> => (await fetch("https://google.fixture.test/__calls")).json();
 
 async function activity(owner: TestOwner, marker: string) {
   const model = await enableFakeModel(owner);
@@ -73,7 +72,6 @@ describe("deleting an account", () => {
 
   it("erases every row, object, conversation and credential of that owner once confirmed", async () => {
     const app = await testApp();
-    await fixtureCalls();
     const asked = await victim.api.json("POST", "/v1/account/delete", {});
     expect(asked.consequence).toContain("cannot be undone");
     const confirmed = await victim.api.json("POST", "/v1/account/delete", { confirmationToken: asked.confirmationToken });
@@ -101,11 +99,11 @@ describe("deleting an account", () => {
     expect(JSON.stringify(transcript)).not.toContain("VICTIM-MARKER-7f3a");
     expect(transcript.messages).toEqual([]);
 
-    // The provider was asked to revoke the Google grant.
-    expect((await fixtureCalls()).some((c) => c.method === "POST" && new URL(c.url).pathname === "/revoke")).toBe(true);
+    // The provider was asked to revoke the Google grant and accepted (the erasure record keeps the counts).
+    const record = await app.db.prepare("SELECT * FROM account_erasures ORDER BY confirmed_at DESC LIMIT 1").first<Record<string, unknown>>();
+    expect(JSON.parse(String(record!.stores_json)).thirdPartyGrants).toEqual({ attempted: 1, revoked: 1 });
 
     // What remains is a record without personal data.
-    const record = await app.db.prepare("SELECT * FROM account_erasures ORDER BY confirmed_at DESC LIMIT 1").first<Record<string, unknown>>();
     expect(record).toMatchObject({ state: "erased", pending_owner_id: null, last_error: null });
     expect(JSON.parse(String(record!.stores_json)).database.rows).toBeGreaterThan(100);
     expect(await resumeErasures(app, Date.now())).toBe(0); // nothing is left pending
