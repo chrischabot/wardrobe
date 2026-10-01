@@ -7,6 +7,9 @@ import {
   finalizeUpload,
   garmentImageRefs,
   getGarmentMedia,
+  getComposition,
+  openCompositePreview,
+  requestCompositePreview,
   getStudioSelectors,
   getUploadStatus,
   handleMediaQueue,
@@ -71,6 +74,9 @@ export function createMediaPort(ctx: LaneContext, deps: MediaDeps): MediaPort {
     validate: (principal, input) => validateStudioOutfit(rt, principal, { slots: input.slots, mode: input.mode, forDate: input.date ?? null }),
     suggest: (principal, input) => suggestStudioOutfits(rt, principal, { slots: input.slots, mode: input.mode, forDate: input.date ?? null, ...(input.limit ? { limit: input.limit } : {}) }),
     compose: (principal, slots) => composeOutfit(rt, principal, { slots }),
+    requestPreview: (principal, slots, clientRequestId) => requestCompositePreview(rt, principal, { slots: slots as never, idempotencyKey: `composite-preview:${clientRequestId}` }),
+    composition: (principal, manifestHash) => getComposition(rt, principal, manifestHash),
+    openPreview: (principal, manifestHash) => openCompositePreview(rt, principal, manifestHash, "png"),
     afterCommit: async () => {
       await dispatchMediaJobs(rt);
     },

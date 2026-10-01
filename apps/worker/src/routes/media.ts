@@ -1,4 +1,5 @@
-import { AssetImageQuery, ImageQuery, StudioComposeRequest, StudioOutfitRequest, StudioQuery, UploadRequest } from "@garderobe/contracts/ext/api";
+import { AssetImageQuery, ImageQuery, StudioComposeRequest, StudioOutfitRequest, StudioPreviewRequest, StudioQuery, UploadRequest } from "@garderobe/contracts/ext/api";
+import { afterCommit } from "../app.ts";
 import { MEDIA_THUMBNAIL_WIDTHS } from "@garderobe/contracts/ext/media";
 import { requireMedia } from "../app.ts";
 import { ApiException } from "../errors.ts";
@@ -91,5 +92,20 @@ export function mediaRoutes(): RouteDef[] {
     owner("POST", "/v1/studio/suggest", "read", async ({ app, session, request }) => json({ suggestions: await requireMedia(app, "Studio").suggest(session.principal, await readJson(request, StudioOutfitRequest)) })),
 
     owner("POST", "/v1/studio/compose", "read", async ({ app, session, request }) => json(await requireMedia(app, "Studio").compose(session.principal, (await readJson(request, StudioComposeRequest)).slots))),
+
+    /* A rendered preview of a composition: requested as a job, read by its manifest hash, served only to its owner. */
+    owner("POST", "/v1/studio/previews", "write", async ({ app, session, request, exec }) => {
+      const body = await readJson(request, StudioPreviewRequest);
+      const result = await requireMedia(app, "Studio previews").requestPreview(session.principal, body.slots, body.clientRequestId);
+      if (!result.receipt.replayed) exec.waitUntil(afterCommit(app, session.principal));
+      return json(result);
+    }),
+
+    owner("GET", "/v1/studio/compositions/{id}", "read", async ({ app, session, params }) => json(await requireMedia(app, "Studio previews").composition(session.principal, params.id!))),
+
+    owner("GET", "/v1/studio/compositions/{id}/preview", "read", async ({ app, session, params }) => {
+      const image = await requireMedia(app, "Studio previews").openPreview(session.principal, params.id!);
+      return new Response(image.body, { status: 200, headers: { ...BASE_HEADERS, "Content-Type": image.contentType, "Cache-Control": "private, max-age=300", ETag: image.etag, "X-Content-Type-Options": "nosniff" } });
+    }),
   ];
 }

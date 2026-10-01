@@ -392,6 +392,18 @@ describe("Studio", () => {
     for (const s of suggestions.suggestions) expect(s.slots.find((x: any) => x.role === "top").garmentId).toBe(slots[0]!.garmentId);
     const composition = await owner.api.json("POST", "/v1/studio/compose", { slots });
     expect(composition).toBeTruthy();
+    // A rendered preview is asked for as a job and read by its manifest hash, by its owner only.
+    const preview = await owner.api.json("POST", "/v1/studio/previews", { clientRequestId: `preview-${crypto.randomUUID()}`, slots });
+    expect(preview.manifestHash).toBe(composition.manifestHash);
+    expect(["committed", "noop"]).toContain(preview.receipt.outcome);
+    const fetched = await owner.api.json("GET", `/v1/studio/compositions/${preview.manifestHash}`);
+    expect(fetched.manifestHash).toBe(composition.manifestHash);
+    expect(["queued", "rendered", "failed"]).toContain(fetched.preview.state);
+    const image = await owner.api.get(`/v1/studio/compositions/${preview.manifestHash}/preview`);
+    if (fetched.preview.state === "rendered") expect(image.headers.get("Content-Type")).toBe("image/png");
+    else expect(image.status).toBe(404); // not shown as ready before it is rendered
+    expect((await stranger.api.get(`/v1/studio/compositions/${preview.manifestHash}`)).status).toBe(404);
+    expect((await stranger.api.get(`/v1/studio/compositions/${preview.manifestHash}/preview`)).status).toBe(404);
     const after = await owner.api.json("GET", "/v1/wardrobe");
     expect(after.wardrobeRevision).toBe(before.wardrobeRevision);
 

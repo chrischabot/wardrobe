@@ -94,6 +94,9 @@ export const API_ROUTES: readonly RouteSpec[] = [
   r("POST", "/v1/studio/validate", "access", "read", "StudioOutfitRequest", "StudioValidation", "Authoritative validation of a composed combination (no mutation)"),
   r("POST", "/v1/studio/suggest", "access", "read", "StudioOutfitRequest", "StudioSuggestResponse", "Find something that works with the locked pieces (no mutation)"),
   r("POST", "/v1/studio/compose", "access", "read", "StudioComposeRequest", "Composition", "Composition manifest for an outfit from the actual garment assets"),
+  r("POST", "/v1/studio/previews", "access", "write", "StudioPreviewRequest", "StudioPreviewResponse", "Ask for a rendered preview of a composition (queued job); returns the manifest hash"),
+  r("GET", "/v1/studio/compositions/{id}", "access", "read", null, "Composition", "A composition by manifest hash, with the state of its preview"),
+  r("GET", "/v1/studio/compositions/{id}/preview", "access", "read", null, "binary", "The rendered preview (PNG); 404 until it is rendered"),
   // Commands
   r("POST", "/v1/commands", "access", "write", "CommandEnvelope", "CommandReceipt", "Execute a typed domain change with idempotency key and expected versions"),
   r("POST", "/v1/commands/batch", "access", "write", "CommandBatchRequest", "CommandBatchResponse", "Offline replay: ordered, independent submissions, one result each"),
@@ -520,6 +523,8 @@ export const StudioOutfitRequest = z.object({
 });
 export const StudioSuggestResponse = z.object({ suggestions: z.array(StudioSuggestion) });
 export const StudioComposeRequest = z.object({ slots: z.array(StudioSlot).min(1) });
+export const StudioPreviewRequest = z.object({ clientRequestId: z.string().min(8).max(128), slots: z.array(StudioSlot).min(1) });
+export const StudioPreviewResponse = z.object({ receipt: CommandReceipt, manifestHash: z.string().length(64) });
 
 /* ================================================================== */
 /* Commands                                                             */

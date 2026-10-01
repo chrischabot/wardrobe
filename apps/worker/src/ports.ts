@@ -140,6 +140,10 @@ export interface MediaPort {
   validate(principal: Principal, input: { slots: StudioSlot[]; mode: "for_today" | "explore"; date?: string }): Promise<StudioValidation>;
   suggest(principal: Principal, input: { slots: StudioSlot[]; mode: "for_today" | "explore"; date?: string; limit?: number }): Promise<StudioSuggestion[]>;
   compose(principal: Principal, slots: StudioSlot[]): Promise<Composition>;
+  /** Ask for a rendered preview of a composition (a queued job); the manifest hash identifies it. */
+  requestPreview(principal: Principal, slots: StudioSlot[], clientRequestId: string): Promise<{ receipt: CommandReceipt; manifestHash: string }>;
+  composition(principal: Principal, manifestHash: string): Promise<Composition>;
+  openPreview(principal: Principal, manifestHash: string): Promise<{ body: ReadableStream<Uint8Array>; contentType: string; etag: string }>;
   afterCommit(): Promise<void>;
   scheduled(nowMs: number): Promise<unknown>;
   queue(batch: MessageBatch<unknown>): Promise<void>;
