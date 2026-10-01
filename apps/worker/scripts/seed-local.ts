@@ -21,6 +21,19 @@ if (!stateSigningKey) throw new Error("STATE_SIGNING_KEY is required (the dev sc
 const proxy = await getPlatformProxy<{ DB: D1Database }>({ configPath: path.join(workerDir, "wrangler.jsonc"), persist: true });
 try {
   const db = proxy.env.DB;
+  if (process.env.SEED_MODE === "empty-owner") {
+    // An empty, clearly labelled owner with a one-time invitation: the target of a local restore drill.
+    const emptyId = (await createUser(db, { displayName: "Restore drill target (empty test owner)", isSynthetic: true })).userId;
+    const code = `GRDI-${randomToken(32)}`;
+    const at = new Date();
+    await db
+      .prepare("INSERT INTO owner_invitations (invitation_id, user_id, code_hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?)")
+      .bind(`inv_${toBase64Url(randomBytes(9))}`, emptyId, await codeHash(stateSigningKey, "invitation", code), at.toISOString(), new Date(at.getTime() + 14 * 86_400_000).toISOString())
+      .run();
+    console.log(JSON.stringify({ userId: emptyId, invitationCode: code, empty: true }));
+    await proxy.dispose();
+    process.exit(0);
+  }
   const existing = await first<{ user_id: string }>(db, "SELECT user_id FROM users WHERE is_synthetic = 0 ORDER BY created_at LIMIT 1");
   let userId = existing?.user_id ?? null;
   let imported: Record<string, unknown> | null = null;

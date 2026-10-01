@@ -2,6 +2,8 @@ import { DownloadQuery, ExportRequest } from "@garderobe/contracts/ext/api";
 import { ApiException } from "../errors.ts";
 import { getImport, importPackage } from "../export/import.ts";
 import { downloadExport, getExport, issueDownloadTicket, listExports, requestExport } from "../export/job.ts";
+import { listBackups, readTombstones, requestBackup, verifyRestore } from "../backup/service.ts";
+import { ClientRequest, RestoreVerifyRequest } from "@garderobe/contracts/ext/api";
 import { json, readBytes, readJson, readQuery } from "../http.ts";
 import { owner, selfAuthenticated, type RouteDef } from "../router.ts";
 
@@ -29,5 +31,24 @@ export function exportRoutes(): RouteDef[] {
     }),
 
     owner("GET", "/v1/imports/{id}", "admin", async ({ app, session, params }) => json(await getImport(app, session, params.id!))),
+
+    /* Backups: taken daily by the scheduled sweep; the owner can list them, take one now and download one. */
+    owner("GET", "/v1/backups", "admin", async ({ app, session }) => json(await listBackups(app, session))),
+
+    owner("POST", "/v1/backups", "admin", async ({ app, session, request }) => json(await requestBackup(app, session, (await readJson(request, ClientRequest)).clientRequestId))),
+
+    owner("POST", "/v1/backups/{id}/ticket", "admin", async ({ app, session, params }) => {
+      if (!params.id!.startsWith("bkp_")) throw new ApiException("not_found", "that backup was not found");
+      return json(await issueDownloadTicket(app, session, params.id!));
+    }),
+
+    /* The owner's current deletion tombstones: restored together with an older backup so forgotten sources stay forgotten. */
+    owner("GET", "/v1/backups/tombstones", "admin", async ({ app, session }) => json(await readTombstones(app, session.userId, app.now()))),
+
+    /* After a backup package was imported into this owner: replay tombstones, rebuild indexes, compare with the restore manifest. */
+    owner("POST", "/v1/restore/verify", "admin", async ({ app, session, request }) => {
+      const body = await readJson(request, RestoreVerifyRequest);
+      return json(await verifyRestore(app, session, { restoreManifest: body.restoreManifest, tombstones: (body.tombstones ?? null) as never }));
+    }),
   ];
 }

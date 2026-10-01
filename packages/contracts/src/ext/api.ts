@@ -157,6 +157,12 @@ export const API_ROUTES: readonly RouteSpec[] = [
   r("GET", "/v1/exports/{id}/download", "ticket", null, "DownloadQuery", "binary", "Download the package with a ticket"),
   r("POST", "/v1/imports", "access", "admin", "binary", "ImportJob", "Import a portable package into this (empty) owner"),
   r("GET", "/v1/imports/{id}", "access", "admin", null, "ImportJob", "Import job state and per-component outcome"),
+  // Backups and restore
+  r("GET", "/v1/backups", "access", "admin", null, "BackupList", "Backups of this owner with their restore manifests"),
+  r("POST", "/v1/backups", "access", "admin", "ClientRequest", "Backup", "Take a backup now (one is taken daily by the scheduled sweep)"),
+  r("POST", "/v1/backups/{id}/ticket", "access", "admin", null, "DownloadTicket", "Short-lived single-use download ticket for a backup package (downloaded through /v1/exports/{id}/download)"),
+  r("GET", "/v1/backups/tombstones", "access", "admin", null, "TombstoneJournal", "Current deletion tombstones, replayed when an older backup is restored"),
+  r("POST", "/v1/restore/verify", "access", "admin", "RestoreVerifyRequest", "RestoreReport", "After importing a backup: replay tombstones, rebuild indexes and compare the owner with the restore manifest"),
   // Private web board (cookie session through Access)
   r("GET", "/board", "access", "read", null, "text/html", "Private web board for today"),
   r("GET", "/board/{date}", "access", "read", null, "text/html", "Private web board for a date; option anchors use stable option IDs"),
@@ -319,6 +325,42 @@ export const AccountDeleteResponse = z.object({
   confirmationToken: z.string().nullable(),
   expiresAt: Instant.nullable(),
   consequence: z.string(),
+});
+
+/* ================================================================== */
+/* Backups and restore                                                 */
+/* ================================================================== */
+
+/** What a restore must reproduce and where each store stood (snapshot times and projection watermarks). */
+export const RestoreManifest = z.record(z.string(), z.unknown()).describe("format garderobe-restore-manifest/1: backupId, ownerRef, snapshot { takenAt, coherent, stores }, components, state, afterRestore");
+export const Backup = z.object({
+  backupId: z.string(),
+  runId: z.string(),
+  state: z.enum(["queued", "running", "completed", "completed_incomplete", "failed", "expired"]),
+  complete: z.boolean(),
+  takenAt: Instant.nullable(),
+  requestedAt: Instant,
+  finishedAt: Instant.nullable(),
+  expiresAt: Instant.nullable(),
+  byteLength: z.number().int().nullable(),
+  sha256: z.string().nullable(),
+  components: z.array(z.object({ name: z.string(), state: z.string(), records: z.number(), note: z.string().nullable() })),
+  restoreManifest: RestoreManifest.nullable(),
+});
+export const BackupList = z.object({ backups: z.array(Backup), retentionDays: z.number().int(), intervalHours: z.number() });
+export const TombstoneJournal = z.object({
+  format: z.literal("garderobe-tombstones/1"),
+  ownerRef: z.string(),
+  writtenAt: Instant,
+  tombstones: z.array(z.object({ sourceKind: z.string(), sourceId: z.string(), requestedAt: z.string() })),
+});
+export const RestoreVerifyRequest = z.object({ restoreManifest: RestoreManifest, tombstones: TombstoneJournal.optional() });
+export const RestoreReport = z.object({
+  /** True only when every check holds. */
+  complete: z.boolean(),
+  checks: z.array(z.object({ name: z.string(), ok: z.boolean(), expected: z.unknown(), actual: z.unknown(), note: z.string().optional() })),
+  tombstonesReplayed: z.number().int().nonnegative(),
+  verifiedAt: Instant,
 });
 
 /* ================================================================== */

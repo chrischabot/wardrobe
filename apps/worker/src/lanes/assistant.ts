@@ -179,7 +179,8 @@ export function createAssistantPort(ctx: LaneContext): AssistantPort {
     feedback: (principal, garmentId) => listComfortFeedback(db, principal, garmentId ? { garmentIds: [garmentId] } : {}),
     inference: (principal) => getInferenceOverview(db, principal, { gatewayId: env.AI_GATEWAY_ID ?? null, nowMs: ctx.now() }),
     connections: (principal) => listConnections(db, principal),
-    exportData: async (principal) => ({ records: await exportAssistantData(db, principal), conversation: await client(principal).exportConversation() }),
+    exportData: async (principal, opts) => ({ records: await exportAssistantData(db, principal), conversation: opts?.operational ? await client(principal).backupConversation() : await client(principal).exportConversation() }),
+    conversationWatermarks: async (principal) => (await client(principal).conversationWatermarks()) as unknown as Record<string, unknown>,
     eraseOwner: async (principal) => {
       const actor = await client(principal).eraseEverything();
       const search = env.AI_SEARCH ? await eraseSearchInstance(env.AI_SEARCH as never, env.ENVIRONMENT ?? "dev", principal.userId) : { instance: null, deleted: false };
@@ -187,7 +188,10 @@ export function createAssistantPort(ctx: LaneContext): AssistantPort {
     },
     importData: async (principal, data) => {
       const records = await importAssistantData(db, principal, data.records as never);
-      const conversation = data.conversation ? await client(principal).importConversation(data.conversation as never) : null;
+      // The records (tombstones, turns) are in place first: the backup form restores overlays and pending
+      // turns against them and rebuilds the recall index; neither form runs inference or an external effect.
+      const operational = (data.conversation as { kind?: string } | null)?.kind === "garderobe-conversation-backup";
+      const conversation = !data.conversation ? null : operational ? await client(principal).restoreConversation(data.conversation as never) : await client(principal).importConversation(data.conversation as never);
       return { records, conversation };
     },
   };

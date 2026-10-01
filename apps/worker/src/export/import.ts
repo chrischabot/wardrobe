@@ -6,6 +6,7 @@ import { auditStatement, rateLimit, type OwnerSession } from "../auth/session.ts
 import { decryptPackage, isEncryptedPackage, randomBytes, sha256Hex, toBase64Url } from "../crypto.ts";
 import { ApiException } from "../errors.ts";
 import { appendRunEvent, createApiRun } from "../runs.ts";
+import { isErasedOwnerRef } from "../identity/erasure.ts";
 import { LEDGER_COMPONENTS, LEDGER_TABLES, tableColumns, type TableDump } from "./ledger.ts";
 import { readPackage } from "./package.ts";
 
@@ -19,6 +20,8 @@ const Manifest = z.object({
   complete: z.boolean(),
   components: z.array(z.object({ name: z.string(), state: z.string(), records: z.number(), note: z.string().nullable().optional(), files: z.array(z.string()).default([]) })),
   files: z.array(z.object({ path: z.string(), bytes: z.number().int().nonnegative(), sha256: z.string().length(64) })),
+  /** Present in a backup package. */
+  backup: z.object({ ownerRef: z.string(), restoreManifest: z.string() }).optional(),
 });
 
 const LedgerFile = z.object({ tables: z.record(z.string(), z.object({ columns: z.array(z.string()), rows: z.array(z.record(z.string(), z.unknown())) })) });
@@ -102,6 +105,10 @@ export async function importPackage(app: App, session: OwnerSession, body: Uint8
     return reject("this file is not a readable Garderobe export");
   }
   const manifest = await verifyPackage(files);
+  // A backup of an account that was deleted since is never restored: deletion reaches the backups too.
+  if (manifest.backup && (await isErasedOwnerRef(db, manifest.backup.ownerRef))) {
+    throw new ApiException("forbidden", "this backup belongs to an account that was deleted; it cannot be restored", { rejected: true, reason: "owner_erased" });
+  }
 
   for (const table of EMPTY_CHECK) {
     const row = await first<{ n: number }>(db, `SELECT COUNT(*) AS n FROM ${table} WHERE user_id = ?`, userId);

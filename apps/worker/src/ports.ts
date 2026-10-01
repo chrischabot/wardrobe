@@ -93,7 +93,10 @@ export interface AssistantPort {
   feedback(principal: Principal, garmentId?: string): Promise<ComfortFeedback[]>;
   inference(principal: Principal): Promise<InferenceOverview>;
   connections(principal: Principal): Promise<Connection[]>;
-  exportData(principal: Principal): Promise<{ records: unknown; conversation: unknown }>;
+  /** `operational`: the backup form of the conversation (compaction overlays and pending turns included). */
+  exportData(principal: Principal, opts?: { operational?: boolean }): Promise<{ records: unknown; conversation: unknown }>;
+  /** Where the conversation and its derived indexes stand (recorded in a restore manifest). */
+  conversationWatermarks(principal: Principal): Promise<Record<string, unknown>>;
   /** Account erasure: wipe the conversation actor, its task actors and the owner's search instance. Runs before the rows are deleted. */
   eraseOwner(principal: Principal): Promise<Record<string, unknown>>;
   importData(principal: Principal, data: { records: unknown; conversation: unknown }): Promise<unknown>;

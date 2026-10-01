@@ -1,6 +1,7 @@
 import { prepare, stmt, toInstant, all } from "@garderobe/domain";
 import type { App } from "./app.ts";
 import { finishApiRun } from "./runs.ts";
+import { restoreManifestKey } from "./export/job.ts";
 
 /** A recommendation run still marked running after this long lost its background work (the isolate ended). */
 const RECOMMENDATION_RUN_LIMIT_MS = 10 * 60_000;
@@ -13,9 +14,18 @@ export async function sweepExpired(app: App, nowMs: number): Promise<{ exportsEx
   const { db } = app;
   const now = toInstant(nowMs);
   const dayAgo = toInstant(nowMs - 86_400_000);
-  const expired = await db.prepare("SELECT user_id, export_id, object_key FROM export_jobs WHERE expires_at IS NOT NULL AND expires_at <= ? AND state IN ('completed', 'completed_incomplete') LIMIT 50").bind(now).all<{ user_id: string; export_id: string; object_key: string | null }>();
+  // The newest complete backup of an owner is kept even past its retention, so there is always one to restore.
+  const expired = await db
+    .prepare(
+      `SELECT user_id, export_id, object_key, purpose FROM export_jobs j WHERE expires_at IS NOT NULL AND expires_at <= ? AND state IN ('completed', 'completed_incomplete')
+         AND NOT (purpose = 'backup' AND export_id = (SELECT export_id FROM export_jobs n WHERE n.user_id = j.user_id AND n.purpose = 'backup' AND n.state IN ('completed', 'completed_incomplete') ORDER BY n.requested_at DESC LIMIT 1))
+       LIMIT 50`,
+    )
+    .bind(now)
+    .all<{ user_id: string; export_id: string; object_key: string | null; purpose: string }>();
   for (const job of expired.results) {
     if (job.object_key) await app.env.EXPORT_BUCKET.delete(job.object_key);
+    if (job.purpose === "backup") await app.env.EXPORT_BUCKET.delete(restoreManifestKey(job.user_id, job.export_id));
     await db.batch(
       [
         stmt("DELETE FROM export_tickets WHERE user_id = ? AND export_id = ?", job.user_id, job.export_id),

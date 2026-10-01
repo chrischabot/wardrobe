@@ -16,6 +16,8 @@ type Component = z.infer<typeof ExportComponent>;
 
 const LEASE_MS = 120_000;
 const DOWNLOAD_WINDOW_MS = 24 * 3_600_000;
+/** How long a backup is kept (bounded retention); the newest complete backup of an owner is kept regardless. */
+export const BACKUP_RETENTION_MS = 35 * 86_400_000;
 const TICKET_TTL_MS = 5 * 60_000;
 const BOUNDARY_ATTEMPTS = 3;
 
@@ -35,6 +37,16 @@ interface JobRow {
   requested_at: string;
   finished_at: string | null;
   expires_at: string | null;
+  purpose: "export" | "backup";
+  restore_manifest_json: string | null;
+}
+
+/** What a backup adds to a package; supplied by the backup service so this job stays one mechanism for both. */
+export interface BackupHooks {
+  /** A keyed reference to the owner, so a backup of an erased account can be recognised. */
+  ownerRef: string;
+  /** The restore manifest for the state that was just packaged. */
+  restoreManifest(input: { backupId: string; snapshot: Snapshot; coherent: boolean; components: { name: string; state: string; records: number }[] }): Promise<Record<string, unknown>>;
 }
 
 function toJob(row: JobRow): Job {
@@ -59,8 +71,11 @@ function toJob(row: JobRow): Job {
 
 const loadJob = (app: App, userId: string, exportId: string) => first<JobRow>(app.db, "SELECT * FROM export_jobs WHERE user_id = ? AND export_id = ?", userId, exportId);
 
-const stagingKey = (userId: string, exportId: string, name: string) => `exports/${userId}/${exportId}/staging/${name}.json`;
-const packageKey = (userId: string, exportId: string) => `exports/${userId}/${exportId}/package`;
+const rootOf = (purpose: JobRow["purpose"]) => (purpose === "backup" ? "backups" : "exports");
+const stagingKey = (root: string, userId: string, exportId: string, name: string) => `${root}/${userId}/${exportId}/staging/${name}.json`;
+const packageKey = (root: string, userId: string, exportId: string) => `${root}/${userId}/${exportId}/package`;
+/** The restore manifest is also kept beside the package, readable without opening it. */
+export const restoreManifestKey = (userId: string, backupId: string) => `backups/${userId}/${backupId}/restore-manifest.json`;
 
 interface Staged {
   name: string;
@@ -76,12 +91,12 @@ const EXTENSIONS: Record<string, string> = { "image/jpeg": "jpg", "image/png": "
 /* Collection                                                           */
 /* ------------------------------------------------------------------ */
 
-async function stage(app: App, userId: string, exportId: string, name: string, value: unknown): Promise<void> {
-  await app.env.EXPORT_BUCKET.put(stagingKey(userId, exportId, name), JSON.stringify(value), { httpMetadata: { contentType: "application/json" } });
+async function stage(app: App, root: string, userId: string, exportId: string, name: string, value: unknown): Promise<void> {
+  await app.env.EXPORT_BUCKET.put(stagingKey(root, userId, exportId, name), JSON.stringify(value), { httpMetadata: { contentType: "application/json" } });
 }
 
-async function readStaged<T>(app: App, userId: string, exportId: string, name: string): Promise<T | null> {
-  const object = await app.env.EXPORT_BUCKET.get(stagingKey(userId, exportId, name));
+async function readStaged<T>(app: App, root: string, userId: string, exportId: string, name: string): Promise<T | null> {
+  const object = await app.env.EXPORT_BUCKET.get(stagingKey(root, userId, exportId, name));
   return object ? ((await object.json()) as T) : null;
 }
 
@@ -92,8 +107,9 @@ function countRecords(value: unknown): number {
 }
 
 /** Read every component into staging. Components already staged for the same version boundary are kept (resume). */
-async function collect(app: App, principal: Principal, exportId: string, done: Map<string, Staged>): Promise<void> {
+async function collect(app: App, principal: Principal, exportId: string, done: Map<string, Staged>, purpose: JobRow["purpose"]): Promise<void> {
   const userId = principal.userId;
+  const root = rootOf(purpose);
   for (const component of LEDGER_COMPONENTS) {
     if (done.has(component.name)) continue;
     const tables: Record<string, TableDump> = {};
@@ -103,7 +119,7 @@ async function collect(app: App, principal: Principal, exportId: string, done: M
       tables[spec.table] = dump;
       records += dump.rows.length;
     }
-    await stage(app, userId, exportId, component.name, { component: component.name, title: component.title, tables });
+    await stage(app, root, userId, exportId, component.name, { component: component.name, title: component.title, tables });
     done.set(component.name, { name: component.name, title: component.title, state: "complete", records, note: null });
   }
 
@@ -115,7 +131,7 @@ async function collect(app: App, principal: Principal, exportId: string, done: M
     }
     try {
       const value = await read();
-      await stage(app, userId, exportId, name, value);
+      await stage(app, root, userId, exportId, name, value);
       done.set(name, { name, title, state: "complete", records: countRecords(value), note: null });
     } catch (error) {
       console.error(`export component ${name} failed`, String((error as Error)?.message ?? error));
@@ -125,7 +141,9 @@ async function collect(app: App, principal: Principal, exportId: string, done: M
 
   await lane("daily", "Boards and their revisions, trips and packing proposals, pause records, weather and calendar snapshots", app.daily !== null, () => app.daily!.exportData(principal));
   let assistantExport: { records: unknown; conversation: unknown } | null = null;
-  const readAssistant = async () => (assistantExport ??= await app.assistant!.exportData(principal));
+  // A backup keeps the operational form of the conversation (compaction overlays and pending turns as
+  // well as the original messages); a portable export keeps the original messages.
+  const readAssistant = async () => (assistantExport ??= await app.assistant!.exportData(principal, { operational: purpose === "backup" }));
   await lane("assistant", "Orders, returns and exchanges, lifecycle projects, research with source references, comfort feedback, remembered conclusions", app.assistant !== null, async () => (await readAssistant()).records);
   await lane("conversation", "Original conversation messages with their dates and channels", app.assistant !== null, async () => (await readAssistant()).conversation);
   await lane("media", "Photographs and derived images with transformation provenance; saved combinations and day plans", app.media !== null, () => app.media!.exportData(principal));
@@ -140,7 +158,7 @@ async function collect(app: App, principal: Principal, exportId: string, done: M
       connections,
       connectedAssistants: assistants,
     };
-    await stage(app, userId, exportId, "account", value);
+    await stage(app, root, userId, exportId, "account", value);
     done.set("account", { name: "account", title: "Account summary and connection list (no credentials)", state: "complete", records: connections.length + assistants.length + 1, note: null });
   }
 }
@@ -255,9 +273,11 @@ async function failJob(app: App, row: JobRow, code: string, message: string): Pr
  * components are reused while the wardrobe has not changed, and the package is only published as a
  * whole. The passphrase exists only in the memory of the request that supplied it.
  */
-export async function advanceExport(app: App, userId: string, exportId: string, passphrase?: string): Promise<void> {
+export async function advanceExport(app: App, userId: string, exportId: string, passphrase?: string, backup?: BackupHooks): Promise<void> {
   const row = await loadJob(app, userId, exportId);
   if (!row || (row.state !== "queued" && row.state !== "running")) return;
+  if (row.purpose === "backup" && !backup) return; // a backup is only advanced by the backup service
+  const root = rootOf(row.purpose);
   if (!(await acquireLease(app, userId, exportId, app.now()))) return;
   if (row.encrypted === 1 && !passphrase) {
     // Never fall back to an unencrypted package when encryption was requested.
@@ -278,7 +298,7 @@ export async function advanceExport(app: App, userId: string, exportId: string, 
     if (previous && sameBoundary(previous, snapshot)) snapshot = { ...snapshot, takenAt: previous.takenAt };
     let coherent = false;
     for (let attempt = 1; attempt <= BOUNDARY_ATTEMPTS; attempt++) {
-      await collect(app, principal, exportId, done);
+      await collect(app, principal, exportId, done, row.purpose);
       await prepare(db, stmt("UPDATE export_jobs SET snapshot_json = ?, progress_json = json_set(progress_json, '$.staged', json(?), '$.leaseUntil', ?) WHERE user_id = ? AND export_id = ?", JSON.stringify(snapshot), JSON.stringify([...done.values()]), toInstant(app.now() + LEASE_MS), userId, exportId)).run();
       const after = await readSnapshot(db, userId, snapshot.takenAt);
       if (sameBoundary(snapshot, after)) {
@@ -295,7 +315,7 @@ export async function advanceExport(app: App, userId: string, exportId: string, 
 
     await appendRunEvent(db, userId, row.run_id, "activity", { text: "Building the package" }, { activity: "Building the package" }, app.now());
     const exportedAt = toInstant(app.now());
-    writer = await PackageWriter.open(app.env.EXPORT_BUCKET, packageKey(userId, exportId), { ...(passphrase ? { passphrase } : {}), metadata: { exportId, formatVersion: EXPORT_FORMAT_VERSION } });
+    writer = await PackageWriter.open(app.env.EXPORT_BUCKET, packageKey(root, userId, exportId), { ...(passphrase ? { passphrase } : {}), metadata: { exportId, formatVersion: EXPORT_FORMAT_VERSION } });
     const componentFiles = new Map<string, string[]>();
     const addFile = async (component: string | null, path: string, data: Uint8Array | string, store = false): Promise<PackageFile> => {
       const file = await writer!.add(path, data, { store });
@@ -307,7 +327,7 @@ export async function advanceExport(app: App, userId: string, exportId: string, 
     let conversation: unknown = null;
     for (const c of components) {
       if (c.state === "unavailable") continue;
-      const value = await readStaged<unknown>(app, userId, exportId, c.name);
+      const value = await readStaged<unknown>(app, root, userId, exportId, c.name);
       if (value === null) continue;
       if (LEDGER_COMPONENTS.some((l) => l.name === c.name)) ledger[c.name] = value as LedgerFile;
       if (c.name === "conversation") conversation = value;
@@ -318,7 +338,7 @@ export async function advanceExport(app: App, userId: string, exportId: string, 
     // Media: records plus the stored bytes of every asset, one at a time.
     const media = components.find((c) => c.name === "media");
     if (media && media.state !== "unavailable" && app.media) {
-      const staged = await readStaged<{ records: unknown; assets: { assetId: string; renditionId: string | null; kind: string; r2Key: string; contentType: string; byteLength: number; sha256: string }[] }>(app, userId, exportId, "media");
+      const staged = await readStaged<{ records: unknown; assets: { assetId: string; renditionId: string | null; kind: string; r2Key: string; contentType: string; byteLength: number; sha256: string }[] }>(app, root, userId, exportId, "media");
       if (staged) {
         const files: Record<string, string> = {};
         const missing: string[] = [];
@@ -344,6 +364,12 @@ export async function advanceExport(app: App, userId: string, exportId: string, 
     const complete = components.every((c) => c.state === "complete");
     await addFile(null, "README.md", README({ exportedAt, formatVersion: EXPORT_FORMAT_VERSION, complete }));
 
+    let restoreManifest: Record<string, unknown> | null = null;
+    if (backup) {
+      restoreManifest = await backup.restoreManifest({ backupId: exportId, snapshot, coherent, components: components.map((c) => ({ name: c.name, state: c.state, records: c.records })) });
+      await addFile(null, "restore-manifest.json", JSON.stringify(restoreManifest, null, 1));
+    }
+
     const manifest = {
       format: EXPORT_FORMAT_VERSION,
       contractVersion: CONTRACT_VERSION,
@@ -356,6 +382,7 @@ export async function advanceExport(app: App, userId: string, exportId: string, 
       watermarks: { ledger: { wardrobeRevision: snapshot.wardrobeRevision, lastCommandRecordedAt: snapshot.lastCommandRecordedAt }, components: Object.fromEntries(components.map((c) => [c.name, { readAt: snapshot.takenAt, records: c.records }])) },
       components: components.map((c) => ({ name: c.name, title: c.title, state: c.state, records: c.records, note: c.note, files: componentFiles.get(c.name) ?? [] })),
       excluded: NEVER_EXPORTED,
+      ...(backup ? { backup: { ownerRef: backup.ownerRef, restoreManifest: "restore-manifest.json" } } : {}),
       files: [...writer.files],
     };
     await writer.add("manifest.json", JSON.stringify(manifest, null, 1));
@@ -369,20 +396,22 @@ export async function advanceExport(app: App, userId: string, exportId: string, 
     await prepare(
       db,
       stmt(
-        "UPDATE export_jobs SET state = ?, components_json = ?, object_key = ?, byte_length = ?, sha256 = ?, finished_at = ?, expires_at = ?, progress_json = json_set(progress_json, '$.leaseUntil', '') WHERE user_id = ? AND export_id = ?",
+        "UPDATE export_jobs SET state = ?, components_json = ?, object_key = ?, byte_length = ?, sha256 = ?, finished_at = ?, expires_at = ?, restore_manifest_json = ?, progress_json = json_set(progress_json, '$.leaseUntil', '') WHERE user_id = ? AND export_id = ?",
         state,
         JSON.stringify(publicComponents),
-        packageKey(userId, exportId),
+        packageKey(root, userId, exportId),
         stored.bytes,
         stored.sha256,
         toInstant(finishedMs),
-        toInstant(finishedMs + DOWNLOAD_WINDOW_MS),
+        toInstant(finishedMs + (row.purpose === "backup" ? BACKUP_RETENTION_MS : DOWNLOAD_WINDOW_MS)),
+        restoreManifest ? JSON.stringify(restoreManifest) : null,
         userId,
         exportId,
       ),
     ).run();
+    if (restoreManifest) await app.env.EXPORT_BUCKET.put(restoreManifestKey(userId, exportId), JSON.stringify(restoreManifest), { httpMetadata: { contentType: "application/json" } });
     await appendRunEvent(db, userId, row.run_id, "run_finished", { state: "completed" }, { state: "completed", activity: null, result: { exportId } }, finishedMs);
-    for (const c of components) await app.env.EXPORT_BUCKET.delete(stagingKey(userId, exportId, c.name));
+    for (const c of components) await app.env.EXPORT_BUCKET.delete(stagingKey(root, userId, exportId, c.name));
   } catch (error) {
     if (writer) await writer.abort();
     console.error("export failed", String((error as Error)?.stack ?? error));
@@ -432,8 +461,10 @@ export async function getExport(app: App, session: OwnerSession, exportId: strin
   return toJob(row);
 }
 
+export { toJob as exportJobOf, loadJob as loadExportJob, type JobRow as ExportJobRow };
+
 export async function listExports(app: App, session: OwnerSession): Promise<Job[]> {
-  const rows = await all<JobRow>(app.db, "SELECT * FROM export_jobs WHERE user_id = ? ORDER BY requested_at DESC LIMIT 20", session.userId);
+  const rows = await all<JobRow>(app.db, "SELECT * FROM export_jobs WHERE user_id = ? AND purpose = 'export' ORDER BY requested_at DESC LIMIT 20", session.userId);
   return rows.map(toJob);
 }
 
