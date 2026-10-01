@@ -338,22 +338,22 @@ export async function advanceExport(app: App, userId: string, exportId: string, 
     // Media: records plus the stored bytes of every asset, one at a time.
     const media = components.find((c) => c.name === "media");
     if (media && media.state !== "unavailable" && app.media) {
-      const staged = await readStaged<{ records: unknown; assets: { assetId: string; renditionId: string | null; kind: string; r2Key: string; contentType: string; byteLength: number; sha256: string }[] }>(app, root, userId, exportId, "media");
+      const staged = await readStaged<{ records: unknown; assets: { assetId: string; renditionId: string | null; kind: string; file: string; contentType: string; byteLength: number; sha256: string }[] }>(app, root, userId, exportId, "media");
       if (staged) {
         const files: Record<string, string> = {};
         const missing: string[] = [];
         const used = new Set<string>();
         for (const asset of staged.assets ?? []) {
-          const bytes = await app.media.readExportAsset(principal, asset.r2Key);
+          const bytes = await app.media.readExportAsset(principal, asset.file);
           if (!bytes) {
-            missing.push(asset.r2Key);
+            missing.push(asset.file);
             continue;
           }
           let path = `media/${asset.assetId}${asset.renditionId ? `-${asset.renditionId}` : ""}-${asset.kind}.${EXTENSIONS[asset.contentType] ?? "bin"}`.replace(/[^A-Za-z0-9._/-]/g, "_");
           for (let n = 2; used.has(path); n++) path = path.replace(/(\.[a-z0-9]+)$/, `-${n}$1`);
           used.add(path);
           await addFile("media", path, new Uint8Array(bytes), true);
-          files[asset.r2Key] = path;
+          files[asset.file] = path;
         }
         await addFile("media", "records/media.json", JSON.stringify({ ...staged, files, missing }, null, 1));
         if (missing.length > 0) Object.assign(media, { state: "incomplete", note: `${missing.length} stored image file(s) could not be read and are missing from this package.` });

@@ -17,6 +17,8 @@ let owner: TestOwner;
 let backup: any;
 let zip: Uint8Array;
 let forgottenText: string;
+let keptAssetId: string;
+let doomedAssetId: string;
 const today = new Date().toISOString().slice(0, 10);
 const connectionSecret = "tvly-BACKUP-TEST-SECRET-4d5e6f7a8b";
 const decoder = new TextDecoder();
@@ -45,7 +47,9 @@ beforeAll(async () => {
   await owner.api.command("wear.record", { wearingDate: today, garmentIds: [clean("top").garmentId, clean("bottom").garmentId] });
   await owner.api.command("care.mark_dirty", { items: [{ garmentId: clean("socks").garmentId, quantity: 1 }] });
   await publishBoard(owner, { date: today });
-  await uploadImage(owner, { garmentId: clean("top").garmentId });
+  keptAssetId = (await uploadImage(owner, { garmentId: clean("top").garmentId })).complete.asset.assetId;
+  // A second photograph, deleted AFTER the backup is taken: a restore of that backup must not bring it back.
+  doomedAssetId = (await uploadImage(owner, { garmentId: clean("bottom").garmentId })).complete.asset.assetId;
   for (const [question, reply] of [["Which shirt for the board meeting?", "The oxford cloth shirt suits the meeting."], ["A private note I will want forgotten: FORGET-ME-5521", "Noted."]]) {
     model.script({ text: reply });
     const turn = await owner.api.json("POST", "/v1/conversation/turns", { clientTurnId: `turn-${crypto.randomUUID()}`, text: question });
@@ -127,11 +131,20 @@ describe("restoring a backup", () => {
     journal = await owner.api.json("GET", "/v1/backups/tombstones");
     expect(journal.tombstones.map((t: any) => t.sourceId)).toEqual([secretMessage.messageId]);
     expect(journal.ownerRef).toBe(backup.restoreManifest.ownerRef);
+    // A photograph deleted after the backup is in the journal too (the visual wardrobe's deletion journal).
+    const deleted = await owner.api.command("media.delete_asset", { assetId: doomedAssetId });
+    expect(deleted.status, await deleted.clone().text()).toBe(200);
+    journal = await owner.api.json("GET", "/v1/backups/tombstones");
+    expect(journal.mediaDeletions.format).toBe("garderobe-media-deletions/1");
+    expect(journal.mediaDeletions.deletedAssets.map((d: any) => d.assetId)).toEqual([doomedAssetId]);
     // The sweep keeps a copy of the journal beside the backups, outside the database.
     const app = await testApp();
     await runScheduledBackups(app, Date.now());
     const stored = await app.env.EXPORT_BUCKET.get(`backups/${owner.userId}/tombstones.json`);
     expect(((await stored!.json()) as any).tombstones).toHaveLength(1);
+    // A second copy is named by the owner reference a backup package carries, so a restore here finds it from the package alone.
+    const byRef = await app.env.EXPORT_BUCKET.get(`backup-journals/${backup.restoreManifest.ownerRef}/tombstones.json`);
+    expect(((await byRef!.json()) as any).mediaDeletions.deletedAssets).toHaveLength(1);
   });
 
   it("recovers quantities, wears, style versions, the conversation, media, pending turns, tombstones and effects into an empty owner, and sends nothing again", async () => {
@@ -145,6 +158,15 @@ describe("restoring a backup", () => {
     expect(verified.checks.filter((c: any) => !c.ok)).toEqual([]);
     expect(verified.complete).toBe(true);
     expect(verified.tombstonesReplayed).toBe(1);
+    // The photograph deleted after the backup: its bytes were in the package, and it is not readable after the restore.
+    expect(Object.keys(unzipSync(zip)).filter((p) => p.startsWith("media/") && p.includes(doomedAssetId)).length).toBeGreaterThan(0);
+    expect(verified.checks.find((c: any) => c.name === "images deleted after the backup stay deleted")).toMatchObject({ ok: true, actual: [] });
+    expect((await target.api.get(`/v1/media/assets/${doomedAssetId}`)).status).toBe(404);
+    expect((await target.api.get(`/v1/media/assets/${keptAssetId}`)).status).toBe(200);
+    const app0 = await testApp();
+    const restoredObjects = (await app0.env.MEDIA_BUCKET!.list({ prefix: `u/${target.userId}/` })).objects.map((o) => o.key);
+    expect(restoredObjects.length).toBeGreaterThan(0);
+    expect(restoredObjects.filter((key) => key.includes(doomedAssetId))).toEqual([]);
     expect(verified.checks.map((c: any) => c.name)).toEqual(
       expect.arrayContaining(["garments and their identifiers", "quantities by bucket and movement count", "counted wears", "style versions with their content hashes", "media assets and renditions", "pending turns", "recall index rebuilt through the last restored message", "deletion tombstones", "no external effect left to send", "completed effects keep their recorded outcome"]),
     );
@@ -207,6 +229,7 @@ describe("retention and deletion", () => {
     expect((await leaving.api.json("POST", "/v1/account/delete", { confirmationToken: asked.confirmationToken })).state).toBe("erased");
     const app = await testApp();
     expect((await app.env.EXPORT_BUCKET.list({ prefix: `backups/${leaving.userId}/` })).objects).toEqual([]);
+    expect((await app.env.EXPORT_BUCKET.list({ prefix: `backup-journals/${taken.restoreManifest.ownerRef}/` })).objects).toEqual([]);
 
     const someoneElse = await provisionOwner();
     const attempt = await someoneElse.api.request("POST", "/v1/imports", { raw: kept, headers: { "Content-Type": "application/zip" } });

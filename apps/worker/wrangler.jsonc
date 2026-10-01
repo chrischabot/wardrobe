@@ -25,7 +25,8 @@
   },
   "durable_objects": { "bindings": [{ "name": "ASSISTANT", "class_name": "GarderobeAssistant" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GarderobeAssistant"] }],
-  // Every five minutes: the daily service's due phases and calendar projections, media maintenance,
+  // Every five minutes: connection health, the daily service's due phases and calendar projections,
+  // media and assistant maintenance, background jobs, backups, notifications, reminder events, and
   // expiry sweeps of this workstream's short-lived records.
   "triggers": { "crons": ["*/5 * * * *"] },
   "vars": {
@@ -37,7 +38,10 @@
     "AI_GATEWAY_ID": "garderobe-dev"
   }
   // Secrets (never in this file): CREDENTIAL_KEY, STATE_SIGNING_KEY, MEDIA_SIGNING_KEY,
-  // GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET. `npm run dev` generates local values in
+  // GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET, and for notifications APNS_TEAM_ID,
+  // APNS_KEY_ID, APNS_PRIVATE_KEY, APNS_TOPIC. `npm run dev` generates local values in
   // .dev.vars (git-ignored) together with ACCESS_JWKS_JSON, the public key of the local sign-in key.
-  // Deployment bindings not simulated locally: AI (Workers AI through AI Gateway), IMAGES, AI_SEARCH.
+  // Deployment bindings not simulated locally: AI (Workers AI through AI Gateway), IMAGES, AI_SEARCH,
+  // and BROWSER (Browser Rendering: "browser": { "binding": "BROWSER" }). Without one, the part that
+  // needs it reports itself unavailable; nothing is simulated in its place.
 }

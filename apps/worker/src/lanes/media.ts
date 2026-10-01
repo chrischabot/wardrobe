@@ -14,6 +14,12 @@ import {
   getUploadStatus,
   handleMediaQueue,
   importMediaData,
+  listMediaDeletions,
+  MEDIA_RESPONSE_HEADERS,
+  readExportFile,
+  replayMediaDeletions,
+  serveSignedMedia,
+  signRenditionUrl,
   knownCombinationsForGarment,
   listMediaReview,
   listPhotosNeeded,
@@ -30,8 +36,12 @@ import {
   validateStudioOutfit,
   type MediaDeps,
 } from "@garderobe/media";
+import { CommandError } from "@garderobe/domain";
 import type { MediaPort } from "../ports.ts";
 import type { LaneContext } from "./index.ts";
+
+/** The headers every image response carries (the visual wardrobe's own set): an image is only ever an image. */
+export const IMAGE_RESPONSE_HEADERS: Readonly<Record<string, string>> = MEDIA_RESPONSE_HEADERS;
 
 /**
  * The visual wardrobe, mounted. Image bytes live in a private R2 bucket reached only through the
@@ -59,12 +69,12 @@ export function createMediaPort(ctx: LaneContext, deps: MediaDeps): MediaPort {
     garmentImage: async (principal, garmentId) => (await garmentImageRefs(rt, principal, [garmentId])).get(garmentId) ?? null,
     openRendition: (principal, renditionId, width) => openRendition(rt, principal, renditionId, { ...(width ? { width } : {}) }),
     openAsset: (principal, assetId, opts) => openAssetImage(rt, principal, assetId, { ...(opts.variant ? { variant: opts.variant } : {}), ...(opts.width ? { width: opts.width } : {}) }),
-    readExportAsset: async (principal, r2Key) => {
-      // Only objects under this owner's own prefix are ever read into a package.
-      if (!r2Key.startsWith(ownerPrefix(principal.userId))) return null;
-      const object = await deps.bucket.get(r2Key);
-      return object ? object.arrayBuffer() : null;
-    },
+    signRendition: (principal, renditionId, opts) => signRenditionUrl(rt, principal, renditionId, { ...(opts.width ? { width: opts.width } : {}), ...(opts.ttlSeconds ? { ttlSeconds: opts.ttlSeconds } : {}), audience: "app" }),
+    serveSigned: (token, request) => serveSignedMedia(rt, token, request),
+    listDeletions: async (principal) => (await listMediaDeletions(rt, principal)) as unknown as Record<string, unknown>,
+    replayDeletions: (principal, journal) => replayMediaDeletions(rt, principal, journal as never),
+    // Only the caller's own files are ever read into a package; the visual wardrobe resolves the path.
+    readExportAsset: (principal, file) => readExportFile(rt, principal, file),
     photosNeeded: (principal) => listPhotosNeeded(rt, principal),
     review: (principal) => listMediaReview(rt, principal),
     studio: (principal, query) => getStudioSelectors(rt, principal, { mode: query.mode, forDate: query.date ?? null }),
@@ -91,7 +101,11 @@ export function createMediaPort(ctx: LaneContext, deps: MediaDeps): MediaPort {
       const data = await exportMediaData(rt, principal);
       return { records: data, assets: data.assets };
     },
-    importData: (principal, records, readAsset) => importMediaData(rt, principal, records as never, readAsset),
+    importData: async (principal, records, readAsset, deletions) => {
+      // Restoring images writes to private storage: it needs the owner's admin authority before any byte is read or stored.
+      if (!principal.scopes.includes("admin")) throw new CommandError("forbidden", "importing images needs the owner's admin authority", { reason: "admin_scope_required" });
+      return importMediaData(rt, principal, records as never, readAsset, { deletions: (deletions ?? null) as never });
+    },
     eraseOwner: async (userId) => {
       // The cache keys are derived from the owner's rendition records, so this runs before any row is deleted.
       const cache = await purgeOwnerMediaCache(rt, userId);

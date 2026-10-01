@@ -26,6 +26,16 @@ async function activity(owner: TestOwner, marker: string) {
   const top = wardrobe.items.find((i: any) => i.garment.acquisition === "owned" && i.garment.roles.includes("top")).garment;
   await owner.api.command("style.add_direction", { text: `Direction ${marker}`, source: { kind: "owner_statement" } });
   await uploadImage(owner, { garmentId: top.garmentId });
+  // A photograph deleted just before the account is: its stored files may still be waiting for their purge.
+  const doomed = await uploadImage(owner, { intent: "attachment" });
+  await owner.api.command("media.delete_asset", { assetId: doomed.complete.asset.assetId });
+  // A research run: it works in its own task actor, which is found only through the owner's turn records.
+  model.script({ text: `Research reply ${marker}` });
+  const research = await owner.api.json("POST", "/v1/research", { clientRequestId: `research-${crypto.randomUUID()}`, topic: `Research topic ${marker}`, kind: "general" });
+  for (let i = 0; i < 200; i++) {
+    if (["completed", "failed"].includes((await owner.api.json("GET", `/v1/runs/${research.runId}`)).state)) break;
+    await new Promise((r) => setTimeout(r, 50));
+  }
   model.script({ text: `Reply ${marker}` });
   const turn = await owner.api.json("POST", "/v1/conversation/turns", { clientTurnId: `turn-${crypto.randomUUID()}`, text: `Question ${marker}` });
   for (let i = 0; i < 100; i++) {
@@ -102,6 +112,12 @@ describe("deleting an account", () => {
     // The provider was asked to revoke the Google grant and accepted (the erasure record keeps the counts).
     const record = await app.db.prepare("SELECT * FROM account_erasures ORDER BY confirmed_at DESC LIMIT 1").first<Record<string, unknown>>();
     expect(JSON.parse(String(record!.stores_json)).thirdPartyGrants).toEqual({ attempted: 1, revoked: 1 });
+    // Order: the conversation actor and its research task actor were erased while the owner's turn records
+    // still existed (afterwards they could not have been found), and the images while their records did.
+    const stores = JSON.parse(String(record!.stores_json));
+    expect(stores.conversation.taskActors).toBeGreaterThanOrEqual(1);
+    expect(stores.conversation.messages).toBeGreaterThan(0);
+    expect(stores.media.objects).toBeGreaterThan(0);
 
     // What remains is a record without personal data.
     expect(record).toMatchObject({ state: "erased", pending_owner_id: null, last_error: null });

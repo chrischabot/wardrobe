@@ -7,6 +7,7 @@ import { decryptPackage, isEncryptedPackage, randomBytes, sha256Hex, toBase64Url
 import { ApiException } from "../errors.ts";
 import { appendRunEvent, createApiRun } from "../runs.ts";
 import { isErasedOwnerRef } from "../identity/erasure.ts";
+import { journalForOwnerRef } from "../backup/service.ts";
 import { LEDGER_COMPONENTS, LEDGER_TABLES, tableColumns, type TableDump } from "./ledger.ts";
 import { readPackage } from "./package.ts";
 
@@ -208,11 +209,18 @@ export async function importPackage(app: App, session: OwnerSession, body: Uint8
     await lane("media", app.media !== null, async (value) => {
       const media = value as { records: unknown; files?: Record<string, string> };
       const paths = media.files ?? {};
-      await app.media!.importData(session.principal, media.records, async (exportedKey) => {
-        const path = paths[exportedKey];
-        const data = path ? files.get(path) : undefined;
-        return data ? (data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer) : null;
-      });
+      // Restoring a backup in the deployment that took it: images the owner deleted since are not written back.
+      const journal = manifest.backup ? await journalForOwnerRef(app, manifest.backup.ownerRef) : null;
+      await app.media!.importData(
+        session.principal,
+        media.records,
+        async (exportedKey) => {
+          const path = paths[exportedKey];
+          const data = path ? files.get(path) : undefined;
+          return data ? (data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer) : null;
+        },
+        journal?.mediaDeletions ?? null,
+      );
     });
     if (files.has("records/account.json")) reports.push({ name: "account", imported: 0, skipped: component("account")?.records ?? 0, note: "Never imported: sign-ins, sessions, connections and connected assistants are not created from a package." });
 

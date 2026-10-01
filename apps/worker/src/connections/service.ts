@@ -9,7 +9,7 @@ import type { Env } from "../env.ts";
 import { ApiException } from "../errors.ts";
 import { assertRemoteUrl, guardedFetch, redactText, redactUrl } from "./endpoints.ts";
 import { describeTools, discoverRemoteTools, forgetTools, GROUP_LABELS, protocolLabel } from "./outbound.ts";
-import { research } from "@garderobe/assistant";
+import { ConnectionError, research } from "@garderobe/assistant";
 
 type Connection = z.infer<typeof ApiConnection>;
 type Capability = z.infer<typeof ConnectionCapability>;
@@ -815,6 +815,40 @@ export async function googleAccessToken(env: Env, db: Db, userId: string, capabi
     // Lost the race: another refresh stored a newer credential (or the connection was removed). Re-read.
   }
   return null;
+}
+
+/**
+ * The owner's Google grant for one capability, for the assistant workstream's typed Google adapters
+ * (mailbox and spreadsheet readers in background jobs, health probes). `accessToken` is resolved per
+ * request, so a token that expires during a long job is refreshed; a grant that is no longer usable
+ * raises the adapter's own `auth` error. Null when the capability is not enabled or not granted.
+ */
+export async function googleGrant(env: Env, db: Db, userId: string, capability: GoogleCapability, nowMs: () => number = Date.now): Promise<{ connectionId: string; grantedScopes: string[]; accessToken: () => Promise<string> } | null> {
+  const profile = await first<{ connection_id: string }>(db, "SELECT connection_id FROM connection_profiles WHERE user_id = ? AND kind = 'google_workspace' AND state = 'connected'", userId);
+  if (!profile) return null;
+  if (!(await googleAccessToken(env, db, userId, capability, nowMs()))) return null;
+  const stored = await readCredential(env, db, userId, profile.connection_id);
+  if (!stored || stored.value.type !== "google") return null;
+  return {
+    connectionId: profile.connection_id,
+    grantedScopes: stored.value.grantedScopes,
+    accessToken: async () => {
+      const token = await googleAccessToken(env, db, userId, capability, nowMs());
+      if (!token) throw new ConnectionError("auth", "the Google grant is no longer usable; the owner needs to reconnect");
+      return token;
+    },
+  };
+}
+
+/** The state of one connection profile of this owner (`connected`, `needs_reconnect`, ...), or null. */
+export async function connectionState(db: Db, userId: string, connectionId: string): Promise<{ state: string; kind: string; name: string } | null> {
+  return first<{ state: string; kind: string; name: string }>(db, "SELECT state, kind, name FROM connection_profiles WHERE user_id = ? AND connection_id = ?", userId, connectionId);
+}
+
+/** A health check found the credential rejected: the profile shows the one reconnect state (idempotent). */
+export async function connectionRejected(db: Db, userId: string, connectionId: string, nowMs: number): Promise<void> {
+  const profile = await connectionState(db, userId, connectionId);
+  if (profile) await markNeedsReconnect(db, userId, connectionId, null, `${profile.name} needs to be connected again.`, nowMs);
 }
 
 /**

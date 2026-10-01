@@ -145,14 +145,17 @@ describe("export my wardrobe", () => {
     expect(media.assets.length).toBeGreaterThan(0);
     expect(media.missing).toEqual([]);
     for (const asset of media.assets) {
-      const path = media.files[asset.r2Key];
+      const path = media.files[asset.file];
+      // A package names its files by package-relative paths, never by storage keys.
+      expect(asset.file.startsWith("u/"), asset.file).toBe(false);
+      expect(asset.file).not.toContain(owner.userId);
       expect(files[path], path).toBeTruthy();
       expect(files[path]!.length).toBe(asset.byteLength);
     }
     expect(Object.keys(files).some((p) => p.startsWith("media/") && p.endsWith(".png"))).toBe(true);
   });
 
-  it("includes readable views and a README that explains the records", () => {
+  it("includes readable views and a README that explains the records", async () => {
     const readme = text("README.md");
     for (const phrase of ["How the records relate", "Units and dates", "Estimates that are not facts", "What is not in this package", "wearing date", "never that the piece is unworn"]) expect(readme).toContain(phrase);
     const inventory = text("views/inventory.csv").split("\r\n");
@@ -162,7 +165,7 @@ describe("export my wardrobe", () => {
     expect(text("views/quantity-movements.csv").split("\r\n").length).toBeGreaterThan(10);
     expect(text("views/summary.md")).toContain("| Component | State | Records | Note |");
     expect(text("views/conversation.md")).toContain("Which shirt for the board meeting?");
-    expect(sha256Hex(text("views/profile.md"))).resolves.toBe("e15639d891f9a5264c7eff13d05a478bcb188745aea11323b2131db37f5cb198");
+    expect(await sha256Hex(text("views/profile.md"))).toBe("e15639d891f9a5264c7eff13d05a478bcb188745aea11323b2131db37f5cb198");
   });
 
   it("contains no credential, session, token hash, recovery verifier or sign-in identity", async () => {
@@ -219,7 +222,7 @@ describe("export my wardrobe", () => {
 
     // A package missing a stored image is marked incomplete, in the job and in its own manifest.
     const media = jsonFile("records/media.json");
-    await app.env.MEDIA_BUCKET!.delete(media.assets[0].r2Key);
+    await app.env.MEDIA_BUCKET!.delete(`u/${owner.userId}/${media.assets[0].file}`);
     const partial = await waitForExport(owner, (await owner.api.json("POST", "/v1/exports", { clientRequestId: `export-${crypto.randomUUID()}` })).exportId);
     expect(partial.state).toBe("completed_incomplete");
     expect(partial.complete).toBe(false);

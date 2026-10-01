@@ -125,6 +125,8 @@ export const API_ROUTES: readonly RouteSpec[] = [
   r("POST", "/v1/uploads/{id}/complete", "access", "write", null, "UploadCompleteResponse", "Validate and finalize an upload"),
   r("GET", "/v1/media/renditions/{id}", "access", "read", "ImageQuery", "binary", "Owner-scoped private rendition bytes"),
   r("GET", "/v1/media/assets/{id}", "access", "read", "AssetImageQuery", "binary", "Owner-scoped private asset image (variant selectable)"),
+  r("POST", "/v1/media/renditions/{id}/sign", "access", "read", "SignRenditionRequest", "SignedMediaUrl", "Short-lived URL for one of the owner's own renditions (for an image view that cannot send the sign-in)"),
+  r("GET", "/v1/media/signed/{token}", "ticket", null, null, "binary", "Rendition bytes for a signed URL; every failure is the same 404"),
   r("GET", "/v1/media/photos-needed", "access", "read", null, "PhotosNeededList", "Items research could not resolve an image for"),
   r("GET", "/v1/media/review", "access", "read", null, "MediaReview", "Image candidates awaiting the owner's decision"),
   // Connections (third-party accounts and outbound MCP)
@@ -373,6 +375,8 @@ export const TombstoneJournal = z.object({
   ownerRef: z.string(),
   writtenAt: Instant,
   tombstones: z.array(z.object({ sourceKind: z.string(), sourceId: z.string(), requestedAt: z.string() })),
+  /** The visual wardrobe's deletion journal (format `garderobe-media-deletions/1`): images deleted, and originals purged, that an older backup may still hold. */
+  mediaDeletions: z.record(z.string(), z.unknown()).optional(),
 });
 export const RestoreVerifyRequest = z.object({ restoreManifest: RestoreManifest, tombstones: TombstoneJournal.optional() });
 export const RestoreReport = z.object({
@@ -380,6 +384,7 @@ export const RestoreReport = z.object({
   complete: z.boolean(),
   checks: z.array(z.object({ name: z.string(), ok: z.boolean(), expected: z.unknown(), actual: z.unknown(), note: z.string().optional() })),
   tombstonesReplayed: z.number().int().nonnegative(),
+  mediaDeletionsReplayed: z.object({ assetsDeleted: z.number().int().nonnegative(), originalsPurged: z.number().int().nonnegative() }),
   verifiedAt: Instant,
 });
 
@@ -475,6 +480,8 @@ export const AvailabilityQuery = z.object({ date: LocalDate.optional() });
 export const TemperaturePreviewQuery = z.object({ temperatureC: z.coerce.number().min(-40).max(50) });
 export const ImageQuery = z.object({ width: z.coerce.number().int().optional().describe("One of 160, 320, 640, 1280.") });
 export const AssetImageQuery = z.object({ variant: z.enum(["display", "original", "cutout", "catalogue"]).optional(), width: z.coerce.number().int().optional() });
+/** The answer is the visual wardrobe's `SignedMediaUrl` (path relative to the API origin, expiry). The lifetime is capped by the server. */
+export const SignRenditionRequest = z.object({ width: z.number().int().optional().describe("One of 160, 320, 640, 1280."), ttlSeconds: z.number().int().min(30).max(3600).optional() });
 
 export const ItemResponse = z.object({
   detail: GarmentDetail,

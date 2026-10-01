@@ -236,6 +236,9 @@ export async function answerRunInput(app: App, principal: Principal, runId: stri
   const row = await loadRow(app.db, principal.userId, runId);
   if (row.provider !== "assistant") throw new ApiException("precondition_failed", "this run is not waiting for input");
   const run = await requireAssistant(app, "conversation runs").answerInput(principal, runId, input);
+  // The answer continues as a turn of its own. It is registered like any other, so it can be read,
+  // streamed and cancelled by its ID; without this it would be a run nobody could follow.
+  if (run.runId !== runId) await registerAssistantRun(app.db, principal, { runId: run.runId, kind: row.kind as Kind, state: run.state, clientRequestId: `answer:${runId}:${input.inputId}` }, app.now());
   return { ...run, kind: row.kind };
 }
 

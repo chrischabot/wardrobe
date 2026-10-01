@@ -19,6 +19,7 @@ import { sweepExpired } from "./maintenance.ts";
 import { resumeErasures } from "./identity/erasure.ts";
 import { runScheduledBackups } from "./backup/service.ts";
 import { deliverNotifications } from "./notifications/service.ts";
+import { projectReminderEvents, runAssistantJobs, runConnectionHealth } from "./scheduled/assistant.ts";
 import { GarderobeAssistant as AssistantActor } from "@garderobe/assistant";
 import { bindEnv } from "./lanes/index.ts";
 
@@ -57,14 +58,17 @@ export default {
     const app = appFor(env);
     const nowMs = app.now();
     const jobs: Promise<unknown>[] = [sweepExpired(app, nowMs), oauthProviderFor(env, applicationFetch).purgeExpiredData(env), resumeErasures(app, nowMs), runScheduledBackups(app, nowMs)];
-    if (app.daily) jobs.push(app.daily.scheduled(nowMs));
+    const failed = (what: string) => (error: unknown) => console.error(`${what} failed`, String((error as Error)?.message ?? error).slice(0, 200));
+    // Connection health comes first: it is checked before the evening composition and the morning delivery.
+    const health = app.assistant ? runConnectionHealth(app, nowMs).catch(failed("connection health")) : Promise.resolve();
+    if (app.daily) jobs.push(health.then(() => app.daily!.scheduled(nowMs)));
     if (app.media) jobs.push(app.media.scheduled(nowMs));
-    if (app.assistant) jobs.push(app.assistant.maintenance(nowMs));
-    // After the daily phases above have queued this sweep's reminders, due notifications are sent.
+    if (app.assistant) jobs.push(app.assistant.maintenance(nowMs), runAssistantJobs(app, nowMs));
+    // After the daily phases above have queued this sweep's reminders, due notifications are sent and
+    // reminder events are written to the outfit calendar.
     ctx.waitUntil(
       Promise.allSettled(jobs)
-        .then(() => deliverNotifications(app, app.now()))
-        .catch((error) => console.error("notification delivery failed", String((error as Error)?.message ?? error))),
+        .then(() => Promise.allSettled([deliverNotifications(app, app.now()).catch(failed("notification delivery")), app.assistant ? projectReminderEvents(app, app.now()).catch(failed("reminder calendar projection")) : null])),
     );
     ctx.waitUntil(
       Promise.allSettled(jobs).then((results) => {
