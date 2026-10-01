@@ -1,0 +1,31 @@
+{
+  "name": "@garderobe/assistant",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The Garderobe assistant: Think conversation authority, inference through AI Gateway, memory and recall, research, purchases, returns, lifecycle work and comfort feedback.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./testing": "./src/testing/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ai-sdk/provider": "4.0.21",
+    "@cloudflare/think": "0.19.0",
+    "@garderobe/contracts": "1.0.0",
+    "@garderobe/domain": "1.0.0",
+    "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@modelcontextprotocol/server": "2.0.0",
+    "agents": "0.24.0",
+    "ai": "7.0.124",
+    "workers-ai-provider": "4.0.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@garderobe/daily": "1.0.0"
+  }
+}
