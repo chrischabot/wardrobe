@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { isCommandError } from "@garderobe/domain";
 import type { TestOwner } from "@garderobe/domain/testing";
-import { authorizeUpload, composeOutfit, finalizeUpload, getGarmentMedia, listPhotosNeeded, receiveUploadContent, type DiscoveryProvider } from "../src/index.ts";
+import { authorizeUpload, composeOutfit, finalizeUpload, getGarmentMedia, importImageBytes, listPhotosNeeded, receiveUploadContent, type DiscoveryProvider } from "../src/index.ts";
 import { encodePng } from "../src/image/index.ts";
 import { createMediaHarness, syntheticShirt, type MediaHarness } from "../src/testing/index.ts";
 
@@ -78,5 +78,25 @@ describe("generic illustrations are labelled and never become the garment's real
     await h.settle(owner);
     const afterDelete = await getGarmentMedia(h.rt, owner.principal(), "ill-shirt");
     expect(afterDelete.image).toMatchObject({ assetKind: "generic_illustration", displayLabel: "Illustration", hasRealImage: false });
+  });
+
+  it("copies an authorized Drive photo into private storage with provenance, once, so nothing depends on a sharing link", async () => {
+    const bytes = await encodePng(syntheticShirt({ size: 256, body: [90, 60, 30] })); // stands in for bytes read from the owner's Drive
+    const first_ = await importImageBytes(h.rt, owner.principal(), { garmentId: "ill-trousers", bytes, origin: "drive_import", originRef: "drive:file/TEST-FILE-ID" });
+    await h.settle(owner);
+    expect(first_.rejected).toBeNull();
+    expect(first_.asset).toMatchObject({ kind: "owner_photo", displayLabel: "Your photo", isDemo: false, source: { kind: "drive_import", note: "drive:file/TEST-FILE-ID", permittedUse: "owner_owned", imageUrl: null, pageUrl: null } });
+    const media = await getGarmentMedia(h.rt, owner.principal(), "ill-trousers");
+    expect(media.image).toMatchObject({ assetId: first_.asset!.assetId, hasRealImage: true });
+    // The bytes are in the owner's private prefix; the same file imported again is the same asset, not a copy.
+    const stored = await h.bindings.MEDIA_BUCKET.list({ prefix: `u/${owner.userId}/assets/${first_.asset!.assetId}/original` });
+    expect(stored.objects).toHaveLength(1);
+    const again = await importImageBytes(h.rt, owner.principal(), { garmentId: "ill-trousers", bytes, origin: "drive_import", originRef: "drive:file/TEST-FILE-ID" });
+    expect(again.asset!.assetId).toBe(first_.asset!.assetId);
+    expect(again.receipt.replayed).toBe(true); // the stored receipt of the first import, not a second write
+    expect((await getGarmentMedia(h.rt, owner.principal(), "ill-trousers")).assets).toHaveLength(1);
+    // Bytes that are not an image are refused before anything is authorized or stored.
+    const bad = await importImageBytes(h.rt, owner.principal(), { garmentId: "ill-trousers", bytes: new TextEncoder().encode("<html>shared link page</html>"), origin: "drive_import", originRef: "drive:file/OTHER" }).catch((e) => e);
+    expect(isCommandError(bad) && bad.code).toBe("invalid_command");
   });
 });

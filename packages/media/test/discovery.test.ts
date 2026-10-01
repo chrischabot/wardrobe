@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { all, isCommandError } from "@garderobe/domain";
 import type { TestOwner } from "@garderobe/domain/testing";
-import { evaluateCandidate, extractProductPage, getBackfillEstimate, getGarmentMedia, listMediaReview, listPhotosNeeded, refuseUrl, runMediaMaintenance, safeFetch } from "../src/index.ts";
+import { createPurchaseLinkProvider, evaluateCandidate, extractProductPage, getBackfillEstimate, getGarmentMedia, listMediaReview, listPhotosNeeded, refuseUrl, runMediaMaintenance, safeFetch } from "../src/index.ts";
 import type { DiscoveryCandidatePage, DiscoveryGarment, DiscoveryProvider, ImageFetcher } from "../src/index.ts";
 import { encodeJpeg } from "../src/image/index.ts";
 import { createMediaHarness, syntheticShirt, type MediaHarness } from "../src/testing/index.ts";
@@ -59,6 +59,30 @@ describe("fetching untrusted URLs", () => {
     expect(await safeFetch("https://shop.example.org/a", { maxBytes: 1000, accept: "*/*", fetchImpl: loop })).toMatchObject({ ok: false, reason: "too many redirects" });
     const big: typeof fetch = async () => new Response(new Uint8Array(5000));
     expect(await safeFetch("https://shop.example.org/a", { maxBytes: 1000, accept: "*/*", fetchImpl: big })).toMatchObject({ ok: false, reason: "response larger than the size limit" });
+  });
+
+  it("the purchase-link step fetches only the garment's own recorded link, without a browser, and reports an unreadable page", async () => {
+    const requested: string[] = [];
+    // TEST DOUBLE for the network: one product page.
+    const fetchImpl: typeof fetch = async (url) => {
+      requested.push(String(url));
+      return new Response(`<html><head><script type="application/ld+json">{"@type":"Product","name":"990v4","sku":"M990GL4","color":"Grey","brand":"New Balance","image":"/img/990.jpg"}</script></head></html>`, { headers: { "content-type": "text/html" } });
+    };
+    const provider = createPurchaseLinkProvider({ fetchImpl, now: () => Date.parse("2026-09-15T08:00:00Z") });
+    expect(provider).toMatchObject({ strategies: ["purchase_source"], usesBrowser: false });
+    const linked = { ...garment, purchaseLink: "https://shop.example.org/products/990v4-grey" };
+    const found = await provider.search({ strategy: "purchase_source", garment: linked, text: linked.purchaseLink }, { maxPages: 12, maxBrowserSessions: 2 });
+    expect(requested).toEqual(["https://shop.example.org/products/990v4-grey"]);
+    expect(found).toMatchObject({ browserSessions: 0, browserSeconds: 0 });
+    expect(found.pages).toEqual([expect.objectContaining({ pageUrl: "https://shop.example.org/products/990v4-grey", imageUrl: "https://shop.example.org/img/990.jpg", sourceClass: "purchase_source", recordedPurchaseLink: true, retrievedAt: "2026-09-15T08:00:00Z" })]);
+    // The exact product code on the recorded purchase page is the strongest identity evidence there is.
+    expect(evaluateCandidate(linked, found.pages[0]!)).toMatchObject({ decision: "eligible", exactIdentifier: true });
+    // No link: nothing is fetched. A link to a private address: refused, and said so.
+    expect((await provider.search({ strategy: "purchase_source", garment, text: "" }, { maxPages: 12, maxBrowserSessions: 2 })).pages).toEqual([]);
+    const internal = await provider.search({ strategy: "purchase_source", garment: { ...garment, purchaseLink: "https://192.168.1.10/admin" }, text: "x" }, { maxPages: 12, maxBrowserSessions: 2 });
+    expect(internal.pages).toEqual([]);
+    expect(internal.error).toMatch(/^the recorded purchase link could not be read: /);
+    expect(requested).toHaveLength(1);
   });
 
   it("reads product identity from structured data and treats page text as data only", () => {
@@ -244,6 +268,24 @@ describe("image discovery jobs, Photos needed and review (real queue, R2 and led
     await h.db.batch(Array.from({ length: 300 }, (_, i) => h.db.prepare("INSERT INTO garments (user_id, garment_id, name, category, roles_json, care_channel, acquisition, created_at, updated_at) VALUES (?, ?, ?, 'shirt', '[\"top\"]', 'service', 'owned', ?, ?)").bind(many.userId, `bulk-${i}`, `bulk test record ${i}`, h.clock.iso(), h.clock.iso())));
     const estimate = await getBackfillEstimate(h.rt, many.principal());
     expect(estimate).toMatchObject({ totalGarments: 300, unresolved: 300, worstCaseBrowserMinutes: 600, estimatedDaysMin: 60, estimatedDaysMax: 120 });
+  });
+
+  it("queues active garments with high expected use first", async () => {
+    const fresh = await h.createOwner({ synthetic: false, displayName: "Discovery priority owner (test records only)" });
+    const add = (id: string, extra: Record<string, unknown> = {}) => fresh.exec("garment.create", { garmentId: id, name: `test record ${id}`, category: "shirt", roles: ["top"], careChannel: "service", acquisition: "owned", quantity: 1, maker: "Test Maker", product: "Oxford Shirt", colour: "Blue", source: { kind: "system", note: "test record" }, ...extra });
+    await add("p-excluded");
+    await add("p-incoming", { acquisition: "incoming" });
+    await add("p-occasional");
+    await add("p-unworn");
+    await add("p-worn");
+    await fresh.exec("garment.set_planning_policy", { garmentId: "p-excluded", policy: "excluded" });
+    await fresh.exec("garment.set_planning_policy", { garmentId: "p-occasional", policy: "occasional" });
+    await fresh.exec("wear.record", { wearingDate: "2026-09-14", garmentIds: ["p-worn"] });
+    const receipt = await fresh.exec("media.request_discovery", { garmentIds: [] });
+    // Normal planning before occasional before excluded; owned before incoming; recorded wears first.
+    expect(receipt.result.garmentIds).toEqual(["p-worn", "p-unworn", "p-incoming", "p-occasional", "p-excluded"]);
+    expect(receipt.summary).toMatch(/recommendations do not wait for it$/);
+    await h.settle(fresh);
   });
 
   it("maintenance starts discovery in the background for garments never investigated, without blocking anything", async () => {
