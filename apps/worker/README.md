@@ -14,7 +14,7 @@ Access-trust routes are refused on any other hostname. An Access assertion is no
 ## Routes (specification section 13 and 15)
 
 - **Today and daily service**: `GET /v1/today`, `POST /v1/recommendations`, `GET /v1/days/{date}`, `GET /v1/weather`, `GET /v1/service` (pause state), `GET /v1/trips`, `GET /v1/trips/{id}`, `POST /v1/trips/{id}/packing-proposal`, `GET /board`, `GET /board/{date}`.
-- **Wardrobe**: `GET /v1/wardrobe` (explicit total, cursor, `complete`), `GET /v1/wardrobe/resolve`, `GET /v1/wardrobe/temperature-preview`, `GET /v1/availability`, `GET /v1/items/{id}`, `GET /v1/items/{id}/image`, `GET /v1/laundry`, `GET /v1/style`, `GET /v1/settings`.
+- **Wardrobe**: `GET /v1/wardrobe` (explicit total, cursor, `complete`), `GET /v1/wardrobe/resolve`, `POST /v1/wardrobe/selection` (which garments a bulk correction would cover), `GET /v1/wardrobe/temperature-preview`, `GET /v1/availability`, `GET /v1/items/{id}`, `GET /v1/items/{id}/image`, `GET /v1/laundry`, `GET /v1/style`, `POST /v1/style/preview-save` (what a profile save would do to structured facts), `GET /v1/style/conflicts`, `GET /v1/settings`.
 - **Studio**: `GET /v1/studio`, `POST /v1/studio/validate`, `POST /v1/studio/suggest`, `POST /v1/studio/compose`.
 - **Commands**: `POST /v1/commands` (idempotency key, expected versions, verified receipt), `POST /v1/commands/batch` (offline replay), `GET /v1/commands`, `GET /v1/commands/{id}`, `GET /v1/command-types`. Laundry, wears, trips, returns, feedback, pause and resume are all commands on this route.
 - **Conversation and runs**: `POST /v1/conversation/turns`, `GET /v1/conversation/messages`, `POST /v1/recall/search`, `POST /v1/research`, `GET /v1/orders`, `GET /v1/returns`, `GET /v1/projects`, `GET /v1/feedback`, `GET /v1/runs/{id}`, `GET /v1/runs/{id}/events` (server-sent events, `Last-Event-ID` or `after`), `POST /v1/runs/{id}/cancel`, `POST /v1/runs/{id}/resume`, `POST /v1/runs/{id}/input`.
@@ -34,7 +34,7 @@ Protocol `2026-07-28` (stateless, `@modelcontextprotocol/server` 2.0.0), with a 
 | `garderobe_ask` | Send a request to the backend assistant; a read-only connection gets proposals, never changes | read |
 | `garderobe_today` | The prepared board, at the same revision the app sees | read |
 | `garderobe_recommend` | Validated outfit options for a brief, date and count | read |
-| `garderobe_inventory` | Items, availability, history or the complete snapshot with explicit completeness | read |
+| `garderobe_inventory` | Items, availability, history, the complete snapshot with explicit completeness, or the garments a bulk correction would cover | read |
 | `garderobe_command` | One typed command with a verified receipt; consequential commands ask for confirmation first (`input_required`) | write (not listed for read-only connections) |
 | `garderobe_research` | Start an investigation and return sources, verdict and comparison | read |
 | `garderobe_run` | Read a run, answer its question, cancel or resume it | read |
@@ -76,7 +76,7 @@ await mcp.close();
 
 ```
 npm run typecheck        # in apps/worker
-npm test                 # in apps/worker: 8 files, 106 tests
+npm test                 # in apps/worker: 9 files, 112 tests
 npm test                 # in the repository root: typecheck and tests of every workspace
 ```
 
