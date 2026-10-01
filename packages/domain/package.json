@@ -13,7 +13,8 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "import:report": "node --experimental-strip-types scripts/build-import-data.ts"
+    "import:report": "node --experimental-strip-types scripts/build-import-data.ts",
+    "import:report:check": "node --experimental-strip-types scripts/build-import-data.ts --check"
   },
   "dependencies": {
     "@garderobe/contracts": "1.0.0",

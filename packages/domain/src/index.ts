@@ -22,7 +22,10 @@ export { replayGarment, toBalances, ownedUnits, emptyState, sortEvents, type Sto
 export * from "./availability/estimator.ts";
 
 // Handler building blocks other workstreams compose into their own commands
-export { define } from "./handlers/garments.ts";
+export { define, BULK_CORRECT_LIMIT } from "./handlers/garments.ts";
+export { selectGarments, previewGarmentSelection } from "./handlers/selection.ts";
+export { listStyleFactConflicts, previewStyleSave } from "./handlers/style-facts.ts";
+export { deriveFactDiff, lineDiff, locateQuote, type AnchoredFact, type FactDiff, type LineHunk } from "./style/fact-diff.ts";
 export { loadGarment, loadGarments, stockParts, simpleStockUndo, undoStockEvents, bumpGarment, nameList } from "./handlers/common.ts";
 export { exposurePublish, exposureSelect, exposureSupersede } from "./handlers/style.ts";
 export { dueCycleKeys, cycleCutoffMs } from "./handlers/wear-care.ts";

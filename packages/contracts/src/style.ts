@@ -105,6 +105,106 @@ export const SizeExperience = z.object({
 });
 export type SizeExperience = z.infer<typeof SizeExperience>;
 
+/* ------------------------------------------------------------------ */
+/* Structured facts anchored in the profile prose, and what a Save does */
+/* to them (specification section 6, "Save in My style").               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A structured fact that quotes the profile: a machine rule (`id` is its stable key), a dated
+ * measurement or a size experience (`id` is the record ID).
+ */
+export const StyleFactRef = z.object({
+  kind: z.enum(["rule", "measurement", "size_experience"]),
+  id: z.string().min(1),
+});
+export type StyleFactRef = z.infer<typeof StyleFactRef>;
+
+/**
+ * The owner's decision about one structured fact whose quoted passage a profile edit removed or reworded.
+ * Nothing here is ever derived by the application: a fact without a resolution stays as it was and is
+ * shown as an open conflict.
+ *   keep    - the fact still holds unchanged. With `quote` it is re-anchored to that passage of the new
+ *             text; without one it stands on the owner's confirmation alone.
+ *   replace - the fact changes: new rule parameters, a new dated measurement, or a new size experience.
+ *   retire  - the fact no longer applies (rules and size experiences only; a measurement stays a dated
+ *             fact, and an active restriction is never lifted by editing prose).
+ */
+export const StyleFactResolution = z
+  .object({
+    action: z.enum(["keep", "replace", "retire"]),
+    quote: z.string().min(1).optional().describe("Passage of the saved text that now states the fact; must occur verbatim."),
+    rule: z
+      .object({
+        params: z.record(z.string(), z.unknown()).optional(),
+        interpretation: z.string().min(1).optional(),
+        kind: RuleKind.optional(),
+        status: z.enum(["active", "pending_reconciliation", "dormant"]).optional(),
+      })
+      .optional(),
+    measurement: z
+      .object({
+        value: z.number(),
+        unit: z.enum(["in", "cm", "m", "uk_shoe", "other"]),
+        convention: z.string().nullable().optional(),
+        qualifier: z.string().nullable().optional(),
+        measuredOn: LocalDate.nullable().optional(),
+      })
+      .optional(),
+    sizeExperience: z.object({ sizeLabel: z.string().min(1), note: z.string().nullable().optional() }).optional(),
+    note: z.string().optional(),
+  })
+  .refine((r) => r.action !== "replace" || r.rule !== undefined || r.measurement !== undefined || r.sizeExperience !== undefined, "replace needs the new rule, measurement or size experience");
+export type StyleFactResolution = z.infer<typeof StyleFactResolution>;
+
+/** A structured fact whose passage a profile save removed or reworded and the owner has not yet decided. */
+export const StyleFactConflict = z.object({
+  conflictId: z.string(),
+  documentId: z.string(),
+  fromVersion: z.number().int().positive(),
+  toVersion: z.number().int().positive(),
+  fact: StyleFactRef,
+  label: z.string().describe("What the fact says, built from the record (e.g. \"body chest: 44 in\")."),
+  reason: z.enum(["passage_removed", "passage_changed"]),
+  previousPassages: z.array(PassageRef).describe("The passages the fact quoted in the earlier version."),
+  missingQuotes: z.array(z.string()).describe("Quotes that no longer occur verbatim in the saved text."),
+  candidateText: z.string().nullable().describe("The owner's new wording at that place, verbatim; shown for the decision, never interpreted."),
+  status: z.enum(["open", "resolved", "withdrawn"]),
+  resolution: StyleFactResolution.nullable(),
+  createdAt: Instant,
+  resolvedAt: Instant.nullable(),
+});
+export type StyleFactConflict = z.infer<typeof StyleFactConflict>;
+
+/**
+ * What a Save in My style does to the structured facts, derived deterministically by comparing the
+ * quoted passages with the edited text. No field is a model extraction.
+ */
+export const StyleFactDiff = z.object({
+  documentId: z.string(),
+  fromVersion: z.number().int().positive(),
+  contentChanged: z.boolean(),
+  anchoredFacts: z.number().int().nonnegative().describe("Structured facts that quoted the earlier version."),
+  unchanged: z.number().int().nonnegative().describe("Facts whose quoted passages all still occur verbatim."),
+  reanchored: z.array(z.object({ fact: StyleFactRef, label: z.string(), passages: z.array(PassageRef) })).describe("Unchanged rules whose passage references move to the new version."),
+  applied: z.array(z.object({ fact: StyleFactRef, label: z.string(), action: z.enum(["keep", "replace", "retire"]) })).describe("Affected facts the owner resolved in this save."),
+  conflicts: z
+    .array(
+      z.object({
+        fact: StyleFactRef,
+        label: z.string(),
+        reason: z.enum(["passage_removed", "passage_changed"]),
+        previousPassages: z.array(PassageRef),
+        missingQuotes: z.array(z.string()),
+        candidateText: z.string().nullable(),
+        note: z.string().nullable().describe("Why this cannot be settled by the edit alone, where that applies."),
+      }),
+    )
+    .describe("Affected facts left undecided; each stays in force and visible until the owner resolves it."),
+  addedText: z.array(z.object({ lineStart: z.number().int().positive(), lineEnd: z.number().int().positive() })).describe("Line ranges of the new text that are new or reworded. No structured fact is created from them."),
+});
+export type StyleFactDiff = z.infer<typeof StyleFactDiff>;
+
 /**
  * Everything a conversational model turn or a composition run must receive about taste:
  * the complete active profile, then its active amendments, then the precedence statement.
@@ -117,6 +217,8 @@ export const StyleContext = z.object({
   briefs: z.array(TemporaryBrief),
   measurements: z.array(Measurement),
   sizeExperiences: z.array(SizeExperience),
+  /** Open conflicts between the saved profile text and structured facts; absent means none were read. */
+  factConflicts: z.array(StyleFactConflict).optional(),
   precedence: z.string(),
   styleRevision: z.number().int().nonnegative(),
 });

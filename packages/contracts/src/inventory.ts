@@ -2,6 +2,7 @@ import { z } from "zod";
 import { Instant, LocalDate } from "./primitives.ts";
 import { DailyWear, Garment, GarmentAlias, GarmentFact, Restriction, StockBalance, StockMovement, WearObservation } from "./garment.ts";
 import { GarmentAvailability } from "./availability.ts";
+import { Measurement } from "./style.ts";
 
 /** A garment with everything the item page needs from the ledger. */
 export const GarmentDetail = z.object({
@@ -17,6 +18,8 @@ export const GarmentDetail = z.object({
   wearCountCaveat: z.string(),
   recentWears: z.array(DailyWear),
   movements: z.array(StockMovement),
+  /** Current measurements stored for this garment. An empty list means none are recorded, which stays visible. */
+  measurements: z.array(Measurement).optional(),
 });
 export type GarmentDetail = z.infer<typeof GarmentDetail>;
 
@@ -64,6 +67,14 @@ export const InventoryQuery = z.object({
   forDate: LocalDate.optional(),
 });
 export type InventoryQuery = z.input<typeof InventoryQuery>;
+
+/** The garments a selector currently matches: what a bulk edit would touch, read before it is confirmed. */
+export const GarmentSelection = z.object({
+  garments: z.array(z.object({ garmentId: z.string(), version: z.number().int().positive(), name: z.string(), category: z.string() })),
+  count: z.number().int().nonnegative(),
+  wardrobeRevision: z.number().int().nonnegative(),
+});
+export type GarmentSelection = z.infer<typeof GarmentSelection>;
 
 /** A day's record: what was actually worn, grouped from observations. */
 export const DailyRecord = z.object({

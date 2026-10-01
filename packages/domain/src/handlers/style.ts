@@ -6,6 +6,7 @@ import type { CommandPlan } from "../commands/types.ts";
 import { restrictionCovers } from "../availability/estimator.ts";
 import { attrs, GARMENT_COLS, loadGarments } from "./common.ts";
 import { define } from "./garments.ts";
+import { planFactChanges, planFactUndo, styleResolveFactConflict, type FactUndo } from "./style-facts.ts";
 import type { GarmentRow } from "../stock/planner.ts";
 
 const ALREADY_UNDO = { unavailableReason: "this is already an undo" } as const;
@@ -124,6 +125,14 @@ export const restrictionResolve = define({
 
 const styleOutbox = (revision: number) => [{ topic: "style", entityKind: "style", entityId: "owner-profile", revision }];
 
+/** Close open profile conflicts on facts that their own command now replaces. */
+function supersedeOpenConflicts(ctx: { userId: string; now: string; commandId: string }, factKind: "rule" | "measurement", where: string, params: unknown[]): Stmt {
+  return stmt(
+    `UPDATE style_fact_conflicts SET status = 'resolved', resolution_json = ?, resolved_at = ?, resolved_command_id = ? WHERE user_id = ? AND status = 'open' AND fact_kind = ? AND ${where}`,
+    JSON.stringify({ action: "replace", note: "superseded by a newer statement of this fact" }), ctx.now, ctx.commandId, ctx.userId, factKind, ...params,
+  );
+}
+
 export const styleImportDocument = define({
   type: "style.import_document",
   schema: C["style.import_document"],
@@ -164,12 +173,30 @@ export const styleSaveDocument = define({
   class: "edit",
   requiredScope: "write",
   async plan(ctx, p) {
-    const active = await first<{ version: number; title: string; content_sha256: string }>(ctx.db, "SELECT version, title, content_sha256 FROM style_documents WHERE user_id = ? AND document_id = ? AND status = 'active'", ctx.userId, p.documentId);
+    // A model-written compaction or extraction can never rewrite the owner's profile.
+    if (p.source.kind === "model_inference") throw new CommandError("forbidden", "the profile is the owner's own text; a model inference cannot save a new version of it");
+    const active = await first<{ version: number; title: string; content: string; content_sha256: string }>(ctx.db, "SELECT version, title, content, content_sha256 FROM style_documents WHERE user_id = ? AND document_id = ? AND status = 'active'", ctx.userId, p.documentId);
     if (!active) throw new CommandError("not_found", "there is no active style document to edit");
     const bytes = new TextEncoder().encode(p.content);
     const sha = await sha256Hex(bytes);
     if (sha === active.content_sha256 && p.incorporateAmendmentIds.length === 0) return { outcome: "noop", summary: "My style is unchanged", undo: { unavailableReason: "nothing changed" } };
+    if (p.incorporateAmendmentIds.length > 0) {
+      const known = await allIn<{ amendment_id: string }>(ctx.db, "SELECT amendment_id FROM style_amendments WHERE user_id = ? AND document_id = ? AND amendment_id IN (:ids)", [ctx.userId, p.documentId], p.incorporateAmendmentIds);
+      const missing = p.incorporateAmendmentIds.filter((id) => !known.some((k) => k.amendment_id === id));
+      if (missing.length > 0) throw new CommandError("not_found", `unknown amendment${missing.length > 1 ? "s" : ""}: ${missing.join(", ")}; nothing was saved`, { missing });
+    }
     const version = active.version + 1;
+    // The diff of structured facts against the version this save replaces (same batch, same expected version).
+    const facts = await planFactChanges(ctx, {
+      documentId: p.documentId,
+      fromVersion: active.version,
+      toVersion: version,
+      previous: { content: active.content, sha256: active.content_sha256 },
+      next: { content: p.content, sha256: sha },
+      resolutions: p.factResolutions,
+      source: p.source,
+    });
+    const incorporated = (await allIn<{ amendment_id: string }>(ctx.db, "SELECT amendment_id FROM style_amendments WHERE user_id = ? AND status = 'active' AND amendment_id IN (:ids)", [ctx.userId], p.incorporateAmendmentIds)).map((a) => a.amendment_id);
     const statements: Stmt[] = [
       stmt("UPDATE style_documents SET status = 'superseded' WHERE user_id = ? AND document_id = ? AND version = ?", ctx.userId, p.documentId, active.version),
       stmt(
@@ -178,19 +205,25 @@ export const styleSaveDocument = define({
       ),
     ];
     // Amendments are marked incorporated individually; the others stay active on top of the new version.
-    for (const id of p.incorporateAmendmentIds) {
+    for (const id of incorporated) {
       statements.push(stmt("UPDATE style_amendments SET status = 'incorporated', updated_at = ? WHERE user_id = ? AND amendment_id = ? AND status = 'active'", ctx.now, ctx.userId, id));
     }
+    statements.push(...facts.statements);
+    const parts = [
+      incorporated.length ? `${incorporated.length} amendment(s) incorporated` : "",
+      facts.diff.applied.length ? `${facts.diff.applied.length} structured fact(s) changed as decided` : "",
+      facts.diff.conflicts.length ? `${facts.diff.conflicts.length} structured fact(s) no longer match the text and stay in force until decided` : "",
+    ].filter(Boolean);
     return {
-      summary: `My style saved as version ${version}` + (p.incorporateAmendmentIds.length ? `; ${p.incorporateAmendmentIds.length} amendment(s) incorporated` : ""),
+      summary: `My style saved as version ${version}` + (parts.length ? `; ${parts.join("; ")}` : ""),
       statements,
       preconditions: [{ label: "style document unchanged since read", sql: "(SELECT version FROM style_documents WHERE user_id = ? AND document_id = ? AND status = 'active') = ?", params: [ctx.userId, p.documentId, active.version], class: "internal" }],
-      affected: [{ kind: "style_document", id: p.documentId, version }],
+      affected: [{ kind: "style_document", id: p.documentId, version }, ...facts.affected],
       outbox: styleOutbox(ctx.styleRevision + 1),
-      result: { documentId: p.documentId, version, contentSha256: sha, previousVersion: active.version },
+      result: { documentId: p.documentId, version, contentSha256: sha, previousVersion: active.version, factDiff: facts.diff, conflictIds: facts.conflictIds },
       changes: { styleChanged: true },
       bumpStyle: true,
-      undo: { data: { documentId: p.documentId, version, previousVersion: active.version, incorporated: p.incorporateAmendmentIds } },
+      undo: { data: { documentId: p.documentId, version, previousVersion: active.version, incorporated, facts: facts.undo } },
     };
   },
   async planUndo(ctx, _o, data) {
@@ -209,10 +242,13 @@ export const styleSaveDocument = define({
       ),
     ];
     for (const id of data.incorporated as string[]) statements.push(stmt("UPDATE style_amendments SET status = 'active', updated_at = ? WHERE user_id = ? AND amendment_id = ?", ctx.now, ctx.userId, id));
+    // Structured facts go back with the text: re-anchored passages, the owner's decisions and the conflicts this save opened.
+    const facts = data.facts ? planFactUndo(ctx, data.facts as FactUndo) : { statements: [], preconditions: [] };
+    statements.push(...facts.statements);
     return {
       summary: `My style restored to the text of version ${data.previousVersion} (saved as version ${version})`,
       statements,
-      preconditions: [{ label: "no later edit of My style", sql: "(SELECT version FROM style_documents WHERE user_id = ? AND document_id = ? AND status = 'active') = ?", params: [ctx.userId, data.documentId, data.version], class: "state" }],
+      preconditions: [{ label: "no later edit of My style", sql: "(SELECT version FROM style_documents WHERE user_id = ? AND document_id = ? AND status = 'active') = ?", params: [ctx.userId, data.documentId, data.version], class: "state" }, ...facts.preconditions],
       affected: [{ kind: "style_document", id: data.documentId, version }],
       outbox: styleOutbox(ctx.styleRevision + 1),
       changes: { styleChanged: true },
@@ -303,7 +339,11 @@ export const styleUpsertRule = define({
     const ruleId = current?.rule_id ?? p.ruleId ?? ctx.newId("rul");
     const version = (current?.version ?? 0) + 1;
     const statements: Stmt[] = [];
-    if (current) statements.push(stmt("UPDATE style_rules SET is_current = 0 WHERE user_id = ? AND rule_id = ? AND version = ?", ctx.userId, current.rule_id, current.version));
+    if (current) {
+      statements.push(stmt("UPDATE style_rules SET is_current = 0 WHERE user_id = ? AND rule_id = ? AND version = ?", ctx.userId, current.rule_id, current.version));
+      // The owner's newer statement of this rule settles any conflict a profile edit left open on it.
+      statements.push(supersedeOpenConflicts(ctx, "rule", "fact_id = ?", [p.key]));
+    }
     statements.push(
       stmt(
         "INSERT INTO style_rules (user_id, rule_id, version, key, kind, status, params_json, interpretation, passages_json, origin, is_current, command_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
@@ -472,6 +512,13 @@ export const measurementRecord = define({
     return {
       summary: `Recorded ${p.subject} ${p.key}: ${p.qualifier ? `${p.qualifier} ` : ""}${p.value} ${p.unit}${p.measuredOn ? ` (${p.measuredOn})` : ""}`,
       statements: [
+        // A newer dated value settles any conflict a profile edit left open on the value it supersedes.
+        supersedeOpenConflicts(
+          ctx,
+          "measurement",
+          "fact_id IN (SELECT measurement_id FROM measurements WHERE user_id = ? AND subject = ? AND key = ? AND COALESCE(garment_id, '') = COALESCE(?, '') AND superseded_by IS NULL)",
+          [ctx.userId, p.subject, p.key, p.garmentId],
+        ),
         // The newer dated value supersedes the earlier one without erasing it.
         stmt(
           "UPDATE measurements SET superseded_by = ? WHERE user_id = ? AND subject = ? AND key = ? AND COALESCE(garment_id, '') = COALESCE(?, '') AND superseded_by IS NULL",
@@ -686,6 +733,7 @@ export const styleHandlers = [
   restrictionResolve,
   styleImportDocument,
   styleSaveDocument,
+  styleResolveFactConflict,
   styleAddAmendment,
   styleSetAmendmentStatus,
   styleUpsertRule,

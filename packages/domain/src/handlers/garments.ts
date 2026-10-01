@@ -6,7 +6,9 @@ import { normalizePhrase } from "../util.ts";
 import { explainGarmentStock, type GarmentRow } from "../stock/planner.ts";
 import { ownedUnits } from "../stock/replay.ts";
 import type { CommandDefinition, CommandPlan } from "../commands/types.ts";
-import { bumpGarment, loadGarment, simpleStockUndo, stockParts } from "./common.ts";
+import { bumpGarment, loadGarment, nameList, simpleStockUndo, stockParts } from "./common.ts";
+import { selectGarments } from "./selection.ts";
+import type { CommandContext } from "../commands/types.ts";
 
 export function define<S extends z.ZodType>(def: CommandDefinition<S>): CommandDefinition<S> {
   return def;
@@ -176,6 +178,47 @@ const COLUMN_OF: Record<string, string> = {
   attributes: "attributes_json",
 };
 
+/**
+ * The writes that correct one garment's descriptive facts: the column update and, per changed attribute,
+ * a fact that supersedes the earlier assertion without erasing why it existed. Returns no statements when
+ * the garment is already as stated.
+ */
+function planCorrection(ctx: CommandContext, full: Record<string, any>, changes: Record<string, unknown>, source: unknown): { statements: Stmt[]; previous: Record<string, unknown>; changed: string[] } {
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  const previous: Record<string, unknown> = {};
+  const statements: Stmt[] = [];
+  const changed: string[] = [];
+  for (const [key, value] of Object.entries(changes)) {
+    const column = COLUMN_OF[key]!;
+    let stored: unknown = value;
+    if (key === "roles" || key === "thermal") stored = value === null ? null : JSON.stringify(value);
+    if (key === "attributes") stored = JSON.stringify({ ...json(full.attributes_json, {}), ...(value as object) });
+    if (full[column] === stored) continue;
+    previous[column] = full[column];
+    sets.push(`${column} = ?`);
+    params.push(stored);
+    changed.push(key);
+    const factId = ctx.newId("fct");
+    statements.push(stmt("UPDATE garment_facts SET superseded_by = ? WHERE user_id = ? AND garment_id = ? AND attribute = ? AND superseded_by IS NULL", factId, ctx.userId, full.garment_id, key));
+    statements.push(
+      stmt(
+        "INSERT INTO garment_facts (user_id, fact_id, garment_id, attribute, value_json, source_json, scope, command_id, recorded_at) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)",
+        ctx.userId,
+        factId,
+        full.garment_id,
+        key,
+        JSON.stringify({ value, previous: full[column] }),
+        JSON.stringify(source),
+        ctx.commandId,
+        ctx.now,
+      ),
+    );
+  }
+  if (sets.length > 0) statements.unshift(stmt(`UPDATE garments SET ${sets.join(", ")} WHERE user_id = ? AND garment_id = ?`, ...params, ctx.userId, full.garment_id));
+  return { statements, previous, changed };
+}
+
 export const garmentCorrect = define({
   type: "garment.correct",
   schema: C["garment.correct"],
@@ -184,44 +227,12 @@ export const garmentCorrect = define({
   async plan(ctx, p) {
     const g = await loadGarment(ctx, p.garmentId);
     const full = (await first<Record<string, any>>(ctx.db, "SELECT * FROM garments WHERE user_id = ? AND garment_id = ?", ctx.userId, g.garment_id))!;
-    const sets: string[] = [];
-    const params: unknown[] = [];
-    const previous: Record<string, unknown> = {};
-    const statements: Stmt[] = [];
-    const changed: string[] = [];
-    for (const [key, value] of Object.entries(p.changes)) {
-      const column = COLUMN_OF[key]!;
-      let stored: unknown = value;
-      if (key === "roles" || key === "thermal") stored = value === null ? null : JSON.stringify(value);
-      if (key === "attributes") stored = JSON.stringify({ ...json(full.attributes_json, {}), ...(value as object) });
-      if (full[column] === stored) continue;
-      previous[column] = full[column];
-      sets.push(`${column} = ?`);
-      params.push(stored);
-      changed.push(key);
-      const factId = ctx.newId("fct");
-      // The correction supersedes the earlier assertion without erasing why it existed.
-      statements.push(stmt("UPDATE garment_facts SET superseded_by = ? WHERE user_id = ? AND garment_id = ? AND attribute = ? AND superseded_by IS NULL", factId, ctx.userId, g.garment_id, key));
-      statements.push(
-        stmt(
-          "INSERT INTO garment_facts (user_id, fact_id, garment_id, attribute, value_json, source_json, scope, command_id, recorded_at) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)",
-          ctx.userId,
-          factId,
-          g.garment_id,
-          key,
-          JSON.stringify({ value, previous: full[column] }),
-          JSON.stringify(p.source),
-          ctx.commandId,
-          ctx.now,
-        ),
-      );
-    }
-    if (sets.length === 0) return { outcome: "noop", summary: `${g.name}: already as stated`, undo: { unavailableReason: "nothing changed" } };
+    const { statements, previous, changed } = planCorrection(ctx, full, p.changes, p.source);
+    if (changed.length === 0) return { outcome: "noop", summary: `${g.name}: already as stated`, undo: { unavailableReason: "nothing changed" } };
     const planner = ctx.stock();
     if (p.changes.careChannel && p.changes.careChannel !== g.care_channel) planner.setCareChannel(g.garment_id, p.changes.careChannel);
     else planner.touch(g.garment_id);
     const parts = stockParts(await planner.build());
-    statements.unshift(stmt(`UPDATE garments SET ${sets.join(", ")} WHERE user_id = ? AND garment_id = ?`, ...params, ctx.userId, g.garment_id));
     if (p.changes.name && p.changes.name !== g.name) {
       // The owner's name governs what he dresses from; the earlier name stays findable as an alias.
       statements.push(aliasInsert(ctx, g.garment_id, p.changes.name, "owner_name"));
@@ -251,6 +262,93 @@ export const garmentCorrect = define({
       preconditions: [...parts.preconditions, { label: "garment not changed since the correction", sql: "(SELECT version FROM garments WHERE user_id = ? AND garment_id = ?) = ?", params: [ctx.userId, g.garment_id, data.versionAfter], class: "state" }],
       affected: parts.affected,
       changes: { availabilityChanged: [g.garment_id] },
+      bumpWardrobe: true,
+      undo: { unavailableReason: "this is already an undo" },
+    };
+  },
+});
+
+/** The most garments one bulk edit may change; a larger selection is refused rather than silently cut. */
+export const BULK_CORRECT_LIMIT = 200;
+
+/**
+ * One correction across every garment a category or query selects (research requirement R12): a single
+ * command, receipt and undo. The selection is evaluated when the command runs; `expectedCount` refuses a
+ * set that differs from the one the owner saw. Garments already as stated are left untouched.
+ */
+export const garmentBulkCorrect = define({
+  type: "garment.bulk_correct",
+  schema: C["garment.bulk_correct"],
+  class: "observation",
+  requiredScope: "write",
+  async plan(ctx, p) {
+    const rows = await selectGarments(ctx.db, ctx.userId, p.selector);
+    const matched = rows.map((r) => ({ garmentId: r.garment_id as string, name: r.name as string }));
+    if (rows.length === 0) throw new CommandError("not_found", "no garment matches that selection; nothing was written", { selector: p.selector });
+    if (p.expectedCount !== undefined && p.expectedCount !== rows.length) {
+      throw new CommandError("precondition_failed", `the selection now matches ${rows.length} garment${rows.length === 1 ? "" : "s"}, not ${p.expectedCount}; nothing was written`, { expectedCount: p.expectedCount, matched });
+    }
+    if (rows.length > BULK_CORRECT_LIMIT) {
+      throw new CommandError("precondition_failed", `the selection matches ${rows.length} garments; one bulk edit changes at most ${BULK_CORRECT_LIMIT}. Narrow the selection; nothing was written`, { matchedCount: rows.length, limit: BULK_CORRECT_LIMIT });
+    }
+    const planner = ctx.stock();
+    const statements: Stmt[] = [];
+    const undo: { garmentId: string; previous: Record<string, unknown> }[] = [];
+    const changedNames: string[] = [];
+    const changedKeys = new Set<string>();
+    for (const full of rows) {
+      const one = planCorrection(ctx, full, p.changes, p.source);
+      if (one.changed.length === 0) continue;
+      statements.push(...one.statements);
+      undo.push({ garmentId: full.garment_id, previous: one.previous });
+      changedNames.push(full.name);
+      for (const key of one.changed) changedKeys.add(key);
+      if (p.changes.careChannel && p.changes.careChannel !== full.care_channel) planner.setCareChannel(full.garment_id, p.changes.careChannel);
+      else planner.touch(full.garment_id);
+    }
+    if (undo.length === 0) {
+      return { outcome: "noop", summary: `All ${rows.length} selected garment${rows.length === 1 ? " is" : "s are"} already as stated`, result: { matchedCount: rows.length, changedGarmentIds: [], unchangedGarmentIds: matched.map((m) => m.garmentId) }, undo: { unavailableReason: "nothing changed" } };
+    }
+    const parts = stockParts(await planner.build());
+    const versionAfter = new Map(parts.affected.map((a) => [a.id, a.version]));
+    const changedIds = undo.map((u) => u.garmentId);
+    return {
+      summary: `Corrected ${[...changedKeys].join(", ")} on ${undo.length} of ${rows.length} selected garment${rows.length === 1 ? "" : "s"}: ${nameList(changedNames)}`,
+      statements: [...statements, ...parts.statements],
+      preconditions: parts.preconditions,
+      affected: parts.affected,
+      outbox: changedIds.map((id) => ({ topic: "garment", entityKind: "garment", entityId: id, revision: versionAfter.get(id)! })),
+      result: { matchedCount: rows.length, changedGarmentIds: changedIds, unchangedGarmentIds: matched.map((m) => m.garmentId).filter((id) => !changedIds.includes(id)), changed: [...changedKeys] },
+      changes: { availabilityChanged: changedIds },
+      bumpWardrobe: true,
+      undo: { data: { garments: undo.map((u) => ({ ...u, versionAfter: versionAfter.get(u.garmentId)! })) } },
+    };
+  },
+  async planUndo(ctx, _original, data) {
+    const garments = data.garments as { garmentId: string; previous: Record<string, unknown>; versionAfter: number }[];
+    const planner = ctx.stock();
+    const statements: Stmt[] = [];
+    for (const g of garments) {
+      const cols = Object.keys(g.previous);
+      statements.push(stmt(`UPDATE garments SET ${cols.map((c) => `${c} = ?`).join(", ")} WHERE user_id = ? AND garment_id = ?`, ...cols.map((c) => g.previous[c]), ctx.userId, g.garmentId));
+      if ("care_channel" in g.previous) planner.setCareChannel(g.garmentId, g.previous.care_channel as any);
+      else planner.touch(g.garmentId);
+    }
+    const parts = stockParts(await planner.build());
+    return {
+      summary: `Bulk correction undone on ${garments.length} garment${garments.length === 1 ? "" : "s"}`,
+      statements: [...statements, ...parts.statements],
+      preconditions: [
+        ...parts.preconditions,
+        {
+          label: "no selected garment changed since the bulk correction",
+          sql: "(SELECT COUNT(*) FROM garments WHERE user_id = ? AND (garment_id || ':' || version) IN (SELECT j.value FROM json_each(?) AS j)) = ?",
+          params: [ctx.userId, JSON.stringify(garments.map((g) => `${g.garmentId}:${g.versionAfter}`)), garments.length],
+          class: "state",
+        },
+      ],
+      affected: parts.affected,
+      changes: { availabilityChanged: garments.map((g) => g.garmentId) },
       bumpWardrobe: true,
       undo: { unavailableReason: "this is already an undo" },
     };
@@ -607,6 +705,7 @@ export const garmentHandlers = [
   garmentCreate,
   garmentReceive,
   garmentCorrect,
+  garmentBulkCorrect,
   garmentAddAlias,
   garmentRemoveAlias,
   garmentSetPlanningPolicy,

@@ -3,7 +3,7 @@ import { Actor, AuthorizationBasis, Channel, CommandId, EntityVersion, GarmentId
 import { Bucket, CareChannel, Category, GarmentAttributes, PlanningPolicy, RestrictionKind, RestrictionScope, Role, ThermalBound } from "./garment.ts";
 import { ExposureOption } from "./availability.ts";
 import { OwnerSettings } from "./settings.ts";
-import { RuleKind, RuleStatus } from "./style.ts";
+import { RuleKind, RuleStatus, StyleFactRef, StyleFactResolution } from "./style.ts";
 
 /* ------------------------------------------------------------------ */
 /* Foundation command payloads. One schema per command type.           */
@@ -65,6 +65,53 @@ export const GarmentCorrect = z.object({
     })
     .partial()
     .refine((c) => Object.keys(c).length > 0, "at least one change is required"),
+  source: SourceRef,
+});
+
+/**
+ * Which garments a bulk edit covers. Every set field must match (AND); `garmentIds` names an explicit
+ * set, the others are evaluated against the current records. Merged, removed and disposed garments are
+ * never selected.
+ */
+export const GarmentSelector = z
+  .object({
+    garmentIds: z.array(GarmentId).min(1).optional(),
+    category: Category.optional(),
+    search: z.string().min(1).optional().describe("All words must occur in the name, maker, product, colour, fabric or an alias."),
+    maker: z.string().min(1).optional(),
+    colour: z.string().min(1).optional(),
+    fabric: z.string().min(1).optional(),
+    careChannel: CareChannel.optional(),
+    planningPolicy: PlanningPolicy.optional(),
+    acquisition: z.enum(["incoming", "owned"]).optional(),
+  })
+  .refine((s) => Object.values(s).some((v) => v !== undefined), "a selector needs at least one criterion");
+export type GarmentSelector = z.input<typeof GarmentSelector>;
+
+/**
+ * One correction applied to every garment a category or query selects, as a single command with one
+ * receipt and one undo. `expectedCount` is the size of the set the owner saw; the command is refused,
+ * with the current matches, when the selection has changed.
+ */
+export const GarmentBulkCorrect = z.object({
+  selector: GarmentSelector,
+  changes: z
+    .object({
+      maker: z.string().nullable(),
+      product: z.string().nullable(),
+      fabric: z.string().nullable(),
+      colour: z.string().nullable(),
+      pattern: z.string().nullable(),
+      size: z.string().nullable(),
+      condition: z.string().nullable(),
+      careChannel: CareChannel,
+      roles: z.array(Role).min(1),
+      thermal: ThermalBound.nullable(),
+      attributes: GarmentAttributes,
+    })
+    .partial()
+    .refine((c) => Object.keys(c).length > 0, "at least one change is required"),
+  expectedCount: z.number().int().positive().optional(),
   source: SourceRef,
 });
 
@@ -191,13 +238,22 @@ export const StyleImportDocument = z.object({
   source: SourceRef,
 });
 
-/** Save in My style: new version against the same expected version. */
+/**
+ * Save in My style: new version against the same expected version. The command derives the diff of
+ * structured facts (see StyleFactDiff); `factResolutions` are the owner's clear decisions for affected
+ * facts and apply atomically with the new version and the amendment changes. Affected facts without a
+ * resolution become open conflicts.
+ */
 export const StyleSaveDocument = z.object({
   documentId: z.string().default("owner-profile"),
   content: z.string().min(1),
   incorporateAmendmentIds: z.array(z.string()).default([]),
+  factResolutions: z.array(z.object({ fact: StyleFactRef, resolution: StyleFactResolution })).default([]),
   source: SourceRef,
 });
+
+/** Decide an open conflict left by an earlier save. */
+export const StyleResolveFactConflict = z.object({ conflictId: z.string().min(1), resolution: StyleFactResolution });
 
 export const StyleAddAmendment = z.object({
   amendmentId: z.string().optional(),
@@ -308,6 +364,7 @@ export const FOUNDATION_COMMANDS = {
   "garment.create": GarmentCreate,
   "garment.receive": GarmentReceive,
   "garment.correct": GarmentCorrect,
+  "garment.bulk_correct": GarmentBulkCorrect,
   "garment.add_alias": GarmentAddAlias,
   "garment.remove_alias": GarmentRemoveAlias,
   "garment.set_planning_policy": GarmentSetPlanningPolicy,
@@ -330,6 +387,7 @@ export const FOUNDATION_COMMANDS = {
   "restriction.resolve": RestrictionResolve,
   "style.import_document": StyleImportDocument,
   "style.save_document": StyleSaveDocument,
+  "style.resolve_fact_conflict": StyleResolveFactConflict,
   "style.add_amendment": StyleAddAmendment,
   "style.set_amendment_status": StyleSetAmendmentStatus,
   "style.upsert_rule": StyleUpsertRule,

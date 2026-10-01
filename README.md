@@ -14,7 +14,7 @@ Only data and requirements were migrated; no code from any earlier application i
 | Typecheck and test everything | `npm test` |
 | Foundation tests only | `npm run test:foundation` |
 | One workspace | `npm test -w @garderobe/domain` |
-| Verify supplied documents, checklist, import report and generated contracts | `npm run verify` |
+| Verify supplied documents, checklist, import report and generated contracts (checks only, writes nothing) | `npm run verify` |
 | Regenerate the inventory import report | `npm run import:report` |
 | Regenerate JSON Schema and Swift contracts | `npm run generate:contracts` |
 
@@ -68,7 +68,7 @@ Each workstream edits only its own directories. Nobody edits another workstream'
 
 ## Public interfaces
 
-### `@garderobe/contracts` (version `1.0.0`, API `v1`)
+### `@garderobe/contracts` (contract version `1.1.0`, API `v1`)
 
 Zod schemas and inferred types: `CommandEnvelope`, `CommandReceipt`, `CommandErrorBody`,
 `FOUNDATION_COMMANDS` (one payload schema per command type), `Garment`, `GarmentDetail`, `InventoryPage`,
@@ -105,15 +105,34 @@ The same key with the same body returns the stored receipt (`replayed: true`); a
 `idempotency_key_reuse`. Owner observations are never rejected for a stale version; plan edits return
 `conflict`. `source.channel` must match the principal's channel.
 
-Foundation command types: `garment.create`, `garment.receive`, `garment.correct`, `garment.add_alias`,
+Foundation command types: `garment.create`, `garment.receive`, `garment.correct`, `garment.bulk_correct`,
+`garment.add_alias`,
 `garment.remove_alias`, `garment.set_planning_policy`, `garment.move`, `garment.retire`, `garment.merge`,
 `garment.remove_fabricated`, `stock.reconcile`, `stock.pack`, `stock.unpack`, `wear.record`, `wear.amend`,
 `care.mark_dirty`, `care.washed`, `laundry.collect`, `laundry.return`, `laundry.report_exception`,
 `laundry.apply_weekly_reset`, `restriction.add`, `restriction.resolve`, `style.import_document`,
-`style.save_document`, `style.add_amendment`, `style.set_amendment_status`, `style.upsert_rule`,
+`style.save_document`, `style.resolve_fact_conflict`, `style.add_amendment`, `style.set_amendment_status`, `style.upsert_rule`,
 `style.add_direction`, `style.retire_direction`, `style.set_brief`, `style.retire_brief`,
 `measurement.record`, `size_experience.record`, `settings.update`, `exposure.publish`, `exposure.select`,
 `exposure.supersede`, `import.record_run`, `command.undo`.
+
+Contract 1.1.0 additions (all additive; older payloads still parse):
+
+- **Save in My style.** `style.save_document` accepts `factResolutions` and its receipt carries
+  `result.factDiff` (`StyleFactDiff`). The diff is derived only from the passages that rules,
+  measurements and size experiences quote verbatim: a fact whose quotes all still occur is re-anchored to
+  the new version; a fact whose passage was removed or reworded keeps its value and becomes an open
+  `StyleFactConflict` unless the same save carries the owner's decision for it (`keep`, `replace`,
+  `retire`). Nothing is read out of the prose. `previewStyleSave(db, principal, { content })` returns the
+  same diff without writing; open conflicts are in `StyleContext.factConflicts` and
+  `listStyleFactConflicts`; `style.resolve_fact_conflict` decides one later. A rule that carries an active
+  restriction cannot be retired or changed by an edit of the text.
+- **Bulk edit.** `garment.bulk_correct` applies one correction to every garment a `GarmentSelector`
+  matches (category, search words, maker, colour, fabric, care channel, planning policy, explicit IDs), as
+  one command with one receipt and one undo. Read the set first with
+  `previewGarmentSelection(db, principal, selector)` and send its `count` as `expectedCount`.
+- **Garment measurements.** `GarmentDetail.measurements` lists the current measurements of the item; an
+  empty list means none are recorded.
 
 ### `@garderobe/domain`
 
@@ -123,7 +142,8 @@ Foundation command types: `garment.create`, `garment.receive`, `garment.correct`
   `systemPrincipalFor`, `createUser`, `linkIdentity`, `unlinkIdentity`, `setUserStatus`.
 - Reads, all `(db, principal, ...)`: `listInventory`, `getGarmentDetail`, `resolveAlias`,
   `getAvailability`, `getJointAvailability`, `getDailyRecord`, `listCountedWears`, `getLaundryState`,
-  `getStyleContext`, `listStyleDocumentVersions`, `listRestrictions`, `getOwnerState`, `getSettings`.
+  `getStyleContext`, `listStyleDocumentVersions`, `listRestrictions`, `getOwnerState`, `getSettings`,
+  `previewStyleSave`, `listStyleFactConflicts`, `previewGarmentSelection`.
 - Durable plumbing: `registerActionIntent`, `pendingActionIntents`, `claimDueEffects`, `settleEffect`,
   `latestDesiredRevision`, `effectsForCommand`, `readOutbox`, `acknowledgeOutbox`.
 - Accounting primitives for lane commands: `ctx.stock()` (`StockPlanner`), `stockParts`, `loadGarments`,

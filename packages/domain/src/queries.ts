@@ -10,6 +10,7 @@ import type {
   InventoryItem,
   InventoryPage,
   JointAvailability,
+  Measurement,
   Restriction,
   StockBalance,
   StyleContext,
@@ -22,6 +23,7 @@ import { addDays, deepMerge, localDateOf, normalizePhrase, toInstant } from "./u
 import { estimateAll, jointAvailability, restrictionCovers, type EstimatorExposureSet, type EstimatorGarment, type EstimatorInput, type EstimatorRestriction } from "./availability/estimator.ts";
 import { explainGarmentStock } from "./stock/planner.ts";
 import type { BalanceRow } from "./stock/replay.ts";
+import { listStyleFactConflicts } from "./handlers/style-facts.ts";
 
 /**
  * Read API. Every function requires an authenticated Principal and qualifies every query with its
@@ -62,6 +64,10 @@ function rowToGarment(userId: string, r: any): Garment {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
+}
+
+function rowToMeasurement(m: any): Measurement {
+  return { measurementId: m.measurement_id, subject: m.subject, garmentId: m.garment_id, key: m.key, value: m.value, unit: m.unit, convention: m.convention, qualifier: m.qualifier, measuredOn: m.measured_on, source: json(m.source_json, { kind: "system" }), passage: json(m.passage_json, null), supersededBy: m.superseded_by };
 }
 
 function rowToRestriction(r: any): Restriction {
@@ -299,13 +305,14 @@ export async function getGarmentDetail(db: Db, principal: Principal, garmentId: 
   const r = await first<any>(db, "SELECT * FROM garments WHERE user_id = ? AND garment_id = ?", userId, garmentId);
   if (!r) throw new CommandError("not_found", `no garment '${garmentId}' in this wardrobe`);
   const garment = rowToGarment(userId, r);
-  const [aliasRows, factRows, balanceRows, wearAgg, recent, restrictionRows] = await Promise.all([
+  const [aliasRows, factRows, balanceRows, wearAgg, recent, restrictionRows, measurementRows] = await Promise.all([
     all<any>(db, "SELECT alias_id, garment_id, phrase, kind FROM garment_aliases WHERE user_id = ? AND garment_id = ? AND removed_at IS NULL ORDER BY created_at, rowid", userId, garmentId),
     all<any>(db, "SELECT * FROM garment_facts WHERE user_id = ? AND garment_id = ? ORDER BY recorded_at, rowid", userId, garmentId),
     all<any>(db, "SELECT bucket, ref, quantity FROM stock_balances WHERE user_id = ? AND garment_id = ? ORDER BY bucket, ref", userId, garmentId),
     first<{ n: number; last: string | null }>(db, "SELECT COUNT(*) AS n, MAX(wearing_date) AS last FROM daily_wears WHERE user_id = ? AND garment_id = ? AND status = 'active'", userId, garmentId),
     all<any>(db, "SELECT garment_id, wearing_date, observation_count, status FROM daily_wears WHERE user_id = ? AND garment_id = ? ORDER BY wearing_date DESC LIMIT 60", userId, garmentId),
     all<any>(db, "SELECT * FROM restrictions WHERE user_id = ? AND status = 'active'", userId),
+    all<any>(db, "SELECT * FROM measurements WHERE user_id = ? AND subject = 'garment' AND garment_id = ? AND superseded_by IS NULL ORDER BY key", userId, garmentId),
   ]);
   const replay = await explainGarmentStock(db, userId, garmentId, garment.careChannel);
   const balances: StockBalance[] = balanceRows.map((b) => ({ bucket: b.bucket, ref: b.ref, quantity: b.quantity }));
@@ -321,6 +328,7 @@ export async function getGarmentDetail(db: Db, principal: Principal, garmentId: 
     wearCountCaveat: ZERO_WEAR_CAVEAT,
     recentWears: recent.map((w) => ({ garmentId: w.garment_id, wearingDate: w.wearing_date, observationCount: Math.max(1, w.observation_count), status: w.status })),
     movements: replay.movements.map((m) => ({ eventId: m.eventId, kind: m.kind, from: m.from, to: m.to, quantity: m.quantity, basis: m.basis, occurredAt: toInstant(m.occurredAtMs), note: m.note })),
+    measurements: measurementRows.map(rowToMeasurement),
   };
 }
 
@@ -447,14 +455,15 @@ export async function getStyleContext(db: Db, principal: Principal, opts: { forD
   const documentId = opts.documentId ?? "owner-profile";
   const doc = await first<any>(db, "SELECT * FROM style_documents WHERE user_id = ? AND document_id = ? AND status = 'active'", userId, documentId);
   if (!doc) throw new CommandError("not_found", "no active style document; import the owner's profile first");
-  const [amendments, rules, directions, briefs, measurements, sizes, state] = await Promise.all([
+  const [amendments, rules, directions, briefs, measurements, sizes, state, conflicts] = await Promise.all([
     all<any>(db, "SELECT * FROM style_amendments WHERE user_id = ? AND document_id = ? AND status = 'active' ORDER BY created_at, rowid", userId, documentId),
     all<any>(db, "SELECT * FROM style_rules WHERE user_id = ? AND is_current = 1 AND status != 'retired' ORDER BY key", userId),
     all<any>(db, "SELECT * FROM standing_directions WHERE user_id = ? AND status = 'active' ORDER BY created_at, rowid", userId),
     opts.forDate ? all<any>(db, "SELECT * FROM temporary_briefs WHERE user_id = ? AND status = 'active' AND local_date = ? ORDER BY created_at, rowid", userId, opts.forDate) : Promise.resolve([]),
     all<any>(db, "SELECT * FROM measurements WHERE user_id = ? AND superseded_by IS NULL ORDER BY subject, key", userId),
-    all<any>(db, "SELECT * FROM size_experiences WHERE user_id = ? ORDER BY maker, created_at", userId),
+    all<any>(db, "SELECT * FROM size_experiences WHERE user_id = ? AND retired_at IS NULL ORDER BY maker, created_at", userId),
     first<{ style_revision: number }>(db, "SELECT style_revision FROM owner_state WHERE user_id = ?", userId),
+    listStyleFactConflicts(db, principal, { documentId }),
   ]);
   return {
     document: { documentId: doc.document_id, version: doc.version, title: doc.title, content: doc.content, contentSha256: doc.content_sha256, byteLength: doc.byte_length, status: doc.status, createdAt: doc.created_at },
@@ -462,8 +471,9 @@ export async function getStyleContext(db: Db, principal: Principal, opts: { forD
     rules: rules.map((r) => ({ ruleId: r.rule_id, version: r.version, key: r.key, kind: r.kind, status: r.status, params: json(r.params_json, {}), interpretation: r.interpretation, passages: json(r.passages_json, []), origin: r.origin, createdAt: r.created_at })),
     directions: directions.map((d) => ({ directionId: d.direction_id, version: d.version, text: d.text, scope: d.scope, checkKey: d.check_key, status: d.status, source: json(d.source_json, { kind: "system" }), createdAt: d.created_at })),
     briefs: briefs.map((b) => ({ briefId: b.brief_id, localDate: b.local_date, text: b.text, status: b.status, source: json(b.source_json, { kind: "system" }), createdAt: b.created_at })),
-    measurements: measurements.map((m) => ({ measurementId: m.measurement_id, subject: m.subject, garmentId: m.garment_id, key: m.key, value: m.value, unit: m.unit, convention: m.convention, qualifier: m.qualifier, measuredOn: m.measured_on, source: json(m.source_json, { kind: "system" }), passage: json(m.passage_json, null), supersededBy: m.superseded_by })),
+    measurements: measurements.map(rowToMeasurement),
     sizeExperiences: sizes.map((s) => ({ sizeExperienceId: s.size_experience_id, maker: s.maker, productFamily: s.product_family, sizeLabel: s.size_label, note: s.note, notedOn: s.noted_on, passage: json(s.passage_json, null) })),
+    factConflicts: conflicts,
     precedence: STYLE_PRECEDENCE_STATEMENT,
     styleRevision: state?.style_revision ?? 0,
   };
