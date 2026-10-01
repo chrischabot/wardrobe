@@ -65,8 +65,9 @@ function imageCandidates(images: readonly string[]): { url: string }[] {
   const seen = new Set<string>();
   for (const image of images) {
     try {
-      const parsed = new URL(image);
-      if (parsed.protocol === "https:" || parsed.protocol === "http:") seen.add(redactSecretsInUrl(image));
+      // Only public https addresses are kept as candidates: a page cannot point the image pipeline at a
+      // private, loopback or metadata address.
+      seen.add(redactSecretsInUrl(assertPublicHttpsUrl(image)));
     } catch {
       // An unparseable image reference is not a candidate.
     }

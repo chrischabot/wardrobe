@@ -1,6 +1,6 @@
 import { ASSISTANT_COMMANDS as C } from "@garderobe/contracts/ext/assistant";
 import { CommandError, define, first, stmt } from "@garderobe/domain";
-import { NO_UNDO, money, requireGarments } from "./common.ts";
+import { NO_UNDO, money, requireGarments, named } from "./common.ts";
 
 /** A shopping candidate: a product record outside the wardrobe. It never becomes owned stock here. */
 export const productRecord = define({
@@ -14,7 +14,7 @@ export const productRecord = define({
     if (existing) {
       return {
         outcome: "merged",
-        summary: `Shopping candidate updated: ${p.name}. It is not in your wardrobe`,
+        summary: `Shopping candidate updated: ${named(p.name)}. It is not in your wardrobe`,
         statements: [
           stmt(
             "UPDATE products SET version = version + 1, url = COALESCE(?, url), maker = COALESCE(?, maker), name = ?, product_code = COALESCE(?, product_code), note = COALESCE(?, note), updated_at = ? WHERE user_id = ? AND product_id = ?",
@@ -27,7 +27,7 @@ export const productRecord = define({
       };
     }
     return {
-      summary: `Shopping candidate saved: ${p.name}${p.maker ? ` (${p.maker})` : ""}. It is not in your wardrobe`,
+      summary: `Shopping candidate saved: ${named(p.name)}${p.maker ? ` (${named(p.maker)})` : ""}. It is not in your wardrobe`,
       statements: [
         stmt(
           "INSERT INTO products (user_id, product_id, version, url, maker, name, product_code, note, source_ref, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -63,7 +63,7 @@ export const productRecordObservation = define({
     const variant = [p.size, p.colour].filter(Boolean).join(", ");
     const price = p.priceMinor !== null ? `, ${money(p.priceMinor, p.currency)}` : "";
     return {
-      summary: `${product.name}${variant ? ` (${variant})` : ""}: ${p.availability} as observed ${p.observedAt}${price}. Stock and price are rechecked before any purchase`,
+      summary: `${named(product.name)}${variant ? ` (${named(variant)})` : ""}: ${p.availability} as observed ${p.observedAt}${price}. Stock and price are rechecked before any purchase`,
       statements: [
         stmt(
           `INSERT INTO product_observations (user_id, observation_id, product_id, observed_at, checked_url, availability, size, colour, price_minor, currency, country, method, completeness, facts_json, missing_fields_json, return_terms, command_id)
@@ -91,7 +91,7 @@ export const productRecordFitAssessment = define({
     const assessmentId = ctx.newId("fit");
     const uncertain = p.uncertainties.length > 0 ? ` Uncertain: ${p.uncertainties.join("; ")}` : "";
     return {
-      summary: `Fit assessment for ${product.name}${p.sizeLabel ? ` in ${p.sizeLabel}` : ""}: ${p.verdict.replace(/_/g, " ")}.${uncertain}`,
+      summary: `Fit assessment for ${named(product.name)}${p.sizeLabel ? ` in ${named(p.sizeLabel)}` : ""}: ${p.verdict.replace(/_/g, " ")}.${uncertain}`,
       statements: [
         stmt(
           "INSERT INTO fit_assessments (user_id, assessment_id, product_id, size_label, verdict, computation_json, uncertainties_json, measurement_refs_json, command_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -126,7 +126,7 @@ export const researchSaveNote = define({
     const supported = p.claims.filter((c) => c.status === "supported").length;
     return {
       outcome: existing ? "merged" : "committed",
-      summary: `Research saved: ${p.topic} (${p.claims.length} claim${p.claims.length === 1 ? "" : "s"}, ${supported} with independent support)`,
+      summary: `Research saved: ${named(p.topic)} (${p.claims.length} claim${p.claims.length === 1 ? "" : "s"}, ${supported} with independent support)`,
       statements: [
         existing
           ? stmt("UPDATE research_notes SET version = version + 1, topic = ?, body = ?, claims_json = ?, garment_ids_json = ?, product_ids_json = ?, command_id = ?, updated_at = ? WHERE user_id = ? AND note_id = ?", p.topic, p.body, JSON.stringify(p.claims), JSON.stringify(p.garmentIds), JSON.stringify(p.productIds), ctx.commandId, ctx.now, ctx.userId, noteId)

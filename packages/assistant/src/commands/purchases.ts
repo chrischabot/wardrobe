@@ -1,6 +1,6 @@
 import { ASSISTANT_COMMANDS as C } from "@garderobe/contracts/ext/assistant";
 import { CommandError, all, define, first, json, stmt, type CommandContext, type Stmt } from "@garderobe/domain";
-import { NO_UNDO, plural, requireGarments } from "./common.ts";
+import { NO_UNDO, plural, requireGarments, named } from "./common.ts";
 
 interface OrderRow {
   order_id: string;
@@ -176,7 +176,7 @@ export const purchaseImportOrder = define({
     if (existing && addedLines.length === 0 && newEvents === 0 && !refsChanged) {
       return {
         outcome: "noop",
-        summary: `${p.merchant} order ${p.orderNumber} was already logged; nothing was duplicated`,
+        summary: `${named(p.merchant)} order ${named(p.orderNumber)} was already logged; nothing was duplicated`,
         affected: [{ kind: "order", id: orderId, version: existing.version }],
         result: { orderId, addedLineIds: [], lineIds: currentLines.map((l) => l.line_id), linesNeedingGarment: currentLines.filter((l) => !l.garment_id && l.state !== "cancelled").map((l) => l.line_id) },
         undo: NO_UNDO("nothing changed"),
@@ -212,7 +212,7 @@ export const purchaseRecordEvent = define({
     const order = await loadOrder(ctx, p.orderId);
     const dup = await first(ctx.db, "SELECT 1 AS x FROM order_events WHERE user_id = ? AND order_id = ? AND dedupe_key = ?", ctx.userId, p.orderId, p.event.dedupeKey);
     if (dup) {
-      return { outcome: "noop", summary: `That ${p.event.kind} notice for ${order.merchant} order ${order.order_number} was already recorded`, affected: [{ kind: "order", id: order.order_id, version: order.version }], result: { orderId: order.order_id }, undo: NO_UNDO("nothing changed") };
+      return { outcome: "noop", summary: `That ${p.event.kind} notice for ${named(order.merchant)} order ${named(order.order_number)} was already recorded`, affected: [{ kind: "order", id: order.order_id, version: order.version }], result: { orderId: order.order_id }, undo: NO_UNDO("nothing changed") };
     }
     const lines = await loadLines(ctx, p.orderId);
     const built = eventStatements(ctx, p.orderId, lines, p.event);
@@ -224,7 +224,7 @@ export const purchaseRecordEvent = define({
           ? " Stock is unchanged by this notice"
           : "";
     return {
-      summary: `Recorded ${p.event.kind} for ${order.merchant} order ${order.order_number} (${plural(built.lineIds.length, "line")}).${note}`,
+      summary: `Recorded ${p.event.kind} for ${named(order.merchant)} order ${named(order.order_number)} (${plural(built.lineIds.length, "line")}).${note}`,
       statements: [...built.statements, stmt("UPDATE orders SET version = version + 1, updated_at = ? WHERE user_id = ? AND order_id = ?", ctx.now, ctx.userId, p.orderId)],
       preconditions: [{ label: `order ${p.orderId} unchanged since read`, sql: "(SELECT version FROM orders WHERE user_id = ? AND order_id = ?) = ?", params: [ctx.userId, p.orderId, order.version], class: "internal" }],
       affected: [{ kind: "order", id: order.order_id, version: order.version + 1 }],
@@ -246,10 +246,10 @@ export const purchaseLinkLine = define({
     const line = (await loadLines(ctx, p.orderId)).find((l) => l.line_id === p.lineId);
     if (!line) throw new CommandError("not_found", `no line '${p.lineId}' on that order; nothing was written`);
     const garment = (await requireGarments(ctx, [p.garmentId])).get(p.garmentId)!;
-    if (line.garment_id === p.garmentId) return { outcome: "noop", summary: `${line.product_name} is already linked to ${garment.name}`, result: { orderId: p.orderId, lineId: p.lineId, garmentId: p.garmentId }, undo: NO_UNDO("nothing changed") };
+    if (line.garment_id === p.garmentId) return { outcome: "noop", summary: `${named(line.product_name)} is already linked to ${named(garment.name)}`, result: { orderId: p.orderId, lineId: p.lineId, garmentId: p.garmentId }, undo: NO_UNDO("nothing changed") };
     if (line.garment_id) throw new CommandError("conflict", `${line.product_name} is already linked to another garment record; a second record would double the ownership`, { garmentId: line.garment_id });
     return {
-      summary: `Linked ${order.merchant} order line "${line.product_name}" to ${garment.name}`,
+      summary: `Linked ${named(order.merchant)} order line "${named(line.product_name)}" to ${named(garment.name)}`,
       statements: [
         stmt("UPDATE order_lines SET garment_id = ? WHERE user_id = ? AND order_id = ? AND line_id = ? AND garment_id IS NULL", p.garmentId, ctx.userId, p.orderId, p.lineId),
         stmt("UPDATE orders SET version = version + 1, updated_at = ? WHERE user_id = ? AND order_id = ?", ctx.now, ctx.userId, p.orderId),
@@ -272,9 +272,9 @@ export const purchaseMarkDelivered = define({
     const order = await loadOrder(ctx, p.orderId);
     const line = (await loadLines(ctx, p.orderId)).find((l) => l.line_id === p.lineId);
     if (!line) throw new CommandError("not_found", `no line '${p.lineId}' on that order; nothing was written`);
-    if (line.state === "delivered") return { outcome: "noop", summary: `${line.product_name} was already marked delivered`, result: { orderId: p.orderId, lineId: p.lineId }, undo: NO_UNDO("nothing changed") };
+    if (line.state === "delivered") return { outcome: "noop", summary: `${named(line.product_name)} was already marked delivered`, result: { orderId: p.orderId, lineId: p.lineId }, undo: NO_UNDO("nothing changed") };
     return {
-      summary: `${line.product_name} from ${order.merchant} marked delivered on ${p.deliveredOn}`,
+      summary: `${named(line.product_name)} from ${named(order.merchant)} marked delivered on ${p.deliveredOn}`,
       statements: [
         stmt("UPDATE order_lines SET state = 'delivered', delivered_on = ? WHERE user_id = ? AND order_id = ? AND line_id = ?", p.deliveredOn, ctx.userId, p.orderId, p.lineId),
         stmt("UPDATE orders SET version = version + 1, updated_at = ? WHERE user_id = ? AND order_id = ?", ctx.now, ctx.userId, p.orderId),

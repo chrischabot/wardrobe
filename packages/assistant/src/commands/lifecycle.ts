@@ -1,6 +1,6 @@
 import { ASSISTANT_COMMANDS as C } from "@garderobe/contracts/ext/assistant";
 import { CommandError, all, define, first, json, stmt, type CommandContext, type Stmt } from "@garderobe/domain";
-import { NO_UNDO, money, plural, requireGarments } from "./common.ts";
+import { NO_UNDO, money, plural, requireGarments, named } from "./common.ts";
 
 interface ProjectRow {
   project_id: string;
@@ -62,7 +62,7 @@ export const lifecycleOpenProject = define({
       stmt("INSERT INTO lifecycle_events (user_id, event_id, project_id, kind, detail_json, occurred_at, command_id) VALUES (?, ?, ?, 'opened', '{}', ?, ?)", ctx.userId, ctx.newId("lce"), projectId, ctx.occurredAt, ctx.commandId),
     ];
     return {
-      summary: `${p.title}: ${p.kind.replace(/_/g, " ")} project opened with ${plural(p.items.length, "piece")}${p.nextAction ? `. Next: ${p.nextAction}` : ""}. ${STILL_HERE[p.kind]}`,
+      summary: `${named(p.title)}: ${p.kind.replace(/_/g, " ")} project opened with ${plural(p.items.length, "piece")}${p.nextAction ? `. Next: ${named(p.nextAction)}` : ""}. ${STILL_HERE[p.kind]}`,
       statements,
       affected: [{ kind: "lifecycle_project", id: projectId, version: 1 }],
       result: { projectId, garmentIds: ids },
@@ -122,7 +122,7 @@ export const lifecycleRecordEvent = define({
     if (p.externalOperationKey) {
       const prior = await first<{ kind: string }>(ctx.db, "SELECT kind FROM lifecycle_events WHERE user_id = ? AND project_id = ? AND external_operation_key = ? ORDER BY occurred_at DESC", ctx.userId, p.projectId, p.externalOperationKey);
       if (prior && prior.kind === p.kind) {
-        return { outcome: "noop", summary: `${project.title}: that step was already recorded`, result: { projectId: p.projectId }, undo: NO_UNDO("nothing changed") };
+        return { outcome: "noop", summary: `${named(project.title)}: that step was already recorded`, result: { projectId: p.projectId }, undo: NO_UNDO("nothing changed") };
       }
       // An ambiguous outcome must be reconciled before another attempt.
       if (p.kind === "submission_attempted") {
@@ -156,7 +156,7 @@ export const lifecycleRecordEvent = define({
     const proceeds = p.kind === "proceeds_recorded" ? ` ${money(p.proceedsMinor, p.currency)}` : "";
     const next = p.nextAction ? ` Next: ${p.nextAction}` : "";
     return {
-      summary: `${project.title}: ${EVENT_LABEL[p.kind]}${proceeds}.${next}`,
+      summary: `${named(project.title)}: ${EVENT_LABEL[p.kind]}${proceeds}.${next}`,
       statements,
       preconditions: [unchanged(ctx, project)],
       affected: [{ kind: "lifecycle_project", id: p.projectId, version: project.version + 1 }],
@@ -177,7 +177,7 @@ export const lifecycleUpdateProject = define({
     const title = p.title ?? project.title;
     const state = p.state ?? project.state;
     return {
-      summary: `${title} updated${state !== project.state ? `: now ${state.replace(/_/g, " ")}` : ""}${p.nextAction ? `. Next: ${p.nextAction}` : ""}`,
+      summary: `${named(title)} updated${state !== project.state ? `: now ${state.replace(/_/g, " ")}` : ""}${p.nextAction ? `. Next: ${named(p.nextAction)}` : ""}`,
       statements: [
         stmt(
           "UPDATE lifecycle_projects SET version = version + 1, title = ?, destination = ?, next_action = ?, details_json = ?, state = ?, updated_at = ? WHERE user_id = ? AND project_id = ?",
@@ -203,11 +203,11 @@ export const lifecycleAuthorizeAction = define({
     const project = await loadProject(ctx, p.projectId);
     const list = json<{ action: string; scope: string; grantedAt: string; ownerQuote: string }[]>(project.authorizations_json, []);
     if (list.some((a) => a.action === p.action && a.scope === p.scope)) {
-      return { outcome: "noop", summary: `${project.title}: that authorization is already on record`, result: { projectId: p.projectId }, undo: NO_UNDO("nothing changed") };
+      return { outcome: "noop", summary: `${named(project.title)}: that authorization is already on record`, result: { projectId: p.projectId }, undo: NO_UNDO("nothing changed") };
     }
     list.push({ action: p.action, scope: p.scope, grantedAt: ctx.now, ownerQuote: p.ownerQuote });
     return {
-      summary: `${project.title}: you authorized ${p.action.replace(/_/g, " ")} (${p.scope}). It will not be asked again for this project`,
+      summary: `${named(project.title)}: you authorized ${p.action.replace(/_/g, " ")} (${named(p.scope)}). It will not be asked again for this project`,
       statements: [stmt("UPDATE lifecycle_projects SET version = version + 1, authorizations_json = ?, updated_at = ? WHERE user_id = ? AND project_id = ?", JSON.stringify(list), ctx.now, ctx.userId, p.projectId)],
       preconditions: [unchanged(ctx, project)],
       affected: [{ kind: "lifecycle_project", id: p.projectId, version: project.version + 1 }],
@@ -219,7 +219,7 @@ export const lifecycleAuthorizeAction = define({
     const project = await loadProject(ctx, data.projectId);
     const list = json<{ action: string; scope: string }[]>(project.authorizations_json, []).filter((a) => !(a.action === data.action && a.scope === data.scope));
     return {
-      summary: `${project.title}: authorization withdrawn`,
+      summary: `${named(project.title)}: authorization withdrawn`,
       statements: [stmt("UPDATE lifecycle_projects SET version = version + 1, authorizations_json = ?, updated_at = ? WHERE user_id = ? AND project_id = ?", JSON.stringify(list), ctx.now, ctx.userId, data.projectId)],
       undo: NO_UNDO("already an undo"),
     };

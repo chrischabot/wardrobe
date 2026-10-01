@@ -1,6 +1,6 @@
 import { ASSISTANT_COMMANDS as C } from "@garderobe/contracts/ext/assistant";
 import { CommandError, define, first, stmt, toInstant, type PlannedEffect } from "@garderobe/domain";
-import { NO_UNDO, newEffects } from "./common.ts";
+import { NO_UNDO, newEffects, named } from "./common.ts";
 
 /**
  * A reminder for a drop or a window, set from the conversation. It is its own managed event type: the
@@ -25,13 +25,13 @@ export const reminderSet = define({
     const effects = await newEffects(ctx, planned);
     return {
       outcome: existing ? "merged" : "committed",
-      summary: `Reminder set: ${p.title} at ${p.dueAt}`,
+      summary: `Reminder set: ${named(p.title)} at ${p.dueAt}`,
       statements: [
         existing
           ? stmt("UPDATE reminders SET version = version + 1, kind = ?, title = ?, note = ?, url = ?, due_at = ?, status = 'active', command_id = ?, updated_at = ? WHERE user_id = ? AND reminder_id = ?", p.kind, p.title, p.note, p.url, p.dueAt, ctx.commandId, ctx.now, ctx.userId, reminderId)
           : stmt("INSERT INTO reminders (user_id, reminder_id, version, kind, title, note, due_at, url, status, source_ref, command_id, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)", ctx.userId, reminderId, p.kind, p.title, p.note, p.dueAt, p.url, ctx.envelope.source.parentId ?? null, ctx.commandId, ctx.now, ctx.now),
-        // A changed time supersedes notifications queued for the old one.
-        ...(existing ? [stmt("UPDATE effects SET state = 'cancelled', updated_at = ? WHERE user_id = ? AND kind = 'notification.reminder' AND target_key = ? AND state = 'pending' AND operation_key NOT LIKE ?", ctx.now, ctx.userId, `reminder:${reminderId}`, `reminder:${reminderId}:${p.dueAt}:%`)] : []),
+        // A changed time supersedes notifications queued for the old one. (A prefix comparison, not LIKE: D1 limits a LIKE pattern to 50 bytes.)
+        ...(existing ? [stmt("UPDATE effects SET state = 'cancelled', updated_at = ? WHERE user_id = ? AND kind = 'notification.reminder' AND target_key = ? AND state = 'pending' AND substr(operation_key, 1, length(?)) != ?", ctx.now, ctx.userId, `reminder:${reminderId}`, `reminder:${reminderId}:${p.dueAt}:`, `reminder:${reminderId}:${p.dueAt}:`)] : []),
       ],
       affected: [{ kind: "reminder", id: reminderId, version }],
       effects,

@@ -82,6 +82,14 @@ export function minimumExcerpt(message: MailMessage): { excerpt: string; keptLin
   return { excerpt: `${head}\n\n${body}`, keptLines: kept.length, totalLines: lines.length };
 }
 
+/** True only when `reference` names a turn of this owner, not relayed through MCP, whose verified grants include logging for this job. */
+export async function importAuthorization(db: Db, userId: string, jobId: string, reference: string | null): Promise<boolean> {
+  if (!reference || !reference.startsWith("turn:")) return false;
+  const turn = await first<{ channel: string; grants_json: string }>(db, "SELECT channel, grants_json FROM assistant_turns WHERE user_id = ? AND turn_id = ?", userId, reference.slice(5));
+  if (!turn || turn.channel === "mcp") return false;
+  return json<{ tool?: string; jobId?: string; logOrders?: boolean }[]>(turn.grants_json, []).some((g) => g.tool === "search_mailbox_for_purchases" && g.jobId === jobId && g.logOrders === true);
+}
+
 export interface PurchaseInvestigationDeps {
   db: Db;
   service: CommandService;
@@ -175,7 +183,11 @@ export async function runPurchaseInvestigation(deps: PurchaseInvestigationDeps, 
   const resumeNext = found.resume;
 
   const imported: PurchaseInvestigationResult["imported"] = [];
-  if (params.importAuthorizedBy) {
+  // A job logs orders only when the turn it names really recorded the owner's verified request for THIS
+  // job. A value in the job's parameters proves nothing on its own: anyone who can create a job can write it.
+  const authorized = await importAuthorization(deps.db, userId, jobId, params.importAuthorizedBy);
+  if (params.importAuthorizedBy && !authorized) issues.push({ messageId: "", reason: "the orders were found but not logged: this search carries no verified request from the owner to log them" });
+  if (authorized) {
     for (const order of reconciled.orders) {
       try {
         const receipt = await deps.service.execute(principal, {
@@ -220,7 +232,7 @@ export async function runPurchaseInvestigation(deps: PurchaseInvestigationDeps, 
         unreadable,
         logged: imported.length,
         // Found but not logged: kept as a draft the owner can ask to log.
-        draftOrders: params.importAuthorizedBy ? [] : reconciled.orders,
+        draftOrders: authorized ? [] : reconciled.orders,
         issues: issues.slice(0, 50),
       },
     },

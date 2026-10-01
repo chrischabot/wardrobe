@@ -95,7 +95,7 @@ export async function updateTurn(db: Db, userId: string, turnId: string, patch: 
  * Append to a JSON list column in ONE statement. Tools of a turn can run concurrently, so a read-modify-write
  * here would lose receipts; `json_insert` on the stored value is atomic. Returns false when `dedupe` matched.
  */
-async function appendJson(db: Db, userId: string, turnId: string, column: "receipts_json" | "refusals_json" | "proposals_json", item: unknown, dedupe?: { path: string; value: string }): Promise<boolean> {
+async function appendJson(db: Db, userId: string, turnId: string, column: "receipts_json" | "refusals_json" | "proposals_json" | "grants_json", item: unknown, dedupe?: { path: string; value: string }): Promise<boolean> {
   const text = JSON.stringify(item);
   const res = dedupe
     ? await prepare(db, stmt(`UPDATE assistant_turns SET ${column} = json_insert(${column}, '$[#]', json(?)) WHERE user_id = ? AND turn_id = ? AND NOT EXISTS (SELECT 1 FROM json_each(assistant_turns.${column}) WHERE json_extract(value, ?) = ?)`, text, userId, turnId, dedupe.path, dedupe.value)).run()
@@ -133,4 +133,9 @@ export async function readTurnEvents(db: Db, userId: string, turnId: string, aft
   const rows = await all<{ seq: number; type: TurnEvent["type"]; at: string; data_json: string }>(db, "SELECT seq, type, at, data_json FROM assistant_turn_events WHERE user_id = ? AND turn_id = ? AND seq > ? ORDER BY seq LIMIT ?", userId, turnId, afterSeq, TURN_EVENT_RETENTION);
   const oldest = await first<{ seq: number | null }>(db, "SELECT MIN(seq) AS seq FROM assistant_turn_events WHERE user_id = ? AND turn_id = ?", userId, turnId);
   return { events: rows.map((r) => ({ seq: r.seq, type: r.type, at: r.at, data: json(r.data_json, {}) })), expired: oldest?.seq !== null && oldest?.seq !== undefined && afterSeq > 0 && afterSeq + 1 < oldest.seq };
+}
+
+/** A verified owner authorization of this turn. Written only by trusted code after the quote and the intent were verified. */
+export async function recordGrant(db: Db, userId: string, turnId: string, grant: Record<string, unknown>): Promise<void> {
+  await appendJson(db, userId, turnId, "grants_json", grant);
 }

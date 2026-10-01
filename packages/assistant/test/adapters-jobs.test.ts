@@ -272,7 +272,7 @@ describe("purchase investigation as a durable job (REAL Gmail adapter over the F
 
   it("'what have I bought?' finds orders without logging them, states its range and completeness, and sends the model only the relevant lines", async () => {
     const garments = (await listInventory(w.h.db, w.owner.principal())).total;
-    w.model.script({ toolCalls: [{ toolName: "search_mailbox_for_purchases", input: { from: "2026-08-01", to: "2026-09-01" } }] }, { text: "I'm searching your mailbox; I'll report here." });
+    w.model.script({ toolCalls: [{ toolName: "search_mailbox_for_purchases", input: { from: "2026-08-01", to: "2026-09-01", ownerQuote: "what have I bought since August?" } }] }, { text: "I'm searching your mailbox; I'll report here." });
     const asked = await w.client.runTurn({ submissionId: submission(), text: "what have I bought since August?" });
     expect(asked.receipts.map((r) => r.type)).toEqual(["job.create"]);
     const jobId = (await listJobs(w.h.db, w.owner.principal())).find((j) => j.kind === "email_investigation")!.jobId;
@@ -413,7 +413,10 @@ describe("purchase investigation as a durable job (REAL Gmail adapter over the F
     const job = (await listJobs(w.h.db, w.owner.principal())).find((j) => j.state === "queued" && j.kind === "email_investigation")!;
     const stored = await all<{ params_json: string }>(w.h.db, "SELECT params_json FROM assistant_jobs WHERE user_id = ? AND job_id = ?", w.owner.userId, job.jobId);
     // The authorization is the owner's message, recorded by trusted code - the model cannot supply it.
-    expect(JSON.parse(stored[0]!.params_json).importAuthorizedBy).toMatch(/^message:msg_/);
+    expect(JSON.parse(stored[0]!.params_json).importAuthorizedBy).toBe(`turn:${asked.turnId}`);
+    // ... and the turn holds the verified grant the job runner checks; without it nothing would be logged.
+    const grants = await all<{ grants_json: string }>(w.h.db, "SELECT grants_json FROM assistant_turns WHERE user_id = ? AND turn_id = ?", w.owner.userId, asked.turnId);
+    expect(JSON.parse(grants[0]!.grants_json)).toEqual([expect.objectContaining({ tool: "search_mailbox_for_purchases", jobId: job.jobId, logOrders: true })]);
     extractor().reset();
     extractor().otherwise((r) => ({ text: JSON.stringify({ isOrderEmail: true, kind: "confirmation", merchant: "Drake's", orderNumber: "DR-60001", currency: "GBP", lines: [{ productName: "Brushed Shetland crewneck", size: "44", price: "245.00" }] }), usage: { inputTokens: excerptOf(r).length, outputTokens: 40 } }));
     await runAssistantJob(deps, w.owner.userId, job.jobId);
@@ -454,7 +457,7 @@ describe("schema-validated product facts from a page (real extraction router and
     let extractionCalls = 0;
     w.model.otherwise((r) => {
       if (isExtraction(r)) return ++extractionCalls === 1 ? { text: "The jumper costs £145." } : { text: JSON.stringify(RECORD) };
-      return r.toolResults.length === 0 ? { toolCalls: [{ toolName: "read_product_facts", input: { url: "https://shop.example/harley-crew?utm_source=x" } }] } : { text: "In 44 the flat half-chest is 56 cm; size and stock were not shown for a selected variant." };
+      return r.toolResults.length === 0 ? { toolCalls: [{ toolName: "read_product_facts", input: { url: "https://shop.example/harley-crew" } }] } : { text: "In 44 the flat half-chest is 56 cm; size and stock were not shown for a selected variant." };
     });
     const turn = await w.client.runTurn({ submissionId: submission(), text: "what does https://shop.example/harley-crew say about sizing?" });
     expect(turn.status).toBe("completed");

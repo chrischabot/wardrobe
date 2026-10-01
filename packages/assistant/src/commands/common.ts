@@ -63,3 +63,18 @@ export function assistantSettings(ctx: { settings: { extensions: Record<string, 
   const raw = ctx.settings.extensions["assistant"];
   return raw && typeof raw === "object" ? (raw as AssistantSettings) : {};
 }
+
+/**
+ * A free-text value (a title, a name, a topic, a next action) as it may appear inside a receipt summary.
+ * Such values can come from a model or from a page, so they are never allowed to read as the system's own
+ * statement: the value is put on one line, stripped of control characters, cut short and wrapped in
+ * quotation marks. The sentence around it is written by trusted code.
+ */
+export function named(value: string | null | undefined, max = 60): string {
+  const clean = String(value ?? "")
+    .replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, " ")
+    .replace(/[\u201C\u201D"]/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+  return `\u201C${clean.length > max ? `${clean.slice(0, max - 1).trimEnd()}\u2026` : clean}\u201D`;
+}

@@ -1,6 +1,6 @@
 import { ASSISTANT_COMMANDS as C } from "@garderobe/contracts/ext/assistant";
 import { CommandError, define, first, json, stmt } from "@garderobe/domain";
-import { NO_UNDO, plural } from "./common.ts";
+import { NO_UNDO, plural, named } from "./common.ts";
 import { validateOwnerEndpoint, redactSecretsInUrl } from "../research/web/index.ts";
 
 interface ConnectionRow {
@@ -39,7 +39,7 @@ export const connectionRegister = define({
     }
     const connectionId = p.connectionId ?? ctx.newId("con");
     return {
-      summary: `${p.label} registered. No tools are enabled until its capabilities are discovered and you choose them`,
+      summary: `${named(p.label)} registered. No tools are enabled until its capabilities are discovered and you choose them`,
       statements: [
         stmt("DELETE FROM connections WHERE user_id = ? AND namespace = ? AND status = 'revoked'", ctx.userId, p.namespace),
         stmt(
@@ -67,7 +67,7 @@ export const connectionRecordDiscovery = define({
     if (row.status === "revoked") throw new CommandError("forbidden", "this connection was revoked");
     const enabled = p.tools.filter((t) => t.enabled).length;
     return {
-      summary: `${row.label}: ${plural(p.tools.length, "tool")} discovered, ${enabled} usable, ${p.tools.length - enabled} disabled`,
+      summary: `${named(row.label)}: ${plural(p.tools.length, "tool")} discovered, ${enabled} usable, ${p.tools.length - enabled} disabled`,
       statements: [
         stmt(
           "UPDATE connections SET version = version + 1, status = 'connected', status_reason = NULL, protocol_version = ?, schema_digest = ?, tools_json = ?, last_discovery_at = ?, updated_at = ? WHERE user_id = ? AND connection_id = ?",
@@ -96,7 +96,7 @@ export const connectionSetToolGroups = define({
     const unknown = p.enabledGroups.filter((g) => !known.has(g));
     if (unknown.length > 0) throw new CommandError("not_found", `this connection has not offered these tool groups: ${unknown.join(", ")}`);
     return {
-      summary: `${row.label}: ${p.enabledGroups.length > 0 ? `enabled ${p.enabledGroups.join(", ")}` : "all tool groups disabled"}`,
+      summary: `${named(row.label)}: ${p.enabledGroups.length > 0 ? `enabled ${p.enabledGroups.join(", ")}` : "all tool groups disabled"}`,
       statements: [stmt("UPDATE connections SET version = version + 1, enabled_groups_json = ?, updated_at = ? WHERE user_id = ? AND connection_id = ?", JSON.stringify(p.enabledGroups), ctx.now, ctx.userId, p.connectionId)],
       preconditions: [unchanged(ctx.userId, row)],
       affected: [{ kind: "connection", id: p.connectionId, version: row.version + 1 }],
@@ -116,12 +116,12 @@ export const connectionSetStatus = define({
   async plan(ctx, p) {
     const row = await first<ConnectionRow>(ctx.db, "SELECT connection_id, version, label, status, tools_json FROM connections WHERE user_id = ? AND connection_id = ?", ctx.userId, p.connectionId);
     if (!row) throw new CommandError("not_found", `no connection '${p.connectionId}'`);
-    if (row.status === p.status) return { outcome: "noop", summary: `${row.label} is already ${p.status.replace(/_/g, " ")}`, result: { connectionId: p.connectionId }, undo: NO_UNDO("nothing changed") };
+    if (row.status === p.status) return { outcome: "noop", summary: `${named(row.label)} is already ${p.status.replace(/_/g, " ")}`, result: { connectionId: p.connectionId }, undo: NO_UNDO("nothing changed") };
     if (row.status === "revoked") throw new CommandError("forbidden", "a revoked connection is registered again rather than revived");
     const ownerAuthority = ctx.envelope.authorization === "owner_tap" || ctx.envelope.authorization === "owner_statement";
     if (p.status === "connected" && !ownerAuthority) throw new CommandError("forbidden", "only you can reconnect a service");
     return {
-      summary: p.status === "revoked" ? `${row.label} disconnected. Queued work for it will not run; nothing else is affected` : p.status === "needs_reauthorization" ? `${row.label} needs you to sign in again; other functions keep working` : `${row.label} connected`,
+      summary: p.status === "revoked" ? `${named(row.label)} disconnected. Queued work for it will not run; nothing else is affected` : p.status === "needs_reauthorization" ? `${named(row.label)} needs you to sign in again; other functions keep working` : `${named(row.label)} connected`,
       statements: [
         stmt(
           "UPDATE connections SET version = version + 1, status = ?, status_reason = ?, enabled_groups_json = CASE WHEN ? = 'revoked' THEN '[]' ELSE enabled_groups_json END, secret_ref = CASE WHEN ? = 'revoked' THEN NULL ELSE secret_ref END, updated_at = ? WHERE user_id = ? AND connection_id = ?",
@@ -153,7 +153,7 @@ export const connectionRecordHealth = define({
     const health = { ok: p.ok, checkedAt: ctx.now, detail: p.detail, phase: p.phase };
     const needsOwner = p.authFailure && row.status === "connected";
     return {
-      summary: p.ok ? `${row.label} is healthy` : needsOwner ? `${row.label} needs you to sign in again; other functions keep working` : `${row.label} did not answer${p.detail ? `: ${p.detail}` : ""}`,
+      summary: p.ok ? `${named(row.label)} is healthy` : needsOwner ? `${named(row.label)} needs you to sign in again; other functions keep working` : `${named(row.label)} did not answer${p.detail ? `: ${named(p.detail)}` : ""}`,
       statements: [
         stmt("UPDATE connections SET version = version + 1, health_json = ?, status = ?, status_reason = ?, updated_at = ? WHERE user_id = ? AND connection_id = ?", JSON.stringify(health), needsOwner ? "needs_reauthorization" : row.status, needsOwner ? "the service rejected the stored authorization" : null, ctx.now, ctx.userId, p.connectionId),
       ],
@@ -178,10 +178,10 @@ export const jobCreate = define({
   async plan(ctx, p) {
     const jobId = p.jobId ?? ctx.newId("job");
     if (await first(ctx.db, "SELECT 1 AS x FROM assistant_jobs WHERE user_id = ? AND job_id = ?", ctx.userId, jobId)) {
-      return { outcome: "noop", summary: `${p.title} is already under way`, result: { jobId, deliveryId: `job-result:${jobId}` }, undo: NO_UNDO("nothing changed") };
+      return { outcome: "noop", summary: `${named(p.title)} is already under way`, result: { jobId, deliveryId: `job-result:${jobId}` }, undo: NO_UNDO("nothing changed") };
     }
     return {
-      summary: `Started: ${p.title}. It runs in the background and reports here when it settles`,
+      summary: `Started: ${named(p.title)}. It runs in the background and reports here when it settles`,
       statements: [
         stmt(
           "INSERT INTO assistant_jobs (user_id, job_id, version, kind, state, title, params_json, priority, delivery_id, created_at, updated_at) VALUES (?, ?, 1, ?, 'queued', ?, ?, ?, ?, ?, ?)",
@@ -214,16 +214,16 @@ export const jobUpdate = define({
     if (!row) throw new CommandError("not_found", `no job '${p.jobId}'`);
     if (TERMINAL.includes(row.state)) {
       // A late step of a cancelled or finished job changes nothing.
-      return { outcome: "noop", summary: `${row.title} had already ${row.state === "completed" ? "finished" : row.state === "cancelled" ? "been stopped" : "failed"}`, result: { jobId: p.jobId, state: row.state }, undo: NO_UNDO("nothing changed") };
+      return { outcome: "noop", summary: `${named(row.title)} had already ${row.state === "completed" ? "finished" : row.state === "cancelled" ? "been stopped" : "failed"}`, result: { jobId: p.jobId, state: row.state }, undo: NO_UNDO("nothing changed") };
     }
     const state = p.state ?? row.state;
     const committed = [...new Set([...json<string[]>(row.committed_command_ids_json, []), ...(p.committedCommandIds ?? [])])];
     const progress = { ...json<Record<string, unknown>>(row.progress_json, {}), ...(p.progress ?? {}) };
     const coverage = p.coverage ?? json<{ completion: string } | null>(row.coverage_json, null);
-    let summary = `${row.title}: ${state}`;
-    if (state === "cancelled") summary = `${row.title} stopped. ${committed.length > 0 ? `${plural(committed.length, "change")} already made stay in place; undo is separate` : "Nothing had been changed"}`;
-    else if (state === "completed") summary = `${row.title} finished${coverage ? ` (${coverage.completion === "complete" ? "searched completely" : "partial: not everything was searched"})` : ""}`;
-    else if (state === "failed") summary = `${row.title} could not finish${p.unresolvedReason ? `: ${p.unresolvedReason}` : ""}`;
+    let summary = `${named(row.title)}: ${state}`;
+    if (state === "cancelled") summary = `${named(row.title)} stopped. ${committed.length > 0 ? `${plural(committed.length, "change")} already made stay in place; undo is separate` : "Nothing had been changed"}`;
+    else if (state === "completed") summary = `${named(row.title)} finished${coverage ? ` (${coverage.completion === "complete" ? "searched completely" : "partial: not everything was searched"})` : ""}`;
+    else if (state === "failed") summary = `${named(row.title)} could not finish${p.unresolvedReason ? `: ${named(p.unresolvedReason)}` : ""}`;
     return {
       summary,
       statements: [

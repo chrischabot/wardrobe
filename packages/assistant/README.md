@@ -25,7 +25,16 @@ media; photo turns are refused without it), `searchProviders`, `extraction`, `se
 
 - A write tool must quote the owner's own words from the current turn. Attachments, pasted or forwarded
   text, web pages, emails, tool results and photographs are data and are never accepted as that quote.
+- The quote is also tied to the action (`src/policy/intent.ts`): the owner's sentence must contain wording
+  for that kind of action, name (or have attached) each piece it touches, and supply the words of any
+  rule, profile amendment or measurement that is stored. An unrelated owner sentence authorizes nothing.
+- Words that arrive through a connected assistant (the `mcp` channel) never change the profile, the rules,
+  the wardrobe's contents or a restriction: such requests are kept as proposals for the owner to confirm
+  in the app. A research topic is never treated as an owner statement.
+- The assistant retrieves only addresses the owner supplied or a search of the same turn returned.
 - A restriction is lifted only by `resolve_restriction` on the owner's statement that its condition ended.
+  The sentence must be about the restricted condition; doubt, a wish, a future, negation, reported or
+  quoted speech and a hypothetical anywhere in the message are refused.
   The `undo` tool refuses to undo the command that recorded a restriction, and refuses imported records.
 - A photograph never logs a wear and never creates a garment. What cannot be seen stays unknown.
 - An order is not an arrival. A mailbox investigation only finds orders unless the owner asked to log them.

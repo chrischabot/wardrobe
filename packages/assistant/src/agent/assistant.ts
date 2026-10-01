@@ -47,14 +47,15 @@ import { registerAssistant } from "../commands/index.ts";
 import { ASSISTANT_PROMPT_VERSION, assembleMandatoryContext, estimateTokens } from "../context/mandatory.ts";
 import { BudgetExceededError, InferenceFailedError, ModelService, NoSelectableProfileError, type ModelCallMeta } from "../inference/service.ts";
 import { PROFILE_SPECS, TASK_SPECS, type ProfileSpec } from "../inference/registry.ts";
+import { ownerAuthoredText } from "../policy/authority.ts";
 import { redactDeep, redactSecrets } from "../policy/secrets.ts";
 import { tombstonedIds } from "../queries.ts";
 import { indexMessages, indexWatermark, recall, type CanonicalMessage, type RecallInput } from "../recall/index.ts";
 import { extractProductRecord, wrapUntrusted } from "../research/index.ts";
 import { buildReadTools } from "../tools/read.ts";
 import { buildWriteTools } from "../tools/write.ts";
-import type { AssistantPorts, TurnRuntime } from "../tools/runtime.ts";
-import { SubmissionReuseError, acceptTurnRow, emitTurnEvent, findTurn, findTurnBySubmission, readTurnEvents, recordProposal, recordReceipt, recordRefusal, toTurnRecord, updateTurn, type TurnRow } from "./turns.ts";
+import { urlKey, type AssistantPorts, type TurnRuntime } from "../tools/runtime.ts";
+import { SubmissionReuseError, acceptTurnRow, emitTurnEvent, findTurn, findTurnBySubmission, readTurnEvents, recordGrant, recordProposal, recordReceipt, recordRefusal, toTurnRecord, updateTurn, type TurnRow } from "./turns.ts";
 import { COMPACTION_PROMPT_VERSION, buildCompaction } from "./compaction.ts";
 
 export interface AssistantEnv {
@@ -146,6 +147,27 @@ function ownerTextOf(message: { parts: unknown; metadata?: unknown }): string {
   if (g?.forgotten) return "";
   if (g && typeof g.ownerText === "string") return g.ownerText;
   return (message.parts as { type: string; text?: string }[]).find((p) => p.type === "text")?.text ?? "";
+}
+
+/**
+ * The owner's own words of a restored message. An export carries the message parts but not the marker, so
+ * it is rebuilt: the first text part, unless that part is an untrusted attachment block or a photo marker
+ * (a message that was only an attachment or a photo has no owner words at all).
+ */
+function importedOwnerText(parts: { type: string; text?: string }[]): string {
+  const first = parts.find((p) => p.type === "text")?.text ?? "";
+  if (/^\s*(?:<<<UNTRUSTED_CONTENT|\[photo attached)/.test(first)) return "";
+  return first;
+}
+
+/** Addresses written out in a text, normalized for comparison. */
+function urlsIn(text: string): string[] {
+  const out: string[] = [];
+  for (const m of text.matchAll(/https:\/\/[^\s<>"')\]]+/g)) {
+    const key = urlKey(m[0].replace(/[.,;:!?]+$/, ""));
+    if (key) out.push(key);
+  }
+  return out;
 }
 
 function withImages(messages: ModelMessage[], images: { bytes: Uint8Array; contentType: string }[]): ModelMessage[] {
@@ -411,9 +433,13 @@ export abstract class GarderobeAssistantBase extends Think<any> {
       ports: this.ports(),
       // A stopped turn dispatches nothing further, even if the model's step was already in flight.
       isCancelled: async () => this.cancelledTurns.has(row.turn_id) || (await findTurn(db, userId, row.turn_id))?.status === "cancelled",
+      // Addresses the assistant may retrieve in this turn: the ones in the owner's message and its
+      // attachments. Search results of the turn are added by the search tool itself.
+      allowedUrls: new Set(urlsIn((message.parts as { type: string; text?: string }[]).map((x) => x.text ?? "").join("\n"))),
       readOriginal: (messageId) => this.readOriginal(messageId),
       extractProduct: async (page) => ({ ...(await extractProductRecord(this.models(), { userId, parent: { kind: "turn", id: row.turn_id } }, page)) }),
       sessionSearch: (query, limit) => this.sessionSearch(query, limit),
+      onGrant: (grant) => recordGrant(db, userId, row.turn_id, grant),
       onReceipt: (receipt) => recordReceipt(db, userId, row.turn_id, receipt, this.now()),
       onRefusal: (refusal) => recordRefusal(db, userId, row.turn_id, refusal),
       onProposal: (proposal) => recordProposal(db, userId, row.turn_id, proposal),
@@ -607,7 +633,9 @@ export abstract class GarderobeAssistantBase extends Think<any> {
     const m = await this.session.getMessage(row.message_id);
     if (!m) return null;
     const parts = m.parts as { type: string; text?: string }[];
-    const text = row.role === "user" ? ownerTextOf(m) : textOf(parts);
+    // Recall attributes a judgement to the owner only for the owner's own voice: quoted, forwarded and
+    // fenced material inside the owner's message is what someone else said.
+    const text = row.role === "user" ? ownerAuthoredText(ownerTextOf(m)).replace(/\n{2,}/g, "\n").trim() : textOf(parts);
     if (text === FORGOTTEN_TEXT || metaOf(m)?.forgotten) return null;
     return { messageId: row.message_id, position: row.position, role: row.role as "user" | "assistant", text, authoredAt: row.authored_at, channel: row.channel, turnId: row.turn_id };
   }
@@ -668,8 +696,18 @@ export abstract class GarderobeAssistantBase extends Think<any> {
           }
         }
       }
+      if (!m && !this.taskTurnId) {
+        // Not in this conversation: it may be the request of a research run, whose private working
+        // transcript lives in its own task actor. That actor is wiped; only then is the transcript erased.
+        const research = await first<{ turn_id: string }>(this.db, "SELECT turn_id FROM assistant_turns WHERE user_id = ? AND user_message_id = ? AND kind = 'research'", this.userId, r.source_id);
+        if (research) {
+          const wiped = await this.withTask(research.turn_id, (task) => task.eraseEverything() as Promise<unknown>).catch(() => null);
+          if (!wiped || !wiped.used) continue; // still held there: stays pending and is retried
+        }
+      }
       erased.push(r.source_id);
     }
+    if (erased.length === 0) return { erased: [] };
     await (this as unknown as { syncMessagesFromStorage(): Promise<unknown> }).syncMessagesFromStorage();
     const system = await systemPrincipalFor(this.db, this.userId, "erasure", "system");
     const confirm = (store: "transcript" | "summaries", ids: string[], outstandingRetention: string | null) =>
@@ -753,7 +791,7 @@ export abstract class GarderobeAssistantBase extends Think<any> {
         // Everything that is not the owner's own words travels as delimited, explicitly untrusted data.
         ...attachments.map((a) => ({ type: "text" as const, text: wrapUntrusted(kindMap[a.kind] ?? "document", `${a.kind}${a.source ? `: ${a.source}` : ""}`, a.text) })),
       ],
-      metadata: { garderobe: { turnId: row.turn_id, channel: grant.channel, authoredAt: toInstant(nowMs), kind: "owner", ownerText: text, attachedRefs: parsed.attachedRefs, ...(images.length > 0 ? { images } : {}), ...(answersTurnId ? { answersTurnId } : {}) } },
+      metadata: { garderobe: { turnId: row.turn_id, channel: grant.channel, authoredAt: toInstant(nowMs), kind: "owner", ownerText: kind === "research" ? "" : text, attachedRefs: parsed.attachedRefs, ...(images.length > 0 ? { images } : {}), ...(answersTurnId ? { answersTurnId } : {}) } },
     };
     return { row, accepted, message };
   }
@@ -1149,7 +1187,7 @@ export abstract class GarderobeAssistantBase extends Think<any> {
     for (const m of data.messages) {
       if (m.forgotten || forgotten.has(m.messageId)) continue; // tombstones are replayed before anything is restored
       const at = m.authoredAt ?? toInstant(this.now());
-      await this.session.importMessage({ id: m.messageId, role: m.role, parts: redactDeep(m.parts) as never, metadata: { garderobe: { turnId: m.turnId ?? `imported:${m.messageId}`, channel: m.channel ?? "import", authoredAt: at, kind: m.role === "user" ? "owner" : "reply" } } }, { parentId, createdAt: Date.parse(at) });
+      await this.session.importMessage({ id: m.messageId, role: m.role, parts: redactDeep(m.parts) as never, metadata: { garderobe: { turnId: m.turnId ?? `imported:${m.messageId}`, channel: m.channel ?? "import", authoredAt: at, kind: m.role === "user" ? "owner" : "reply", ...(m.role === "user" ? { ownerText: importedOwnerText(m.parts as { type: string; text?: string }[]) } : {}) } } }, { parentId, createdAt: Date.parse(at) });
       this.ledger(m.messageId, m.role, m.turnId, m.channel, m.role === "user" ? "owner" : "reply", at);
       parentId = m.messageId;
       imported++;

@@ -26,6 +26,11 @@ const TABLES: { table: string; omit?: string[] }[] = [
   // The registry row is kept so the owner can reconnect; the credential reference is never exported.
   { table: "connections", omit: ["secret_ref"] },
   { table: "assistant_jobs" },
+  { table: "reminders" },
+  // Which messages a mailbox search already read (identifiers only) and where the next run starts.
+  { table: "mail_sync_state" },
+  { table: "mail_seen" },
+  { table: "search_instances" },
 ];
 
 export interface AssistantExport {
