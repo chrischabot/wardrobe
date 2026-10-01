@@ -13,11 +13,14 @@ import {
   type CommandContext, type CommandPlan, type CommandRegistry, type PlannedEffect, type PlannedOutbox, type Precondition, type Stmt,
 } from "@garderobe/domain";
 import type { EntityVersion } from "@garderobe/contracts";
-import { assembleContext, calendarSnapshotById, weatherSnapshotById } from "./context.ts";
+import { assembleContext, calendarSnapshotById, dailySettings, latestWeatherSnapshot, weatherSnapshotById } from "./context.ts";
 import { factualReason, findReplacement } from "./compose.ts";
-import { dayLineFor, loadBoard, loadOptions, loadRevision, pauseCovering, type BoardRow, type StoredOption } from "./document.ts";
+import { dayLineFor, loadBoard, loadOptions, loadRevision, pauseCovering, type BoardRow, type RevisionRow, type StoredOption } from "./document.ts";
 import { parseScope, type RecommendationContext } from "./model.ts";
+import { repairOptions } from "./repair.ts";
 import { validateCandidate } from "./validate.ts";
+import { formatAge } from "./weather/assess.ts";
+import type { WeatherSnapshot } from "@garderobe/contracts/ext/daily";
 import { AVAILABILITY_MODEL_VERSION_OR_DEFAULT, COMPOSER_VERSION } from "./version.ts";
 
 export const CALENDAR_EFFECT_KIND = "calendar.project_board";
@@ -70,7 +73,7 @@ export interface RevisionWrite {
 }
 
 /** Slim, storable evidence: what was checked, against which weather basis, with which probabilities. */
-export function optionEvidence(validation: OutfitValidation, jointAvailability: number, extra: Pick<OptionEvidence, "source" | "explanationSource" | "removedClaims">): OptionEvidence {
+export function optionEvidence(validation: OutfitValidation, jointAvailability: number, extra: Pick<OptionEvidence, "source" | "explanationSource" | "removedClaims"> & { explicitGarmentIds?: string[] }): OptionEvidence {
   const e = validation.evidence as Record<string, unknown>;
   return {
     validation: {
@@ -80,7 +83,10 @@ export function optionEvidence(validation: OutfitValidation, jointAvailability: 
     },
     jointAvailability,
     availabilityModelVersion: AVAILABILITY_MODEL_VERSION_OR_DEFAULT,
-    ...extra,
+    source: extra.source,
+    explanationSource: extra.explanationSource,
+    removedClaims: extra.removedClaims,
+    explicitGarmentIds: extra.explicitGarmentIds ?? [],
   };
 }
 
@@ -289,7 +295,8 @@ export const boardPublish = define({
     const usedTops = new Set<string>();
     const usedKeys = new Set<string>();
     const accept = (input: (typeof p.options)[number], label: string): DraftOption | null => {
-      const validation = validateCandidate(rc, input, { requirePairedFootwear: true });
+      const explicit = input.explicitGarmentIds.filter((id) => input.slots.some((s) => s.garmentId === id));
+      const validation = validateCandidate(rc, input, { requirePairedFootwear: true, explicitGarmentIds: explicit });
       if (!validation.valid) {
         dropped.push({ position: label, violations: validation.violations.filter((x) => x.severity === "blocking").map((x) => `${x.code}: ${x.message}`) });
         return null;
@@ -311,7 +318,7 @@ export const boardPublish = define({
         footwearAlternatives: input.footwearAlternatives,
         reason: text.reason,
         suitsEventIds: input.suitsEventIds,
-        evidence: optionEvidence(validation, Number((validation.evidence as any).availability.jointAvailability), { source: input.source, explanationSource: text.replaced ? "factual" : input.explanationSource, removedClaims: input.removedClaims }),
+        evidence: optionEvidence(validation, Number((validation.evidence as any).availability.jointAvailability), { source: input.source, explanationSource: text.replaced ? "factual" : input.explanationSource, removedClaims: input.removedClaims, explicitGarmentIds: explicit }),
         changed: existing !== null && !same,
       };
     };
@@ -462,6 +469,45 @@ export function storedToDraft(o: StoredOption, changed = false): DraftOption {
   return { optionId: o.optionId, slots: o.slots, footwearAlternatives: o.footwearAlternatives, reason: o.reason, suitsEventIds: o.suitsEventIds, evidence: o.evidence, changed };
 }
 
+/** Slots whose validity depends on the forecast: a swap of one of these is "affected by weather". */
+export const WEATHER_ROLES: ReadonlySet<Role> = new Set<Role>(["top", "mid_layer", "bottom", "outer", "socks", "footwear", "neckwear", "one_piece"]);
+const STALE_SWAP_NOTE = /\s*The forecast behind this board is [^.]*\. The swap was checked against it and is rechecked when a fresh forecast is read\./;
+
+export interface SwapWeatherBasis {
+  kind: "not_weather_dependent" | "current" | "refreshed" | "stale" | "unavailable";
+  /** A newer forecast than the board's own, to validate against and carry into the new revision. */
+  snapshot: WeatherSnapshot | null;
+  ageMinutes: number | null;
+}
+
+/**
+ * The forecast a weather-affected swap is validated against (specification section 7: the weather
+ * service is consulted before swaps affected by weather). A command cannot call the provider, so:
+ * a snapshot supplied by the service, or any newer recorded snapshot for the day, replaces the board's
+ * stored forecast; otherwise, if the stored forecast is past the freshness threshold, the swap is
+ * checked against it WITH its age stated and the board is flagged so the next sweep refetches and
+ * revalidates. A stale forecast is never silently treated as current.
+ */
+async function swapWeatherBasis(ctx: CommandContext, board: BoardRow, revision: RevisionRow, role: Role, suppliedId: string | null): Promise<SwapWeatherBasis> {
+  if (!WEATHER_ROLES.has(role)) return { kind: "not_weather_dependent", snapshot: null, ageMinutes: null };
+  const stored = revision.weather_snapshot_id ? await weatherSnapshotById(ctx.db, ctx.userId, revision.weather_snapshot_id) : null;
+  const usable = (s: WeatherSnapshot | null): s is WeatherSnapshot => !!s && s.localDate === board.local_date && s.freshness !== "unavailable" && s.conditions.segment === revision.conditions.segment;
+  let supplied: WeatherSnapshot | null = null;
+  if (suppliedId) {
+    supplied = await weatherSnapshotById(ctx.db, ctx.userId, suppliedId);
+    if (!supplied) throw new CommandError("not_found", "unknown weather snapshot");
+    if (supplied.localDate !== board.local_date) throw new CommandError("invalid_command", "that weather snapshot is for a different day");
+  }
+  const newest = usable(supplied) ? supplied : await latestWeatherSnapshot(ctx.db, ctx.userId, board.local_date, parseScope(board.scope).base === "trip");
+  const storedUsable = usable(stored);
+  if (usable(newest) && newest.snapshotId !== stored?.snapshotId && (!storedUsable || newest.fetchedAt > stored.fetchedAt)) {
+    return { kind: "refreshed", snapshot: newest, ageMinutes: Math.max(0, Math.round((ctx.nowMs - Date.parse(newest.fetchedAt)) / 60_000)) };
+  }
+  if (!storedUsable) return { kind: "unavailable", snapshot: null, ageMinutes: null };
+  const ageMinutes = Math.max(0, Math.round((ctx.nowMs - Date.parse(stored.fetchedAt)) / 60_000));
+  return { kind: ageMinutes > dailySettings(ctx.settings).weatherMaxAgeMinutes ? "stale" : "current", snapshot: null, ageMinutes };
+}
+
 export const boardSwapSlot = define({
   type: "board.swap_slot",
   schema: DAILY_COMMANDS["board.swap_slot"],
@@ -470,7 +516,14 @@ export const boardSwapSlot = define({
   async plan(ctx, p): Promise<CommandPlan> {
     const board = await requireBoard(ctx, p.boardId);
     if (board.status !== "active") throw new CommandError("precondition_failed", board.status === "worn" ? "the day's outfit is already recorded; amend the wear instead" : "this day's board was removed");
-    const { rc, options, requestedCount, suitabilityLine } = await contextForBoard(ctx, board);
+    const base = await contextForBoard(ctx, board);
+    const { options, requestedCount, suitabilityLine } = base;
+    const revision = (await loadRevision(ctx.db, ctx.userId, board.board_id, board.current_revision))!;
+    const basis = await swapWeatherBasis(ctx, board, revision, p.role, p.weatherSnapshotId ?? null);
+    // A newer forecast governs the swap - and, in the same revision, every other option on the board.
+    const rc = basis.snapshot
+      ? await assembleContext(ctx.db, ctx.principal, { localDate: board.local_date, nowMs: ctx.nowMs, scope: board.scope, brief: revision.brief, weather: basis.snapshot, calendar: base.rc.calendar, withoutProfileText: true })
+      : base.rc;
     const offered = options.filter((o) => o.state === "offered");
     const option = offered.find((o) => o.optionId === p.optionId);
     if (!option) throw new CommandError("not_found", "that option is not on the current board revision", { revision: board.current_revision });
@@ -481,17 +534,19 @@ export const boardSwapSlot = define({
     let slots: OutfitSlot[];
     let validation: OutfitValidation;
     const previousId = slotOf(option, p.role);
+    // Pieces the owner already put into this option himself stay admitted while they remain in it.
+    const keptExplicit = (option.evidence.explicitGarmentIds ?? []).filter((id) => id !== previousId);
     if (p.garmentId) {
       // The owner's own pick: validated as given. It is an explicit request, which admits an occasional
       // piece - and never makes absent, restricted or too-warm stock acceptable.
       slots = previousId ? option.slots.map((s) => (s.role === p.role ? { role: p.role, garmentId: p.garmentId! } : s)) : [...option.slots, { role: p.role, garmentId: p.garmentId }];
-      validation = validateCandidate(rc, { slots, footwearAlternatives: option.footwearAlternatives.filter((id) => id !== p.garmentId) }, { requirePairedFootwear: true, explicitGarmentIds: [p.garmentId], ignoreBriefInclusions: true });
+      validation = validateCandidate(rc, { slots, footwearAlternatives: option.footwearAlternatives.filter((id) => id !== p.garmentId) }, { requirePairedFootwear: true, explicitGarmentIds: [...keptExplicit, p.garmentId], ignoreBriefInclusions: true });
       if (!validation.valid) {
         const blockers = validation.violations.filter((x) => x.severity === "blocking");
         throw new CommandError("precondition_failed", `that swap does not make a valid outfit: ${blockers.map((x) => x.message).join("; ")}; nothing was changed`, { violations: blockers });
       }
     } else {
-      const found = findReplacement(rc, option, p.role, { avoidGarmentIds: avoid, validate: { ignoreBriefInclusions: true } });
+      const found = findReplacement(rc, option, p.role, { avoidGarmentIds: avoid, validate: { ignoreBriefInclusions: true, explicitGarmentIds: keptExplicit } });
       if (!found) throw new CommandError("precondition_failed", `nothing else eligible can take that ${p.role.replace("_", " ")} slot today; the option is unchanged`);
       slots = found.slots;
       validation = found.validation;
@@ -503,11 +558,25 @@ export const boardSwapSlot = define({
       footwearAlternatives: alternatives,
       reason: factualReason(rc, slots),
       suitsEventIds: option.suitsEventIds,
-      evidence: optionEvidence(validation, Number((validation.evidence as any).availability.jointAvailability), { source: "owner_swap", explanationSource: "factual", removedClaims: [] }),
+      evidence: optionEvidence(validation, Number((validation.evidence as any).availability.jointAvailability), { source: "owner_swap", explanationSource: "factual", removedClaims: [], explicitGarmentIds: [...keptExplicit, ...(p.garmentId ? [p.garmentId] : [])] }),
       changed: true,
     };
-    const nextOffered = offered.map((o) => (o.optionId === option.optionId ? swapped : storedToDraft(o)));
-    const revision = (await loadRevision(ctx.db, ctx.userId, board.board_id, board.current_revision))!;
+    let nextOffered: DraftOption[];
+    let nextReserves: DraftOption[];
+    let shortage: string | null = null;
+    if (basis.snapshot) {
+      const replaced: StoredOption[] = options.map((o) => (o.optionId === option.optionId ? { ...o, slots, footwearAlternatives: alternatives, reason: swapped.reason, evidence: swapped.evidence } : o));
+      const outcome = repairOptions(rc, replaced, requestedCount);
+      nextOffered = outcome.offered.map((o) => (o.optionId === option.optionId ? { ...o, changed: true } : o));
+      nextReserves = outcome.reserves;
+      shortage = outcome.shortage;
+    } else {
+      nextOffered = offered.map((o) => (o.optionId === option.optionId ? swapped : storedToDraft(o)));
+      nextReserves = options.filter((o) => o.state === "reserve" && !o.slots.some((s) => slots.some((n) => n.garmentId === s.garmentId && (s.role === "top" || s.role === "bottom")))).map((o) => storedToDraft(o));
+    }
+    const carried = (revision.notice ?? "").replace(STALE_SWAP_NOTE, "").trim();
+    const staleNote = basis.kind === "stale" ? `The forecast behind this board is ${formatAge(basis.ageMinutes ?? 0)} old. The swap was checked against it and is rechecked when a fresh forecast is read.` : null;
+    const notice = basis.snapshot ? boardNotice(rc, shortage) : [carried, staleNote].filter(Boolean).join(" ") || null;
     const write = await planRevisionWrite(ctx, {
       existing: board,
       scope: board.scope,
@@ -516,19 +585,20 @@ export const boardSwapSlot = define({
       reason: "swap",
       requestedCount,
       brief: revision.brief,
-      conditions: revision.conditions,
-      context: revisionContext(rc),
-      weatherLine: revision.weather_line,
+      conditions: basis.snapshot ? rc.conditions : revision.conditions,
+      context: revisionContext(rc, { swapWeatherBasis: { kind: basis.kind, ageMinutes: basis.ageMinutes, snapshotId: basis.snapshot?.snapshotId ?? revision.weather_snapshot_id } }),
+      weatherLine: basis.snapshot ? basis.snapshot.line : revision.weather_line,
       suitabilityLine,
-      notice: revision.notice,
+      notice,
       changes: describeChanges(rc, offered, nextOffered),
-      weatherSnapshotId: revision.weather_snapshot_id,
+      weatherSnapshotId: basis.snapshot ? basis.snapshot.snapshotId : revision.weather_snapshot_id,
       calendarSnapshotId: revision.calendar_snapshot_id,
       offered: nextOffered,
-      reserves: options.filter((o) => o.state === "reserve" && !o.slots.some((s) => slots.some((n) => n.garmentId === s.garmentId && (s.role === "top" || s.role === "bottom")))).map((o) => storedToDraft(o)),
+      reserves: nextReserves,
       projectToCalendar: !parseScope(board.scope).evening && !(await pauseCovering(ctx.db, ctx.userId, board.local_date)),
       writeExposure: !parseScope(board.scope).evening && !(await wearRecordedOn(ctx, board.local_date)),
-      needsReplenishment: board.needs_replenishment === 1,
+      // A swap checked against a forecast past its freshness threshold is rechecked by the sweep.
+      needsReplenishment: board.needs_replenishment === 1 || basis.kind === "stale" || basis.kind === "unavailable" || nextOffered.length < requestedCount,
     });
     const newId = slotOf({ slots }, p.role)!;
     return {
@@ -538,7 +608,7 @@ export const boardSwapSlot = define({
       affected: write.affected,
       effects: write.effects,
       outbox: write.outbox,
-      result: { boardId: board.board_id, revision: write.revision, optionId: option.optionId, role: p.role, garmentId: newId, replacedGarmentId: previousId },
+      result: { boardId: board.board_id, revision: write.revision, optionId: option.optionId, role: p.role, garmentId: newId, replacedGarmentId: previousId, weatherBasis: basis.kind, weatherAgeMinutes: basis.ageMinutes },
       bumpWardrobe: write.exposureId !== null || !!board.exposure_id,
       undo: { unavailableReason: "swap the piece back instead; the earlier revision stays in history" },
     };

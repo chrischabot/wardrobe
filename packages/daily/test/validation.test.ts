@@ -205,6 +205,75 @@ describe("profile 8.4: the thermal rule", () => {
     expect(notEnforced).toEqual(expect.arrayContaining(["thermal.cotton_linen_from", "thermal.pure_linen_from", "thermal.lightweight_oxford_floor", "thermal.outerwear_ceiling", "thermal.alpaca_socks_cold_only"]));
   });
 
+  it("SYNTHETIC: the research rules the profile does not contain are enforced at their stated boundaries once activated, and an unsettled basis is still not guessed", async () => {
+    const synthetic = await h.createSyntheticOwner({
+      settings: { homeLocation: { label: "London", latitude: 51.5085, longitude: -0.1257 } } as never,
+      garments: [
+        { id: "shirt-lwo", name: "synthetic lightweight oxford", category: "shirt", roles: ["top"], careChannel: "service", attributes: { fabricClass: "lightweight_oxford" } },
+        { id: "shirt-linen", name: "synthetic pure linen shirt", category: "shirt", roles: ["top"], careChannel: "service", attributes: { fabricClass: "pure_linen" } },
+        { id: "trouser", name: "synthetic chinos", category: "trousers", roles: ["bottom"], careChannel: "service" },
+        { id: "jacket", name: "synthetic work jacket", category: "outerwear", roles: ["outer"], careChannel: "none", attributes: { jacketLike: true } },
+        { id: "sock-merino", name: "synthetic merino socks", category: "socks", roles: ["socks"], careChannel: "handwash", quantity: 3, attributes: { fabricClass: "merino" } },
+        { id: "sock-alpaca", name: "synthetic alpaca socks", category: "socks", roles: ["socks"], careChannel: "handwash", quantity: 2, attributes: { fabricClass: "alpaca" } },
+        { id: "shoe", name: "synthetic sneakers", category: "footwear", roles: ["footwear"], careChannel: "none", attributes: { footwearKind: "sneaker" } },
+      ],
+    });
+    const activate = (key: string, params: Record<string, unknown>) => synthetic.exec("style.upsert_rule", { key, kind: "hard", status: "active", params, interpretation: "synthetic activation for a boundary test", origin: "owner_direction" });
+    await activate("thermal.pure_linen_from", { fabricClass: "pure_linen", minC: 30, basis: "daytime_peak" });
+    await activate("thermal.lightweight_oxford_floor", { fabricClass: "lightweight_oxford", minC: 10, basis: "daytime_peak" });
+    await activate("thermal.alpaca_socks_cold_only", { fabricClass: "alpaca", maxC: 12, basis: "daytime_peak" });
+    await activate("thermal.outerwear_ceiling", { maxC: 24, basis: "unsettled" });
+    const outfit = (parts: { top?: string; socks?: string; outer?: boolean }) => [
+      { role: "top" as const, garmentId: parts.top ?? "shirt-lwo" },
+      { role: "bottom" as const, garmentId: "trouser" },
+      { role: "socks" as const, garmentId: parts.socks ?? "sock-merino" },
+      { role: "footwear" as const, garmentId: "shoe" },
+      ...(parts.outer ? [{ role: "outer" as const, garmentId: "jacket" }] : []),
+    ];
+    const check = async (departure: number, peak: number, parts: Parameters<typeof outfit>[0]) => codes(await validateOutfit(h.db, synthetic.principal(), { forDate: await day(departure, peak, synthetic), slots: outfit(parts) }));
+
+    expect(await check(20, 29.9, { top: "shirt-linen" })).toEqual(["fabric_rule"]);
+    expect(await check(20, 30, { top: "shirt-linen" })).toEqual([]);
+    expect(await check(4, 9.9, {})).toEqual(["fabric_rule"]); // lightweight oxford below its 10 C floor
+    expect(await check(4, 10, {})).toEqual([]); // and kept in the pool at the boundary
+    expect(await check(8, 12, { socks: "sock-alpaca" })).toEqual([]);
+    expect(await check(8, 12.1, { socks: "sock-alpaca" })).toEqual(["fabric_rule"]);
+    // The ceiling's basis (morning or peak) is unsettled: it is reported, not silently applied either way.
+    const unsettled = await validateOutfit(h.db, synthetic.principal(), { forDate: await day(25, 31), slots: outfit({ top: "shirt-linen", outer: true }) });
+    expect(unsettled.valid).toBe(true);
+    expect((unsettled.evidence as any).rulesNotEnforced).toContainEqual({ key: "thermal.outerwear_ceiling", status: "active_basis_unsettled" });
+    // Once the owner settles it on the outdoor interval, 24 C is allowed and 24.1 C is not.
+    await activate("thermal.outerwear_ceiling", { maxC: 24, basis: "outdoor_interval" });
+    expect(await check(24, 31, { top: "shirt-linen", outer: true })).toEqual([]);
+    expect(await check(24.1, 31, { top: "shirt-linen", outer: true })).toEqual(["outerwear_ceiling"]);
+  });
+
+  it("SYNTHETIC: an owner's layer-combination rule rejects two individually eligible pieces that are too warm together, and only inside its band", async () => {
+    const synthetic = await h.createSyntheticOwner({
+      settings: { homeLocation: { label: "London", latitude: 51.5085, longitude: -0.1257 } } as never,
+      garments: [
+        { id: "shirt-flannel", name: "synthetic flannel shirt", category: "shirt", roles: ["top"], careChannel: "service", attributes: { fabricClass: "flannel" } },
+        { id: "shirt-lwo", name: "synthetic lightweight oxford", category: "shirt", roles: ["top"], careChannel: "service", attributes: { fabricClass: "lightweight_oxford" } },
+        { id: "trouser", name: "synthetic chinos", category: "trousers", roles: ["bottom"], careChannel: "service" },
+        { id: "coat-wool", name: "synthetic heavy wool coat", category: "outerwear", roles: ["outer"], careChannel: "none", attributes: { jacketLike: true, fabricClass: "wool" } },
+        { id: "jacket-twill", name: "synthetic twill jacket", category: "outerwear", roles: ["outer"], careChannel: "none", attributes: { jacketLike: true, fabricClass: "twill" } },
+        { id: "sock", name: "synthetic merino socks", category: "socks", roles: ["socks"], careChannel: "handwash", quantity: 3 },
+        { id: "shoe", name: "synthetic sneakers", category: "footwear", roles: ["footwear"], careChannel: "none", attributes: { footwearKind: "sneaker" } },
+      ],
+    });
+    await synthetic.exec("style.upsert_rule", { key: "layering.wool_coat_over_flannel", kind: "hard", status: "active", params: { basis: "outdoor_interval", minC: 10, pieces: { outer: { fabricClasses: ["wool"] }, top: { fabricClasses: ["flannel"] } } }, interpretation: "synthetic comfort rule: a heavy wool coat over flannel is too warm from 10 C outdoors", origin: "owner_direction" });
+    const outfit = (top: string, outer: string) => [{ role: "top" as const, garmentId: top }, { role: "bottom" as const, garmentId: "trouser" }, { role: "socks" as const, garmentId: "sock" }, { role: "footwear" as const, garmentId: "shoe" }, { role: "outer" as const, garmentId: outer }];
+    const at10 = await day(10, 13, synthetic);
+    const together = await validateOutfit(h.db, synthetic.principal(), { forDate: at10, slots: outfit("shirt-flannel", "coat-wool") });
+    expect(codes(together)).toEqual(["too_warm_together"]);
+    expect(together.violations[0]).toMatchObject({ ruleKey: "layering.wool_coat_over_flannel", garmentIds: ["coat-wool", "shirt-flannel"] });
+    // Each piece is fine on its own terms the same day.
+    expect((await validateOutfit(h.db, synthetic.principal(), { forDate: at10, slots: outfit("shirt-lwo", "coat-wool") })).valid).toBe(true);
+    expect((await validateOutfit(h.db, synthetic.principal(), { forDate: at10, slots: outfit("shirt-flannel", "jacket-twill") })).valid).toBe(true);
+    // Below the band the same pair is allowed.
+    expect((await validateOutfit(h.db, synthetic.principal(), { forDate: await day(9.9, 13, synthetic), slots: outfit("shirt-flannel", "coat-wool") })).valid).toBe(true);
+  });
+
   it("SYNTHETIC: once the owner activates a fabric rule it is enforced at its boundary (cotton-linen from 28 C at the peak)", async () => {
     const synthetic = await syntheticOwner(h);
     await synthetic.exec("style.upsert_rule", { key: "thermal.cotton_linen_from", kind: "hard", status: "active", params: { fabricClass: "cotton_linen", minC: 28, basis: "daytime_peak" }, interpretation: "synthetic activation for a boundary test", origin: "owner_direction" });

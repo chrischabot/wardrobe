@@ -38,10 +38,18 @@ const deps: DailyDeps = {
   weather: { provider: createOpenMeteoProvider({ fetch }), geocoder: createOpenMeteoGeocoder({ fetch }) },
   calendar: { reader, writer },   // createGoogleCalendar({ fetch, getAccessToken }) or null when not connected
   model: null,                    // a CompositionModel behind the AI Gateway; optional
+  modelFor: (principal) => model, // preferred: a model budgeted to that owner (also used by the scheduled sweep)
+  modelBudgetMs: 120_000,         // wall-clock budget for the model part of one board
   comfort: null,                  // reader for dated comfort observations; optional
 };
 await runDueJobs(deps);           // from the five-minute cron
 ```
+
+Route a slot swap through `swapSlot(deps, principal, ...)` rather than sending `board.swap_slot` bare:
+it consults the weather service first when the board's forecast is past its freshness threshold. The
+bare command still uses the newest forecast recorded for the day and, failing that, states the age of
+the forecast it checked against and flags the board for the sweep. For an ad hoc outfit question use
+`decisionContext(deps, principal, { outfit, role })`.
 
 Settings live under `OwnerSettings.extensions.daily` (`DailySettings` in `@garderobe/contracts/ext/daily`):
 phase times, wearing intervals, freshness thresholds, the outfit calendar and its presentation.
@@ -62,4 +70,11 @@ phase times, wearing intervals, freshness thresholds, the outfit calendar and it
   claim about taste.
 - Shirts marked as a layering tier are not offered as the base shirt.
 - A missed morning phase is caught up for three hours after the morning time; later it is not replayed.
+- The 6:50 phase is the final check: a forecast older than `weatherMaxAgeMinutes` (60) or a calendar
+  read older than `calendarMaxAgeMinutes` (30) is read again then and the board revalidated. An ad hoc
+  request reuses a calendar read inside the threshold.
+- Slots affected by weather for a swap: everything except the belt and accessories.
+- An owner's layer-combination rule is a hard style rule `layering.<name>` with
+  `{ basis, minC?, maxC?, pieces: { outer?, top?, mid_layer?, bottom? } }`; none exists in the profile
+  beyond the 14 to 16 C jacket rule.
 - Unpacking returns every packed unit as awaiting care (the ledger's rule), including unworn ones.

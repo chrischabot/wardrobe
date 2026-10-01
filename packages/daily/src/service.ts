@@ -6,10 +6,12 @@
 import type { CommandReceipt, Role } from "@garderobe/contracts";
 import { DayBrief, SuggestOutfitsInput, ValidateOutfitInput } from "@garderobe/contracts/ext/daily";
 import type { BoardDocument, BoardGarmentLine, BoardOption, CalendarSnapshot, OutfitSlot, OutfitValidation, SuggestedOutfit, TemperaturePreview, WeatherSnapshot } from "@garderobe/contracts/ext/daily";
-import { all, assertPrincipal, first, isCommandError, json, localDateOf, newId, prepare, requireScope, stmt, type Db, type Principal } from "@garderobe/domain";
-import { assembleContext, calendarSnapshotById, loadOwner, weatherSnapshotById } from "./context.ts";
+import { all, assertPrincipal, CommandError, first, isCommandError, json, localDateOf, newId, prepare, requireScope, stmt, type Db, type Principal } from "@garderobe/domain";
+import { assembleContext, calendarSnapshotById, dailySettings, loadOwner, weatherSnapshotById } from "./context.ts";
+import { WEATHER_ROLES } from "./boards.ts";
+import { eligibleFor, factualReason } from "./compose.ts";
 import { composeBoard, type ComposedOption, type ComposeDiagnostics } from "./compose.ts";
-import { execAs, loadComfort, nowOf, type DailyDeps } from "./deps.ts";
+import { execAs, loadComfort, modelOf, nowOf, type DailyDeps } from "./deps.ts";
 import { buildBoardDocument, getBoard, loadBoard, loadOptions, loadRevision, type BoardRow, type StoredOption } from "./document.ts";
 import { parseScope, type RecommendationContext } from "./model.ts";
 import { repairOptions } from "./repair.ts";
@@ -117,11 +119,11 @@ export interface PrepareBoardResult {
 }
 
 function toPublishOption(o: ComposedOption) {
-  return { ...(o.optionId ? { optionId: o.optionId } : {}), slots: o.slots, footwearAlternatives: o.footwearAlternatives, reason: o.reason, explanationSource: o.explanationSource, removedClaims: o.removedClaims, source: o.source, suitsEventIds: o.suitsEventIds };
+  return { ...(o.optionId ? { optionId: o.optionId } : {}), slots: o.slots, footwearAlternatives: o.footwearAlternatives, reason: o.reason, explanationSource: o.explanationSource, removedClaims: o.removedClaims, explicitGarmentIds: o.explicitGarmentIds ?? [], source: o.source, suitsEventIds: o.suitsEventIds };
 }
 
 function storedToComposed(rc: RecommendationContext, o: StoredOption): ComposedOption {
-  return { optionId: o.optionId, slots: o.slots, footwearAlternatives: o.footwearAlternatives, reason: o.reason, explanationSource: o.evidence.explanationSource, removedClaims: o.evidence.removedClaims, source: o.evidence.source, suitsEventIds: o.suitsEventIds, validation: validateCandidate(rc, o, { requirePairedFootwear: true }), jointAvailability: o.evidence.jointAvailability, score: 1000 };
+  return { optionId: o.optionId, slots: o.slots, footwearAlternatives: o.footwearAlternatives, reason: o.reason, explanationSource: o.evidence.explanationSource, removedClaims: o.evidence.removedClaims, explicitGarmentIds: o.evidence.explicitGarmentIds ?? [], source: o.evidence.source, suitsEventIds: o.suitsEventIds, validation: validateCandidate(rc, o, { requirePairedFootwear: true, explicitGarmentIds: o.evidence.explicitGarmentIds ?? [] }), jointAvailability: o.evidence.jointAvailability, score: 1000 };
 }
 
 /** Combinations the owner chose before: revalidated for the day, they still make a useful board without inference. */
@@ -149,7 +151,8 @@ export async function prepareBoard(deps: DailyDeps, principal: Principal, opts: 
   const parsed = parseScope(scope);
   const brief = DayBrief.parse({ ...(opts.brief ?? {}), ...(parsed.evening ? { segment: "evening" } : {}) });
   const weather = opts.weather ?? (await fetchWeatherSnapshot(deps, principal, { localDate: opts.localDate, purpose: opts.purpose, segment: brief.segment, location: opts.location, nowMs }));
-  const calendar = opts.calendar !== undefined ? opts.calendar : await readCalendarSnapshot(deps, principal, { localDate: opts.localDate, scope, nowMs });
+  // A scheduled phase reads the calendar itself; an ad hoc request reuses a read inside the freshness threshold.
+  const calendar = opts.calendar !== undefined ? opts.calendar : await readCalendarSnapshot(deps, principal, { localDate: opts.localDate, scope, nowMs, ...(opts.purpose === "adhoc" ? { maxAgeMinutes: dailySettings((await loadOwner(deps.db, principal.userId)).settings).calendarMaxAgeMinutes } : {}) });
   const approved = await approvedCombinations(deps.db, principal.userId, opts.localDate);
   const comfort = await loadComfort(deps, principal);
 
@@ -157,7 +160,7 @@ export async function prepareBoard(deps: DailyDeps, principal: Principal, opts: 
   for (let attempt = 1; attempt <= 3; attempt++) {
     const rc = await assembleContext(deps.db, principal, { localDate: opts.localDate, nowMs, scope, brief, weather, calendar, comfort });
     const keep = (opts.keep ?? []).map((o) => storedToComposed(rc, o)).filter((o) => o.validation.valid);
-    const composed = await composeBoard(rc, { count: opts.count, model: deps.model ?? null, maxModelAttempts: deps.maxModelAttempts ?? 2, deadlineAtMs: nowMs + 120_000, approved, keep, avoidTops: opts.avoidTops });
+    const composed = await composeBoard(rc, { count: opts.count, model: modelOf(deps, principal), modelBudgetMs: deps.modelBudgetMs, maxModelAttempts: deps.maxModelAttempts ?? 2, deadlineAtMs: nowMs + 120_000, approved, keep, avoidTops: opts.avoidTops });
     last = { board: null, receipt: null, note: composed.notice, requestedCount: composed.requestedCount, diagnostics: composed.diagnostics };
     if (composed.options.length === 0) return last;
     try {
@@ -257,7 +260,7 @@ export async function recommend(deps: DailyDeps, principal: Principal, input: Re
     const weather = await fetchWeatherSnapshot(deps, principal, { localDate, purpose: "adhoc", segment: brief.segment, nowMs, record: false });
     const calendar = await readCalendarSnapshot(deps, principal, { localDate, scope, nowMs, record: false });
     const rc = await assembleContext(deps.db, principal, { localDate, nowMs, scope, brief, weather, calendar, comfort: await loadComfort(deps, principal) });
-    const composed = await composeBoard(rc, { model: deps.model ?? null, maxModelAttempts: deps.maxModelAttempts ?? 2, reserveCount: 0, deadlineAtMs: nowMs + 120_000 });
+    const composed = await composeBoard(rc, { model: modelOf(deps, principal), modelBudgetMs: deps.modelBudgetMs, maxModelAttempts: deps.maxModelAttempts ?? 2, reserveCount: 0, deadlineAtMs: nowMs + 120_000 });
     return { state: "completed", options: previewOptions(rc, composed.options), board: null, insufficient: composed.options.length < composed.requestedCount, note: composed.notice };
   }
 
@@ -288,7 +291,7 @@ export async function rebuildDay(deps: DailyDeps, principal: Principal, input: {
 }
 
 function storedToPublish(o: StoredOption) {
-  return { optionId: o.optionId, slots: o.slots, footwearAlternatives: o.footwearAlternatives, reason: o.reason, explanationSource: o.evidence.explanationSource, removedClaims: o.evidence.removedClaims, source: o.evidence.source, suitsEventIds: o.suitsEventIds };
+  return { optionId: o.optionId, slots: o.slots, footwearAlternatives: o.footwearAlternatives, reason: o.reason, explanationSource: o.evidence.explanationSource, removedClaims: o.evidence.removedClaims, explicitGarmentIds: o.evidence.explicitGarmentIds ?? [], source: o.evidence.source, suitsEventIds: o.suitsEventIds };
 }
 
 async function boardContext(deps: DailyDeps, principal: Principal, board: BoardRow, nowMs: number, overrides: { weather?: WeatherSnapshot; calendar?: CalendarSnapshot | null } = {}) {
@@ -314,7 +317,7 @@ export async function rebuildOption(deps: DailyDeps, principal: Principal, input
   if (!target) return { board: await doc(), receipt: null, note: "That option is not on the current board revision." };
   const keep = offered.filter((o) => o.optionId !== target.optionId).map((o) => storedToComposed(rc, o));
   const oldTop = target.slots.find((s) => s.role === "top")?.garmentId;
-  const composed = await composeBoard(rc, { count: offered.length, reserveCount: 0, model: deps.model ?? null, maxModelAttempts: deps.maxModelAttempts ?? 1, keep, avoidTops: oldTop && !revision.brief.include.includes(oldTop) ? [oldTop] : [] });
+  const composed = await composeBoard(rc, { count: offered.length, reserveCount: 0, model: modelOf(deps, principal), modelBudgetMs: deps.modelBudgetMs, maxModelAttempts: deps.maxModelAttempts ?? 1, keep, avoidTops: oldTop && !revision.brief.include.includes(oldTop) ? [oldTop] : [] });
   const fresh = composed.options.find((o) => !o.optionId);
   if (!fresh) return { board: await doc(), receipt: null, note: "Nothing else eligible makes a different valid outfit today; the option is unchanged." };
   const options = offered.map((o) => (o.optionId === target.optionId ? toPublishOption(fresh) : storedToPublish(o)));
@@ -323,6 +326,111 @@ export async function rebuildOption(deps: DailyDeps, principal: Principal, input
     weatherSnapshotId: weather?.snapshotId ?? null, calendarSnapshotId: calendar?.snapshotId ?? null, notice: null,
   }, `rebuild-option:${input.clientRequestId}`, { expectedVersions: { [`board:${board.board_id}`]: board.current_revision } });
   return { board: await doc(), receipt, note: null };
+}
+
+/** Destination of a trip board's day, for its forecast. */
+async function boardLocation(db: Db, userId: string, board: BoardRow): Promise<{ label: string; latitude?: number; longitude?: number; timezone?: string } | undefined> {
+  const { tripId } = parseScope(board.scope);
+  if (!tripId) return undefined;
+  const trip = await first<{ destinations_json: string }>(db, "SELECT destinations_json FROM trips WHERE user_id = ? AND trip_id = ?", userId, tripId);
+  const destinations = json<{ label: string; latitude?: number; longitude?: number; timezone: string; from: string; to: string }[]>(trip?.destinations_json ?? "[]", []);
+  return destinations.find((d) => d.from <= board.local_date && board.local_date <= d.to) ?? destinations[0];
+}
+
+/**
+ * A forecast for a board whose stored one is past the freshness threshold (or absent). Returns a
+ * snapshot only when the provider supplied something newer than what the board already holds; on an
+ * outage the board keeps its basis and its stated limitation.
+ */
+export async function fresherForecast(deps: DailyDeps, principal: Principal, board: BoardRow, nowMs: number): Promise<WeatherSnapshot | null> {
+  const revision = await loadRevision(deps.db, principal.userId, board.board_id, board.current_revision);
+  if (!revision) return null;
+  const owner = await loadOwner(deps.db, principal.userId);
+  const maxAge = dailySettings(owner.settings).weatherMaxAgeMinutes;
+  const stored = revision.weather_snapshot_id ? await weatherSnapshotById(deps.db, principal.userId, revision.weather_snapshot_id) : null;
+  const storedAge = stored && stored.freshness !== "unavailable" ? (nowMs - Date.parse(stored.fetchedAt)) / 60_000 : Infinity;
+  if (storedAge <= maxAge) return null;
+  const trip = parseScope(board.scope).base === "trip";
+  const snapshot = await fetchWeatherSnapshot(deps, principal, { localDate: board.local_date, purpose: trip ? "trip" : "adhoc", segment: revision.conditions.segment, location: await boardLocation(deps.db, principal.userId, board), nowMs });
+  if (snapshot.freshness === "unavailable") return null;
+  if (stored && stored.freshness !== "unavailable" && snapshot.fetchedAt <= stored.fetchedAt) return null;
+  return snapshot;
+}
+
+/**
+ * Swap one slot of an option. The weather service is consulted first when the slot depends on the
+ * forecast and the board's stored forecast is past its freshness threshold, so the swap - and every
+ * other option in the resulting revision - is validated against current conditions. If the provider
+ * cannot be reached the swap still works against the last forecast, with its age stated on the board.
+ */
+export async function swapSlot(deps: DailyDeps, principal: Principal, input: { boardId: string; optionId: string; role: Role; garmentId?: string; clientRequestId: string; expectedRevision?: number; nowMs?: number }): Promise<{ board: BoardDocument; receipt: CommandReceipt }> {
+  assertPrincipal(principal);
+  requireScope(principal, "write");
+  const nowMs = nowOf(deps, input.nowMs);
+  const board = await loadBoard(deps.db, principal.userId, { boardId: input.boardId });
+  if (!board) throw new CommandError("not_found", `no board '${input.boardId}'`);
+  const snapshot = board.status === "active" && WEATHER_ROLES.has(input.role) ? await fresherForecast(deps, principal, board, nowMs) : null;
+  const receipt = await execAs(
+    deps,
+    principal,
+    "board.swap_slot",
+    { boardId: input.boardId, optionId: input.optionId, role: input.role, ...(input.garmentId ? { garmentId: input.garmentId } : {}), ...(snapshot ? { weatherSnapshotId: snapshot.snapshotId } : {}) },
+    `board-swap:${input.clientRequestId}`,
+    input.expectedRevision !== undefined ? { expectedVersions: { [`board:${input.boardId}`]: input.expectedRevision } } : {},
+  );
+  return { board: await buildBoardDocument(deps.db, principal.userId, (await loadBoard(deps.db, principal.userId, { boardId: input.boardId }))!), receipt };
+}
+
+/**
+ * Decision-scoped mandatory context for an ad hoc outfit question such as "what socks with this?":
+ * the actual outfit, what is eligible for the slot in question today, the palette facts and the day's
+ * constraints, loaded by the backend (weather included) before any model reasons. It reads the ledger
+ * only for the decision at hand; a question that is not about an outfit does not call it.
+ */
+export async function decisionContext(deps: DailyDeps, principal: Principal, input: { localDate?: string; outfit: OutfitSlot[]; role: Role; tripId?: string; nowMs?: number }): Promise<{
+  localDate: string;
+  role: Role;
+  weather: { line: string; freshness: string; fetchedAt: string; limitation: string | null };
+  conditions: RecommendationContext["conditions"];
+  outfit: { role: Role; garmentId: string; name: string; colour: string | null; colourFamily: string; fabric: string | null; known: boolean }[];
+  candidates: { garmentId: string; name: string; colour: string | null; colourFamily: string; fabric: string | null; availability: string; valid: boolean; reason: string }[];
+  rules: { key: string; version: number }[];
+  text: string;
+}> {
+  assertPrincipal(principal);
+  requireScope(principal, "read");
+  const nowMs = nowOf(deps, input.nowMs);
+  const owner = await loadOwner(deps.db, principal.userId);
+  const localDate = input.localDate ?? localDateOf(nowMs, owner.settings.timezone);
+  const canWrite = principal.scopes.includes("write") || principal.scopes.includes("admin");
+  const weather = await fetchWeatherSnapshot(deps, principal, { localDate, purpose: input.tripId ? "trip" : "adhoc", nowMs, record: canWrite });
+  const rc = await assembleContext(deps.db, principal, { localDate, nowMs, scope: input.tripId ? `trip:${input.tripId}` : "home", weather, withoutProfileText: true, comfort: await loadComfort(deps, principal) });
+  const others = input.outfit.filter((s) => s.role !== input.role);
+  const outfit = input.outfit.map((s) => {
+    const g = rc.garments.get(s.garmentId);
+    return { role: s.role, garmentId: s.garmentId, name: g?.name ?? "Unknown garment", colour: g?.colour ?? null, colourFamily: g?.colourFamily ?? "unknown", fabric: g?.fabric ?? null, known: !!g };
+  });
+  const candidates = eligibleFor(rc, input.role, { ignoreBriefInclusions: true })
+    .filter((g) => !others.some((s) => s.garmentId === g.garmentId))
+    .map((g) => {
+      const slots = [...others, { role: input.role, garmentId: g.garmentId }];
+      const validation = validateCandidate(rc, { slots }, { ignoreBriefInclusions: true });
+      // Only problems this piece causes count here; the rest of the outfit is the owner's given.
+      const valid = validation.violations.every((x) => x.severity !== "blocking" || !x.garmentIds.includes(g.garmentId));
+      return { garmentId: g.garmentId, name: g.name, colour: g.colour, colourFamily: g.colourFamily, fabric: g.fabric, availability: g.availability.status, valid, reason: factualReason(rc, slots) };
+    })
+    .filter((c) => c.valid);
+  const rules = rc.rules.versions.filter((r) => r.status === "active" && r.kind === "hard").map((r) => ({ key: r.key, version: r.version }));
+  const text = [
+    `Decision: which ${input.role.replace("_", " ")} for ${localDate}.`,
+    weather.freshness === "unavailable" ? "The forecast is UNAVAILABLE; nothing may be assumed about temperature, rain or wind." : `${weather.line} (${weather.provider}, ${weather.freshness}).`,
+    "Outfit as given:",
+    ...outfit.map((o) => `- ${o.role}: ${o.name}${o.colour ? ` (${o.colour}; ${o.colourFamily.replace("_", " ")})` : ""}${o.known ? "" : " [not in the wardrobe]"}`),
+    `Eligible ${input.role.replace("_", " ")} today (use the exact garmentId):`,
+    ...(candidates.length ? candidates.map((c) => `- ${c.garmentId} | ${c.name} | ${c.colour ?? "colour unknown"} | ${c.fabric ?? "fabric unknown"} | ${c.availability}`) : ["(none)"]),
+    `Hard rules in force: ${rules.map((r) => r.key).join(", ") || "(none)"}.`,
+  ].join("\n");
+  return { localDate, role: input.role, weather: { line: weather.line, freshness: weather.freshness, fetchedAt: weather.fetchedAt, limitation: weather.limitation }, conditions: rc.conditions, outfit, candidates, rules, text };
 }
 
 /* ------------------------------------------------------------------ */
@@ -345,14 +453,14 @@ export interface ReplenishResult {
 export async function reviseBoard(deps: DailyDeps, principal: Principal, board: BoardRow, opts: { nowMs: number; reason: "repair" | "replenish" | "refresh" | "resume"; weather?: WeatherSnapshot; calendar?: CalendarSnapshot | null; force?: boolean; idempotencyKey: string }): Promise<ReplenishResult> {
   const { revision, weather, calendar, rc, stored } = await boardContext(deps, principal, board, opts.nowMs, { weather: opts.weather, calendar: opts.calendar });
   const outcome = repairOptions(rc, stored, revision.requested_count);
-  const keep: ComposedOption[] = outcome.offered.map((o) => ({ optionId: o.optionId, slots: o.slots, footwearAlternatives: o.footwearAlternatives, reason: o.reason, explanationSource: o.evidence.explanationSource, removedClaims: o.evidence.removedClaims, source: o.evidence.source, suitsEventIds: o.suitsEventIds, validation: o.evidence.validation, jointAvailability: o.evidence.jointAvailability, score: 1000 }));
+  const keep: ComposedOption[] = outcome.offered.map((o) => ({ optionId: o.optionId, slots: o.slots, footwearAlternatives: o.footwearAlternatives, reason: o.reason, explanationSource: o.evidence.explanationSource, removedClaims: o.evidence.removedClaims, explicitGarmentIds: o.evidence.explicitGarmentIds ?? [], source: o.evidence.source, suitsEventIds: o.suitsEventIds, validation: o.evidence.validation, jointAvailability: o.evidence.jointAvailability, score: 1000 }));
   const short = keep.length < revision.requested_count || outcome.reserves.length < rc.daily.reserveCount;
   let options = keep;
-  let reserves: ComposedOption[] = outcome.reserves.map((o) => ({ optionId: o.optionId, slots: o.slots, footwearAlternatives: o.footwearAlternatives, reason: o.reason, explanationSource: o.evidence.explanationSource, removedClaims: o.evidence.removedClaims, source: o.evidence.source, suitsEventIds: o.suitsEventIds, validation: o.evidence.validation, jointAvailability: o.evidence.jointAvailability, score: 500 }));
+  let reserves: ComposedOption[] = outcome.reserves.map((o) => ({ optionId: o.optionId, slots: o.slots, footwearAlternatives: o.footwearAlternatives, reason: o.reason, explanationSource: o.evidence.explanationSource, removedClaims: o.evidence.removedClaims, explicitGarmentIds: o.evidence.explicitGarmentIds ?? [], source: o.evidence.source, suitsEventIds: o.suitsEventIds, validation: o.evidence.validation, jointAvailability: o.evidence.jointAvailability, score: 500 }));
   let added = 0;
   let notice: string | null = outcome.shortage;
   if (short) {
-    const composed = await composeBoard(rc, { count: revision.requested_count, model: deps.model ?? null, maxModelAttempts: deps.maxModelAttempts ?? 1, keep, deadlineAtMs: opts.nowMs + 60_000 });
+    const composed = await composeBoard(rc, { count: revision.requested_count, model: modelOf(deps, principal), modelBudgetMs: deps.modelBudgetMs, maxModelAttempts: deps.maxModelAttempts ?? 1, keep, deadlineAtMs: opts.nowMs + 60_000 });
     added = composed.options.length - keep.length;
     options = composed.options;
     if (composed.reserves.length >= reserves.length) reserves = composed.reserves;
@@ -395,7 +503,9 @@ export async function replenishBoards(deps: DailyDeps, principal: Principal, opt
     const paused = await first<{ n: number }>(deps.db, "SELECT COUNT(*) AS n FROM service_pauses WHERE user_id = ? AND status = 'active' AND starts_on <= ? AND (resume_on IS NULL OR resume_on > ?)", principal.userId, board.local_date, board.local_date);
     if ((paused?.n ?? 0) > 0 && principal.actor === "system") continue;
     try {
-      out.push(await reviseBoard(deps, principal, board, { nowMs, reason: "replenish", idempotencyKey: `replenish:${board.board_id}:r${board.current_revision}:${newId("k")}` }));
+      // A board last checked against a forecast past its freshness threshold is rechecked against a fresh one.
+      const weather = deps.weather ? await fresherForecast(deps, principal, board, nowMs) : null;
+      out.push(await reviseBoard(deps, principal, board, { nowMs, reason: weather ? "refresh" : "replenish", ...(weather ? { weather, force: true } : {}), idempotencyKey: `replenish:${board.board_id}:r${board.current_revision}:${newId("k")}` }));
     } catch (e) {
       if (!isCommandError(e)) throw e;
       out.push({ boardId: board.board_id, localDate: board.local_date, action: "none", revision: board.current_revision, offered: -1 });

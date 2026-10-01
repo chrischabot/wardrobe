@@ -376,6 +376,8 @@ export const OptionEvidence = z.object({
   source: z.enum(["model", "deterministic", "reserve", "approved_combination", "owner_swap", "repair"]),
   explanationSource: z.enum(["model_verified", "factual"]),
   removedClaims: z.array(z.string()),
+  /** Pieces the owner put into this option himself; they stay admitted (e.g. an occasional piece) when the option is revalidated. */
+  explicitGarmentIds: z.array(GarmentId).default([]),
 });
 export type OptionEvidence = z.infer<typeof OptionEvidence>;
 
@@ -391,6 +393,7 @@ export const PublishedOptionInput = z.object({
   reason: z.string().max(600),
   explanationSource: z.enum(["model_verified", "factual"]).default("factual"),
   removedClaims: z.array(z.string()).default([]),
+  explicitGarmentIds: z.array(GarmentId).default([]),
   source: z.enum(["model", "deterministic", "reserve", "approved_combination", "owner_swap", "repair"]).default("deterministic"),
   suitsEventIds: z.array(z.string()).default([]),
 });
@@ -420,7 +423,17 @@ export const BoardPublish = z.object({
 export const BoardSelect = z.object({ boardId: z.string(), optionId: z.string().nullable(), footwearGarmentId: GarmentId.nullable().default(null) });
 
 /** Swap one slot. With `garmentId` the owner's pick is validated; without it a replacement is chosen (never navy by default). */
-export const BoardSwapSlot = z.object({ boardId: z.string(), optionId: z.string(), role: Role, garmentId: GarmentId.optional() });
+export const BoardSwapSlot = z.object({
+  boardId: z.string(),
+  optionId: z.string(),
+  role: Role,
+  garmentId: GarmentId.optional(),
+  /**
+   * A weather snapshot read for this swap (the service's `swapSlot` supplies it when the board's stored
+   * forecast is past its freshness threshold). Without it the newest recorded snapshot for the day is used.
+   */
+  weatherSnapshotId: z.string().optional(),
+});
 
 /** Remove / pause a single day's board; records a suppression so retries cannot recreate the event. */
 export const BoardSuppress = z.object({ localDate: LocalDate, scope: z.string().default("home"), reason: z.string().nullable().default(null) });

@@ -27,10 +27,10 @@ export * from "./ports.ts";
 // Reads
 export { getToday, getBoard, getPauseState, renderBoardHtml, renderBoardDocumentHtml, renderBoardCalendarText, optionLines, boardSummary, type BoardRef } from "./document.ts";
 export { listTrips, getTrip } from "./trips.ts";
-export { validateOutfit, suggestOutfits, outfitValidator, temperaturePreview } from "./service.ts";
+export { validateOutfit, suggestOutfits, outfitValidator, temperaturePreview, decisionContext } from "./service.ts";
 
 // Composition-driven operations (they commit through board.publish / trip.record_packing_proposal)
-export { prepareBoard, recommend, rebuildDay, rebuildOption, replenishBoards, reviseBoard, type PrepareBoardOptions, type PrepareBoardResult, type RecommendInput, type RecommendResult, type ReplenishResult } from "./service.ts";
+export { prepareBoard, recommend, rebuildDay, rebuildOption, swapSlot, replenishBoards, reviseBoard, fresherForecast, type PrepareBoardOptions, type PrepareBoardResult, type RecommendInput, type RecommendResult, type ReplenishResult } from "./service.ts";
 export { proposePacking, prepareTripDayBoard } from "./trips.ts";
 export { resumeService, MORNING_REMINDER_EFFECT_KIND } from "./pause.ts";
 

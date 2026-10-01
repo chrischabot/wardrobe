@@ -29,6 +29,8 @@ export interface ComposedOption {
   explanationSource: "model_verified" | "factual";
   removedClaims: string[];
   source: "model" | "deterministic" | "reserve" | "approved_combination" | "owner_swap" | "repair";
+  /** Pieces the owner chose for this option himself. */
+  explicitGarmentIds?: string[];
   suitsEventIds: string[];
   validation: OutfitValidation;
   jointAvailability: number;
@@ -61,6 +63,8 @@ export interface ComposeOptions {
   reserveCount?: number;
   model?: CompositionModel | null;
   maxModelAttempts?: number;
+  /** Wall-clock budget (ms) for the model part of this composition; it bounds every attempt together. */
+  modelBudgetMs?: number;
   deadlineAtMs?: number;
   /** Existing options kept exactly as they are (replenishment keeps valid options usable). */
   keep?: ComposedOption[];
@@ -414,15 +418,30 @@ export async function composeBoard(ctx: RecommendationContext, opts: ComposeOpti
     const contextText = renderContextText(ctx);
     const contextData = renderContextData(ctx);
     let accepted = 0;
+    // The inference budget is wall-clock: a slow or hung model cannot hold the morning board. When it
+    // runs out the attempt is abandoned and the deterministic composer fills the board.
+    const budgetMs = Math.max(0, opts.modelBudgetMs ?? 120_000);
+    const startedAt = Date.now();
     for (let attempt = 1; attempt <= maxAttempts && accepted < want; attempt++) {
-      if (opts.deadlineAtMs !== undefined && ctx.nowMs >= opts.deadlineAtMs) break;
+      const remaining = budgetMs - (Date.now() - startedAt);
+      if (remaining <= 0) {
+        diagnostics.modelError = diagnostics.modelError ?? "the inference budget for this board was used up";
+        break;
+      }
       diagnostics.modelAttempts = attempt;
       let proposals: unknown[];
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        proposals = await opts.model.propose({ localDate: ctx.localDate, count: want, contextText, contextData, rejections: [...rejections], deadlineAtMs: opts.deadlineAtMs ?? ctx.nowMs + 60_000 });
+        const call = opts.model.propose({ localDate: ctx.localDate, count: want, contextText, contextData, rejections: [...rejections], deadlineAtMs: (opts.deadlineAtMs ?? ctx.nowMs + budgetMs) });
+        const timeout = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("the model did not answer within the inference budget for this board")), remaining);
+        });
+        proposals = await Promise.race([call, timeout]);
       } catch (e) {
         diagnostics.modelError = String((e as Error)?.message ?? e).slice(0, 200);
         break;
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
       }
       if (!Array.isArray(proposals)) {
         diagnostics.modelError = "the model did not return a list of candidates";

@@ -62,6 +62,31 @@ describe("availability changes repair open boards in the same commit", () => {
     expect(exposures.map((e) => e.status).sort()).toEqual(["open", "superseded"]);
   });
 
+  it("a piece the owner put in himself - an occasional one the service would never offer - survives the repair of its option and a later republication", async () => {
+    const { h, owner } = await setup(["2026-09-16"]);
+    const names = await garmentsByName(h, owner);
+    const square = names.get("Anglo-Italian pocket square")!.garment_id;
+    const before = (await compose(h, owner, "2026-09-16")).board!;
+    const target = before.options[1]!;
+    // Unasked, the occasional piece is refused; as the owner's own pick it is accepted.
+    await owner.exec("board.swap_slot", { boardId: before.boardId, optionId: target.optionId, role: "accessory", garmentId: square });
+    const hasSquare = async () => (await getBoard(h.db, owner.principal(), { boardId: before.boardId }))!.options.find((o) => o.optionId === target.optionId)!.garments.some((g) => g.garmentId === square);
+    expect(await hasSquare()).toBe(true);
+
+    // The same option's shirt is spilled on: the shirt is replaced, the owner's square stays.
+    const repaired = await owner.exec("care.mark_dirty", { items: [{ garmentId: piece(target, "top")!.garmentId }] });
+    expect((repaired.result as any).boardRepairs[0]).toMatchObject({ offered: 5, withdrawn: 0 });
+    expect(await hasSquare()).toBe(true);
+    // A background republication keeps it too.
+    await h.db.prepare("UPDATE boards SET needs_replenishment = 1 WHERE user_id = ? AND board_id = ?").bind(owner.userId, before.boardId).run();
+    h.clock.advanceMinutes(90);
+    await replenishBoards(h.deps, await system(h, owner), { nowMs: h.clock.now() });
+    const after = (await getBoard(h.db, owner.principal(), { boardId: before.boardId }))!;
+    expect(after.revision).toBeGreaterThan(3);
+    expect(await hasSquare()).toBe(true);
+    expect(after.options).toHaveLength(5);
+  });
+
   it("a command that touches nothing on a board leaves the board alone", async () => {
     const { h, owner } = await setup(["2026-09-16"]);
     const doc = (await compose(h, owner, "2026-09-16")).board!;

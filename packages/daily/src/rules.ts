@@ -23,6 +23,26 @@ export interface LayeringRule extends RuleRef {
   requiredShirtFabricClass: string;
 }
 
+/** Which pieces a combination rule is about: every stated field of a piece must match. */
+export interface PieceMatch {
+  fabricClasses?: string[];
+  categories?: string[];
+  jacketLike?: boolean;
+}
+
+/**
+ * A layer-combination comfort rule: two (or more) individually eligible pieces that the owner finds
+ * too warm together inside a temperature band. Stored as a versioned style rule `layering.<name>` with
+ * params `{ basis, minC?, maxC?, pieces: { outer?, top?, mid_layer?, bottom? } }`.
+ */
+export interface CombinationRule extends RuleRef {
+  minC: number | null;
+  maxC: number | null;
+  basis: "daytime_peak" | "outdoor_interval";
+  pieces: Partial<Record<"outer" | "top" | "mid_layer" | "bottom", PieceMatch>>;
+  interpretation: string;
+}
+
 export interface RuleSet {
   /** Every current rule with its status, for validation evidence. */
   versions: { key: string; version: number; status: string; kind: string }[];
@@ -31,6 +51,8 @@ export interface RuleSet {
   sneakersOnly: (RuleRef & { allowedKinds: string[]; excludedModels: string[]; restrictionId: string | null; inForce: boolean }) | null;
   pairedFootwear: (RuleRef & { inForce: boolean }) | null;
   jacketBand: LayeringRule | null;
+  /** Owner-activated combination rules beyond the 14-16 C jacket rule. */
+  combinations: CombinationRule[];
   /** Roles whose garment bounds with an unsettled basis resolve to the daytime peak (active profile rule). */
   peakRoles: Role[];
   peakRule: RuleRef | null;
@@ -64,6 +86,7 @@ export function buildRuleSet(rules: StyleRule[], opts: { activeRestrictionIds: S
     sneakersOnly: null,
     pairedFootwear: null,
     jacketBand: null,
+    combinations: [],
     peakRoles: [],
     peakRule: null,
     outerFollowsDeparture: null,
@@ -146,6 +169,26 @@ export function buildRuleSet(rules: StyleRule[], opts: { activeRestrictionIds: S
         break;
       }
       default:
+        if (r.key.startsWith("layering.") && r.kind === "hard") {
+          const pieces: CombinationRule["pieces"] = {};
+          const raw = (p.pieces ?? {}) as Record<string, any>;
+          for (const role of ["outer", "top", "mid_layer", "bottom"] as const) {
+            const m = raw[role];
+            if (!m || typeof m !== "object") continue;
+            const match: PieceMatch = {};
+            if (strings(m.fabricClasses).length > 0) match.fabricClasses = strings(m.fabricClasses);
+            if (strings(m.categories).length > 0) match.categories = strings(m.categories);
+            if (typeof m.jacketLike === "boolean") match.jacketLike = m.jacketLike;
+            pieces[role] = match;
+          }
+          // A combination rule names at least two pieces and a settled temperature basis; anything less is not enforced.
+          if (Object.keys(pieces).length >= 2 && (p.basis === "daytime_peak" || p.basis === "outdoor_interval") && (num(p.minC) !== null || num(p.maxC) !== null)) {
+            out.combinations.push({ ...ref, minC: num(p.minC), maxC: num(p.maxC), basis: p.basis, pieces, interpretation: r.interpretation });
+          } else {
+            out.notEnforced.push({ key: r.key, status: "active_incomplete", interpretation: r.interpretation });
+          }
+          break;
+        }
         // Generic fabric-class temperature bounds: thermal.<anything> with { fabricClass, minC|maxC, basis }.
         if (r.key.startsWith("thermal.") && r.kind === "hard" && str(p.fabricClass)) {
           if (p.basis === "daytime_peak" || p.basis === "outdoor_interval") {

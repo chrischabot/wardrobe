@@ -214,9 +214,15 @@ export async function weatherCompareLocations(deps: DailyDeps, principal: Princi
 /* Calendar                                                             */
 /* ------------------------------------------------------------------ */
 
-export async function readCalendarSnapshot(deps: DailyDeps, principal: Principal, opts: { localDate: string; scope?: string; nowMs?: number; record?: boolean }): Promise<CalendarSnapshot> {
+export async function readCalendarSnapshot(deps: DailyDeps, principal: Principal, opts: { localDate: string; scope?: string; nowMs?: number; record?: boolean; maxAgeMinutes?: number }): Promise<CalendarSnapshot> {
   assertPrincipal(principal);
   const nowMs = nowOf(deps, opts.nowMs);
+  // Within the freshness threshold a successful read is still the read: it is reused, with its real age.
+  if (opts.maxAgeMinutes !== undefined) {
+    const held = await latestCalendarSnapshot(deps.db, principal.userId, opts.localDate);
+    const age = held?.status === "ok" && held.readAt ? (nowMs - Date.parse(held.readAt)) / 60_000 : null;
+    if (held && age !== null && age >= 0 && age <= opts.maxAgeMinutes) return { ...held, ageMinutes: Math.round(age) };
+  }
   const owner = await loadOwner(deps.db, principal.userId);
   const settings = dailySettings(owner.settings);
   const timezone = owner.settings.timezone;

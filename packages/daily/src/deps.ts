@@ -15,6 +15,14 @@ export interface DailyDeps {
   calendar: { reader: CalendarReader | null; writer: CalendarWriter | null };
   /** The composition model behind the AI Gateway; without it the deterministic composer is used. */
   model?: CompositionModel | null;
+  /**
+   * A composition model budgeted to one owner. When given it takes precedence over `model`, so the
+   * scheduled sweep (which serves every owner with one set of dependencies) attributes each owner's
+   * inference to that owner. Return null for an owner with no usable model.
+   */
+  modelFor?: ((principal: Principal) => CompositionModel | null) | null;
+  /** Wall-clock budget for the model part of one composition (default two minutes); the fallback composer then takes over. */
+  modelBudgetMs?: number;
   /** Reader for the owner's dated comfort observations (the assistant workstream's store). */
   comfort?: ((principal: Principal) => Promise<ComfortObservation[]>) | null;
   /** Upper bound on model calls per composition (the morning budget). */
@@ -29,6 +37,18 @@ export async function loadComfort(deps: DailyDeps, principal: Principal): Promis
   } catch {
     return [];
   }
+}
+
+/** The composition model to use for this owner, or null for the deterministic composer alone. */
+export function modelOf(deps: DailyDeps, principal: Principal): CompositionModel | null {
+  if (deps.modelFor) {
+    try {
+      return deps.modelFor(principal);
+    } catch {
+      return null; // a model that cannot be constructed is an outage, never a reason to fail the board
+    }
+  }
+  return deps.model ?? null;
 }
 
 export function nowOf(deps: DailyDeps, nowMs?: number): number {

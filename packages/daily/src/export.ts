@@ -61,8 +61,11 @@ export async function importDailyData(db: Db, principal: Principal, data: DailyE
     const statements = [];
     for (const row of rows) {
       const columns = Object.keys(row).filter((c) => known.has(c) && c !== "user_id");
-      // Calendar delivery is not replayed: a restored projection waits for the next real publication.
-      const values = columns.map((c) => (table === "calendar_projections" && c === "etag" ? null : row[c]));
+      // Calendar delivery is not replayed, and nothing is assumed about the importing owner's calendar: a
+      // restored projection starts over as pending, so the next real publication creates or adopts the
+      // event instead of mistaking its absence for a deletion by the owner.
+      const reset: Record<string, unknown> = table === "calendar_projections" ? { etag: null, state: row.state === "suppressed" && row.suppression_reason !== "deleted_externally" ? "suppressed" : "pending", suppression_reason: row.suppression_reason === "deleted_externally" ? null : row.suppression_reason, projected_revision: null, managed_text: null, last_verified_at: null, last_error: null, calendar_id: null } : {};
+      const values = columns.map((c) => (c in reset ? reset[c] : row[c]));
       statements.push(prepare(db, stmt(`INSERT INTO ${table} (user_id, ${columns.join(", ")}) VALUES (?, ${columns.map(() => "?").join(", ")})`, principal.userId, ...values)));
     }
     for (let i = 0; i < statements.length; i += 40) await db.batch(statements.slice(i, i + 40));

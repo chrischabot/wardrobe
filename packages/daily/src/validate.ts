@@ -26,7 +26,7 @@ const SINGLE_ROLES: Role[] = ["top", "mid_layer", "bottom", "outer", "footwear",
 /** Codes that describe "not wearable today" rather than "not an outfit"; advisory in Explore mode. */
 export const EXPLORE_ADVISORY = new Set([
   "unavailable", "restricted", "not_packed", "conditional_not_requested", "thermal_too_warm", "thermal_too_cold", "fabric_rule",
-  "jacket_band_requires_lightweight_oxford", "outerwear_ceiling", "repeat_within_horizon", "footwear_restricted", "paired_footwear_required",
+  "jacket_band_requires_lightweight_oxford", "too_warm_together", "outerwear_ceiling", "repeat_within_horizon", "footwear_restricted", "paired_footwear_required",
 ]);
 
 const REASON_WORDS: Record<string, string> = {
@@ -188,6 +188,28 @@ export function validateCandidate(ctx: RecommendationContext, candidate: { slots
       if (!isRequired) violations.push(v("jacket_band_unverified", `The ${band.minC}-${band.maxC} °C jacket rule could not be checked: the forecast is unavailable`, [outer.garmentId, top.garmentId], band.key, "advisory"));
     } else if (t >= band.minC && t <= band.maxC && !isRequired) {
       violations.push(v("jacket_band_requires_lightweight_oxford", `At ${t} °C outdoors a jacket goes over a lightweight oxford only; ${top.name} is not one`, [outer.garmentId, top.garmentId], band.key));
+    }
+  }
+
+  // Owner-activated layer-combination rules: individually eligible pieces that are too warm together.
+  for (const rule of ctx.rules.combinations) {
+    const matched: PoolGarment[] = [];
+    let all = true;
+    for (const [role, match] of Object.entries(rule.pieces) as [Role, NonNullable<(typeof rule.pieces)["outer"]>][]) {
+      const g = get(role);
+      const ok = !!g && (!match.fabricClasses || match.fabricClasses.includes(String(g.attributes.fabricClass ?? ""))) && (!match.categories || match.categories.includes(g.category)) && (match.jacketLike === undefined || (g.attributes.jacketLike === true) === match.jacketLike);
+      if (!ok) {
+        all = false;
+        break;
+      }
+      matched.push(g!);
+    }
+    if (!all) continue;
+    const t = rule.basis === "daytime_peak" ? ctx.conditions.peakC : ctx.conditions.departureC;
+    const ids = matched.map((g) => g.garmentId);
+    if (t === null) violations.push(v("combination_unverified", `A layering rule for ${matched.map((g) => g.name).join(" with ")} could not be checked: the forecast is unavailable`, ids, rule.key, "advisory"));
+    else if ((rule.minC === null || t >= rule.minC) && (rule.maxC === null || t <= rule.maxC)) {
+      violations.push(v("too_warm_together", `${matched.map((g) => g.name).join(" with ")} are too warm together at ${t} °C ${rule.basis === "daytime_peak" ? "at the peak" : "outdoors"}`, ids, rule.key));
     }
   }
 

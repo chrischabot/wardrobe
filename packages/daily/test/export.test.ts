@@ -51,5 +51,14 @@ describe("portable export", () => {
     expect(h.calendar.allEvents(target.userId, "outfits@test.calendar")).toEqual([]);
     // Import is only into an empty owner.
     await expect(importDailyData(h.db, admin, exported)).rejects.toMatchObject({ code: "precondition_failed" });
+
+    // The restored board's next real publication reaches the importing owner's calendar as a new event:
+    // the absence of an event there is not mistaken for a deletion by the owner.
+    await target.exec("settings.update", { patch: { extensions: { daily: { calendar: { outfitCalendarId: "outfits@test.calendar" } } } } });
+    h.clock.advanceMinutes(5);
+    await target.exec("board.swap_slot", { boardId: doc.boardId, optionId: doc.options[2]!.optionId, role: "belt" });
+    const outcomes = (await projectCalendarEffects(h.deps, { nowMs: h.clock.now() })).filter((o) => o.userId === target.userId);
+    expect(outcomes.map((o) => o.outcome)).toEqual(["projected"]);
+    expect(h.calendar.allEvents(target.userId, "outfits@test.calendar")).toHaveLength(1);
   });
 });

@@ -12,7 +12,7 @@
  */
 import type { Role } from "@garderobe/contracts";
 import type { OutfitSlot } from "@garderobe/contracts/ext/daily";
-import { all, allIn, localDateOf, stmt, type BalanceRow, type CommandContext, type CommandPlan, type CommitHook, type DomainChanges, type PlanFragment, type Stmt } from "@garderobe/domain";
+import { addDays, all, allIn, localDateOf, stmt, type BalanceRow, type CommandContext, type CommandPlan, type CommitHook, type DomainChanges, type PlanFragment, type Stmt } from "@garderobe/domain";
 import { assembleContext, calendarSnapshotById, weatherSnapshotById, type Overlay } from "./context.ts";
 import { boardNotice, describeChanges, optionEvidence, planRevisionWrite, revisionContext, storedToDraft, type DraftOption } from "./boards.ts";
 import { factualReason, findReplacement } from "./compose.ts";
@@ -38,7 +38,7 @@ function whyPhrase(rc: RecommendationContext, code: string, garmentId: string): 
   }
   if (code === "unavailable" || code === "not_packed" || code === "unknown_garment") return "no longer available";
   if (code === "restricted" || code === "footwear_restricted") return "now restricted";
-  if (code.startsWith("thermal") || code === "fabric_rule" || code === "outerwear_ceiling" || code === "jacket_band_requires_lightweight_oxford") return "wrong for the forecast now";
+  if (code.startsWith("thermal") || code === "fabric_rule" || code === "outerwear_ceiling" || code === "jacket_band_requires_lightweight_oxford" || code === "too_warm_together") return "wrong for the forecast now";
   return "no longer valid";
 }
 
@@ -49,9 +49,9 @@ function whyPhrase(rc: RecommendationContext, code: string, garmentId: string): 
 export function repairOptions(rc: RecommendationContext, stored: StoredOption[], requestedCount: number): RepairOutcome {
   const offered = stored.filter((o) => o.state === "offered");
   const reserves = stored.filter((o) => o.state === "reserve");
-  const opts = { requirePairedFootwear: true, ignoreBriefInclusions: false };
-  const checks = offered.map((o) => ({ o, validation: validateCandidate(rc, o, opts) }));
-  const reserveChecks = reserves.map((o) => ({ o, validation: validateCandidate(rc, o, opts) }));
+  const optsFor = (o: StoredOption) => ({ requirePairedFootwear: true, ignoreBriefInclusions: false, explicitGarmentIds: o.evidence.explicitGarmentIds ?? [] });
+  const checks = offered.map((o) => ({ o, validation: validateCandidate(rc, o, optsFor(o)) }));
+  const reserveChecks = reserves.map((o) => ({ o, validation: validateCandidate(rc, o, optsFor(o)) }));
   const usedTops = new Set<string>();
   const usedBottoms = new Set<string>();
   for (const c of checks) {
@@ -77,10 +77,11 @@ export function repairOptions(rc: RecommendationContext, stored: StoredOption[],
     const implicated = new Set<string>();
     for (const b of blockers) for (const id of b.garmentIds) {
       // A combination rule names both pieces; the layer is what gives way, the base outfit stays.
-      if (b.code === "jacket_band_requires_lightweight_oxford" && id !== slotOf(o, "outer")) continue;
+      if ((b.code === "jacket_band_requires_lightweight_oxford" || b.code === "too_warm_together") && slotOf(o, "outer") && b.garmentIds.includes(slotOf(o, "outer")!) && id !== slotOf(o, "outer")) continue;
       implicated.add(id);
       if (!why.has(id)) why.set(id, whyPhrase(rc, b.code, id));
     }
+    const opts = optsFor(o);
     let current: { slots: OutfitSlot[]; footwearAlternatives: string[] } = { slots: o.slots, footwearAlternatives: o.footwearAlternatives.filter((id) => !implicated.has(id)) };
     let ok = true;
     const roles = o.slots.filter((s) => implicated.has(s.garmentId)).map((s) => s.role);
@@ -88,11 +89,11 @@ export function repairOptions(rc: RecommendationContext, stored: StoredOption[],
       const avoid = new Set<string>([...implicated, ...(role === "top" ? usedTops : role === "bottom" ? usedBottoms : [])]);
       if (role === "outer" || role === "neckwear" || role === "belt" || role === "mid_layer") {
         // An optional layer: replace it when something eligible fits, otherwise the outfit goes without it.
-        const found = findReplacement(rc, current, role, { avoidGarmentIds: avoid });
+        const found = findReplacement(rc, current, role, { avoidGarmentIds: avoid, validate: { explicitGarmentIds: opts.explicitGarmentIds } });
         current = found ? { slots: found.slots, footwearAlternatives: found.footwearAlternatives } : { slots: current.slots.filter((s) => s.role !== role), footwearAlternatives: current.footwearAlternatives };
         continue;
       }
-      const found = findReplacement(rc, current, role, { avoidGarmentIds: avoid });
+      const found = findReplacement(rc, current, role, { avoidGarmentIds: avoid, validate: { explicitGarmentIds: opts.explicitGarmentIds } });
       if (!found) {
         ok = false;
         break;
@@ -111,7 +112,7 @@ export function repairOptions(rc: RecommendationContext, stored: StoredOption[],
         footwearAlternatives: current.footwearAlternatives,
         reason: factualReason(rc, current.slots),
         suitsEventIds: o.suitsEventIds,
-        evidence: optionEvidence(finalValidation, Number((finalValidation.evidence as any).availability.jointAvailability), { source: "repair", explanationSource: "factual", removedClaims: [] }),
+        evidence: optionEvidence(finalValidation, Number((finalValidation.evidence as any).availability.jointAvailability), { source: "repair", explanationSource: "factual", removedClaims: [], explicitGarmentIds: opts.explicitGarmentIds.filter((id) => current.slots.some((s) => s.garmentId === id)) }),
         changed: true,
       });
       continue;
@@ -217,7 +218,9 @@ export const boardRepairHook: CommitHook = async (ctx, plan, changes): Promise<P
     if (remaining.every((r) => retracted.has(r.garment_id))) statements.push(stmt("UPDATE boards SET status = 'active', needs_replenishment = 1, updated_at = ? WHERE user_id = ? AND local_date = ? AND status = 'worn'", ctx.now, ctx.userId, date));
   }
 
-  let boards = await all<BoardRow>(ctx.db, "SELECT * FROM boards WHERE user_id = ? AND status = 'active' AND local_date >= ? ORDER BY local_date, scope", ctx.userId, today);
+  let boards = await all<BoardRow>(ctx.db, "SELECT * FROM boards WHERE user_id = ? AND status = 'active' AND local_date >= ? ORDER BY local_date, scope", ctx.userId, addDays(today, -1));
+  // A board is open while its own local day has not passed (a trip board lives in the destination's timezone).
+  boards = boards.filter((b) => b.local_date >= localDateOf(ctx.nowMs, b.timezone));
   boards = boards.filter((b) => !(wornDates.includes(b.local_date) && b.scope === wornScope));
   if (boards.length === 0) return statements.length > 0 ? fragment : undefined;
 

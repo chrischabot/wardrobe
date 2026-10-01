@@ -8,10 +8,11 @@
  * morning, and presenting it needs no inference.
  */
 import { addDays, all, first, isCommandError, localDateOf, prepare, stmt, systemPrincipalFor, toInstant, zonedToUtcMs, type Principal } from "@garderobe/domain";
-import { dailySettings, loadOwner } from "./context.ts";
+import type { CalendarSnapshot, WeatherSnapshot } from "@garderobe/contracts/ext/daily";
+import { calendarSnapshotById, dailySettings, loadOwner, weatherSnapshotById } from "./context.ts";
 import { projectCalendarEffects } from "./calendar/projector.ts";
 import { nowOf, type DailyDeps } from "./deps.ts";
-import { loadBoard, loadRevision, pauseCovering } from "./document.ts";
+import { loadBoard, loadRevision, pauseCovering, type BoardRow } from "./document.ts";
 import { relevantEvents } from "./calendar/influence.ts";
 import { resumeService } from "./pause.ts";
 import { prepareBoard, replenishBoards, reviseBoard } from "./service.ts";
@@ -82,6 +83,34 @@ async function applyWeeklyReset(deps: DailyDeps, principal: Principal, key: stri
   await deps.commands.execute(principal, { type: "laundry.apply_weekly_reset", payload: {}, idempotencyKey: key, expectedVersions: {}, authorization: "standing_policy", source: { channel: principal.channel } });
 }
 
+/**
+ * Bring an existing active board up to newly read sources. After a selection the day is not rebuilt
+ * for an ordinary change: the chosen outfit keeps its pieces and at most a layer is adjusted. Without
+ * a selection, a material forecast change or a changed set of relevant events recomposes the board.
+ */
+async function refreshBoard(deps: DailyDeps, principal: Principal, board: BoardRow, input: { weather: WeatherSnapshot; calendar: CalendarSnapshot; key: string; nowMs: number }): Promise<Record<string, unknown> & { action: string }> {
+  const { weather, calendar, key, nowMs } = input;
+  const userId = principal.userId;
+  const localDate = board.local_date;
+  const revision = (await loadRevision(deps.db, userId, board.board_id, board.current_revision))!;
+  const change = materialChange(revision.conditions, weather.conditions);
+  const previousCalendar = revision.calendar_snapshot_id ? await calendarSnapshotById(deps.db, userId, revision.calendar_snapshot_id) : null;
+  const before = previousCalendar ? relevantEvents(previousCalendar.events).map((e) => e.eventId).sort().join(",") : "";
+  const after = calendar.status === "ok" ? relevantEvents(calendar.events).map((e) => e.eventId).sort().join(",") : before;
+  if (!board.selected_option_id && ((change.material && weather.freshness !== "unavailable") || before !== after)) {
+    const result = await prepareBoard(deps, principal, { localDate, reason: "refresh", brief: revision.brief, purpose: "morning_refresh", weather, calendar, idempotencyKey: key, nowMs });
+    return { board: board.board_id, action: "recomposed", reasons: [...change.reasons, ...(before !== after ? ["calendar changed"] : [])], revision: result.board?.revision ?? null, offered: result.board?.options.length ?? 0, weather: weather.freshness, calendar: calendar.status };
+  }
+  // A failed source never downgrades a board that was validated against a real forecast: the
+  // limitation is recorded on the run and the earlier basis stays in force.
+  if (weather.freshness === "unavailable" && revision.conditions.freshness !== "unavailable") {
+    const r = await reviseBoard(deps, principal, board, { nowMs, reason: "refresh", idempotencyKey: `${key}:revalidate` });
+    return { board: board.board_id, action: r.action, revision: r.revision, offered: r.offered, weather: "unavailable", weatherLimitation: weather.limitation, keptBasis: revision.weather_snapshot_id, calendar: calendar.status };
+  }
+  const r = await reviseBoard(deps, principal, board, { nowMs, reason: "refresh", weather, calendar: calendar.status === "error" || calendar.status === "not_connected" ? undefined : calendar, force: true, idempotencyKey: `${key}:refresh` });
+  return { board: board.board_id, action: r.action, revision: r.revision, offered: r.offered, materialWeatherChange: change.material, reasons: change.reasons, weather: weather.freshness, calendar: calendar.status };
+}
+
 async function runPhase(deps: DailyDeps, principal: Principal, localDate: string, phase: Phase, nowMs: number): Promise<Record<string, unknown>> {
   const userId = principal.userId;
   const key = `phase:${phase}:${userId}:${localDate}`;
@@ -110,25 +139,7 @@ async function runPhase(deps: DailyDeps, principal: Principal, localDate: string
       return { board: result.board?.boardId ?? null, action: "composed_late", offered: result.board?.options.length ?? 0, note: result.note, weather: weather.freshness, calendar: calendar.status };
     }
     if (board.status !== "active") return { board: board.board_id, action: "left_alone", status: board.status };
-    const revision = (await loadRevision(deps.db, userId, board.board_id, board.current_revision))!;
-    const change = materialChange(revision.conditions, weather.conditions);
-    const previousCalendar = revision.calendar_snapshot_id ? await first<{ snapshot_json: string }>(deps.db, "SELECT snapshot_json FROM calendar_snapshots WHERE user_id = ? AND snapshot_id = ?", userId, revision.calendar_snapshot_id) : null;
-    const before = previousCalendar ? relevantEvents(JSON.parse(previousCalendar.snapshot_json).events ?? []).map((e) => e.eventId).sort().join(",") : "";
-    const after = calendar.status === "ok" ? relevantEvents(calendar.events).map((e) => e.eventId).sort().join(",") : before;
-    // After a selection the day is not rebuilt for an ordinary change: the chosen outfit keeps its
-    // pieces and at most a layer is adjusted. Without a selection, a material change recomposes.
-    if (!board.selected_option_id && ((change.material && weather.freshness !== "unavailable") || before !== after)) {
-      const result = await prepareBoard(deps, principal, { localDate, reason: "refresh", brief: revision.brief, purpose: "morning_refresh", weather, calendar, idempotencyKey: key, nowMs });
-      return { board: board.board_id, action: "recomposed", reasons: [...change.reasons, ...(before !== after ? ["calendar changed"] : [])], revision: result.board?.revision ?? null, offered: result.board?.options.length ?? 0, weather: weather.freshness, calendar: calendar.status };
-    }
-    // A failed source never downgrades a board that was validated against a real forecast: the
-    // limitation is recorded on the run and the earlier basis stays in force.
-    if (weather.freshness === "unavailable" && revision.conditions.freshness !== "unavailable") {
-      const r = await reviseBoard(deps, principal, board, { nowMs, reason: "refresh", idempotencyKey: `${key}:revalidate` });
-      return { board: board.board_id, action: r.action, revision: r.revision, offered: r.offered, weather: "unavailable", weatherLimitation: weather.limitation, keptBasis: revision.weather_snapshot_id, calendar: calendar.status };
-    }
-    const r = await reviseBoard(deps, principal, board, { nowMs, reason: "refresh", weather, calendar: calendar.status === "error" || calendar.status === "not_connected" ? undefined : calendar, force: true, idempotencyKey: `${key}:refresh` });
-    return { board: board.board_id, action: r.action, revision: r.revision, offered: r.offered, materialWeatherChange: change.material, reasons: change.reasons, weather: weather.freshness, calendar: calendar.status };
+    return refreshBoard(deps, principal, board, { weather, calendar, key, nowMs });
   }
 
   if (phase === "morning_publish") {
@@ -137,12 +148,35 @@ async function runPhase(deps: DailyDeps, principal: Principal, localDate: string
       const result = await prepareBoard(deps, principal, { localDate, purpose: "morning_refresh", idempotencyKey: key, nowMs });
       board = result.board ? await loadBoard(deps.db, userId, { date: localDate }) : null;
     }
+    // The final check: the board must rest on a weather fetch and a calendar read inside their
+    // freshness thresholds (initially one hour and thirty minutes). A source older than that - a
+    // missed or late refresh - is read again now and the board is revalidated before it is published.
+    let finalCheck: Record<string, unknown> = {};
+    if (board?.status === "active") {
+      const owner = await loadOwner(deps.db, userId);
+      const daily = dailySettings(owner.settings);
+      const revision = (await loadRevision(deps.db, userId, board.board_id, board.current_revision))!;
+      const wx = revision.weather_snapshot_id ? await weatherSnapshotById(deps.db, userId, revision.weather_snapshot_id) : null;
+      const cal = revision.calendar_snapshot_id ? await calendarSnapshotById(deps.db, userId, revision.calendar_snapshot_id) : null;
+      const age = (iso: string | null | undefined) => (iso ? Math.round((nowMs - Date.parse(iso)) / 60_000) : null);
+      const weatherAge = wx && wx.freshness !== "unavailable" ? age(wx.fetchedAt) : null;
+      const calendarAge = cal && (cal.status === "ok" || cal.status === "stale") ? age(cal.readAt) : null;
+      const weatherDue = weatherAge === null || weatherAge > daily.weatherMaxAgeMinutes;
+      const calendarDue = calendarAge === null || calendarAge > daily.calendarMaxAgeMinutes;
+      finalCheck = { weatherAgeMinutes: weatherAge, calendarAgeMinutes: calendarAge, weatherMaxAgeMinutes: daily.weatherMaxAgeMinutes, calendarMaxAgeMinutes: daily.calendarMaxAgeMinutes, reread: [...(weatherDue ? ["weather"] : []), ...(calendarDue ? ["calendar"] : [])] };
+      if (weatherDue || calendarDue) {
+        const weather = weatherDue ? await fetchWeatherSnapshot(deps, principal, { localDate, purpose: "morning_refresh", nowMs }) : (wx ?? (await fetchWeatherSnapshot(deps, principal, { localDate, purpose: "morning_refresh", nowMs })));
+        const calendar = calendarDue ? await readCalendarSnapshot(deps, principal, { localDate, nowMs }) : cal!;
+        const refreshed = await refreshBoard(deps, principal, board, { weather, calendar, key: `${key}:final`, nowMs });
+        finalCheck = { ...finalCheck, action: refreshed.action, weather: weather.freshness, calendar: calendar.status, weatherAgeAfterMinutes: weather.ageMinutes, calendarAgeAfterMinutes: calendar.ageMinutes };
+      }
+    }
     await replenishBoards(deps, principal, { nowMs });
     await projectCalendarEffects(deps, { nowMs });
     board = await loadBoard(deps.db, userId, { date: localDate });
     const projection = await first<{ state: string; projected_revision: number | null; last_error: string | null }>(deps.db, "SELECT state, projected_revision, last_error FROM calendar_projections WHERE user_id = ? AND target_key = ?", userId, `outfit-event:home:${localDate}`);
     const verified = !!board && projection?.state === "projected" && projection.projected_revision === board.current_revision;
-    return { board: board?.board_id ?? null, revision: board?.current_revision ?? null, boardReady: !!board, calendar: projection?.state ?? "not_requested", calendarVerified: verified, calendarError: projection?.last_error ?? null };
+    return { board: board?.board_id ?? null, revision: board?.current_revision ?? null, boardReady: !!board, calendar: projection?.state ?? "not_requested", calendarVerified: verified, calendarError: projection?.last_error ?? null, finalCheck };
   }
 
   // morning_present: the board is already prepared; this only marks it and queues the reminder.
