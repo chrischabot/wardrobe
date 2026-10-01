@@ -159,8 +159,8 @@ enum AppBootstrap {
 
     static var launchedInDemo: Bool { ProcessInfo.processInfo.arguments.contains(demoArgument) || UserDefaults.standard.bool(forKey: "garderobe.demoMode") }
 
-    static func make(configuration: AppConfiguration = .load(), demo: Bool = launchedInDemo) -> AppModel {
-        if demo, let model = makeDemo() { return model }
+    static func make(configuration: AppConfiguration = .load(), demo: Bool? = nil) -> AppModel {
+        if demo ?? launchedInDemo, let model = makeDemo() { return model }
         let directory = configuration.storageDirectory("store")
         if ProcessInfo.processInfo.arguments.contains(resetArgument) { try? FileManager.default.removeItem(at: directory) }
         let store: KeyValueStore = (try? FileKeyValueStore(directory: directory)) ?? InMemoryKeyValueStore()
