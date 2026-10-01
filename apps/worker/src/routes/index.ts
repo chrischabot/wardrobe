@@ -8,10 +8,11 @@ import { dailyRoutes } from "./daily.ts";
 import { exportRoutes } from "./export.ts";
 import { identityRoutes } from "./identity.ts";
 import { mediaRoutes } from "./media.ts";
+import { proposalRoutes } from "./proposals.ts";
 
 /** Every application route. Protocol endpoints of the MCP authorization server are served by the OAuth provider. */
 export function allRoutes(): RouteDef[] {
-  return [...coreRoutes(), ...identityRoutes(), ...dailyRoutes(), ...conversationRoutes(), ...mediaRoutes(), ...connectionRoutes(), ...exportRoutes(), ...consentRoutes()];
+  return [...coreRoutes(), ...identityRoutes(), ...dailyRoutes(), ...conversationRoutes(), ...proposalRoutes(), ...mediaRoutes(), ...connectionRoutes(), ...exportRoutes(), ...consentRoutes()];
 }
 
 let router: AppRouter | null = null;

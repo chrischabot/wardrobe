@@ -13436,6 +13436,155 @@ public struct ProjectList: Codable, Sendable, Equatable {
     }
 }
 
+public struct Proposal: Codable, Sendable, Equatable {
+    public var proposalId: String
+    /// The turn (run) that produced it.
+    public var turnId: String
+    /// Command type that would be executed.
+    public var type: String
+    public var summary: String
+    public var payload: [String: JSONValue]
+    public var proposedAt: Instant
+    /// After this it can only be rejected; ask for the change again.
+    public var expiresAt: Instant
+    public var source: Source
+    public var state: State
+    public var decidedAt: Instant?
+    /// The command that carried out a confirmed proposal.
+    public var commandId: String?
+
+    public init(
+        proposalId: String,
+        turnId: String,
+        type: String,
+        summary: String,
+        payload: [String: JSONValue],
+        proposedAt: Instant,
+        expiresAt: Instant,
+        source: Source,
+        state: State,
+        decidedAt: Instant? = nil,
+        commandId: String? = nil
+    ) {
+        self.proposalId = proposalId
+        self.turnId = turnId
+        self.type = type
+        self.summary = summary
+        self.payload = payload
+        self.proposedAt = proposedAt
+        self.expiresAt = expiresAt
+        self.source = source
+        self.state = state
+        self.decidedAt = decidedAt
+        self.commandId = commandId
+    }
+
+    public struct Source: Codable, Sendable, Equatable {
+        public var channel: String
+        /// The connected assistant it came through, by the name the owner approved.
+        public var assistantName: String?
+
+        public init(
+            channel: String,
+            assistantName: String? = nil
+        ) {
+            self.channel = channel
+            self.assistantName = assistantName
+        }
+    }
+
+    public enum State: String, Codable, Sendable, CaseIterable {
+        case pending
+        case confirmed
+        case rejected
+        case expired
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+}
+
+public struct ProposalDecisionRequest: Codable, Sendable, Equatable {
+    public var decision: Decision
+
+    public init(
+        decision: Decision
+    ) {
+        self.decision = decision
+    }
+
+    public enum Decision: String, Codable, Sendable, CaseIterable {
+        case confirm
+        case reject
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+}
+
+public struct ProposalDecisionResponse: Codable, Sendable, Equatable {
+    public var proposal: Proposal
+    public var receipt: CommandReceipt?
+    public var replayed: Bool
+
+    public init(
+        proposal: Proposal,
+        receipt: CommandReceipt? = nil,
+        replayed: Bool
+    ) {
+        self.proposal = proposal
+        self.receipt = receipt
+        self.replayed = replayed
+    }
+}
+
+public struct ProposalList: Codable, Sendable, Equatable {
+    public var proposals: [Proposal]
+    public var pending: Int
+    public var readAt: Instant
+
+    public init(
+        proposals: [Proposal],
+        pending: Int,
+        readAt: Instant
+    ) {
+        self.proposals = proposals
+        self.pending = pending
+        self.readAt = readAt
+    }
+}
+
+public struct ProposalsQuery: Codable, Sendable, Equatable {
+    /// Server default when omitted: `"pending"`.
+    public var state: State?
+
+    public init(
+        state: State? = nil
+    ) {
+        self.state = state
+    }
+
+    public enum State: String, Codable, Sendable, CaseIterable {
+        case pending
+        case all
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+}
+
 public struct PublishedOptionInput: Codable, Sendable, Equatable {
     public var optionId: String?
     public var slots: [OutfitSlot]

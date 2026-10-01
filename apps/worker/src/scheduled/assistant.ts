@@ -153,6 +153,13 @@ export async function runAssistantJobs(app: App, nowMs: number, limit = 5): Prom
   }
   const stragglers = await runPendingAssistantJobs(deps, { limit });
   result.ran.push(...stragglers.ran);
+  // A job the pass above started has been dispatched: its effect is recorded as such now, not a sweep later.
+  for (const ran of stragglers.ran) {
+    const waiting = await first<{ effect_id: string }>(app.db, "SELECT effect_id FROM effects WHERE user_id = ? AND kind = ? AND target_key = ? AND state = 'pending'", ran.userId, JOB_EFFECT_KIND, `job:${ran.jobId}`);
+    if (!waiting || ran.state === "error") continue;
+    await settleEffect(app.db, { userId: ran.userId, effectId: waiting.effect_id }, { state: "projected" }, nowMs);
+    result.effects.push({ effectId: waiting.effect_id, jobId: ran.jobId, outcome: ran.state });
+  }
   return result;
 }
 
