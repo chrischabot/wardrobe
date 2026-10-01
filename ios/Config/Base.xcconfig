@@ -14,11 +14,14 @@
 // Platform
 // ---------------------------------------------------------------------------
 
-// The specification targets iOS 27. When only an older SDK is installed,
-// override this on the xcodebuild command line, for example
-//     xcodebuild ... IPHONEOS_DEPLOYMENT_TARGET=26.0
-// The code uses no API newer than iOS 26 (GarderobeKit declares iOS 26.0 in
-// its Package.swift), so that override builds the same sources.
+// The specification targets iOS 27. When only an older SDK is installed, set a
+// lower target in Config/Local.xcconfig (not committed; included at the end of
+// this file), for example
+//     IPHONEOS_DEPLOYMENT_TARGET = 26.5
+// A command-line override is not enough: xcodebuild decides which simulators
+// are eligible from the value in these files. The code uses no API newer than
+// iOS 26 (GarderobeKit declares iOS 26.0 in its Package.swift), so a lower
+// target builds the same sources.
 IPHONEOS_DEPLOYMENT_TARGET = 27.0
 
 // Build against the iOS SDK (device and simulator).
@@ -124,3 +127,9 @@ LOCALIZATION_PREFERS_STRING_CATALOGS = YES
 
 // Extract localisable strings from Swift sources at build time.
 SWIFT_EMIT_LOC_STRINGS = YES
+
+// ---------------------------------------------------------------------------
+// Local overrides (optional, not committed): deployment values, team, a lower
+// deployment target. Anything set there wins over the values above.
+// ---------------------------------------------------------------------------
+#include? "Local.xcconfig"
