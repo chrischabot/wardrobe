@@ -133,6 +133,7 @@ committed default stays 27.0.
 | [36856429740](https://github.com/chrischabot/wardrobe/actions/runs/36856429740) | `58c24dee` | `TEST BUILD SUCCEEDED` for the app, share extension and UI tests. UI tests: 17 run, 9 passed, 8 failed. |
 | [36858775481](https://github.com/chrischabot/wardrobe/actions/runs/36858775481) | `5f0c4a4d` | Build succeeded. UI tests failed; the published summary was cut off after 12 results (9 passed, 3 failed, two of them simulator launch failures). |
 | [36861072431](https://github.com/chrischabot/wardrobe/actions/runs/36861072431) | `be6f3494` | Build succeeded. UI tests: 18 run, 17 passed, 1 failed: the accessibility audit, with 38 to 51 issues across the four destinations (see Known gaps). |
+| [36864344693](https://github.com/chrischabot/wardrobe/actions/runs/36864344693) | `6dd6576c` | Build succeeded. Swift package tests on macOS: 97 passed. UI tests: 18 run, 17 passed, 1 failed: the accessibility audit, now with 33 issues (see Known gaps). |
 
 Fixed from these runs: the compile error; the undo banner now lapses on the device's clock in demo mode;
 demo mode restores the tab and composer draft between launches; Laundry on Wardrobe and Ask about this on
@@ -181,10 +182,14 @@ there), the Apple team (`DEVELOPMENT_TEAM`) with the app group and Keychain grou
 
 ## Known gaps in the client
 
-- Accessibility audit (simulator, run 36861072431): the tile shown when a garment has no photograph clipped
-  its text and did not follow Dynamic Type; several texts were reported as clipped on Today and Wardrobe;
-  contrast was reported as failed for the outfit canvas and nearly passed for secondary footnotes. The tile
-  and the freshness lines were changed after that run; the audit has not been re-run on the change.
+- Accessibility audit: `testAccessibilityAuditOfTheFourDestinations` fails in the simulator (run 36864344693,
+  33 issues after the no-photo tile and the freshness lines were changed; 38 to 51 before). What it reports:
+  "Dynamic Type font sizes are partially unsupported" for garment names and the no-photo text on Today and
+  Studio and for three Studio footnotes; "Contrast failed" for text on the white catalogue canvas, for the
+  Wardrobe and Studio navigation titles and for some Wardrobe rows; "Contrast nearly passed" for secondary
+  footnotes; "Text clipped" for the Conversation title and the Wardrobe search placeholder. Some of these are
+  system-drawn elements (navigation titles, the search field) under the Liquid Glass bars. None has been
+  looked at by a person; each needs a decision on a device or in Xcode's Accessibility Inspector.
 - A day record can have garments removed but not replaced in place.
 - A day brief set somewhere else can be cleared once the style context lists it (it does for today's date).
 - A return case carries no garment name, so its row is titled by kind and order and links to the item page.
