@@ -1,11 +1,15 @@
 name: iOS (manual)
 
 # Builds the SwiftUI app and runs the Swift package tests and the UI tests on a macOS runner.
-# Manual trigger only: macOS runner minutes are billed to the repository owner, so this never
-# runs on push, pull request or a schedule. A newer run on the same branch cancels an older one.
+# Manual trigger only: this never runs on push, pull request or a schedule. A newer run on the same
+# branch cancels an older one. Results are published as notices on the check run and kept as an artifact.
 on:
   workflow_dispatch:
     inputs:
+      xcode:
+        description: "Xcode to use: empty for the runner's default, 'newest' for the newest installed, or a path such as /Applications/Xcode_26.2.app"
+        required: false
+        default: ""
       deployment_target:
         description: "IPHONEOS_DEPLOYMENT_TARGET override (empty: the chosen simulator's iOS version, at most the project's 27.0)"
         required: false
@@ -33,14 +37,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select the newest installed Xcode
+      - name: Toolchain
         run: |
-          newest="$(ls -d /Applications/Xcode*.app | sort -V | tail -1)"
-          echo "Selecting $newest"
-          sudo xcode-select -s "$newest"
-          xcodebuild -version
-          swift --version
-          xcodebuild -showsdks | grep -i simulator || true
+          {
+            echo "runner: $(sw_vers -productName) $(sw_vers -productVersion) ($(uname -m))"
+            echo "installed: $(ls -d /Applications/Xcode*.app | tr '\n' ' ')"
+            case "${{ inputs.xcode }}" in
+              "") ;;
+              newest) sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)" ;;
+              *) sudo xcode-select -s "${{ inputs.xcode }}" ;;
+            esac
+            echo "selected: $(xcode-select -p)"
+            xcodebuild -version | tr '\n' ' '; echo
+            swift --version 2>&1 | head -1
+            xcodebuild -showsdks | grep -i simulator || true
+            xcrun simctl list runtimes | grep -i ios || true
+          } 2>&1 | tee toolchain.txt
+          python3 ios/Tools/ci-report.py "Toolchain" toolchain.txt 1
 
       - name: Project structure
         run: |
@@ -69,6 +82,7 @@ jobs:
           target = override or "%d.%d" % min((major, minor), (27, 0))
           sys.stderr.write("Simulator: %s, iOS %d.%d; deployment target %s\n" % (name, major, minor, target))
           print("udid=" + udid); print("name=" + name); print("target=" + target)
+          print("::notice title=Simulator::%s, iOS %d.%d, deployment target %s" % (name, major, minor, target), file=sys.stderr)
           PY
 
       - name: Build the app, share extension and UI tests for the simulator
@@ -79,12 +93,15 @@ jobs:
             -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
             -derivedDataPath DerivedData -IDEBuildingContinueBuildingAfterErrors=YES \
             CODE_SIGNING_ALLOWED=NO IPHONEOS_DEPLOYMENT_TARGET=${{ steps.sim.outputs.target }} > build.log 2>&1 || status=$?
-          # The distinct compiler errors, so the end of this step's log is the list to fix.
-          grep -E "(error|fatal error):" build.log | sed "s#$PWD/##" | sort -u > build-errors.txt || true
-          tail -15 build.log
-          echo "---- distinct errors: $(wc -l < build-errors.txt | tr -d ' ') ----"
-          head -150 build-errors.txt
-          { echo "### Build (exit $status)"; echo '```'; head -150 build-errors.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          # The distinct compiler and build-system errors, with the checkout path removed.
+          grep -E "(error|fatal error):|^xcodebuild: error|^error:|BUILD (SUCCEEDED|FAILED)|TEST BUILD (SUCCEEDED|FAILED)" build.log | sed "s#$PWD/##g" | awk '!seen[$0]++' > build-errors.txt || true
+          if ! grep -qE "\.swift:[0-9]+" build-errors.txt; then
+            # Not a compile failure: show how the build ended (destinations, project problems).
+            { echo "---- end of build.log ----"; tail -60 build.log | sed "s#$PWD/##g"; } >> build-errors.txt
+          fi
+          echo "xcodebuild build-for-testing exit $status" >> build-errors.txt
+          tail -5 build.log
+          python3 ios/Tools/ci-report.py "Build" build-errors.txt 9
           exit $status
 
       - name: UI tests (demo mode, a recording of the real backend)
@@ -96,11 +113,11 @@ jobs:
             -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
             -derivedDataPath DerivedData -resultBundlePath TestResults.xcresult \
             CODE_SIGNING_ALLOWED=NO IPHONEOS_DEPLOYMENT_TARGET=${{ steps.sim.outputs.target }} > test.log 2>&1 || status=$?
-          grep -E "Test Case .* (passed|failed)|error:|Executed [0-9]+ tests" test.log | sed "s#$PWD/##" > test-summary.txt || true
-          tail -15 test.log
-          echo "---- UI test results ----"
-          tail -120 test-summary.txt
-          { echo "### UI tests (exit $status)"; echo '```'; tail -120 test-summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          grep -E "Test Case .* (passed|failed)|error:|Executed [0-9]+ tests|TEST (SUCCEEDED|FAILED|EXECUTE)" test.log | sed "s#$PWD/##g" > test-summary.txt || true
+          if ! grep -q "Test Case" test-summary.txt; then { echo "---- end of test.log ----"; tail -60 test.log | sed "s#$PWD/##g"; } >> test-summary.txt; fi
+          echo "xcodebuild test-without-building exit $status" >> test-summary.txt
+          tail -5 test.log
+          python3 ios/Tools/ci-report.py "UI tests" test-summary.txt 9
           exit $status
 
       - name: Swift package tests (macOS host)
@@ -110,7 +127,10 @@ jobs:
           set -o pipefail
           status=0
           swift test > ../../package-test.log 2>&1 || status=$?
-          grep -E "error:|✘|Test run with" ../../package-test.log | tail -60
+          grep -E "error:|✘|Test run with" ../../package-test.log | tail -60 > ../../package-summary.txt || true
+          echo "swift test exit $status" >> ../../package-summary.txt
+          cat ../../package-summary.txt
+          python3 ../Tools/ci-report.py "Package tests" ../../package-summary.txt 2
           exit $status
 
       - name: Keep logs and results
@@ -119,6 +139,7 @@ jobs:
         with:
           name: ios-build-and-test
           path: |
+            toolchain.txt
             build.log
             build-errors.txt
             test.log
