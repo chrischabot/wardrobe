@@ -75,6 +75,9 @@ enum AXID {
     static let settingsResume = "settings.resume"
     static let settingsConnections = "settings.connections"
     static let settingsAssistants = "settings.assistants"
+    static let settingsProposals = "settings.proposals"
+    static func proposalConfirm(_ id: String) -> String { "proposal.\(id).confirm" }
+    static func proposalReject(_ id: String) -> String { "proposal.\(id).reject" }
     static let settingsExport = "settings.export"
     static let settingsRecovery = "settings.recovery"
     static let settingsSignOut = "settings.signOut"

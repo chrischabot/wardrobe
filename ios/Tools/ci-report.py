@@ -23,8 +23,10 @@ if not lines:
     sys.exit(0)
 
 chunks, current, size = [], [], 0
+# A long line is wrapped into several rather than cut.
+WRAP = 1400
+lines = [line[i:i + WRAP] for line in lines for i in range(0, len(line), WRAP)]
 for line in lines:
-    line = line[:1500]
     if size + len(line) + 1 > CHUNK and current:
         chunks.append(current)
         current, size = [], 0

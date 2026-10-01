@@ -67,7 +67,7 @@ struct TodayScreen: View {
             }
             FreshnessLabel(text: today.freshnessLine, freshness: today.today.freshness, identifier: AXID.todayFreshness)
             ForEach(today.sourceNotes, id: \.self) { note in
-                Label(note, systemImage: "info.circle").font(.footnote).foregroundStyle(.secondary)
+                Label(note, systemImage: "info.circle").font(.footnote)
             }
             if let notice = today.board?.notice {
                 Label(notice, systemImage: "exclamationmark.circle").font(.subheadline)

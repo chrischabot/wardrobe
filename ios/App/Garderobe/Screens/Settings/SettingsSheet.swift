@@ -61,6 +61,16 @@ struct SettingsSheet: View {
                     OutcomeLine(outcome: settings.lastOutcome)
                 }
                 Section("Connections") {
+                    NavigationLink {
+                        ProposalsScreen()
+                    } label: {
+                        LabeledContent {
+                            if app.proposals.pendingCount > 0 { Text("\(app.proposals.pendingCount) waiting") }
+                        } label: {
+                            Label("Requests to confirm", systemImage: "checkmark.shield")
+                        }
+                    }
+                    .accessibilityIdentifier(AXID.settingsProposals)
                     link("Connections", symbol: "link", identifier: AXID.settingsConnections) { ConnectionsScreen() }
                     link("Connected assistants", symbol: "person.badge.key", identifier: AXID.settingsAssistants) { AssistantsScreen() }
                     link("Models and budgets", symbol: "cpu") { InferenceScreen() }
@@ -82,7 +92,10 @@ struct SettingsSheet: View {
                 }
             }
         }
-        .task { await settings.open() }
+        .task {
+            await settings.open()
+            await app.proposals.open()
+        }
     }
 
     private func link<Destination: View>(_ title: String, symbol: String, identifier: String? = nil,

@@ -59,6 +59,7 @@ public final class AppModel {
     public let trips: TripsModel
     public let returns: ReturnsModel
     public let projects: ProjectsModel
+    public let proposals: ProposalsModel
     public let settings: SettingsModel
     public let recovery: RecoveryStatusModel
     public let export: ExportModel
@@ -90,6 +91,7 @@ public final class AppModel {
         trips = TripsModel(environment: environment)
         returns = ReturnsModel(environment: environment)
         projects = ProjectsModel(environment: environment)
+        proposals = ProposalsModel(environment: environment)
         let settings = SettingsModel(environment: environment)
         self.settings = settings
         recovery = RecoveryStatusModel(environment: environment)

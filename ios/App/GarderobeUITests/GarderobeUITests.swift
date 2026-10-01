@@ -239,19 +239,20 @@ final class GarderobeUITests: XCTestCase {
     func testAccessibilityAuditOfTheFourDestinations() throws {
         launch()
         XCTAssertTrue(tab("Today").waitForExistence(timeout: 10))
-        // Every issue on every destination is collected and reported together.
-        var found: [String] = []
+        // Every issue on every destination is collected, counted by kind and element, and reported together.
+        var found: [String: Int] = [:]
         for title in ["Today", "Wardrobe", "Studio", "Conversation"] {
             tab(title).tap()
             // Contrast, hit-region size, element description, Dynamic Type clipping and traits.
             try app.performAccessibilityAudit { issue in
                 let element = issue.element
                 let name = [element?.identifier, element?.label].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "/")
-                found.append("\(title): \(issue.compactDescription) [\(element.map { String(describing: $0.elementType.rawValue) } ?? "-") \(name.prefix(70))]")
+                found["\(title): \(issue.compactDescription) [\(name.prefix(48))]", default: 0] += 1
                 return true
             }
         }
-        XCTAssertTrue(found.isEmpty, "\(found.count) accessibility audit issues: " + found.joined(separator: " || "))
+        let lines = found.sorted { $0.key < $1.key }.map { $0.value > 1 ? "\($0.key) x\($0.value)" : $0.key }
+        XCTAssertTrue(found.isEmpty, "\(found.values.reduce(0, +)) accessibility audit issues: " + lines.joined(separator: " || "))
     }
 
     /// On relaunch Today is on screen by the time the app has finished launching. This is a

@@ -15,7 +15,7 @@
 import { describe, expect, it } from "vitest";
 import { CONTRACT_VERSION } from "@garderobe/contracts";
 import { ownerDocuments } from "@garderobe/domain/testing";
-import { enableFakeModel, newIdentity, provisionOwner, publishBoard as publishBoardFor, testPng, ApiClient, type TestOwner } from "@garderobe/worker/testing";
+import { connectMcp, enableFakeModel, newIdentity, provisionOwner, publishBoard as publishBoardFor, testPng, toolResult, ApiClient, type TestOwner } from "@garderobe/worker/testing";
 import { FAKE_MODEL_LABEL } from "@garderobe/assistant/testing";
 import { Recorder, type Provenance } from "./recorder.ts";
 
@@ -354,6 +354,41 @@ describe("iOS fixture cassettes", () => {
     await turn("capture-turn", { text: "What I wore", attachmentIds: [completed.asset.assetId], intent: "what_i_wore" }, "I can see the photo. Tell me what you had on and I will log it.");
 
     await expect(rec.render()).toMatchFileSnapshot(`${OUT}/owner-conversation.json`);
+  });
+
+  it("owner-proposals: a connected assistant's requests are listed for the owner; one is confirmed with its receipt, one is rejected", async () => {
+    const { owner, rec } = await start("owner-proposals", [
+      `The two requests were relayed through a real MCP connection (garderobe_ask) with the ${FAKE_MODEL_LABEL} scripted to act on them; the proposals, the decision route and the receipt are the Worker's.`,
+      "The confirmed garment is a labelled FIXTURE entry in the test database, not one of the owner's garments.",
+    ]);
+    const model = await enableFakeModel(owner);
+    const mcp = await connectMcp(owner, { write: true, clientName: "Connected assistant (fixture)", onElicit: () => ({ action: "accept", content: { confirm: true } }) });
+    const relay = async (message: string, toolName: string, input: Record<string, unknown>) => {
+      model.script({ toolCalls: [{ toolName, input: { ...input, ownerQuote: message } }] }, { text: "That needs your confirmation in the Garderobe app." });
+      const asked = toolResult(await mcp.client.callTool({ name: "garderobe_ask", arguments: { message, clientTurnId: `turn-${crypto.randomUUID()}`, mode: "wait" } }));
+      expect(asked.ok, JSON.stringify(asked.error)).toBe(true);
+      expect(asked.data.receipts).toEqual([]);
+    };
+    const wardrobe = await owner.api.json("GET", "/v1/wardrobe");
+    const socks = wardrobe.items.find((i: any) => i.garment.acquisition === "owned" && i.garment.roles.includes("socks")).garment;
+    await relay("I bought a navy merino cardigan, add it to my wardrobe", "add_garment", { name: "Navy merino cardigan (FIXTURE, relayed request)", category: "knitwear", quantity: 1, state: "owned" });
+    await relay(`I threw away the ${socks.name}`, "retire_garment", { garmentId: socks.garmentId, disposition: "discarded" });
+
+    const listed = await rec.get("/v1/proposals", { state: "all" });
+    expect(listed.pending).toBe(2);
+    const add = listed.proposals.find((p: any) => p.type === "garment.create");
+    const retire = listed.proposals.find((p: any) => p.type === "garment.retire");
+    const confirmed = await rec.change("confirm-add", "POST", `/v1/proposals/${add.proposalId}/decision`, { decision: "confirm" });
+    expect(confirmed.receipt.outcome).toBe("committed");
+    await rec.get("/v1/proposals", { state: "all" });
+    const rejected = await rec.change("reject-retire", "POST", `/v1/proposals/${retire.proposalId}/decision`, { decision: "reject" });
+    expect(rejected.proposal.state).toBe("rejected");
+    expect(rejected.receipt).toBeNull();
+    const after = await rec.get("/v1/proposals", { state: "all" });
+    expect(after.pending).toBe(0);
+    await mcp.close?.();
+
+    await expect(rec.render()).toMatchFileSnapshot(`${OUT}/owner-proposals.json`);
   });
 
   it("owner-account: recovery kit rotation, a link code, export with a verified download, and recovery from a new sign-in", async () => {

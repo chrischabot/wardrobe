@@ -44,17 +44,33 @@ struct GarmentImageView: View {
         .accessibilityHidden(decorative)
     }
 
+    /// No photograph exists: the garment's name where the tile has room for it, otherwise a
+    /// neutral placeholder mark. Text is never squeezed or cut off; the name is always available
+    /// to VoiceOver from the element's label or from the text beside the tile.
     private var missingTile: some View {
-        VStack(spacing: Metrics.unit) {
-            Text(name)
-                .font(.footnote.weight(.semibold))
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.black)
+        ViewThatFits(in: .vertical) {
+            VStack(spacing: Metrics.unit) {
+                Text(name)
+                    .font(.footnote.weight(.semibold))
+                    .multilineTextAlignment(.center)
+                Text(image?.missingImageNote ?? "No photo yet")
+                    .font(.caption)
+                    .multilineTextAlignment(.center)
+            }
+            .foregroundStyle(.black)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(Metrics.unit * 2)
             Text(image?.missingImageNote ?? "No photo yet")
-                .font(.caption2)
-                .foregroundStyle(.black.opacity(0.6))
+                .font(.caption)
+                .foregroundStyle(.black)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(Metrics.unit)
+            Image(systemName: "photo")
+                .font(.title3)
+                .foregroundStyle(.black)
         }
-        .padding(Metrics.unit * 2)
+        .accessibilityHidden(true)
     }
 
     private var accessibilityText: String {

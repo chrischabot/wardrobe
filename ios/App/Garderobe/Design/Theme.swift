@@ -111,7 +111,8 @@ struct FreshnessLabel: View {
                 Image(systemName: freshness.isCurrent ? "checkmark.circle" : (freshness.isOffline ? "wifi.slash" : "clock"))
             }
             .font(.footnote)
-            .foregroundStyle(.secondary)
+            // Primary colour: when something was last checked is information, not decoration.
+            .foregroundStyle(.primary)
             .accessibilityElement(children: .combine)
             .accessibilityIdentifier(identifier ?? "freshness")
         }

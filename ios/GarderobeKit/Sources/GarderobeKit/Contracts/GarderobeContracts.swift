@@ -233,6 +233,38 @@ public struct JSONCodingKey: CodingKey, Hashable, Sendable {
     }
 }
 
+public enum AccessoryKind: String, Codable, Sendable, CaseIterable {
+    case belt
+    case tie
+    case scarf
+    case bandana
+    case pocketSquare = "pocket_square"
+    case hat
+    case gloves
+    case bag
+    case umbrella
+    case watch
+    case jewellery
+    case ring
+    case bracelet
+    case necklace
+    case chain
+    case pendant
+    case earring
+    case brooch
+    case bangle
+    case cufflinks
+    case tieClip = "tie_clip"
+    case other
+    /// A member this client version does not know; the contract requires tolerating it.
+    case unknown
+
+    public init(from decoder: Decoder) throws {
+        let rawValue = try decoder.singleValueContainer().decode(String.self)
+        self = Self(rawValue: rawValue) ?? .unknown
+    }
+}
+
 public struct AccountDeleteRequest: Codable, Sendable, Equatable {
     public var confirmationToken: String?
 
@@ -4343,13 +4375,18 @@ public struct CommandMediaRequestDiscovery: Codable, Sendable, Equatable, Garder
     /// Allow another bounded attempt for garments already in Photos needed (uses only untried sources).
     /// Server default when omitted: `false`.
     public var retry: Bool?
+    /// Also look for a product photo of garments that so far only have the owner's own photograph. Candidates are compared with that photograph; the owner's photo stays until a verified one is adopted.
+    /// Server default when omitted: `false`.
+    public var seekProductPhoto: Bool?
 
     public init(
         garmentIds: [GarmentId]? = nil,
-        retry: Bool? = nil
+        retry: Bool? = nil,
+        seekProductPhoto: Bool? = nil
     ) {
         self.garmentIds = garmentIds
         self.retry = retry
+        self.seekProductPhoto = seekProductPhoto
     }
 }
 
@@ -8130,6 +8167,7 @@ public struct GarmentAlias: Codable, Sendable, Equatable {
 
 public struct GarmentAttributes: Codable, Sendable, Equatable {
     public var footwearKind: FootwearKind?
+    public var accessoryKind: AccessoryKind?
     /// Product model used by selectors, e.g. '990v4'.
     public var model: String?
     public var fabricClass: FabricClass?
@@ -8144,6 +8182,7 @@ public struct GarmentAttributes: Codable, Sendable, Equatable {
 
     public init(
         footwearKind: FootwearKind? = nil,
+        accessoryKind: AccessoryKind? = nil,
         model: String? = nil,
         fabricClass: FabricClass? = nil,
         indoorOnly: Bool? = nil,
@@ -8154,6 +8193,7 @@ public struct GarmentAttributes: Codable, Sendable, Equatable {
         additionalProperties: [String: JSONValue] = [:]
     ) {
         self.footwearKind = footwearKind
+        self.accessoryKind = accessoryKind
         self.model = model
         self.fabricClass = fabricClass
         self.indoorOnly = indoorOnly
@@ -8186,11 +8226,12 @@ public struct GarmentAttributes: Codable, Sendable, Equatable {
         }
     }
 
-    private static let declaredKeys: Set<String> = ["footwearKind", "model", "fabricClass", "indoorOnly", "layeringOnly", "jacketLike", "breakingIn", "fitNote"]
+    private static let declaredKeys: Set<String> = ["footwearKind", "accessoryKind", "model", "fabricClass", "indoorOnly", "layeringOnly", "jacketLike", "breakingIn", "fitNote"]
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: JSONCodingKey.self)
         self.footwearKind = try container.decodeIfPresent(FootwearKind.self, forKey: JSONCodingKey("footwearKind"))
+        self.accessoryKind = try container.decodeIfPresent(AccessoryKind.self, forKey: JSONCodingKey("accessoryKind"))
         self.model = try container.decodeIfPresent(String.self, forKey: JSONCodingKey("model"))
         self.fabricClass = try container.decodeIfPresent(FabricClass.self, forKey: JSONCodingKey("fabricClass"))
         self.indoorOnly = try container.decodeIfPresent(Bool.self, forKey: JSONCodingKey("indoorOnly"))
@@ -8211,6 +8252,7 @@ public struct GarmentAttributes: Codable, Sendable, Equatable {
             try container.encode(value, forKey: JSONCodingKey(key))
         }
         try container.encodeIfPresent(self.footwearKind, forKey: JSONCodingKey("footwearKind"))
+        try container.encodeIfPresent(self.accessoryKind, forKey: JSONCodingKey("accessoryKind"))
         try container.encodeIfPresent(self.model, forKey: JSONCodingKey("model"))
         try container.encodeIfPresent(self.fabricClass, forKey: JSONCodingKey("fabricClass"))
         try container.encodeIfPresent(self.indoorOnly, forKey: JSONCodingKey("indoorOnly"))
@@ -11737,13 +11779,17 @@ public struct MediaRequestDiscovery: Codable, Sendable, Equatable {
     public var garmentIds: [GarmentId]
     /// Allow another bounded attempt for garments already in Photos needed (uses only untried sources).
     public var retry: Bool
+    /// Also look for a product photo of garments that so far only have the owner's own photograph. Candidates are compared with that photograph; the owner's photo stays until a verified one is adopted.
+    public var seekProductPhoto: Bool
 
     public init(
         garmentIds: [GarmentId],
-        retry: Bool
+        retry: Bool,
+        seekProductPhoto: Bool
     ) {
         self.garmentIds = garmentIds
         self.retry = retry
+        self.seekProductPhoto = seekProductPhoto
     }
 }
 
@@ -13390,6 +13436,155 @@ public struct ProjectList: Codable, Sendable, Equatable {
     }
 }
 
+public struct Proposal: Codable, Sendable, Equatable {
+    public var proposalId: String
+    /// The turn (run) that produced it.
+    public var turnId: String
+    /// Command type that would be executed.
+    public var type: String
+    public var summary: String
+    public var payload: [String: JSONValue]
+    public var proposedAt: Instant
+    /// After this it can only be rejected; ask for the change again.
+    public var expiresAt: Instant
+    public var source: Source
+    public var state: State
+    public var decidedAt: Instant?
+    /// The command that carried out a confirmed proposal.
+    public var commandId: String?
+
+    public init(
+        proposalId: String,
+        turnId: String,
+        type: String,
+        summary: String,
+        payload: [String: JSONValue],
+        proposedAt: Instant,
+        expiresAt: Instant,
+        source: Source,
+        state: State,
+        decidedAt: Instant? = nil,
+        commandId: String? = nil
+    ) {
+        self.proposalId = proposalId
+        self.turnId = turnId
+        self.type = type
+        self.summary = summary
+        self.payload = payload
+        self.proposedAt = proposedAt
+        self.expiresAt = expiresAt
+        self.source = source
+        self.state = state
+        self.decidedAt = decidedAt
+        self.commandId = commandId
+    }
+
+    public struct Source: Codable, Sendable, Equatable {
+        public var channel: String
+        /// The connected assistant it came through, by the name the owner approved.
+        public var assistantName: String?
+
+        public init(
+            channel: String,
+            assistantName: String? = nil
+        ) {
+            self.channel = channel
+            self.assistantName = assistantName
+        }
+    }
+
+    public enum State: String, Codable, Sendable, CaseIterable {
+        case pending
+        case confirmed
+        case rejected
+        case expired
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+}
+
+public struct ProposalDecisionRequest: Codable, Sendable, Equatable {
+    public var decision: Decision
+
+    public init(
+        decision: Decision
+    ) {
+        self.decision = decision
+    }
+
+    public enum Decision: String, Codable, Sendable, CaseIterable {
+        case confirm
+        case reject
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+}
+
+public struct ProposalDecisionResponse: Codable, Sendable, Equatable {
+    public var proposal: Proposal
+    public var receipt: CommandReceipt?
+    public var replayed: Bool
+
+    public init(
+        proposal: Proposal,
+        receipt: CommandReceipt? = nil,
+        replayed: Bool
+    ) {
+        self.proposal = proposal
+        self.receipt = receipt
+        self.replayed = replayed
+    }
+}
+
+public struct ProposalList: Codable, Sendable, Equatable {
+    public var proposals: [Proposal]
+    public var pending: Int
+    public var readAt: Instant
+
+    public init(
+        proposals: [Proposal],
+        pending: Int,
+        readAt: Instant
+    ) {
+        self.proposals = proposals
+        self.pending = pending
+        self.readAt = readAt
+    }
+}
+
+public struct ProposalsQuery: Codable, Sendable, Equatable {
+    /// Server default when omitted: `"pending"`.
+    public var state: State?
+
+    public init(
+        state: State? = nil
+    ) {
+        self.state = state
+    }
+
+    public enum State: String, Codable, Sendable, CaseIterable {
+        case pending
+        case all
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+}
+
 public struct PublishedOptionInput: Codable, Sendable, Equatable {
     public var optionId: String?
     public var slots: [OutfitSlot]
@@ -14556,17 +14751,20 @@ public struct RestoreReport: Codable, Sendable, Equatable {
     public var complete: Bool
     public var checks: [ChecksItem]
     public var tombstonesReplayed: Int
+    public var mediaDeletionsReplayed: MediaDeletionsReplayed
     public var verifiedAt: Instant
 
     public init(
         complete: Bool,
         checks: [ChecksItem],
         tombstonesReplayed: Int,
+        mediaDeletionsReplayed: MediaDeletionsReplayed,
         verifiedAt: Instant
     ) {
         self.complete = complete
         self.checks = checks
         self.tombstonesReplayed = tombstonesReplayed
+        self.mediaDeletionsReplayed = mediaDeletionsReplayed
         self.verifiedAt = verifiedAt
     }
 
@@ -14589,6 +14787,19 @@ public struct RestoreReport: Codable, Sendable, Equatable {
             self.expected = expected
             self.actual = actual
             self.note = note
+        }
+    }
+
+    public struct MediaDeletionsReplayed: Codable, Sendable, Equatable {
+        public var assetsDeleted: Int
+        public var originalsPurged: Int
+
+        public init(
+            assetsDeleted: Int,
+            originalsPurged: Int
+        ) {
+            self.assetsDeleted = assetsDeleted
+            self.originalsPurged = originalsPurged
         }
     }
 }
@@ -15750,6 +15961,20 @@ public struct SettingsUpdate: Codable, Sendable, Equatable {
         patch: [String: JSONValue]
     ) {
         self.patch = patch
+    }
+}
+
+public struct SignRenditionRequest: Codable, Sendable, Equatable {
+    /// One of 160, 320, 640, 1280.
+    public var width: Int?
+    public var ttlSeconds: Int?
+
+    public init(
+        width: Int? = nil,
+        ttlSeconds: Int? = nil
+    ) {
+        self.width = width
+        self.ttlSeconds = ttlSeconds
     }
 }
 
@@ -17956,17 +18181,20 @@ public struct TombstoneJournal: Codable, Sendable, Equatable {
     public var ownerRef: String
     public var writtenAt: Instant
     public var tombstones: [TombstonesItem]
+    public var mediaDeletions: [String: JSONValue]?
 
     public init(
         format: String,
         ownerRef: String,
         writtenAt: Instant,
-        tombstones: [TombstonesItem]
+        tombstones: [TombstonesItem],
+        mediaDeletions: [String: JSONValue]? = nil
     ) {
         self.format = format
         self.ownerRef = ownerRef
         self.writtenAt = writtenAt
         self.tombstones = tombstones
+        self.mediaDeletions = mediaDeletions
     }
 
     public struct TombstonesItem: Codable, Sendable, Equatable {
