@@ -13,6 +13,12 @@ struct ComposerBar: View {
         @Bindable var composer = app.composer
         VStack(alignment: .leading, spacing: Metrics.unit * 2) {
             status(composer)
+            if composer.canRunAgain {
+                Button("Try that again") { Task { await composer.runAgain() } }
+                    .font(.footnote)
+                    .touchTarget()
+                    .accessibilityHint("Runs the answer that failed again. Anything already recorded is not repeated.")
+            }
             if let input = composer.pendingInput {
                 PendingInputView(input: input,
                                  choose: { await composer.answer(choiceId: $0) },

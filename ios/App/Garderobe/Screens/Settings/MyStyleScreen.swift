@@ -23,6 +23,10 @@ struct MyStyleScreen: View {
             }
             Section {
                 TextEditor(text: $draft)
+                    .onChange(of: draft) { _, current in
+                        // A preview describes one exact text; editing again withdraws it.
+                        if let preview = settings.savePreview, preview.content != current { settings.cancelSavePreview() }
+                    }
                     .font(.body)
                     .frame(minHeight: 420)
                     .disabled(stored == nil)
@@ -34,12 +38,17 @@ struct MyStyleScreen: View {
                             hasLoaded = current != nil
                         }
                     }
-                Button(settings.isWorking ? "Saving..." : "Save as a new version") {
-                    Task { await settings.saveProfile(content: draft) }
+                Button(settings.isWorking ? "Checking..." : "Review and save") {
+                    Task {
+                        // The backend says what the edit touches before anything is saved. When it
+                        // cannot be asked (offline), the save still goes ahead and queues.
+                        let previewed = await settings.previewSave(content: draft)
+                        if !previewed { await settings.saveProfile(content: draft) }
+                    }
                 }
-                .disabled(settings.isWorking || !isChanged(from: stored))
+                .disabled(settings.isWorking || !isChanged(from: stored) || settings.savePreview != nil)
                 if isChanged(from: stored) {
-                    Button("Discard my edits") { draft = stored ?? "" }
+                    Button("Discard my edits") { draft = stored ?? ""; settings.cancelSavePreview() }
                 }
             } header: {
                 Text(settings.style.value?.document.title ?? "Profile")
@@ -50,6 +59,7 @@ struct MyStyleScreen: View {
                 OutcomeLine(outcome: settings.lastOutcome)
                 SettingsMessageLine(message: settings.message)
             }
+            StylePreviewAndResult()
             StyleAmendmentsSection()
             StyleDirectionsSection()
             if let precedence = settings.style.value?.precedence {
@@ -65,5 +75,14 @@ struct MyStyleScreen: View {
     private func isChanged(from stored: String?) -> Bool {
         guard let stored else { return false }
         return draft != stored && !draft.isEmpty
+    }
+}
+
+/// The review of a pending save, what the last save changed, and the facts still undecided.
+private struct StylePreviewAndResult: View {
+    var body: some View {
+        StyleSavePreviewSection()
+        StyleSaveResultSection()
+        StyleFactConflictsSection()
     }
 }

@@ -232,6 +232,49 @@ struct OwnerStudioJourney {
         #expect(direction?.receipt?.type == "style.add_direction")
         #expect(settings.activeDirections.map(\.text) == ["Stop making navy the default swap"])
 
+        // Save in My style: a FIXTURE rewording of the sentence the shoe-size measurement quotes.
+        // The real backend says which facts the edit touches before anything is saved.
+        let context = try #require(settings.style.value)
+        let shoe = try #require(context.measurements.first { $0.key == "shoe_size" && $0.passage != nil })
+        let quote = try #require(shoe.passage?.quote)
+        let stem = quote.hasSuffix(".") ? String(quote.dropLast()) : quote
+        let edited = context.document.content.replacingOccurrences(of: quote, with: "\(stem) (fixture rewording).")
+        let commandsBeforeSave = commandCount()
+        let previewed = await settings.previewSave(content: edited)
+        #expect(previewed)
+        #expect(commandCount() == commandsBeforeSave)                               // the preview writes nothing
+        let preview = try #require(settings.savePreview)
+        #expect(preview.questions.contains { $0.fact == StyleFactRef(kind: .measurement, id: shoe.measurementId) })
+        // Saved without a decision: every affected fact stays in force and waits for the owner.
+        let profileSaved = await settings.confirmSave()
+        #expect(profileSaved?.receipt?.type == "style.save_document")
+        let diff = try #require(settings.lastFactDiff)
+        #expect(diff.applied.isEmpty)
+        #expect(diff.conflicts.count == preview.questions.count)
+        #expect(settings.openFactConflicts.count == preview.questions.count)
+        #expect(settings.style.value?.document.version == context.document.version + 1)
+        #expect(settings.style.value?.measurements.first { $0.measurementId == shoe.measurementId }?.value == shoe.value)
+        // The owner keeps the measurement as it was: one command, and that conflict is closed.
+        let conflict = try #require(settings.openFactConflicts.first { $0.fact.id == shoe.measurementId })
+        let kept = await settings.resolve(conflict, .keep)
+        #expect(kept?.receipt?.type == "style.resolve_fact_conflict")
+        #expect(!settings.openFactConflicts.contains { $0.conflictId == conflict.conflictId })
+        #expect(settings.style.value?.measurements.first { $0.supersededBy == nil && $0.key == "shoe_size" }?.value == shoe.value)
+
+        // Bulk edit: the backend says what the category covers; one command corrects exactly that many.
+        let bulk = BulkEditModel(environment: env, candidates: [])
+        bulk.scope = .category
+        bulk.category = .socks
+        bulk.field = .condition
+        bulk.text = "Fixture check"
+        await bulk.loadMatches()
+        let covered = try #require(bulk.matched)
+        #expect(covered.count > 1)
+        #expect(covered.garments.allSatisfy { $0.category == "socks" })
+        let corrected = await bulk.submit()
+        #expect(corrected?.receipt?.type == "garment.bulk_correct")
+        #expect(corrected?.receipt?.undo.available == true)                        // one receipt, one undo for the whole set
+
         #expect(j.backend.isAtEnd)
         #expect(j.backend.unexpected.isEmpty, "requests the real backend never answered: \(j.backend.unexpected)")
     }

@@ -196,7 +196,7 @@ describe("iOS fixture cassettes", () => {
     await expect(rec.render()).toMatchFileSnapshot(`${OUT}/owner-care.json`);
   });
 
-  it("owner-studio: validate, suggest with a locked piece, compose, save, plan, wear; a trip; pause and resume; settings and style", async () => {
+  it("owner-studio: validate, suggest with a locked piece, compose, save, plan, wear; a trip; pause and resume; settings and style; a profile save with its fact diff; a bulk edit", async () => {
     const { owner, rec, today } = await start("owner-studio", [LIMITED_SOURCES]);
     await publishBoard(owner, today);
     const studio = await rec.get("/v1/studio", { mode: "for_today" });
@@ -268,7 +268,32 @@ describe("iOS fixture cassettes", () => {
     await rec.command("four-options", "settings.update", { patch: { delivery: { defaultOptionCount: 4 } } }, { settings: resumed.version ?? settings.version });
     await rec.get("/v1/settings");
     await rec.command("direction", "style.add_direction", { text: "Stop making navy the default swap", source: { kind: "owner_statement" } });
+    const style = await rec.get("/v1/style");
+
+    // Save in My style (contract 1.1.0): a FIXTURE rewording of the sentence the shoe-size measurement
+    // quotes. The preview and the save report the affected facts; nothing is decided in the save, and
+    // the measurement is then kept as it was, so no fact of the owner's changes value.
+    const shoe = style.measurements.find((m: any) => m.key === "shoe_size" && m.passage);
+    expect(shoe).toBeTruthy();
+    const quote: string = shoe.passage.quote;
+    const edited = style.document.content.split(quote).join(`${quote.replace(/\.$/, "")} (fixture rewording).`);
+    expect(edited).not.toBe(style.document.content);
+    const preview = await rec.post("/v1/style/preview-save", { content: edited, documentId: style.document.documentId });
+    expect(preview.conflicts.length).toBeGreaterThan(0);
+    const saved = await rec.command("style-save", "style.save_document", { documentId: style.document.documentId, content: edited, source: { kind: "owner_statement" } }, { style: style.styleRevision });
+    expect(saved.result.factDiff.conflicts.length).toBe(preview.conflicts.length);
+    const afterSave = await rec.get("/v1/style");
+    const open = afterSave.factConflicts.find((c: any) => c.fact.id === shoe.measurementId);
+    expect(open).toBeTruthy();
+    const kept = await rec.command("style-keep", "style.resolve_fact_conflict", { conflictId: open.conflictId, resolution: { action: "keep" } });
+    expect(kept.outcome).toBe("committed");
     await rec.get("/v1/style");
+
+    // Bulk edit (contract 1.1.0): the backend says what a category covers, then one command corrects it.
+    const selection = await rec.post("/v1/wardrobe/selection", { category: "socks" });
+    expect(selection.count).toBeGreaterThan(1);
+    const bulk = await rec.command("bulk-correct", "garment.bulk_correct", { selector: { category: "socks" }, changes: { condition: "Fixture check" }, expectedCount: selection.count, source: { kind: "owner_statement" } });
+    expect(bulk.outcome).toBe("committed");
 
     await expect(rec.render()).toMatchFileSnapshot(`${OUT}/owner-studio.json`);
   });

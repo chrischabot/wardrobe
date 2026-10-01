@@ -46,6 +46,8 @@ public final class RunFollower {
     public private(set) var options: [BoardOption] = []
     public private(set) var stopped: [String] = []
     public private(set) var reconnects = 0
+    /// The backend says this failed run can be run again (budget, no usable model, provider outage).
+    public private(set) var canRunAgain = false
 
     private var text: [String: String] = [:]
     private var dirty: Set<String> = []
@@ -102,6 +104,8 @@ public final class RunFollower {
             await sleep(min(8, 0.5 * Double(1 << min(attempts, 4))))
         }
         if phase == .completed || phase == .cancelled { await finish() }
+        // A failure's reason, and whether it can be run again, come from the durable run.
+        if case .failed = phase { _ = try? await syncFromRun() }
     }
 
     /// Applies one event. Replayed events (ID not greater than the last seen) and unknown
@@ -187,6 +191,7 @@ public final class RunFollower {
             transcript?.applyStream(messageId: reply.messageId, text: reply.text)
         }
         if let produced = run.result?.options, !produced.isEmpty { options = produced }
+        canRunAgain = run.state == .failed && run.error?.resumable == true
         switch run.state {
         case .queued, .running: if !phase.isTerminal { phase = .running }
         case .needsInput: if let input = run.pendingInput { phase = .needsInput(input) }
@@ -220,6 +225,22 @@ public final class RunFollower {
         guard phase == .connectionLost else { return }
         phase = .running
         await follow()
+    }
+
+    /// Runs a failed run again when the backend marked it resumable. What it already committed
+    /// is not repeated; the run keeps its ID and its events continue.
+    public func runAgain() async {
+        guard canRunAgain else { return }
+        do {
+            let run = try await environment.api.resumeRun(id: runId)
+            canRunAgain = false
+            phase = .running
+            apply(run)
+            if !phase.isTerminal { await follow() }
+        } catch let failure as APIFailure {
+            environment.center.noteRead(failure: failure)
+            if !failure.isTransport { phase = .failed(failure.ownerMessage) }
+        } catch {}
     }
 
     /// Stop: cancels the remaining work. What was already committed stays committed, and the

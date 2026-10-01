@@ -138,6 +138,8 @@ public final class ItemModel {
         (detail?.facts ?? []).filter { fact in fact.supersededBy == nil && prefixes.contains { fact.attribute.hasPrefix($0) } }
     }
     public var measurementFacts: [GarmentFact] { facts(matching: ["measurement", "measure", "size"]) }
+    /// The item's current dated measurements (owner, tailor or maker), as the backend lists them.
+    public var measurements: [Measurement] { (detail?.measurements ?? []).filter { $0.supersededBy == nil } }
     public var purchaseFacts: [GarmentFact] { facts(matching: ["purchase", "order", "price", "retailer", "source"]) }
     public var alterationFacts: [GarmentFact] { facts(matching: ["alteration", "tailor"]) }
     public var otherFacts: [GarmentFact] {

@@ -82,6 +82,8 @@ struct WardrobeScreen: View {
             } label: {
                 Label("Correct counts", systemImage: "checklist")
             }
+            Button { app.push(.bulkEdit) } label: { Label("Edit several items", systemImage: "square.and.pencil") }
+                .accessibilityIdentifier(AXID.wardrobeBulkEdit)
             Button { app.push(.trips) } label: { Label("Trips", systemImage: "suitcase") }
             Button { app.push(.returns) } label: { Label("Returns", systemImage: "arrow.uturn.left.circle") }
         }

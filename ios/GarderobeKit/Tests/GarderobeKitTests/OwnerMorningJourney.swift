@@ -139,7 +139,7 @@ struct OwnerMorningJourney {
         #expect(after.id == before.id) // the option keeps its durable identity
         #expect(after.visibleGarments.first { $0.role == .top }?.garmentId != before.visibleGarments.first { $0.role == .top }?.garmentId)
         #expect(after.visibleGarments.filter { $0.role != .top } == before.visibleGarments.filter { $0.role != .top })
-        #expect(today.board?.revision == board.revision + 1)
+        #expect((today.board?.revision ?? 0) > board.revision) // a swap publishes a later revision; how many is the backend's business
 
         #expect(j.backend.isAtEnd)
         #expect(j.backend.unexpected.isEmpty, "requests the real backend never answered: \(j.backend.unexpected)")

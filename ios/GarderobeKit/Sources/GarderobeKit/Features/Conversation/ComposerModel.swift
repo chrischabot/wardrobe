@@ -201,6 +201,18 @@ public final class ComposerModel {
         await sendNextWaiting()
     }
 
+    /// The last answer failed in a way the backend says can be run again.
+    public var canRunAgain: Bool { follower?.canRunAgain ?? false }
+
+    /// Runs the failed answer again (same run; what it already committed is not repeated).
+    public func runAgain() async {
+        guard let follower, follower.canRunAgain else { return }
+        notice = nil
+        await follower.runAgain()
+        if case .failed(let message) = follower.phase { notice = message }
+        if follower.phase.isTerminal { await sendNextWaiting() }
+    }
+
     /// Stop: cancels the response in progress.
     public func stop() async {
         guard let follower else { return }

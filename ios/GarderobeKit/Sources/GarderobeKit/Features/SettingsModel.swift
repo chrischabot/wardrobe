@@ -23,6 +23,11 @@ public final class SettingsModel {
     /// A provider authorization page to open in the system browser (connect / reconnect).
     public private(set) var authorizationURL: URL?
     public private(set) var lastDisconnect: DisconnectResponse?
+    /// What the last confirmed Save in My style did to the structured facts, as the receipt reported it.
+    public private(set) var lastFactDiff: StyleFactDiff?
+    /// The backend's preview of the save the owner is reviewing, and the decisions made in it.
+    public private(set) var savePreview: StyleSavePreview?
+    public private(set) var saveDecisions: [String: StyleFactDecision] = [:]
 
     public init(environment: AppEnvironment) {
         self.environment = environment
@@ -131,12 +136,70 @@ public final class SettingsModel {
         return "Version \(doc.version) · \(doc.byteLength) bytes · sha256 \(doc.contentSha256.prefix(12))"
     }
 
-    /// Saves an edited profile as a new version, against the style revision on screen.
+    /// Saves an edited profile as a new version, against the style revision on screen. The
+    /// backend derives what the edit does to rules, measurements and size experiences; the
+    /// receipt's diff is kept in `lastFactDiff`. A fact the edit affects and the owner has not
+    /// decided stays in force and is listed in `openFactConflicts`; nothing is decided here.
     @discardableResult
-    public func saveProfile(content: String) async -> SubmissionOutcome? {
+    public func saveProfile(content: String, resolutions: [CommandStyleSaveDocument.FactResolutionsItem] = []) async -> SubmissionOutcome? {
         guard let context = style.value, content != context.document.content, !content.isEmpty else { return nil }
-        let payload = CommandStyleSaveDocument(documentId: context.document.documentId, content: content, source: SourceRef(kind: .ownerStatement))
-        return await submit(CommandDraft(payload, label: "Saved My style", expectedVersions: ["style": context.styleRevision])) { await self.style.refresh() }
+        let payload = CommandStyleSaveDocument(documentId: context.document.documentId, content: content,
+                                               factResolutions: resolutions.isEmpty ? nil : resolutions, source: SourceRef(kind: .ownerStatement))
+        let outcome = await submit(CommandDraft(payload, label: "Saved My style", expectedVersions: ["style": context.styleRevision])) { await self.style.refresh() }
+        if let receipt = outcome.receipt { lastFactDiff = try? receipt.result["factDiff"]?.decoded(as: StyleFactDiff.self) }
+        if outcome.receipt != nil || outcome == .queued { cancelSavePreview() }
+        return outcome
+    }
+
+    /// Asks the backend what saving this text would do to the structured facts, before saving.
+    /// Nothing is written. Returns false when the preview could not be read (offline): the
+    /// owner can still save, and any affected fact then waits for his decision.
+    @discardableResult
+    public func previewSave(content: String) async -> Bool {
+        guard let context = style.value, content != context.document.content, !content.isEmpty else { return false }
+        var diff: StyleFactDiff?
+        await call { diff = try await self.environment.api.previewStyleSave(StylePreviewSaveRequest(content: content, documentId: context.document.documentId)) }
+        guard let diff else { return false }
+        savePreview = StyleSavePreview(content: content, diff: diff)
+        saveDecisions = [:]
+        return true
+    }
+
+    public func cancelSavePreview() { savePreview = nil; saveDecisions = [:] }
+
+    /// Records (or, with nil, withdraws) the owner's decision for one fact of the preview.
+    public func decide(_ question: StyleFactQuestion, _ decision: StyleFactDecision?) {
+        guard savePreview?.questions.contains(where: { $0.id == question.id }) == true else { return }
+        if let decision, question.allowed.contains(decision.choice.kind) { saveDecisions[question.id] = decision } else { saveDecisions[question.id] = nil }
+    }
+
+    /// Saves the previewed text together with the decisions made; undecided facts stay in force
+    /// and become open conflicts.
+    @discardableResult
+    public func confirmSave() async -> SubmissionOutcome? {
+        guard let preview = savePreview else { return nil }
+        let resolutions = preview.questions.compactMap { q -> CommandStyleSaveDocument.FactResolutionsItem? in
+            guard let d = saveDecisions[q.id] else { return nil }
+            let quote = d.quoteNewWording ? q.newWording.flatMap { $0.isEmpty ? nil : $0 } : nil
+            return .init(fact: q.fact, resolution: d.choice.resolution(quote: quote))
+        }
+        return await saveProfile(content: preview.content, resolutions: resolutions)
+    }
+
+    /// Structured facts whose quoted passage an earlier save removed or reworded and the owner
+    /// has not decided yet. Each stays in force until he does.
+    public var openFactConflicts: [StyleFactConflict] { (style.value?.factConflicts ?? []).filter { $0.status == .open } }
+
+    public var openQuestions: [StyleFactQuestion] { openFactConflicts.map(StyleFactQuestion.init) }
+
+    /// Records the owner's decision for one conflict. The values of a replacement are the
+    /// owner's own entry; the app never reads a value out of the profile text.
+    @discardableResult
+    public func resolve(_ conflict: StyleFactConflict, _ choice: StyleFactChoice, quoteNewWording: Bool = false) async -> SubmissionOutcome? {
+        guard StyleFactChoice.Kind.allowed(for: conflict.fact.kind).contains(choice.kind) else { return nil }
+        let quote = quoteNewWording ? conflict.candidateText.flatMap { $0.isEmpty ? nil : $0 } : nil
+        let payload = CommandStyleResolveFactConflict(conflictId: conflict.conflictId, resolution: choice.resolution(quote: quote))
+        return await submit(CommandDraft(payload, label: "\(choice.kind.pastTense) \(conflict.label)")) { await self.style.refresh() }
     }
 
     @discardableResult

@@ -166,6 +166,19 @@ public final class APIClient: Sendable {
     public func laundry() async throws -> LaundryStateResponse { try await get("/v1/laundry") }
     public func style() async throws -> StyleContext { try await get("/v1/style") }
 
+    /// What saving this profile text would do to the structured facts. Writes nothing.
+    public func previewStyleSave(_ request: StylePreviewSaveRequest) async throws -> StyleFactDiff { try await post("/v1/style/preview-save", body: request) }
+
+    public func styleConflicts(_ query: StyleConflictsQuery = StyleConflictsQuery()) async throws -> StyleConflictList {
+        var items: [URLQueryItem] = []
+        if let status = query.status { items.append(URLQueryItem(name: "status", value: status.rawValue)) }
+        if let documentId = query.documentId { items.append(URLQueryItem(name: "documentId", value: documentId)) }
+        return try await get("/v1/style/conflicts", query: items)
+    }
+
+    /// The garments a bulk edit with this selector would touch. Writes nothing.
+    public func garmentSelection(_ selector: GarmentSelector) async throws -> GarmentSelection { try await post("/v1/wardrobe/selection", body: selector) }
+
     /// Simulation only: what becomes wearable at a temperature. Never changes availability.
     public func temperaturePreview(temperatureC: Double) async throws -> TemperaturePreview {
         try await get("/v1/wardrobe/temperature-preview", query: [URLQueryItem(name: "temperatureC", value: String(temperatureC))])
@@ -213,6 +226,8 @@ public final class APIClient: Sendable {
     public func research(_ request: StartResearchRequest) async throws -> StartResearchResponse { try await post("/v1/research", body: request) }
     public func run(id: String) async throws -> Run { try await get("/v1/runs/\(APIClient.segment(id))") }
     public func cancelRun(id: String) async throws -> RunCancelResponse { try await post("/v1/runs/\(APIClient.segment(id))/cancel") }
+    /// Runs again a run that failed with `error.resumable`; committed changes are not repeated.
+    public func resumeRun(id: String) async throws -> Run { try await post("/v1/runs/\(APIClient.segment(id))/resume") }
     public func answerRun(id: String, _ request: RunInputRequest) async throws -> Run { try await post("/v1/runs/\(APIClient.segment(id))/input", body: request) }
 
     /// Server-sent run events. Reconnect by passing the last event ID seen; an expired cursor

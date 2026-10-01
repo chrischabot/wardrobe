@@ -32,6 +32,10 @@ enum AXID {
     static let wardrobeFilters = "wardrobe.filters"
     static let wardrobeLayoutToggle = "wardrobe.layout.toggle"
     static func wardrobeItem(_ id: String) -> String { "wardrobe.item.\(id)" }
+    static let wardrobeBulkEdit = "wardrobe.bulkEdit"
+    static let bulkEditSelectAll = "bulkEdit.selectAll"
+    static let bulkEditApply = "bulkEdit.apply"
+    static let bulkEditCheck = "bulkEdit.check"
     static let itemStatus = "item.status"
     static func itemAction(_ action: String) -> String { "item.action.\(action)" }
     static let itemHistory = "item.history"
@@ -63,6 +67,10 @@ enum AXID {
     static func captureIntent(_ intent: String) -> String { "capture.intent.\(intent)" }
     static let captureSubmit = "capture.submit"
     static let settingsMyStyle = "settings.myStyle"
+    static let styleSaveResult = "style.saveResult"
+    static let styleSavePreview = "style.savePreview"
+    static let styleSaveConfirm = "style.saveConfirm"
+    static func styleConflict(_ id: String) -> String { "style.conflict.\(id)" }
     static let settingsPause = "settings.pause"
     static let settingsResume = "settings.resume"
     static let settingsConnections = "settings.connections"

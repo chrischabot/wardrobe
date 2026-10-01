@@ -49,3 +49,7 @@ extension BoardDocument {
 extension OwnerSettings {
     public var timeZoneValue: TimeZone? { TimeZone(identifier: timezone) }
 }
+
+/// `Category` is also the name of an Objective-C runtime type that Foundation makes visible on
+/// Apple platforms, so code outside this module (the app) refers to the garment category by this name.
+public typealias GarmentCategory = Category

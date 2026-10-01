@@ -19,8 +19,8 @@ struct WardrobeFilterSheet: View {
             Form {
                 Section("Category") {
                     Picker("Category", selection: $wardrobe.filters.category) {
-                        Text("Any").tag(Category?.none)
-                        ForEach(app.wardrobe.categories, id: \.self) { Text(Phrases.category($0)).tag(Category?.some($0)) }
+                        Text("Any").tag(GarmentCategory?.none)
+                        ForEach(app.wardrobe.categories, id: \.self) { Text(Phrases.category($0)).tag(GarmentCategory?.some($0)) }
                     }
                 }
                 Section("Availability") {

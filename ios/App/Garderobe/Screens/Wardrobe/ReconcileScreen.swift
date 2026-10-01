@@ -36,7 +36,7 @@ struct ReconcileScreen: View {
                 }
             }
         }
-        .navigationTitle(Phrases.category(Category(rawValue: category) ?? .other))
+        .navigationTitle(Phrases.category(GarmentCategory(rawValue: category) ?? .other))
         .navigationBarTitleDisplayMode(.inline)
         .task { await app.wardrobe.open() }
     }

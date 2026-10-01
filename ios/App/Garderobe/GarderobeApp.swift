@@ -106,6 +106,7 @@ struct MainTabs: View {
                     case .trip(let tripId): TripScreen(tripId: tripId)
                     case .returns: ReturnsScreen()
                     case .reconcile(let category): ReconcileScreen(category: category)
+                    case .bulkEdit: BulkEditScreen()
                     case .temperaturePreview: TemperaturePreviewScreen()
                     case .projects: ProjectsScreen()
                     }

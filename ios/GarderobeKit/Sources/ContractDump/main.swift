@@ -156,6 +156,28 @@ func collect() async throws -> [Sample] {
     await s.setCalendarReminder(minutesBefore: nil)
     await s.setReadCalendars(["primary"])
     await s.saveProfile(content: (s.style.value?.document.content ?? "") + "\n")
+    let exampleFact = StyleFactConflict(conflictId: "sfc_example", documentId: "owner-profile", fromVersion: 1, toVersion: 2, fact: StyleFactRef(kind: .measurement, id: "msr_example"),
+                                        label: "body chest: 44 in", reason: .passageChanged, previousPassages: [], missingQuotes: ["44 in"], candidateText: "45 in", status: .open, createdAt: cassette.clock)
+    await s.resolve(exampleFact, .keep)
+    await s.resolve(exampleFact, .replaceMeasurement(value: 45, unit: .in), quoteNewWording: true)
+    var sizeFact = exampleFact; sizeFact.fact = StyleFactRef(kind: .sizeExperience, id: "sze_example")
+    await s.resolve(sizeFact, .replaceSize(label: "L"))
+    await s.resolve(sizeFact, .retire)
+    let bulk = BulkEditModel(environment: env, candidates: items)
+    bulk.toggle(shirt); bulk.toggle(socks)
+    bulk.field = .colour; bulk.text = "Navy"
+    await bulk.submit()
+    bulk.clearsValue = true; bulk.field = .pattern
+    await bulk.submit()
+    bulk.field = .careChannel; bulk.careChannel = .handwash
+    await bulk.submit()
+    bulk.scope = .category; bulk.category = .socks
+    await bulk.loadMatches()
+    bulk.scope = .search; bulk.searchText = "oxford shirt"
+    await bulk.loadMatches()
+    await s.previewSave(content: (s.style.value?.document.content ?? "") + "\nA new line.")
+    _ = try? await env.api.styleConflicts(StyleConflictsQuery(status: .all))
+    _ = try? await env.api.resumeRun(id: "run_example")
     await s.addDirection("Stop making navy the default swap")
     await s.retireDirection("dir_example")
     await s.pause(resumeOn: draft.returnsOn)

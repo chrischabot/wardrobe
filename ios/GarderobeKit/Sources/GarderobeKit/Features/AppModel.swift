@@ -30,6 +30,7 @@ public enum AppRoute: Codable, Sendable, Hashable {
     case trip(tripId: String)
     case returns
     case reconcile(category: String)
+    case bulkEdit
     case temperaturePreview
     case projects
 }

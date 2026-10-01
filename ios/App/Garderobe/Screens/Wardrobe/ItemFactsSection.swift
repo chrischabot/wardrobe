@@ -25,7 +25,18 @@ struct ItemFactsSection: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }
-            facts("Measurements", model.measurementFacts)
+            if !model.measurements.isEmpty {
+                group("Measurements") {
+                    ForEach(model.measurements, id: \.measurementId) { measurement in
+                        let row = StyleFactPhrases.measurement(measurement)
+                        VStack(alignment: .leading, spacing: Metrics.unit) {
+                            DetailRow(label: row.label, value: row.value)
+                            Text(row.note).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            facts(model.measurements.isEmpty ? "Measurements" : "Other recorded sizes", model.measurementFacts)
             facts("Purchase", model.purchaseFacts)
             facts("Alterations", model.alterationFacts)
             facts("Other recorded facts", model.otherFacts)
