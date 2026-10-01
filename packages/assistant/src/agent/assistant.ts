@@ -50,7 +50,7 @@ import { PROFILE_SPECS, TASK_SPECS, type ProfileSpec } from "../inference/regist
 import { redactDeep, redactSecrets } from "../policy/secrets.ts";
 import { tombstonedIds } from "../queries.ts";
 import { indexMessages, indexWatermark, recall, type CanonicalMessage, type RecallInput } from "../recall/index.ts";
-import { wrapUntrusted } from "../research/index.ts";
+import { extractProductRecord, wrapUntrusted } from "../research/index.ts";
 import { buildReadTools } from "../tools/read.ts";
 import { buildWriteTools } from "../tools/write.ts";
 import type { AssistantPorts, TurnRuntime } from "../tools/runtime.ts";
@@ -412,6 +412,7 @@ export abstract class GarderobeAssistantBase extends Think<any> {
       // A stopped turn dispatches nothing further, even if the model's step was already in flight.
       isCancelled: async () => this.cancelledTurns.has(row.turn_id) || (await findTurn(db, userId, row.turn_id))?.status === "cancelled",
       readOriginal: (messageId) => this.readOriginal(messageId),
+      extractProduct: async (page) => ({ ...(await extractProductRecord(this.models(), { userId, parent: { kind: "turn", id: row.turn_id } }, page)) }),
       sessionSearch: (query, limit) => this.sessionSearch(query, limit),
       onReceipt: (receipt) => recordReceipt(db, userId, row.turn_id, receipt, this.now()),
       onRefusal: (refusal) => recordRefusal(db, userId, row.turn_id, refusal),

@@ -58,6 +58,8 @@ export interface TurnRuntime {
   conversationId: string;
   unindexedSource?: () => Promise<CanonicalMessage[]>;
   ports: AssistantPorts;
+  /** Schema-validated product facts from page text, through the model service under this turn's identity. */
+  extractProduct?: (page: { url: string; content: string }) => Promise<Record<string, unknown>>;
   /** True once the owner stopped this turn: nothing further is dispatched. */
   isCancelled?: () => Promise<boolean>;
   /** One original conversation message by ID (text and bounded tool payloads). */

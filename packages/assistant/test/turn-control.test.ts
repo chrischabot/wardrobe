@@ -75,6 +75,13 @@ describe("research runs in its own task actor (real Durable Objects; FAKE MODELS
     expect(w.model.requests.every((r) => !r.messages.some((m) => m.text.includes("Harris Tweed")))).toBe(true);
     expect(research.requests.every((r) => !r.messages.some((m) => m.text.includes("what should I wear")))).toBe(true);
 
+    // The task works in its own file workspace (never a shell); the conversation has no workspace tools at all.
+    expect(research.requests[0]!.toolNames).toEqual(expect.arrayContaining(["read", "write", "list", "grep"]));
+    expect(research.requests[0]!.toolNames).not.toContain("bash");
+    for (const name of ["read", "write", "edit", "delete", "bash"]) expect(w.model.requests[0]!.toolNames).not.toContain(name);
+    // No tool in either set writes the ledger except through a typed command, and none exposes inventory as a file.
+    expect(research.requests[0]!.toolNames).toContain("save_research_note");
+
     // The job settled once; the sweep's later delivery of the same job is deduplicated.
     const job = (await listJobs(w.h.db, w.owner.principal())).find((j) => j.jobId === started.jobId)!;
     expect(job.state).toBe("completed");

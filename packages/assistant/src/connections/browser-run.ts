@@ -19,7 +19,7 @@ import { ConnectionError } from "./mcp.ts";
 import { assertPublicHttpsUrl } from "../research/web/url.ts";
 import type { BrowserFetchBackend, BrowserRenderRequest, BrowserRenderResponse } from "../research/web/extract-types.ts";
 
-export type BrowserQuickAction = "markdown" | "content" | "links" | "snapshot" | "screenshot";
+export type BrowserQuickAction = "markdown" | "content" | "links" | "snapshot" | "screenshot" | "pdf";
 
 /** The part of the Browser Run binding this adapter uses. */
 export interface BrowserRunBinding {
@@ -50,6 +50,8 @@ async function unwrap<T>(value: unknown): Promise<T> {
 export interface BrowserRunBackend extends BrowserFetchBackend {
   /** A screenshot plus the rendered HTML, for visual evidence kept privately. The image is never sent on by this adapter. */
   capture(url: string, timeoutMs?: number): Promise<{ screenshotBase64: string; html: string }>;
+  /** A PDF or a PNG screenshot of the page as bytes, to keep as private evidence of volatile content. */
+  document(url: string, kind: "pdf" | "screenshot", timeoutMs?: number): Promise<{ bytes: Uint8Array; contentType: string }>;
   /** Visible links of a page (candidates only; nothing is followed). */
   links(url: string, timeoutMs?: number): Promise<string[]>;
   readonly callsMade: number;
@@ -83,6 +85,21 @@ export function createBrowserRunBackend(binding: BrowserRunBinding, options: Bro
     async capture(url, timeoutMs = 20_000) {
       const result = await run<{ screenshot?: string; content?: string }>("snapshot", url, timeoutMs);
       return { screenshotBase64: String(result?.screenshot ?? ""), html: String(result?.content ?? "").slice(0, maxChars) };
+    },
+    async document(url, kind, timeoutMs = 30_000) {
+      const safe = assertPublicHttpsUrl(url);
+      if (options.maxCalls !== undefined && calls >= options.maxCalls) throw new ConnectionError("call_limit", "the browser call limit for this run was reached");
+      if (options.admit && !(await options.admit(kind, safe))) throw new ConnectionError("not_admitted", "browser use is not available right now (budget or switch)");
+      calls++;
+      const value = await binding.quickAction(kind, { url: safe, gotoOptions: { waitUntil: "networkidle0", timeout: timeoutMs } });
+      // These two actions answer with the file itself, not a JSON envelope.
+      if (!(value instanceof Response)) throw new ConnectionError("upstream", "Browser Run answered in an unexpected shape");
+      if (!value.ok) throw new ConnectionError(value.status === 429 ? "rate_limited" : "upstream", `Browser Run answered ${value.status}`);
+      const contentType = value.headers.get("content-type") ?? "";
+      if (contentType.includes("application/json")) throw new ConnectionError("upstream", "Browser Run answered with an error instead of a file");
+      const bytes = new Uint8Array(await value.arrayBuffer());
+      if (bytes.length > 20_000_000) throw new ConnectionError("too_large", "the capture is larger than this connection accepts");
+      return { bytes, contentType: contentType || (kind === "pdf" ? "application/pdf" : "image/png") };
     },
     async links(url, timeoutMs = 20_000) {
       const result = await run<string[]>("links", url, timeoutMs, { visibleLinksOnly: true });

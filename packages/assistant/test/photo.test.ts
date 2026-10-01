@@ -95,6 +95,22 @@ describe("photo intake through the conversation (REAL media upload and private r
     expect(turn.refusals).toHaveLength(1);
   });
 
+  it("a shop photo becomes a product record outside the wardrobe, never a garment", async () => {
+    const shop = await upload(p(), "attachment");
+    const garments = (await listInventory(w.h.db, p())).total;
+    w.model.script(
+      { toolCalls: [{ toolName: "save_shopping_candidate", input: { name: "Striped poplin shirt seen in a shop", note: "From the owner's shop photo; maker and size not visible" } }, { toolName: "add_garment", input: { name: "Striped poplin shirt", category: "shirt", state: "owned", ownerQuote: "should I get this?" } }] },
+      { text: "Saved as something you are considering. I cannot see the maker or the size." },
+    );
+    const turn = await w.client.runTurn({ submissionId: submission("photo"), text: "should I get this?", images: [{ assetId: shop.assetId, role: "shop_photo" }] });
+    expect(turn.receipts.map((r) => r.type)).toEqual(["product.record"]);
+    expect(turn.refusals.map((r) => r.tool)).toEqual(["add_garment"]);
+    expect((await listInventory(w.h.db, p())).total).toBe(garments);
+    expect((await all(w.h.db, "SELECT 1 FROM products WHERE user_id = ? AND name = 'Striped poplin shirt seen in a shop'", w.owner.userId))).toHaveLength(1);
+    const stored = (await w.client.transcript({})).messages.find((m) => m.turnId === turn.turnId && m.role === "user")!;
+    expect(stored.text).toContain("a product seen in a shop, not owned");
+  });
+
   it("a photo plus the owner's own statement does log the wear, once", async () => {
     const selfie = await upload(p(), "selfie");
     const shirt = await w.garment("oxford");
