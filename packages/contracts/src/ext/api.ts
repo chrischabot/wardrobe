@@ -21,10 +21,11 @@
  */
 import { z } from "zod";
 import { GarmentAvailability } from "../availability.ts";
-import { CommandEnvelope, CommandErrorCode, CommandReceipt } from "../commands.ts";
+import { CommandEnvelope, CommandErrorCode, CommandReceipt, GarmentSelector } from "../commands.ts";
 import { GarmentDetail } from "../inventory.ts";
 import { Channel, Instant, LocalDate, Scope } from "../primitives.ts";
 import { OwnerSettings } from "../settings.ts";
+import { StyleFactConflict } from "../style.ts";
 import { ComfortFeedback, InferenceOverview, LifecycleProject, Order, ReturnCase, TranscriptPage } from "./assistant.ts";
 import { BoardDocument, BoardOption, PauseState, TodayView, Trip } from "./daily.ts";
 import { GarmentMedia, MediaAsset, PhotosNeededItem, StudioCombination, StudioDayPlan, StudioMode, StudioSelectors, StudioSlot, StudioSuggestion, UploadAuthorization, UploadContentType, UploadIntent } from "./media.ts";
@@ -77,12 +78,15 @@ export const API_ROUTES: readonly RouteSpec[] = [
   // Wardrobe
   r("GET", "/v1/wardrobe", "access", "read", "InventoryQuery", "InventoryPage", "Search or retrieve the complete inventory; explicit total, pagination, completeness"),
   r("GET", "/v1/wardrobe/resolve", "access", "read", "ResolveQuery", "AliasResolution", "Resolve an owner phrase to garments without guessing"),
+  r("POST", "/v1/wardrobe/selection", "access", "read", "GarmentSelector", "GarmentSelection", "The garments a bulk edit with this selector would touch (no mutation); send its count as expectedCount of garment.bulk_correct"),
   r("GET", "/v1/wardrobe/temperature-preview", "access", "read", "TemperaturePreviewQuery", "TemperaturePreview", "Simulation: what becomes wearable at a temperature (never changes availability)"),
   r("GET", "/v1/availability", "access", "read", "AvailabilityQuery", "AvailabilitySnapshot", "Probabilistic availability for a date"),
   r("GET", "/v1/items/{id}", "access", "read", null, "ItemResponse", "An item with its facts, availability, media and known combinations"),
   r("GET", "/v1/items/{id}/image", "access", "read", "ImageQuery", "binary", "The garment's preferred display image; 404 when no real image exists"),
   r("GET", "/v1/laundry", "access", "read", null, "LaundryStateResponse", "Service laundry and hand-wash state with batch membership"),
-  r("GET", "/v1/style", "access", "read", null, "StyleContext", "Profile, amendments, rules, directions and briefs"),
+  r("GET", "/v1/style", "access", "read", null, "StyleContext", "Profile, amendments, rules, directions, briefs and open fact conflicts"),
+  r("POST", "/v1/style/preview-save", "access", "read", "StylePreviewSaveRequest", "StyleFactDiff", "What saving this profile text would do to the structured facts (no mutation); shown before Save in My style"),
+  r("GET", "/v1/style/conflicts", "access", "read", "StyleConflictsQuery", "StyleConflictList", "Conflicts between the saved profile text and structured facts; open by default"),
   // Studio
   r("GET", "/v1/studio", "access", "read", "StudioQuery", "StudioResponse", "Studio selectors, opening outfit, saved combinations and day plans"),
   r("POST", "/v1/studio/validate", "access", "read", "StudioOutfitRequest", "StudioValidation", "Authoritative validation of a composed combination (no mutation)"),
@@ -387,6 +391,10 @@ export type TripList = z.infer<typeof TripList>;
  * snapshot with `complete: true`; a page always says `complete: false` and carries `nextCursor`.
  */
 export const ResolveQuery = z.object({ phrase: z.string().min(1).max(200) });
+/** `POST /v1/style/preview-save`: the edited profile text, exactly as it would be saved. Returns the core `StyleFactDiff`. */
+export const StylePreviewSaveRequest = z.object({ content: z.string().min(1), documentId: z.string().optional() });
+export const StyleConflictsQuery = z.object({ status: z.enum(["open", "resolved", "withdrawn", "all"]).default("open"), documentId: z.string().optional() });
+export const StyleConflictList = z.object({ conflicts: z.array(StyleFactConflict) });
 export const AvailabilityQuery = z.object({ date: LocalDate.optional() });
 export const TemperaturePreviewQuery = z.object({ temperatureC: z.coerce.number().min(-40).max(50) });
 export const ImageQuery = z.object({ width: z.coerce.number().int().optional().describe("One of 160, 320, 640, 1280.") });
@@ -955,9 +963,10 @@ export const McpRecommendInput = z.strictObject({
 });
 export const McpRecommendOutput = RecommendResponse;
 
-export const McpInventoryView = z.enum(["items", "snapshot", "item", "availability", "history", "laundry", "style", "resolve", "receipts", "command_types", "trips", "returns", "orders"]);
+export const McpInventoryView = z.enum(["items", "snapshot", "item", "availability", "history", "laundry", "style", "resolve", "selection", "receipts", "command_types", "trips", "returns", "orders"]);
 export const McpInventoryInput = z.strictObject({
   view: McpInventoryView.default("items"),
+  selector: GarmentSelector.optional().describe("`selection`: which garments a bulk edit would cover. Read the result, then send its count as `expectedCount` of garment.bulk_correct."),
   /** `item`: the garment. `history`, `receipts`: optional garment filter. */
   garmentId: z.string().optional(),
   phrase: z.string().optional().describe("`resolve`: an owner phrase to resolve to garments."),

@@ -1,4 +1,4 @@
-import { API_VERSION, CONTRACT_VERSION, CommandEnvelope, InventoryQuery, LocalDate, type CommandReceipt } from "@garderobe/contracts";
+import { API_VERSION, CONTRACT_VERSION, CommandEnvelope, GarmentSelector, InventoryQuery, LocalDate, type CommandReceipt } from "@garderobe/contracts";
 import {
   AvailabilityQuery,
   CONSEQUENTIAL_COMMAND_TYPES,
@@ -6,6 +6,8 @@ import {
   MCP_PROTOCOL_VERSION,
   ReceiptListQuery,
   ResolveQuery,
+  StyleConflictsQuery,
+  StylePreviewSaveRequest,
   type ApiError,
 } from "@garderobe/contracts/ext/api";
 import {
@@ -19,6 +21,9 @@ import {
   getStyleContext,
   isCommandError,
   listInventory,
+  listStyleFactConflicts,
+  previewGarmentSelection,
+  previewStyleSave,
   resolveAlias,
   toInstant,
   type CommandRegistry,
@@ -170,6 +175,9 @@ export function coreRoutes(): RouteDef[] {
 
     owner("GET", "/v1/wardrobe/resolve", "read", async ({ app, session, url }) => json(await resolveAlias(app.db, session.principal, readQuery(url, ResolveQuery).phrase))),
 
+    // A read that takes a body: the selector can name many garments. Nothing is changed.
+    owner("POST", "/v1/wardrobe/selection", "read", async ({ app, session, request }) => json(await previewGarmentSelection(app.db, session.principal, await readJson(request, GarmentSelector)))),
+
     owner("GET", "/v1/availability", "read", async ({ app, session, url }) => {
       const { date } = readQuery(url, AvailabilityQuery);
       return json(await getAvailability(app.db, session.principal, { ...(date ? { forDate: date } : {}), nowMs: app.now() }));
@@ -180,6 +188,16 @@ export function coreRoutes(): RouteDef[] {
     owner("GET", "/v1/laundry", "read", async ({ app, session }) => json({ ...(await getLaundryState(app.db, session.principal)), readAt: now(app) })),
 
     owner("GET", "/v1/style", "read", async ({ app, session }) => json(await getStyleContext(app.db, session.principal))),
+
+    owner("POST", "/v1/style/preview-save", "read", async ({ app, session, request }) => {
+      const body = await readJson(request, StylePreviewSaveRequest);
+      return json(await previewStyleSave(app.db, session.principal, { content: body.content, ...(body.documentId ? { documentId: body.documentId } : {}) }));
+    }),
+
+    owner("GET", "/v1/style/conflicts", "read", async ({ app, session, url }) => {
+      const q = readQuery(url, StyleConflictsQuery);
+      return json({ conflicts: await listStyleFactConflicts(app.db, session.principal, { status: q.status, ...(q.documentId ? { documentId: q.documentId } : {}) }) });
+    }),
 
     owner("GET", "/v1/days/{date}", "read", async ({ app, session, params }) => {
       const date = LocalDate.safeParse(params.date);

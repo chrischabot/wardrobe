@@ -21,11 +21,15 @@ const command = process.argv[2] ?? "start";
 const npx = process.platform === "win32" ? "npx.cmd" : "npx";
 const run = (args, env = {}) => execFileSync(npx, args, { cwd: WORKER_DIR, stdio: ["ignore", "pipe", "inherit"], env: { ...process.env, ...env }, encoding: "utf8" });
 
+function migrate() {
+  run(["wrangler", "d1", "migrations", "apply", "DB", "--local"], { CI: "1" });
+  console.log("migrations applied to the local database");
+}
+
 async function setup() {
   const state = await ensureLocalSecrets();
   console.log("local keys and .dev.vars ready");
-  run(["wrangler", "d1", "migrations", "apply", "DB", "--local"], { CI: "1" });
-  console.log("migrations applied to the local database");
+  migrate();
   // The seed script shares the Worker's TypeScript sources; bundle it for Node, then run it.
   const bundle = path.join(STATE_DIR, "seed-local.mjs");
   run(["esbuild", path.join(WORKER_DIR, "scripts/seed-local.ts"), "--bundle", "--platform=node", "--format=esm", "--target=node22", "--external:wrangler", "--log-level=warning", `--outfile=${bundle}`]);
@@ -48,7 +52,11 @@ if (command === "reset") {
   await setup();
 } else if (command === "start") {
   if (!readState()?.userId) await setup();
-  else await ensureLocalSecrets();
+  else {
+    await ensureLocalSecrets();
+    // Migrations added since the last run are applied on every start, so an existing local database never lags the code.
+    migrate();
+  }
   console.log("starting the Worker: app http://localhost:8787  mcp http://127.0.0.1:8787/mcp");
   const child = spawn(npx, ["wrangler", "dev", "--port", process.env.PORT ?? "8787", "--ip", "0.0.0.0", "--show-interactive-dev-session=false"], { cwd: WORKER_DIR, stdio: "inherit", env: { ...process.env, CI: "1" } });
   child.on("exit", (code) => process.exit(code ?? 0));

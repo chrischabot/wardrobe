@@ -21,6 +21,7 @@ import {
   listCountedWears,
   listInventory,
   localDateOf,
+  previewGarmentSelection,
   registerActionIntent,
   resolveAlias,
   toInstant,
@@ -246,6 +247,11 @@ export function buildMcpServer(app: App, caller: McpCaller): McpServer {
           case "resolve": {
             const resolution = await resolveAlias(app.db, principal, need(args.phrase, "phrase"));
             return ok(envelope(resolution as unknown as Record<string, unknown>, { total: resolution.matches.length }), resolution.matches.length === 0 ? `Nothing in the wardrobe matches "${resolution.phrase}". Do not create an item to make it match.` : resolution.ambiguous ? `"${resolution.phrase}" matches ${resolution.matches.length} garments; ask which one: ${resolution.matches.map((m) => `${m.name} (${m.distinguishing})`).join("; ")}` : `"${resolution.phrase}" is ${resolution.matches[0]!.name} (${resolution.matches[0]!.garmentId}).`);
+          }
+          case "selection": {
+            if (!args.selector) throw new ApiException("invalid_command", "view 'selection' needs 'selector'");
+            const selection = await previewGarmentSelection(app.db, principal, args.selector);
+            return ok(envelope(selection as unknown as Record<string, unknown>, { total: selection.count }), `${selection.count} garment(s) match. A bulk correction must state expectedCount ${selection.count} and is refused if the selection has changed.`);
           }
           case "receipts": {
             const receipts = await listReceipts(app, principal, { ...(args.garmentId ? { entity: `garment:${args.garmentId}` } : {}), limit: Math.min(args.limit ?? 50, 200) });
