@@ -307,8 +307,10 @@ describe("purchase investigation as a durable job (REAL Gmail adapter over the F
     // The newsletter's injected "order" was classified by the (fake) model as not an order and nothing came of it.
     expect(JSON.stringify(progress.draftOrders)).not.toContain("FAKE-1");
     // Every extraction call was reserved under the research budget with its schema version and evidence.
-    const reserved = await all<{ task: string; budget_class: string; schema_version: string; evidence_json: string; parent_kind: string }>(w.h.db, "SELECT task, budget_class, schema_version, evidence_json, parent_kind FROM inference_reservations WHERE user_id = ? AND parent_id = ?", w.owner.userId, jobId);
+    const reserved = await all<{ task: string; budget_class: string; schema_version: string; evidence_json: string; parent_kind: string; resolved_model: string; effort_json: string }>(w.h.db, "SELECT task, budget_class, schema_version, evidence_json, parent_kind, resolved_model, effort_json FROM inference_reservations WHERE user_id = ? AND parent_id = ?", w.owner.userId, jobId);
     expect(reserved).toHaveLength(3);
+    // The model the provider reported as having answered is what is recorded, with the effort parameters that were sent.
+    expect(reserved.every((r) => r.resolved_model === "fake-deepseek-v41-flash" && typeof JSON.parse(r.effort_json) === "object")).toBe(true);
     expect(reserved.every((r) => r.task === "extraction" && r.budget_class === "research" && r.schema_version === "order-email-fact/1.0.0" && r.parent_kind === "job" && JSON.parse(r.evidence_json).messageId)).toBe(true);
     expect((await all(w.h.db, "SELECT 1 FROM mail_seen WHERE user_id = ?", w.owner.userId))).toHaveLength(3);
 

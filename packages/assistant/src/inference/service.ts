@@ -276,9 +276,9 @@ export class ModelService {
             if (timer !== undefined) clearTimeout(timer);
             timer = undefined;
           };
-          const finishAndClear: typeof finish = async (ok, usage, errorClass) => {
+          const finishAndClear: typeof finish = async (ok, usage, errorClass, reportedModel) => {
             clear();
-            await finish(ok, usage, errorClass);
+            await finish(ok, usage, errorClass, reportedModel);
           };
           try {
             const model = self.createLanguageModel(spec, { runId, task: scope.task, attempt });

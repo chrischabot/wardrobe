@@ -231,6 +231,17 @@ describe("reminders, ledger reads and separate controls (real owner data; FAKE M
   });
 });
 
+describe("administrative record of an owner's AI Search instance (real command; no AI Search service is contacted)", () => {
+  it("records the instance and its gateway under an admin scope only", async () => {
+    const w = await createWorld({ real: false });
+    const payload = { environment: "dev", instance: "garderobe-dev-u-abc123", gatewayId: "garderobe-dev", created: true };
+    await expect(w.owner.exec("search.record_instance", payload, { actor: "assistant", authorization: "owner_statement" })).rejects.toMatchObject({ code: "forbidden" });
+    await w.owner.exec("search.record_instance", payload, { actor: "system", channel: "system", scopes: ["read", "write", "admin"], authorization: "system_schedule" });
+    await w.owner.exec("search.record_instance", { ...payload, created: false }, { actor: "system", channel: "system", scopes: ["read", "write", "admin"], authorization: "system_schedule" });
+    expect(await all(w.h.db, "SELECT environment, instance, gateway_id, created FROM search_instances WHERE user_id = ?", w.owner.userId)).toEqual([{ environment: "dev", instance: "garderobe-dev-u-abc123", gateway_id: "garderobe-dev", created: 1 }]); // one row per owner and environment; a later confirmation does not duplicate it
+  });
+});
+
 describe("original messages by ID, session full-text search, archived tool results (real Think session; FAKE MODEL)", () => {
   it("a large tool result is referenced from the summary and can be opened again by message ID; exact words are found by session search", async () => {
     setTestCompaction(900, 2);
@@ -265,6 +276,10 @@ describe("original messages by ID, session full-text search, archived tool resul
       // Session full-text search confirms the exact words in the source history.
       const hits = await w.client.recallSearch({ text: "Jamieson's Shetland" });
       expect(hits.hits.slice(0, 2).some((h) => h.speaker === "owner" && h.quote.includes("Jamieson's Shetland"))).toBe(true);
+      // Each hit carries the messages around it, so the model sees the exchange and not an isolated sentence.
+      const ownerHit = hits.hits.find((h) => h.speaker === "owner" && h.quote.includes("Jamieson's Shetland"))!;
+      expect(ownerHit.surrounding.length).toBeGreaterThan(0);
+      expect(ownerHit.surrounding[0]!.speaker).toBe("assistant");
 
       // A forgotten message can no longer be opened.
       const owner = (await w.client.transcript({ limit: 200 })).messages.find((m) => m.turnId === first.turnId && m.role === "user")!;
