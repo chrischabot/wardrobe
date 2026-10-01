@@ -89,5 +89,4 @@ boundary (`src/testing/fake-model.ts`), the fake Google API at the fetch boundar
 (`src/testing/fake-google.ts`), fake MCP, Browser Run and AI Search bindings inside the tests that use
 them, and synthetic images from the media package's fixtures.
 
-The photo tests import `@garderobe/media` through the workspace link; it is not yet declared as a
-development dependency of this package because that needs a lockfile change.
+The photo tests use the real media package, declared as a development dependency of this package.
