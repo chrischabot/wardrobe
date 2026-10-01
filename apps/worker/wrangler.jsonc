@@ -1,0 +1,43 @@
+{
+  // Garderobe Worker: HTTP API, MCP server with OAuth, identity, recovery, export.
+  //
+  // This file is the Worker's binding contract and the LOCAL run configuration (`npm run dev`).
+  // Local runs use Miniflare's simulators for every binding below; the IDs here are local names, not
+  // cloud resources. The deployment workstream supplies the development environment (real resource IDs,
+  // routes for the two hostnames, secrets) in deploy/ and must keep the binding NAMES below unchanged.
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "garderobe-local",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-15",
+  // nodejs_compat: the agents/Think runtime. global_fetch_strictly_public: required by the OAuth
+  // provider for Client ID Metadata Document fetches and keeps outbound fetches off private networks.
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "workers_dev": false,
+  "d1_databases": [{ "binding": "DB", "database_name": "garderobe-local", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "../../migrations" }],
+  "kv_namespaces": [{ "binding": "OAUTH_KV", "id": "garderobe-local-oauth" }],
+  "r2_buckets": [
+    { "binding": "MEDIA_BUCKET", "bucket_name": "garderobe-local-media" },
+    { "binding": "EXPORT_BUCKET", "bucket_name": "garderobe-local-exports" }
+  ],
+  "queues": {
+    "producers": [{ "binding": "MEDIA_QUEUE", "queue": "garderobe-local-media" }],
+    "consumers": [{ "queue": "garderobe-local-media", "max_batch_size": 5, "max_batch_timeout": 2, "max_retries": 3 }]
+  },
+  "durable_objects": { "bindings": [{ "name": "ASSISTANT", "class_name": "GarderobeAssistant" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["GarderobeAssistant"] }],
+  // Every five minutes: the daily service's due phases and calendar projections, media maintenance,
+  // expiry sweeps of this workstream's short-lived records.
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "vars": {
+    "ENVIRONMENT": "local",
+    "APP_ORIGIN": "http://localhost:8787",
+    "MCP_ORIGIN": "http://127.0.0.1:8787",
+    "ACCESS_TEAM_DOMAIN": "https://garderobe-local.cloudflareaccess.com",
+    "ACCESS_AUD": "garderobe-local-audience",
+    "AI_GATEWAY_ID": "garderobe-dev"
+  }
+  // Secrets (never in this file): CREDENTIAL_KEY, STATE_SIGNING_KEY, MEDIA_SIGNING_KEY,
+  // GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET. `npm run dev` generates local values in
+  // .dev.vars (git-ignored) together with ACCESS_JWKS_JSON, the public key of the local sign-in key.
+  // Deployment bindings not simulated locally: AI (Workers AI through AI Gateway), IMAGES, AI_SEARCH.
+}
