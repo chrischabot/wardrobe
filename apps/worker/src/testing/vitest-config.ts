@@ -79,8 +79,11 @@ const MCP_FIXTURE_TOOLS = [
 async function mcpFixture(request: Request): Promise<Response> {
   const text = await request.text();
   const body = JSON.parse(text) as { id?: number; method: string; params?: { name?: string; arguments?: Record<string, unknown> } };
-  const authorized = (request.headers.get("Authorization") ?? "").startsWith("Bearer tvly-");
-  calls.push({ method: "MCP", url: request.url, body: JSON.stringify({ method: body.method, tool: body.params?.name ?? null, arguments: body.params?.arguments ?? null, protocol: request.headers.get("Mcp-Protocol-Version"), authorized }) });
+  const bearer = request.headers.get("Authorization") ?? "";
+  const authorized = bearer.startsWith("Bearer tvly-");
+  // `client` is the last eight characters of the test key, so a test file can tell its own requests from
+  // those of other files that run at the same time against this shared fixture.
+  calls.push({ method: "MCP", url: request.url, body: JSON.stringify({ method: body.method, tool: body.params?.name ?? null, arguments: body.params?.arguments ?? null, protocol: request.headers.get("Mcp-Protocol-Version"), authorized, client: bearer.slice(-8) }) });
   if (!authorized) return jsonResponse({ error: "unauthorized" }, 401);
   const reply = (result: unknown) => jsonResponse({ jsonrpc: "2.0", id: body.id, result });
   if (body.method === "tools/list") return reply({ tools: MCP_FIXTURE_TOOLS });

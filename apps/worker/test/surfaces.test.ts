@@ -2,7 +2,7 @@ import { SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { CommandReceipt } from "@garderobe/contracts";
 import { RunEventData } from "@garderobe/contracts/ext/api";
-import { APP_ORIGIN, connectMcp, enableFakeModel, provisionOwner, publishBoard, readSse, testPng, toolResult, uploadImage, type FakeModel, type TestOwner } from "../src/testing/index.ts";
+import { APP_ORIGIN, connectMcp, enableFakeModel, provisionOwner, publishBoard, readSse, testApp, testPng, toolResult, uploadImage, type FakeModel, type TestOwner } from "../src/testing/index.ts";
 
 /*
  * Each product surface through the real Worker, with the REAL owner fixture (supplied profile and
@@ -293,6 +293,16 @@ describe("Conversation", () => {
     for (const [path, key] of [["/v1/orders", "orders"], ["/v1/returns", "returns"], ["/v1/projects", "projects"], ["/v1/feedback", "feedback"]] as const) {
       expect(Array.isArray((await owner.api.json("GET", path))[key])).toBe(true);
     }
+  });
+});
+
+describe("scheduled work", () => {
+  it("runs the assistant's background duties for every owner without skipping any and can run again", async () => {
+    const app = await testApp();
+    const first = (await app.assistant!.maintenance(Date.now())) as { skippedOwners: string[]; delivered: number };
+    expect(first.skippedOwners).toEqual([]);
+    const second = (await app.assistant!.maintenance(Date.now())) as { skippedOwners: string[]; delivered: number };
+    expect(second.delivered).toBe(0); // nothing is delivered twice
   });
 });
 

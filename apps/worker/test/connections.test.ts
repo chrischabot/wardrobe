@@ -123,7 +123,10 @@ describe("a connection with a key", () => {
 
 describe("a tool service's capabilities (remote MCP service: LABELLED FIXTURE, not Tavily)", () => {
   it("records what the service really offers, uses only groups the owner enabled, sends the key only as a header, and stops at disconnect", async () => {
-    const secret = "tvly-FIXTUREKEY-0123456789abcdef";
+    const tail = crypto.randomUUID().slice(-8);
+    const secret = `tvly-FIXTUREKEY-0123456789-${tail}`;
+    // The fixture is shared by test files that run at the same time: only this key's requests are read.
+    const mcpCalls = async () => (await fixtureCalls()).filter((c) => c.method === "MCP").map((c) => JSON.parse(c.body)).filter((c) => c.client === tail);
     await fixtureCalls();
     const registered = (await (await register(owner.api, { kind: "tavily", name: "Page search", auth: { type: "secret", secret } })).json()) as any;
     const id = registered.connection.connectionId as string;
@@ -140,13 +143,14 @@ describe("a tool service's capabilities (remote MCP service: LABELLED FIXTURE, n
     const entry = (await app.assistant!.connections(owner.systemPrincipal)).find((c) => c.connectionId === id)!;
     expect(entry.schemaDigest).toMatch(/^[0-9a-f]{64}$/);
     expect(entry.tools.find((t) => t.name === "fixture_research")).toMatchObject({ enabled: false });
-    const discovery = (await fixtureCalls()).filter((c) => c.method === "MCP").map((c) => JSON.parse(c.body));
+    const discovery = await mcpCalls();
+    expect(discovery.length).toBeGreaterThan(0);
     expect(discovery.every((c) => c.method === "tools/list" && c.authorized === true)).toBe(true);
 
     // The assistant's search port: nothing is sent while the owner has not enabled the group.
     const search = assistantPortsFor(app.env, owner.userId).searchProviders![0]!;
     await expect(search.search("shetland crewneck")).rejects.toMatchObject({ code: "not_executable" });
-    expect((await fixtureCalls()).map((c) => JSON.parse(c.body)).filter((c) => c.method === "tools/call")).toEqual([]);
+    expect((await mcpCalls()).filter((c) => c.method === "tools/call")).toEqual([]);
 
     // A capability the service does not offer cannot be switched on.
     const refused = await owner.api.post(`/v1/connections/${id}/capabilities`, { enabled: ["tools:admin"] });
@@ -155,23 +159,23 @@ describe("a tool service's capabilities (remote MCP service: LABELLED FIXTURE, n
 
     const enabled = await owner.api.json("POST", `/v1/connections/${id}/capabilities`, { enabled: ["tools:search"] });
     expect(Object.fromEntries(enabled.capabilities.map((c: any) => [c.key, c.enabled]))).toEqual({ "tools:search": true, "tools:extract": false });
-    await fixtureCalls();
+    await mcpCalls();
     const found = await search.search("shetland crewneck");
     expect(found.results).toHaveLength(1);
     expect(found.results[0]!.title).toBe("Shetland crewneck");
     expect(found.results[0]!.url).not.toContain("LEAKEDKEY123456"); // a key-bearing result URL is redacted
-    const sent = (await fixtureCalls()).map((c) => JSON.parse(c.body)).filter((c) => c.method === "tools/call");
-    expect(sent).toEqual([{ method: "tools/call", tool: "fixture_search", arguments: { query: "shetland crewneck" }, protocol: "2026-07-28", authorized: true }]);
-    expect(JSON.stringify(sent)).not.toContain("tvly-");
+    const sent = (await mcpCalls()).filter((c) => c.method === "tools/call");
+    expect(sent).toEqual([{ method: "tools/call", tool: "fixture_search", arguments: { query: "shetland crewneck" }, protocol: "2026-07-28", authorized: true, client: tail }]);
+    expect(JSON.stringify(sent.map((c) => c.arguments))).not.toContain("tvly-");
 
     // Another owner's assistant has no such connection: nothing is called and no key is borrowed.
     await expect(assistantPortsFor(app.env, other.userId).searchProviders![0]!.search("shetland crewneck")).rejects.toMatchObject({ code: "not_executable" });
-    expect(await fixtureCalls()).toEqual([]);
+    expect(await mcpCalls()).toEqual([]);
 
     // Disconnect: the very next search is refused and nothing reaches the service.
     await owner.api.json("POST", `/v1/connections/${id}/disconnect`, {});
     await expect(search.search("again")).rejects.toMatchObject({ code: "not_executable" });
-    expect((await fixtureCalls()).filter((c) => c.method === "MCP")).toEqual([]);
+    expect(await mcpCalls()).toEqual([]);
   });
 
   it("reports a service that cannot be reached as one retry state, enables nothing, and leaves sign-in and the wardrobe working", async () => {
