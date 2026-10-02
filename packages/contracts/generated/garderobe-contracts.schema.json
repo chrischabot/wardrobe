@@ -482,6 +482,34 @@
       ],
       "type": "object"
     },
+    "AssistantLiftRestriction": {
+      "properties": {
+        "restrictionId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "restrictionId"
+      ],
+      "type": "object"
+    },
+    "AssistantReportArrival": {
+      "properties": {
+        "deliveredOn": {
+          "$ref": "#/$defs/LocalDate"
+        },
+        "garmentId": {
+          "$ref": "#/$defs/GarmentId"
+        }
+      },
+      "required": [
+        "garmentId",
+        "deliveredOn"
+      ],
+      "type": "object"
+    },
     "AttachedRef": {
       "properties": {
         "boardId": {
@@ -1893,6 +1921,34 @@
         "positive"
       ],
       "type": "string"
+    },
+    "CommandAssistantLiftRestriction": {
+      "properties": {
+        "restrictionId": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "restrictionId"
+      ],
+      "type": "object"
+    },
+    "CommandAssistantReportArrival": {
+      "properties": {
+        "deliveredOn": {
+          "$ref": "#/$defs/LocalDate"
+        },
+        "garmentId": {
+          "$ref": "#/$defs/GarmentId"
+        }
+      },
+      "required": [
+        "garmentId",
+        "deliveredOn"
+      ],
+      "type": "object"
     },
     "CommandBatchItem": {
       "oneOf": [
@@ -4159,6 +4215,10 @@
           },
           "type": "object"
         },
+        "holdForSale": {
+          "default": false,
+          "type": "boolean"
+        },
         "items": {
           "items": {
             "properties": {
@@ -4237,6 +4297,10 @@
         },
         "kind": {
           "$ref": "#/$defs/LifecycleEventKind"
+        },
+        "moveStock": {
+          "default": false,
+          "type": "boolean"
         },
         "nextAction": {
           "type": [
@@ -5088,6 +5152,61 @@
           "items": {
             "$ref": "#/$defs/OrderEventInput"
           },
+          "type": "array"
+        },
+        "incoming": {
+          "default": [],
+          "items": {
+            "properties": {
+              "careChannel": {
+                "enum": [
+                  "service",
+                  "handwash",
+                  "none"
+                ],
+                "type": "string"
+              },
+              "category": {
+                "maxLength": 40,
+                "minLength": 1,
+                "type": "string"
+              },
+              "lineKey": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maker": {
+                "anyOf": [
+                  {
+                    "maxLength": 200,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "roles": {
+                "items": {
+                  "maxLength": 40,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "lineKey",
+              "category",
+              "roles",
+              "careChannel"
+            ],
+            "type": "object"
+          },
+          "maxItems": 20,
           "type": "array"
         },
         "lines": {
@@ -12369,6 +12488,10 @@
           },
           "type": "object"
         },
+        "holdForSale": {
+          "default": false,
+          "type": "boolean"
+        },
         "items": {
           "items": {
             "properties": {
@@ -12418,7 +12541,8 @@
         "items",
         "destination",
         "nextAction",
-        "details"
+        "details",
+        "holdForSale"
       ],
       "type": "object"
     },
@@ -12610,6 +12734,10 @@
         "kind": {
           "$ref": "#/$defs/LifecycleEventKind"
         },
+        "moveStock": {
+          "default": false,
+          "type": "boolean"
+        },
         "nextAction": {
           "type": [
             "string",
@@ -12635,7 +12763,8 @@
         "projectId",
         "kind",
         "detail",
-        "garmentIds"
+        "garmentIds",
+        "moveStock"
       ],
       "type": "object"
     },
@@ -16736,6 +16865,62 @@
           },
           "type": "array"
         },
+        "incoming": {
+          "default": [],
+          "items": {
+            "properties": {
+              "careChannel": {
+                "enum": [
+                  "service",
+                  "handwash",
+                  "none"
+                ],
+                "type": "string"
+              },
+              "category": {
+                "maxLength": 40,
+                "minLength": 1,
+                "type": "string"
+              },
+              "lineKey": {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              "maker": {
+                "anyOf": [
+                  {
+                    "maxLength": 200,
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "default": null
+              },
+              "roles": {
+                "items": {
+                  "maxLength": 40,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "lineKey",
+              "category",
+              "roles",
+              "careChannel",
+              "maker"
+            ],
+            "type": "object"
+          },
+          "maxItems": 20,
+          "type": "array"
+        },
         "lines": {
           "items": {
             "$ref": "#/$defs/OrderLineInput"
@@ -16826,7 +17011,8 @@
         "lines",
         "events",
         "replaces",
-        "sourceRefs"
+        "sourceRefs",
+        "incoming"
       ],
       "type": "object"
     },
@@ -24920,6 +25106,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "apiVersion": "v1",
   "commandTypes": [
+    "assistant.lift_restriction",
+    "assistant.report_arrival",
     "board.present",
     "board.publish",
     "board.restore",

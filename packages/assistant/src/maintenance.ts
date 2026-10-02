@@ -74,6 +74,13 @@ export async function runAssistantMaintenance(deps: MaintenanceDeps, opts: { lim
       }
     }
     if (done.length > 0) await acknowledgeOutbox(deps.db, done, deps.nowMs);
+    // Ledger copies that could not be scrubbed when a source was forgotten (queued work still needed its
+    // payload) are finished here once that work has run.
+    const ledgerHeld = (await all<{ source_kind: string; source_id: string; pending_stores_json: string }>(deps.db, "SELECT source_kind, source_id, pending_stores_json FROM source_tombstones WHERE user_id = ? AND state = 'suppressed'", userId)).filter((h) => json<string[]>(h.pending_stores_json, []).includes("ledger"));
+    for (const kind of [...new Set(ledgerHeld.map((h) => h.source_kind))]) {
+      const ids = ledgerHeld.filter((h) => h.source_kind === kind).map((h) => h.source_id).slice(0, 200);
+      await deps.service.execute(principal, { type: "conversation.confirm_erasure", payload: { sourceKind: kind, sourceIds: ids, store: "ledger", outstandingRetention: null }, idempotencyKey: `erasure:ledger:${kind}:${ids[0]}:${ids.length}:${deps.nowMs}`, authorization: "system_schedule", source: { channel: "system" } });
+    }
     await client.projectIndex();
     const index = deps.searchIndexFor?.(userId) ?? null;
     if (index) {

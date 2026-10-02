@@ -85,6 +85,8 @@ public enum GarderobeContract {
     public static let version = "1.1.0"
     public static let apiVersion = "v1"
     public static let commandTypes: [String] = [
+        "assistant.lift_restriction",
+        "assistant.report_arrival",
         "board.present",
         "board.publish",
         "board.restore",
@@ -665,6 +667,33 @@ public struct AssistantGrantList: Codable, Sendable, Equatable {
         grants: [AssistantGrant]
     ) {
         self.grants = grants
+    }
+}
+
+/// The `assistant.lift_restriction` payload as the server sees it after parsing (defaults applied).
+/// To send the command, use `CommandAssistantLiftRestriction`.
+public struct AssistantLiftRestriction: Codable, Sendable, Equatable {
+    public var restrictionId: String
+
+    public init(
+        restrictionId: String
+    ) {
+        self.restrictionId = restrictionId
+    }
+}
+
+/// The `assistant.report_arrival` payload as the server sees it after parsing (defaults applied).
+/// To send the command, use `CommandAssistantReportArrival`.
+public struct AssistantReportArrival: Codable, Sendable, Equatable {
+    public var garmentId: GarmentId
+    public var deliveredOn: LocalDate
+
+    public init(
+        garmentId: GarmentId,
+        deliveredOn: LocalDate
+    ) {
+        self.garmentId = garmentId
+        self.deliveredOn = deliveredOn
     }
 }
 
@@ -1849,6 +1878,35 @@ public enum ComfortKind: String, Codable, Sendable, CaseIterable {
     public init(from decoder: Decoder) throws {
         let rawValue = try decoder.singleValueContainer().decode(String.self)
         self = Self(rawValue: rawValue) ?? .unknown
+    }
+}
+
+/// Payload of the `assistant.lift_restriction` command, as the client sends it (fields with a server default are optional).
+public struct CommandAssistantLiftRestriction: Codable, Sendable, Equatable, GarderobeCommandPayload {
+    public static let commandType = "assistant.lift_restriction"
+
+    public var restrictionId: String
+
+    public init(
+        restrictionId: String
+    ) {
+        self.restrictionId = restrictionId
+    }
+}
+
+/// Payload of the `assistant.report_arrival` command, as the client sends it (fields with a server default are optional).
+public struct CommandAssistantReportArrival: Codable, Sendable, Equatable, GarderobeCommandPayload {
+    public static let commandType = "assistant.report_arrival"
+
+    public var garmentId: GarmentId
+    public var deliveredOn: LocalDate
+
+    public init(
+        garmentId: GarmentId,
+        deliveredOn: LocalDate
+    ) {
+        self.garmentId = garmentId
+        self.deliveredOn = deliveredOn
     }
 }
 
@@ -3919,6 +3977,8 @@ public struct CommandLifecycleOpenProject: Codable, Sendable, Equatable, Gardero
     public var nextAction: String?
     /// Server default when omitted: `{}`.
     public var details: [String: JSONValue]?
+    /// Server default when omitted: `false`.
+    public var holdForSale: Bool?
 
     public init(
         projectId: String? = nil,
@@ -3927,7 +3987,8 @@ public struct CommandLifecycleOpenProject: Codable, Sendable, Equatable, Gardero
         items: [ItemsItem],
         destination: String? = nil,
         nextAction: String? = nil,
-        details: [String: JSONValue]? = nil
+        details: [String: JSONValue]? = nil,
+        holdForSale: Bool? = nil
     ) {
         self.projectId = projectId
         self.kind = kind
@@ -3936,6 +3997,7 @@ public struct CommandLifecycleOpenProject: Codable, Sendable, Equatable, Gardero
         self.destination = destination
         self.nextAction = nextAction
         self.details = details
+        self.holdForSale = holdForSale
     }
 
     public struct ItemsItem: Codable, Sendable, Equatable {
@@ -3971,6 +4033,8 @@ public struct CommandLifecycleRecordEvent: Codable, Sendable, Equatable, Gardero
     /// `nil` omits the key; `.null` sends an explicit JSON null.
     public var nextAction: Nullable<String>?
     public var state: LifecycleState?
+    /// Server default when omitted: `false`.
+    public var moveStock: Bool?
 
     public init(
         projectId: String,
@@ -3981,7 +4045,8 @@ public struct CommandLifecycleRecordEvent: Codable, Sendable, Equatable, Gardero
         currency: String? = nil,
         externalOperationKey: String? = nil,
         nextAction: Nullable<String>? = nil,
-        state: LifecycleState? = nil
+        state: LifecycleState? = nil,
+        moveStock: Bool? = nil
     ) {
         self.projectId = projectId
         self.kind = kind
@@ -3992,6 +4057,7 @@ public struct CommandLifecycleRecordEvent: Codable, Sendable, Equatable, Gardero
         self.externalOperationKey = externalOperationKey
         self.nextAction = nextAction
         self.state = state
+        self.moveStock = moveStock
     }
 
     public init(from decoder: Decoder) throws {
@@ -4005,6 +4071,7 @@ public struct CommandLifecycleRecordEvent: Codable, Sendable, Equatable, Gardero
         self.externalOperationKey = try container.decodeIfPresent(String.self, forKey: JSONCodingKey("externalOperationKey"))
         self.nextAction = try container.contains(JSONCodingKey("nextAction")) ? container.decode(Nullable<String>.self, forKey: JSONCodingKey("nextAction")) : nil
         self.state = try container.decodeIfPresent(LifecycleState.self, forKey: JSONCodingKey("state"))
+        self.moveStock = try container.decodeIfPresent(Bool.self, forKey: JSONCodingKey("moveStock"))
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -4018,6 +4085,7 @@ public struct CommandLifecycleRecordEvent: Codable, Sendable, Equatable, Gardero
         try container.encodeIfPresent(self.externalOperationKey, forKey: JSONCodingKey("externalOperationKey"))
         try container.encodeIfPresent(self.nextAction, forKey: JSONCodingKey("nextAction"))
         try container.encodeIfPresent(self.state, forKey: JSONCodingKey("state"))
+        try container.encodeIfPresent(self.moveStock, forKey: JSONCodingKey("moveStock"))
     }
 }
 
@@ -4710,6 +4778,8 @@ public struct CommandPurchaseImportOrder: Codable, Sendable, Equatable, Garderob
     public var replaces: Replaces?
     /// Server default when omitted: `[]`.
     public var sourceRefs: [String]?
+    /// Server default when omitted: `[]`.
+    public var incoming: [IncomingItem]?
 
     public init(
         merchant: String,
@@ -4722,7 +4792,8 @@ public struct CommandPurchaseImportOrder: Codable, Sendable, Equatable, Garderob
         lines: [OrderLineInput],
         events: [OrderEventInput]? = nil,
         replaces: Replaces? = nil,
-        sourceRefs: [String]? = nil
+        sourceRefs: [String]? = nil,
+        incoming: [IncomingItem]? = nil
     ) {
         self.merchant = merchant
         self.merchantKey = merchantKey
@@ -4735,6 +4806,7 @@ public struct CommandPurchaseImportOrder: Codable, Sendable, Equatable, Garderob
         self.events = events
         self.replaces = replaces
         self.sourceRefs = sourceRefs
+        self.incoming = incoming
     }
 
     public enum ChannelValue: String, Codable, Sendable, CaseIterable {
@@ -4761,6 +4833,42 @@ public struct CommandPurchaseImportOrder: Codable, Sendable, Equatable, Garderob
         ) {
             self.merchantKey = merchantKey
             self.orderNumber = orderNumber
+        }
+    }
+
+    public struct IncomingItem: Codable, Sendable, Equatable {
+        public var lineKey: String
+        public var category: String
+        public var roles: [String]
+        public var careChannel: CareChannelValue
+        /// Server default when omitted: `null`.
+        public var maker: String?
+
+        public init(
+            lineKey: String,
+            category: String,
+            roles: [String],
+            careChannel: CareChannelValue,
+            maker: String? = nil
+        ) {
+            self.lineKey = lineKey
+            self.category = category
+            self.roles = roles
+            self.careChannel = careChannel
+            self.maker = maker
+        }
+
+        public enum CareChannelValue: String, Codable, Sendable, CaseIterable {
+            case service
+            case handwash
+            case none
+            /// A member this client version does not know; the contract requires tolerating it.
+            case unknown
+
+            public init(from decoder: Decoder) throws {
+                let rawValue = try decoder.singleValueContainer().decode(String.self)
+                self = Self(rawValue: rawValue) ?? .unknown
+            }
         }
     }
 }
@@ -10389,6 +10497,7 @@ public struct LifecycleOpenProject: Codable, Sendable, Equatable {
     public var destination: String?
     public var nextAction: String?
     public var details: [String: JSONValue]
+    public var holdForSale: Bool
 
     public init(
         projectId: String? = nil,
@@ -10397,7 +10506,8 @@ public struct LifecycleOpenProject: Codable, Sendable, Equatable {
         items: [ItemsItem],
         destination: String? = nil,
         nextAction: String? = nil,
-        details: [String: JSONValue]
+        details: [String: JSONValue],
+        holdForSale: Bool
     ) {
         self.projectId = projectId
         self.kind = kind
@@ -10406,6 +10516,7 @@ public struct LifecycleOpenProject: Codable, Sendable, Equatable {
         self.destination = destination
         self.nextAction = nextAction
         self.details = details
+        self.holdForSale = holdForSale
     }
 
     public struct ItemsItem: Codable, Sendable, Equatable {
@@ -10539,6 +10650,7 @@ public struct LifecycleRecordEvent: Codable, Sendable, Equatable {
     public var externalOperationKey: String?
     public var nextAction: String?
     public var state: LifecycleState?
+    public var moveStock: Bool
 
     public init(
         projectId: String,
@@ -10549,7 +10661,8 @@ public struct LifecycleRecordEvent: Codable, Sendable, Equatable {
         currency: String? = nil,
         externalOperationKey: String? = nil,
         nextAction: String? = nil,
-        state: LifecycleState? = nil
+        state: LifecycleState? = nil,
+        moveStock: Bool
     ) {
         self.projectId = projectId
         self.kind = kind
@@ -10560,6 +10673,7 @@ public struct LifecycleRecordEvent: Codable, Sendable, Equatable {
         self.externalOperationKey = externalOperationKey
         self.nextAction = nextAction
         self.state = state
+        self.moveStock = moveStock
     }
 }
 
@@ -13668,6 +13782,7 @@ public struct PurchaseImportOrder: Codable, Sendable, Equatable {
     public var events: [OrderEventInput]
     public var replaces: Replaces?
     public var sourceRefs: [String]
+    public var incoming: [IncomingItem]
 
     public init(
         merchant: String,
@@ -13680,7 +13795,8 @@ public struct PurchaseImportOrder: Codable, Sendable, Equatable {
         lines: [OrderLineInput],
         events: [OrderEventInput],
         replaces: Replaces? = nil,
-        sourceRefs: [String]
+        sourceRefs: [String],
+        incoming: [IncomingItem]
     ) {
         self.merchant = merchant
         self.merchantKey = merchantKey
@@ -13693,6 +13809,7 @@ public struct PurchaseImportOrder: Codable, Sendable, Equatable {
         self.events = events
         self.replaces = replaces
         self.sourceRefs = sourceRefs
+        self.incoming = incoming
     }
 
     public enum ChannelValue: String, Codable, Sendable, CaseIterable {
@@ -13719,6 +13836,41 @@ public struct PurchaseImportOrder: Codable, Sendable, Equatable {
         ) {
             self.merchantKey = merchantKey
             self.orderNumber = orderNumber
+        }
+    }
+
+    public struct IncomingItem: Codable, Sendable, Equatable {
+        public var lineKey: String
+        public var category: String
+        public var roles: [String]
+        public var careChannel: CareChannelValue
+        public var maker: String?
+
+        public init(
+            lineKey: String,
+            category: String,
+            roles: [String],
+            careChannel: CareChannelValue,
+            maker: String? = nil
+        ) {
+            self.lineKey = lineKey
+            self.category = category
+            self.roles = roles
+            self.careChannel = careChannel
+            self.maker = maker
+        }
+
+        public enum CareChannelValue: String, Codable, Sendable, CaseIterable {
+            case service
+            case handwash
+            case none
+            /// A member this client version does not know; the contract requires tolerating it.
+            case unknown
+
+            public init(from decoder: Decoder) throws {
+                let rawValue = try decoder.singleValueContainer().decode(String.self)
+                self = Self(rawValue: rawValue) ?? .unknown
+            }
         }
     }
 }

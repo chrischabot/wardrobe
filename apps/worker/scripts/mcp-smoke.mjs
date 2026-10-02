@@ -9,7 +9,8 @@
  * discovery/registration/consent/token for a read-only and a writing client, tool listing per
  * permission set, the complete inventory, today's board, a recommendation, a typed command with replay
  * and the same receipt read back through the HTTP API, refusal of the write tool on the read-only
- * connection, confirmation of a consequential command, and immediate revocation.
+ * connection, a sensitive command that waits for the owner and runs once the owner confirms it in the
+ * app (never on the connection's own answer), and immediate revocation.
  * No model is reachable locally, so `garderobe_ask` is only checked to return a durable run.
  */
 import { api, ensureClaimed, LOCAL } from "./lib/local.mjs";
@@ -76,9 +77,15 @@ try {
   const forged = await callTool(writer.client, "garderobe_command", { type: "wear.record", payload: { wearingDate, garmentIds: ["gmt_not_a_real_garment"] }, idempotencyKey: `smoke-missing-${Date.now()}` });
   check("an invented garment is refused, nothing is created", !forged.ok && forged.error.code === "not_found");
 
-  const retired = await callTool(writer.client, "garderobe_command", { type: "garment.remove_fabricated", payload: { garmentId: syntheticId, reason: "smoke-test cleanup of a synthetic garment" }, idempotencyKey: `smoke-remove-${Date.now()}` });
+  const removal = { type: "garment.remove_fabricated", payload: { garmentId: syntheticId, reason: "smoke-test cleanup of a synthetic garment" }, idempotencyKey: `smoke-remove-${Date.now()}` };
+  const held = await callTool(writer.client, "garderobe_command", removal);
+  const stillThere = (await api("GET", "/v1/wardrobe")).json.items.some((i) => i.garment.garmentId === syntheticId);
+  check("sensitive command is not executed for the connection and it is never asked to confirm", !held.ok && held.error.code === "confirmation_required" && stillThere && confirmations.length === 0, held.error?.message);
+  const proposal = (await api("GET", "/v1/proposals")).json.proposals.find((p) => p.type === "garment.remove_fabricated" && p.payload.garmentId === syntheticId);
+  const decided = proposal ? await api("POST", `/v1/proposals/${proposal.proposalId}/decision`, { decision: "confirm" }) : null;
+  const retired = await callTool(writer.client, "garderobe_command", removal);
   const wardrobeAfter = (await api("GET", "/v1/wardrobe")).json;
-  check("consequential command asked for confirmation, then ran once", retired.ok && confirmations.length === 1, confirmations[0] ?? retired.error?.message);
+  check("the owner confirms it in the app, it runs once, and the connection reads the same receipt", Boolean(decided?.json?.receipt?.commandId) && retired.ok && retired.data.receipt.commandId === decided.json.receipt.commandId, proposal ? proposal.summary : "no proposal was listed");
   check("the synthetic garment is gone and the real inventory is unchanged", wardrobeAfter.total === wardrobe.total && !wardrobeAfter.items.some((i) => i.garment.garmentId === syntheticId), `${wardrobeAfter.total} garments`);
 
   const asked = await callTool(reader.client, "garderobe_ask", { message: "What is in the wash?", clientTurnId: `smoke-ask-${Date.now()}`, mode: "start" });

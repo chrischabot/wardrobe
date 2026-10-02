@@ -1,11 +1,12 @@
 import { registerAssistant, configureAssistant, AiSearchIndex } from "@garderobe/assistant";
 import { outfitValidator, registerDaily, validateOutfit } from "@garderobe/daily";
-import { CommandError, createFoundationRegistry, first, type CommandRegistry, type CommandService, type Db, type Principal } from "@garderobe/domain";
+import { CommandError, createFoundationRegistry, first, all, json as parseJson, restrictionCovers, stmt, type CommandRegistry, type CommandService, type Db, type Principal } from "@garderobe/domain";
 import { depsFromBindings, registerMedia, type MediaDeps } from "@garderobe/media";
 import type { Env } from "../env.ts";
 import { connectionAuthorization } from "../connections/service.ts";
 import { listConnectionTools, outboundPorts, type OutboundDeps } from "../connections/outbound.ts";
 import type { AssistantPort, DailyPort, MediaPort } from "../ports.ts";
+import { recordSubmittedProposal } from "../proposals/store.ts";
 import { createAssistantPort } from "./assistant.ts";
 import { createDailyPort } from "./daily.ts";
 import { createMediaPort } from "./media.ts";
@@ -59,14 +60,18 @@ export function mediaDepsFor(env: Env): MediaDeps {
  * written and no receipt exists.
  */
 function guardRestrictionLifts(r: CommandRegistry): void {
-  const resolve = r.get("restriction.resolve");
-  const planResolve = resolve.plan;
-  resolve.plan = async (ctx, payload) => {
-    if (ctx.principal.channel === "mcp" || ctx.envelope.source.channel === "mcp") {
-      throw new CommandError("forbidden", "a connected assistant cannot lift a restriction; the owner lifts it in the Garderobe app or in their own Garderobe conversation", { reason: "owner_statement_not_verified" });
-    }
-    return planResolve.call(resolve, ctx, payload);
-  };
+  // `assistant.lift_restriction` (the assistant workstream's owner-confirmed lift, when registered) is a lift too.
+  for (const type of ["restriction.resolve", "assistant.lift_restriction"]) {
+    if (!r.has(type)) continue;
+    const resolve = r.get(type);
+    const planResolve = resolve.plan;
+    resolve.plan = async (ctx, payload) => {
+      if (ctx.principal.channel === "mcp" || ctx.envelope.source.channel === "mcp") {
+        throw new CommandError("forbidden", "a connected assistant cannot lift a restriction; the owner lifts it in the Garderobe app or in their own Garderobe conversation", { reason: "owner_statement_not_verified" });
+      }
+      return planResolve.call(resolve, ctx, payload);
+    };
+  }
   const undo = r.get("command.undo");
   const planUndo = undo.plan;
   undo.plan = async (ctx, payload) => {
@@ -80,58 +85,71 @@ function guardRestrictionLifts(r: CommandRegistry): void {
   };
 }
 
-/**
- * Commands the assistant actor may not run on text that a connected assistant relayed (`garderobe_ask`,
- * `garderobe_research`). In the app the assistant acts on the owner's own typed or spoken words; on the
- * MCP channel the "owner's words" are whatever the connected model sent, which cannot be verified as
- * the owner's and may itself come from a page or a document that model read. So what the owner owns,
- * the owner's profile and measurements, and the hard constraints do not change on relayed text:
- * the assistant can answer and can propose, and a connected assistant with the write permission still
- * has the typed `garderobe_command` tool, where the change is an explicit, schema-checked command that
- * its own user approved rather than something a sentence was interpreted into.
+/*
+ * Sensitive changes (CONSEQUENTIAL_COMMAND_TYPES in the contracts: what the owner owns, the owner's
+ * profile, rules and measurements, forgetting, authorizations towards other parties) are carried out
+ * only after the signed-in owner confirms them in the app (owner decision of 2026-10-01). A connected
+ * assistant can ask for one, as a typed `garderobe_command` (see mcp/server.ts) or through
+ * `garderobe_ask`; either way the request waits as a proposal and the assistant cannot confirm it.
  */
-export const NOT_ON_RELAYED_TEXT: readonly string[] = [
-  "garment.create",
-  "garment.receive",
-  "garment.retire",
-  "garment.merge",
-  "garment.remove_fabricated",
-  "garment.bulk_correct",
-  "stock.reconcile",
-  "style.add_amendment",
-  "style.set_amendment_status",
-  "style.save_document",
-  "style.import_document",
-  "style.upsert_rule",
-  "style.add_direction",
-  "style.retire_direction",
-  "style.resolve_fact_conflict",
-  "measurement.record",
-];
+
+/**
+ * What Garderobe's own assistant may still commit when the text it acts on was relayed by a connected
+ * assistant (`garderobe_ask`, `garderobe_research`). In the app the assistant acts on the owner's own
+ * typed or spoken words; on the MCP channel the "owner's words" are whatever the connected model sent,
+ * which cannot be verified as the owner's and may come from a page or a document that model read. So
+ * the list is short and explicit: the records of a piece of research, and plain wear and wash reports.
+ * Everything else that is not internal bookkeeping (corrections, restrictions, aliases, orders, returns,
+ * reminders, briefs, settings, memory, undo, and every sensitive change above) is kept as a proposal for
+ * the owner and refused. A wear report naming a garment that an active restriction excludes is treated
+ * the same way: it would contradict the restriction on words nobody verified.
+ */
+export const RELAYED_TEXT_ALLOWED: readonly string[] = ["job.create", "job.update", "research.save_note", "product.record", "product.record_observation", "product.record_fit_assessment", "wear.record", "care.washed", "care.mark_dirty"];
+
+type GuardContext = { db: Db; userId: string; nowMs: number; principal: Principal; envelope: { idempotencyKey: string; expectedVersions: Record<string, number>; occurredAt?: string; source: { channel?: string; parentKind?: string | null; parentId?: string | null } } };
 
 const relayedTurn = (ctx: { principal: Principal; envelope: { source: { channel?: string; parentKind?: string | null } } }): boolean =>
   ctx.principal.actor === "assistant" && (ctx.principal.channel === "mcp" || ctx.envelope.source.channel === "mcp") && ctx.envelope.source.parentKind === "turn";
 
-function guardRelayedText(r: CommandRegistry): void {
-  const refuse = (): never => {
-    throw new CommandError("forbidden", "this cannot be changed from a message relayed by a connected assistant; the owner changes it in the Garderobe app, or the connected assistant sends it as an explicit garderobe_command", { reason: "relayed_text_not_owner_statement" });
-  };
-  for (const type of NOT_ON_RELAYED_TEXT) {
-    if (!r.has(type)) continue;
-    const definition = r.get(type);
-    const plan = definition.plan;
-    definition.plan = async (ctx, payload) => (relayedTurn(ctx as never) ? refuse() : plan.call(definition, ctx, payload));
+/** Whether a wear report names a garment that an active restriction currently excludes. */
+async function wearsRestrictedGarment(ctx: GuardContext, payload: unknown): Promise<boolean> {
+  const p = payload as { garmentIds?: string[]; additionalUnits?: { garmentId: string }[] };
+  const ids = [...new Set([...(p.garmentIds ?? []), ...(p.additionalUnits ?? []).map((u) => u.garmentId)])];
+  if (ids.length === 0) return false;
+  const scopes = (await all<{ scope_json: string }>(ctx.db, "SELECT scope_json FROM restrictions WHERE user_id = ? AND status = 'active'", ctx.userId)).map((r) => parseJson<Parameters<typeof restrictionCovers>[0]>(r.scope_json, {} as never));
+  if (scopes.length === 0) return false;
+  for (const id of ids) {
+    let row = await first<{ garment_id: string; category: string; attributes_json: string; merged_into: string | null }>(ctx.db, "SELECT garment_id, category, attributes_json, merged_into FROM garments WHERE user_id = ? AND garment_id = ?", ctx.userId, id);
+    if (row?.merged_into) row = await first(ctx.db, "SELECT garment_id, category, attributes_json, merged_into FROM garments WHERE user_id = ? AND garment_id = ?", ctx.userId, row.merged_into);
+    if (!row) continue; // an unknown garment is refused by the command itself
+    const garment = { garmentId: row.garment_id, category: row.category, attributes: parseJson<Record<string, unknown>>(row.attributes_json, {}) };
+    if (scopes.some((scope) => restrictionCovers(scope, garment))) return true;
   }
-  // Undoing one of those commands is the same change in the other direction.
-  const undo = r.get("command.undo");
-  const planUndo = undo.plan;
-  undo.plan = async (ctx, payload) => {
-    if (relayedTurn(ctx as never)) {
-      const target = await first<{ type: string }>(ctx.db, "SELECT type FROM commands WHERE user_id = ? AND command_id = ?", ctx.userId, (payload as { commandId: string }).commandId);
-      if (target && NOT_ON_RELAYED_TEXT.includes(target.type)) refuse();
-    }
-    return planUndo.call(undo, ctx, payload);
-  };
+  return false;
+}
+
+function guardRelayedText(r: CommandRegistry): void {
+  const allowed = new Set(RELAYED_TEXT_ALLOWED);
+  for (const type of r.types()) {
+    const definition = r.get(type);
+    // Internal bookkeeping (inference accounting, erasure confirmation, job progress) is not a change the text asked for.
+    if (definition.class === "system") continue;
+    if (allowed.has(type) && type !== "wear.record") continue;
+    const plan = definition.plan;
+    definition.plan = async (context, payload) => {
+      const ctx = context as unknown as GuardContext;
+      if (!relayedTurn(ctx)) return plan.call(definition, context, payload);
+      if (type === "wear.record" && !(await wearsRestrictedGarment(ctx, payload))) return plan.call(definition, context, payload);
+      // Kept for the owner, exactly as it would run; the owner sees it in the app and decides.
+      const turnId = String(ctx.envelope.source.parentId ?? "");
+      let kept = false;
+      if (turnId) {
+        const stored = await recordSubmittedProposal(ctx.db, { userId: ctx.userId, origin: "relayed_turn", sourceRef: turnId, grantId: null, turnId, idempotencyKey: ctx.envelope.idempotencyKey, type, payload: payload as Record<string, unknown>, expectedVersions: ctx.envelope.expectedVersions ?? {}, occurredAt: ctx.envelope.occurredAt ?? null, nowMs: ctx.nowMs });
+        kept = "row" in stored;
+      }
+      throw new CommandError("forbidden", `this cannot be changed from a message relayed by a connected assistant${kept ? "; it is kept as a proposal for the owner to confirm in the Garderobe app" : "; the owner changes it in the Garderobe app"}`, { reason: "relayed_text_not_owner_statement", proposed: kept });
+    };
+  }
 }
 
 let registry: CommandRegistry | null = null;
@@ -152,6 +170,14 @@ export function composedRegistry(): CommandRegistry {
     });
     guardRestrictionLifts(r);
     guardRelayedText(r);
+    // Forgetting a message also removes the requests kept from its turn: they hold the same text. Done in
+    // the forgetting command's own transaction. (The owner's recorded decision holds no text and stays.)
+    r.addCommitHook("api.forget_submitted_proposals", async (ctx) => {
+      if (ctx.envelope.type !== "conversation.forget_source") return;
+      const p = ctx.envelope.payload as { sourceKind?: string; sourceIds?: string[] };
+      if (p.sourceKind !== "message" || !Array.isArray(p.sourceIds) || p.sourceIds.length === 0) return;
+      return { statements: [stmt("DELETE FROM submitted_proposals WHERE user_id = ? AND turn_id IN (SELECT turn_id FROM assistant_turns WHERE user_id = ? AND user_message_id IN (SELECT value FROM json_each(?)))", ctx.userId, ctx.userId, JSON.stringify(p.sourceIds))] };
+    });
     registry = r;
   }
   return registry;

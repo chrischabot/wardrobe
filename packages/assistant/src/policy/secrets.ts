@@ -1,7 +1,10 @@
 /**
  * Secret hygiene: credentials pasted into the conversation are removed BEFORE anything is stored
  * (transcript, turn ledger, retrieval index, memory, export) or shown to a model.
- * Detection is deliberately conservative pattern matching; it errs towards removing.
+ * Detection is pattern matching: it recognises the common ways a credential is written and it is
+ * PARTIAL by nature (an unlabelled secret, or one described in a way no pattern covers, is not found).
+ * The assistant's policy therefore also tells the owner never to paste secrets, and the owner can forget
+ * any message.
  */
 
 export const SECRET_PLACEHOLDER = "[secret removed]";
@@ -15,6 +18,10 @@ interface Pattern {
 
 const PATTERNS: Pattern[] = [
   { name: "private_key_block", re: /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g },
+  // A passphrase is several words: everything after its label to the end of the line goes.
+  { name: "labelled_passphrase", re: /\b(pass ?phrase)\b(\s*(?:is|=|:)\s*)([^\n]{4,200}?)(?=[.!?]?\s*(?:\n|$))/gim, group: 3 },
+  // A password of several capitalised words or numbers ("password is Tulip Garden 99").
+  { name: "labelled_passphrase", re: /\b([Pp]ass(?:word|code)|PASSWORD|[Pp]wd)\b(\s*(?:is|=|:)\s*)((?:[A-Z0-9][^\s"',;.]*\s){1,4}[A-Z0-9][^\s"',;.]*)/g, group: 3 },
   { name: "bearer_token", re: /\b(Bearer)\s+([A-Za-z0-9._~+/=-]{16,})/g, group: 2 },
   { name: "jwt", re: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g },
   { name: "provider_key", re: /\b(?:sk|pk|rk)-(?:live-|test-|proj-|ant-)?[A-Za-z0-9_-]{16,}\b/g },
@@ -27,17 +34,45 @@ const PATTERNS: Pattern[] = [
   // "password: hunter2", "api key = abc", "token is abc123" - the value after an explicit credential label.
   {
     name: "labelled_credential",
-    re: /\b(pass(?:word|code|phrase)?|pwd|secret|api[ _-]?key|access[ _-]?token|auth[ _-]?token|refresh[ _-]?token|client[ _-]?secret|recovery[ _-]?(?:code|key)|token)\b(\s*(?:is|=|:)\s*)(["']?)([^\s"',;]{4,})\3/gi,
+    re: /\b(pass(?:word|code|phrase)|pwd|api[ _-]?key|access[ _-]?token|auth[ _-]?token|refresh[ _-]?token|client[ _-]?secret|recovery[ _-]?(?:code|key))\b(\s*(?:is|=|:)\s*)(["']?)([^\s"',;]{4,})\3/gi,
     group: 4,
   },
+  // "pass", "secret" and "token" are ordinary words too ("the secret is good shoes"): their value counts only when it looks like one (it has a digit, or is long).
+  { name: "labelled_credential", re: /\b(pass|secret|token)\b(\s*(?:is|=|:)\s*)(["']?)((?=[^\s"',;]*\d)[^\s"',;]{4,}|[^\s"',;]{12,})\3/gi, group: 4 },
   // The same label followed directly by the value ("password hunter2secret") or after "is:" ("my password is: x").
   {
     name: "labelled_credential",
     re: /\b(pass(?:word|code|phrase)|pwd|api[ _-]?key|access[ _-]?token|auth[ _-]?token|refresh[ _-]?token|client[ _-]?secret|recovery[ _-]?(?:code|key))\b(\s*(?:is\s*[:=]|[:=]\s*is|is|[:=])?\s*)(["']?)((?=[^\s"',;]*\d)[^\s"',;]{6,}|[^\s"',;]{10,})\3/gi,
     group: 4,
   },
+  // Short labels and other languages: "pw: x", "passwd x", "p/w x", "Passwort: x", "mot de passe: x", "contraseña: x".
+  { name: "labelled_credential", re: /(?<![A-Za-z])(passwort|passwd|kennwort|mot de passe|contrase\u00f1a|wachtwoord|pwd|pw|p\/w)(?![A-Za-z])(\s*(?:is\s*[:=]?|[:=])?\s*)(["']?)([^\s"',;]{4,})\3/gi, group: 4 },
+  // The password that follows a dash or "it's" after naming an account: "the password to my X account - it's Y".
+  { name: "labelled_credential", re: /\b(pass(?:word|code|phrase))\b([^.\n]{0,60}?(?:\u2014|\u2013|-|:)\s*(?:it'?s|it is)\s+)([^\s"',;.]{4,})/gi, group: 3 },
+  // PINs, door and verification codes: a number given with its label.
+  { name: "pin_or_code", re: /\b(pin|pin code|pin number|passcode|door code|alarm code|gate code|entry code|locker code|safe code|security code|verification code|2fa code|otp|one[- ]time (?:code|password)|auth(?:entication)? code|cvv|cvc|cv2)\b([^\d\n]{0,24}?)(\d{3,10})\b/gi, group: 3 },
+  // Answers to security questions.
+  { name: "security_answer", re: /\b((?:secret|security) (?:answer|question)[^:\n]{0,40}?(?:\bis\b|:)\s*)([^\n.;]{2,80})/gi, group: 2 },
+  // Bank and government identifiers.
+  { name: "bank_sort_code", re: /\b(sort code)([^\d\n]{0,12})(\d{2}[- ]?\d{2}[- ]?\d{2})\b/gi, group: 3 },
+  { name: "bank_account", re: /\b(account (?:number|no\.?)|acct\.? (?:number|no\.?)|routing number)([^\d\n]{0,12})(\d{6,17})\b/gi, group: 3 },
+  { name: "iban", re: /\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,4})?\b/g },
+  { name: "national_insurance", re: /\b(?!BG|GB|NK|KN|TN|NT|ZZ)[A-CEGHJ-PR-TW-Z]{2} ?\d{2} ?\d{2} ?\d{2} ?[A-D]\b/g },
+  { name: "national_insurance", re: /\b((?:ni|nino|national insurance)(?: number| no\.?)?[^A-Za-z0-9\n]{0,6}(?:is\s+)?)([A-Z]{2} ?\d{2} ?\d{2} ?\d{2} ?[A-Z])\b/gi, group: 2 },
+  // Recovery or seed words.
+  { name: "recovery_words", re: /\b((?:recovery|seed|backup|mnemonic) (?:words|phrase|key)s?[^:\n]{0,20}?(?:\bare\b|\bis\b|:)\s*)((?:[a-z]+[ ,]+){3,23}[a-z]+)/gi, group: 2 },
+  // Credentials in structured or command form.
+  { name: "json_credential", re: /(["'](?:pass(?:word|code|phrase)?|pwd|secret|token|api[_-]?key|access[_-]?token|client[_-]?secret|pin)["']\s*:\s*["'])([^"']{1,200})(?=["'])/gi, group: 2 },
+  { name: "basic_auth", re: /\b(Basic)\s+([A-Za-z0-9+/=]{8,})/g, group: 2 },
+  { name: "url_userinfo", re: /(\b[a-z][a-z0-9+.-]{1,15}:\/\/)([^\s/:@]+:[^\s/@]+)@/gi, group: 2 },
+  { name: "url_userinfo", re: /(\b[a-z][a-z0-9+.-]{1,15}:\/\/[^\s/:@]+:)([^\s/@]+)@/gi, group: 2 },
+  { name: "ssh_password", re: /\b(ssh\s+\S+@\S+\s+(?:with|using|pw|password)\s+)(\S{4,})/gi, group: 2 },
+  { name: "cloudflare_token", re: /\bv1\.0-[A-Za-z0-9_-]{16,}\b/g },
+  { name: "login_pair", re: /\b((?:creds|credentials|log[- ]?in|login details)\s+(?:are|is|:)\s*)([^\s:/|,;]{2,}\s*[:/|]\s*[^\s,;]{4,})/gi, group: 2 },
+  { name: "login_pair", re: /([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\s*[/|:]\s*)((?=\S*\d)\S{6,})/g, group: 2 },
   // "login / password" pairs: "name / secret", "user: x pass: y", "x:y" after the word login or credentials.
-  { name: "login_pair", re: /\b(log[- ]?in|credentials?|username|user)\b(\s*(?:is|=|:)?\s*)([^\s/|,;]{2,})(\s*[/|]\s*)([^\s/|,;]{4,})/gi, group: 5 },
+  { name: "login_pair", re: /\b(log[- ]?in|credentials?|username)\b(\s*(?:is|=|:)?\s*)([^\s/|,;]{2,})(\s*[/|]\s*)([^\s/|,;]{4,})/gi, group: 5 },
+  { name: "login_pair", re: /\b(user)\b(\s*(?:is|=|:)?\s*)([^\s/|,;]{2,})(\s*[/|]\s*)((?=[^\s/|,;]*\d)[^\s/|,;]{4,})/gi, group: 5 },
   // A UUID-format or 32+ hexadecimal key near the word key, token or secret.
   { name: "labelled_key", re: /\b(key|token|secret)\b([^\n]{0,24}?)\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32,})\b/gi, group: 3 },
   // Key-bearing URL parameters.
@@ -78,6 +113,8 @@ export function redactSecrets(input: string): RedactionResult {
       removed.push(p.name);
       if (p.group === undefined) return SECRET_PLACEHOLDER;
       const secret = args[p.group] as string;
+      // Never redact a redaction (a later pattern meeting the placeholder an earlier one left).
+      if (secret.includes("[secret") || secret.includes("removed]")) return match;
       const at = match.lastIndexOf(secret);
       return match.slice(0, at) + SECRET_PLACEHOLDER + match.slice(at + secret.length);
     });

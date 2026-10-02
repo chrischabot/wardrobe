@@ -28,7 +28,7 @@ export const LEDGER_TABLES: TableSpec[] = [
   { table: "stock_balances", component: "quantities", description: "Current quantity per garment and bucket (clean, dirty, service, storage, tailor, trip...)." },
   { table: "wear_observations", component: "wear", description: "Every wear report as received (observations; duplicates across clients are kept as provenance)." },
   { table: "daily_wears", component: "wear", description: "The counted wear: at most one per garment and wearing date." },
-  { table: "laundry_batches", component: "laundry", description: "Service laundry batches." },
+  { table: "laundry_batches", component: "laundry", description: "Service laundry batches. A row whose withdrawn_at is set records a pickup that was undone: it is not out at the service and counts for nothing, whatever its status column says (the status keeps the value it had when the pickup was recorded)." },
   { table: "laundry_batch_items", component: "laundry", description: "What each batch actually contained and what came back." },
   { table: "laundry_cycles", component: "laundry", description: "Applied weekly cleanliness baselines (an inference under the owner's standing policy, never an observed return)." },
   { table: "laundry_exceptions", component: "laundry", description: "Owner-reported delays, items still away and losses." },
@@ -78,6 +78,7 @@ export const NEVER_EXPORTED = [
   "mcp_grants and the OAuth provider's KV records (clients, grants, token hashes)",
   "export_tickets, account_deletions",
   "outbox, command_preconditions (internal queues)",
+  "proposal_decisions, submitted_proposals (requests waiting for the owner's decision and the decisions taken; a change that was confirmed is in commands with its receipt)",
   "browser cookies and raw model reasoning (never stored)",
 ];
 
@@ -98,6 +99,10 @@ export async function dumpTable(db: Db, spec: TableSpec, userId: string): Promis
   if (!all_columns.includes("user_id")) throw new Error(`table ${spec.table} is not owner-qualified`);
   const columns = all_columns.filter((c) => !(spec.omit ?? []).includes(c) && c !== "user_id");
   const select = columns.map((c) => `"${c}"`).join(", ");
+  // Where the service keeps a file is internal. A stored record that names such a location (media job
+  // commands written before 2026-10-02 carried it in their payload) is exported with the owner's storage
+  // prefix removed, which leaves the same package-relative path the media records use.
+  const prefix = `u/${userId}/`;
   const rows: Record<string, unknown>[] = [];
   let after = 0;
   for (;;) {
@@ -105,6 +110,7 @@ export async function dumpTable(db: Db, spec: TableSpec, userId: string): Promis
     for (const row of page) {
       after = row._rowid;
       const { _rowid: _ignored, ...rest } = row;
+      for (const [column, value] of Object.entries(rest)) if (typeof value === "string" && value.includes(prefix)) rest[column] = value.split(prefix).join("");
       rows.push(rest);
     }
     if (page.length < 400) break;

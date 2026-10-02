@@ -7,7 +7,7 @@ import { listConnections, listReminders, listComfortFeedback, listJobs, listLife
 import { recall } from "../recall/index.ts";
 import { redactDeep } from "../policy/secrets.ts";
 import { SearchInvestigation, assessFit, redactSecretsInUrl, wrapUntrusted, type FitInput } from "../research/index.ts";
-import { retrievalRefusal, urlKey, type TurnRuntime } from "./runtime.ts";
+import { retrievalRefusal, urlKey, type TurnRuntime, searchQueryRefusal } from "./runtime.ts";
 
 const notFound = (e: unknown) => (isCommandError(e) ? { error: (e as Error).message } : null);
 
@@ -179,6 +179,11 @@ export function buildReadTools(rt: TurnRuntime): ToolSet {
         const providers = rt.ports.searchProviders ?? [];
         if (providers.length === 0) return { unavailable: true, reason: "no search connection is enabled; say so rather than answering from memory" };
         await rt.onActivity("Searching the web");
+        // A query leaves to a third party: it may not carry private values that were not in the request.
+        for (const q of i.queries) {
+          const refused = await searchQueryRefusal(rt, q);
+          if (refused) return { status: "refused", reason: `Not searched: ${refused}. Search with the product, maker and public terms only.` };
+        }
         const investigation = new SearchInvestigation({ providers, maxQueries: 6, maxResults: 30 });
         for (const q of i.queries) await investigation.search(q);
         const report = investigation.report();

@@ -12,7 +12,7 @@ import {
 } from "@garderobe/contracts/ext/api";
 import {
   addDays,
-  canonicalJson,
+  first,
   getAvailability,
   getDailyRecord,
   getLaundryState,
@@ -22,15 +22,15 @@ import {
   listInventory,
   localDateOf,
   previewGarmentSelection,
-  registerActionIntent,
   resolveAlias,
   toInstant,
   type Principal,
 } from "@garderobe/domain";
-import { McpServer, acceptedContent, createRequestStateCodec, inputRequired, type RequestStateCodec, type ServerContext } from "@modelcontextprotocol/server";
+import { McpServer } from "@modelcontextprotocol/server";
 import type { z } from "zod";
 import { requireAssistant, requireDaily, type App } from "../app.ts";
-import { sha256Hex } from "../crypto.ts";
+import { submittedProposalState } from "../proposals/service.ts";
+import { recordSubmittedProposal } from "../proposals/store.ts";
 import { ApiException, normalizeError } from "../errors.ts";
 import type { ApiRun } from "../ports.ts";
 import { startResearch, submitTurn, toSubmission } from "../routes/conversation.ts";
@@ -47,33 +47,6 @@ export interface McpCaller {
   exec: ExecutionContext;
 }
 
-interface ConfirmationState {
-  /** Hash of the exact command the confirmation was requested for. */
-  h: string;
-  /** Backend-issued action intent: the durable pending-action record. */
-  a: string;
-}
-
-const codecs = new WeakMap<object, RequestStateCodec<ConfirmationState>>();
-
-/**
- * HMAC codec for multi-round-trip request state. The state is bound to the method and to the grant,
- * so a confirmation minted for one connection or one tool call cannot be replayed on another, and it
- * expires after ten minutes.
- */
-export function confirmationCodec(app: App): RequestStateCodec<ConfirmationState> {
-  let codec = codecs.get(app);
-  if (!codec) {
-    codec = createRequestStateCodec<ConfirmationState>({
-      key: app.env.STATE_SIGNING_KEY,
-      ttlSeconds: 600,
-      bind: (ctx) => `${ctx.mcpReq.method}\u0000${String(ctx.http?.authInfo?.extra?.grantId ?? "")}`,
-    });
-    codecs.set(app, codec);
-  }
-  return codec;
-}
-
 const GUIDE = `# Using the Garderobe tools
 
 Garderobe is one person's private wardrobe companion. Every tool acts for the owner who connected this
@@ -88,6 +61,10 @@ assistant; there is no owner or user parameter anywhere.
 - \`garderobe_command\`: make one typed change (needs the write permission). Use view \`command_types\` for
   the types and payload schemas. Send a stable \`idempotencyKey\` per intended change; repeating it never
   repeats the change. The result is a verified receipt: report what the receipt says, nothing more.
+  A sensitive change (adding, retiring or merging a garment, the style profile, rules, measurements,
+  forgetting, deleting an image) is not executed: the answer is \`confirmation_required\` and the request
+  waits for the owner in the Garderobe app. You cannot confirm it. Tell the owner, and repeat the same
+  call with the same \`idempotencyKey\` later: it returns the receipt once the owner has confirmed.
 - \`garderobe_ask\`: an open request to Garderobe's own assistant, which knows the owner's full style
   profile and history.
 - \`garderobe_research\`: investigate a product, a fit question or the owner's history.
@@ -128,13 +105,23 @@ function annotations(name: McpToolName, title: string) {
 }
 
 /**
+ * Whether a typed command from a connected assistant waits for the owner. Sensitive types always do, and
+ * so does the undo of one: undoing is the same change in the other direction.
+ */
+async function needsOwnerConfirmation(app: App, principal: Principal, type: string, payload: Record<string, unknown>): Promise<boolean> {
+  if (isConsequential(type)) return true;
+  if (type !== "command.undo" || typeof payload.commandId !== "string") return false;
+  const target = await first<{ type: string }>(app.db, "SELECT type FROM commands WHERE user_id = ? AND command_id = ?", principal.userId, payload.commandId);
+  return Boolean(target && isConsequential(target.type));
+}
+
+/**
  * Build the MCP server for one request. Tools are thin: each calls the same read interfaces and the
  * same command service as the HTTP API. The tool list depends on the grant's permission set (a
  * read-only connection is not offered `garderobe_command`), and the permission is enforced again at
  * call time by the command service's scope check.
  */
 export function buildMcpServer(app: App, caller: McpCaller): McpServer {
-  const codec = confirmationCodec(app);
   const { principal } = caller;
   const server = new McpServer(
     { name: "garderobe", title: "Garderobe", version: CONTRACT_VERSION },
@@ -142,7 +129,6 @@ export function buildMcpServer(app: App, caller: McpCaller): McpServer {
       instructions: "Garderobe: the connected owner's private wardrobe. The owner is fixed by this connection. Read the resource garderobe://guide for how the tools fit together.",
       // Lists depend on the connection's permission set, so they are cacheable only privately.
       cacheHints: { "tools/list": { ttlMs: 300_000, cacheScope: "private" }, "resources/list": { ttlMs: 300_000, cacheScope: "private" }, "resources/read": { ttlMs: 0, cacheScope: "private" } },
-      requestState: { verify: (state: string, ctx: ServerContext) => codec.verify(state, ctx) },
     },
   );
 
@@ -285,8 +271,8 @@ export function buildMcpServer(app: App, caller: McpCaller): McpServer {
   if (caller.canWrite) {
     server.registerTool(
       "garderobe_command",
-      { title: "Change the wardrobe", description: "Execute one typed, constrained change (see view command_types of garderobe_inventory). Returns the verified receipt. Irreversible or identity-changing commands ask for confirmation first.", inputSchema: MCP_TOOL_CONTRACTS.garderobe_command.input, outputSchema: McpCommandOutput, annotations: annotations("garderobe_command", "Change the wardrobe") },
-      async (args, ctx) => {
+      { title: "Change the wardrobe", description: "Execute one typed, constrained change (see view command_types of garderobe_inventory). Returns the verified receipt. A sensitive change (marked consequential in command_types: what the owner owns, the profile, rules, measurements, forgetting) is not executed from here: it is kept as a proposal that only the owner can confirm in the Garderobe app. Repeat the same call later to learn the outcome.", inputSchema: MCP_TOOL_CONTRACTS.garderobe_command.input, outputSchema: McpCommandOutput, annotations: annotations("garderobe_command", "Change the wardrobe") },
+      async (args) => {
         try {
           const envelope = {
             type: args.type,
@@ -297,34 +283,25 @@ export function buildMcpServer(app: App, caller: McpCaller): McpServer {
             authorization: "owner_statement" as const,
             source: { channel: "mcp" as const, clientSubmissionId: args.idempotencyKey },
           };
-          let actionId: string | null = null;
-          if (isConsequential(args.type)) {
-            // The hash covers everything that defines the change, so a confirmation applies to this exact request only.
-            const requestHash = await sha256Hex(canonicalJson({ type: args.type, payload: args.payload, idempotencyKey: args.idempotencyKey, expectedVersions: args.expectedVersions, occurredAt: args.occurredAt ?? null }));
-            const state = ctx.mcpReq.requestState<ConfirmationState>();
-            const answer = acceptedContent<{ confirm?: boolean }>(ctx.mcpReq.inputResponses, "confirm");
-            if (!state || ctx.mcpReq.inputResponses === undefined) {
-              // Validate before asking, so the owner is never asked to confirm something that cannot run.
-              app.registry.get(args.type);
-              const parsed = app.registry.get(args.type).schema.safeParse(args.payload);
-              if (!parsed.success) throw new ApiException("invalid_command", `invalid payload for '${args.type}'`, { issues: parsed.error.issues });
-              // The durable pending-action record: a retry resolves to this same action, never a second one.
-              const intent = await registerActionIntent(app.db, principal, { parentKind: "job", parentId: `mcp:${caller.grantId}:${args.idempotencyKey}`, operation: args.type, targets: [], effect: args.payload, expectedVersions: args.expectedVersions, nowMs: app.now() });
-              return inputRequired({
-                inputRequests: {
-                  confirm: inputRequired.elicit({
-                    message: `Confirm this change to the wardrobe: ${args.type}. It cannot be undone automatically.`,
-                    requestedSchema: { type: "object", properties: { confirm: { type: "boolean", title: "Make this change" } }, required: ["confirm"] },
-                  }),
-                },
-                requestState: await codec.mint({ h: requestHash, a: intent.actionId }, ctx),
-              });
+          if (await needsOwnerConfirmation(app, principal, args.type, args.payload)) {
+            // Validate first, so the owner is never asked to confirm something that cannot run.
+            const parsed = app.registry.get(args.type).schema.safeParse(args.payload);
+            if (!parsed.success) throw new ApiException("invalid_command", `invalid payload for '${args.type}'`, { issues: parsed.error.issues });
+            // The connection's answer to a confirmation question would be the connection confirming itself, so
+            // none is asked: the exact request waits for the owner's own decision in the app.
+            const stored = await recordSubmittedProposal(app.db, { userId: principal.userId, origin: "typed_command", sourceRef: caller.grantId, grantId: caller.grantId, turnId: null, idempotencyKey: args.idempotencyKey, type: args.type, payload: args.payload, expectedVersions: args.expectedVersions ?? {}, occurredAt: args.occurredAt ?? null, nowMs: app.now() });
+            if ("conflict" in stored) throw new ApiException("idempotency_key_reuse", "this idempotencyKey was already used for a different request; nothing was changed");
+            if ("limited" in stored) throw new ApiException("rate_limited", "nothing was changed and nothing more was put before the owner: this connection already has many requests waiting for the owner's decision. Ask the owner to decide those in the Garderobe app first.", { reason: "too_many_requests_waiting" });
+            const decided = await submittedProposalState(app, principal.userId, stored.row.proposal_id);
+            const receipt = decided.state === "confirmed" && decided.commandId ? await app.service.getReceipt(principal, decided.commandId) : null;
+            if (receipt) {
+              return ok({ receipt: { ...receipt, replayed: true } }, `The owner confirmed this in the Garderobe app. ${receiptLine({ ...receipt, replayed: true })}`);
             }
-            if (state.h !== requestHash) throw new ApiException("confirmation_required", "the request changed after confirmation was asked for; nothing was changed. Ask again with the new request.", { reason: "request_altered" });
-            if (!answer || answer.confirm !== true) throw new ApiException("confirmation_required", "the change was not confirmed; nothing was changed", { reason: "not_confirmed" });
-            actionId = state.a;
+            if (decided.state === "rejected") throw new ApiException("forbidden", "the owner rejected this change in the Garderobe app; nothing was changed", { reason: "rejected_by_owner" });
+            if (decided.state === "expired") throw new ApiException("confirmation_required", "the owner did not confirm this change in time; nothing was changed. Send it again with a new idempotencyKey if it is still wanted.", { reason: "proposal_expired" });
+            throw new ApiException("confirmation_required", "nothing was changed: this is a sensitive change, so it is kept as a proposal that only the owner can confirm in the Garderobe app. Tell the owner it is waiting there; repeat this exact call later to learn the outcome.", { reason: "owner_confirmation_required", state: "pending" });
           }
-          const receipt = await executeCommand(app, principal, actionId ? { ...envelope, source: { ...envelope.source, actionId, parentKind: "job", parentId: `mcp:${caller.grantId}:${args.idempotencyKey}` } } : envelope, caller.exec);
+          const receipt = await executeCommand(app, principal, envelope, caller.exec);
           return ok({ receipt }, receiptLine(receipt));
         } catch (error) {
           return failure(error);

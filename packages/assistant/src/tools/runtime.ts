@@ -1,20 +1,25 @@
 /**
- * The turn runtime: how a model's tool call becomes (or does not become) a verified domain command.
+ * The turn runtime: how a model's tool call becomes a recorded observation, a piece of bookkeeping or a
+ * PROPOSAL for the owner. Conversation text is never authority for a sensitive change.
  *
  * A tool never writes to the database. A write tool hands a typed command to `commit()`, which
- *   1. returns a proposal instead of acting when the connection is read-only;
- *   2. verifies the owner's authority for it in trusted code (see policy/authority.ts);
- *   3. registers a durable action intent under the parent turn BEFORE dispatch - a recovered turn, or a
- *      resampled model proposing the same effect under a new tool-call ID, resolves to the same action and
- *      therefore the same command (the idempotency key derives from the action ID, never from the
- *      provider's tool-call ID);
- *   4. executes through the shared command service and returns the stored receipt.
- * What the model is told afterwards is the receipt's own summary.
+ *   1. classifies it in trusted code (policy/classes.ts);
+ *   2. for a wear or wash report, checks that every garment was named by the owner in their own words
+ *      or attached to the message (policy/naming.ts) and keeps that provenance with the turn;
+ *   3. for everything else that changes the wardrobe, the profile, rules, purchases, returns, memory or
+ *      the account - and for any report that failed step 2, and for every write on a read-only
+ *      connection - records a PROPOSAL with a summary written by trusted code (policy/describe.ts) and
+ *      executes nothing. The owner confirms or rejects that exact proposal in the app;
+ *   4. for what may be recorded, registers a durable action intent under the parent turn BEFORE dispatch
+ *      (a recovered turn or a resampled model resolves to the same action and the same command), then
+ *      executes through the shared command service and returns the stored receipt.
+ * What the model is told afterwards is the receipt's or the proposal's own summary.
  */
 import type { CommandReceipt } from "@garderobe/contracts";
-import { CommandError, isCommandError, registerActionIntent, type CommandService, type Db, type Principal } from "@garderobe/domain";
-import { verifyOwnerStatement, verifyRestrictionLift, type AuthorityCheck } from "../policy/authority.ts";
-import { verifyIntent } from "../policy/intent.ts";
+import { CommandError, all, isCommandError, registerActionIntent, type CommandService, type Db, type Principal } from "@garderobe/domain";
+import { classifyChange } from "../policy/classes.ts";
+import { describeChange, expectedVersionsFor } from "../policy/describe.ts";
+import { garmentsOfCategories, resolveOwnerNaming, type OwnerNaming } from "../policy/naming.ts";
 import type { CanonicalMessage } from "../recall/index.ts";
 import type { SearchIndexPort } from "../recall/ai-search.ts";
 import type { ExtractionRouter, SearchProvider } from "../research/index.ts";
@@ -56,6 +61,10 @@ export interface TurnRuntime {
   /** Owner text of this turn first, then the most recent earlier owner messages. */
   ownerTexts: string[];
   attachedRefs: string[];
+  /** Garments under an active restriction at the start of the turn (from the mandatory context). */
+  restrictedGarmentIds?: string[];
+  /** What was asked in this turn, in the asker's own words (the owner's own voice, or a research request's topic). Bounds what a web search may carry out. */
+  requestText?: string;
   conversationId: string;
   unindexedSource?: () => Promise<CanonicalMessage[]>;
   ports: AssistantPorts;
@@ -73,101 +82,169 @@ export interface TurnRuntime {
   readOriginal?: (messageId: string) => Promise<Record<string, unknown> | null>;
   /** Full-text search over the Think Session. */
   sessionSearch?: (query: string, limit: number) => Promise<{ messageId: string }[]>;
-  /** Record a verified owner authorization with the turn (trusted code only). */
+  /** Record, with the turn, why an observation was accepted without a tap (trusted code only). */
   onGrant?(grant: Record<string, unknown>): Promise<void> | void;
+  /** What the owner named in this turn's own words; resolved once per turn by commit(). */
+  naming?: Promise<OwnerNaming>;
+  /** Proposals recorded in this turn so far (bounded). */
+  proposalCount?: number;
   onReceipt(receipt: CommandReceipt): Promise<void> | void;
   onRefusal(refusal: { tool: string; code: string; message: string }): Promise<void> | void;
-  onProposal(proposal: { type: string; summary: string; payload: Record<string, unknown> }): Promise<void> | void;
+  onProposal(proposal: { type: string; summary: string; payload: Record<string, unknown>; expectedVersions?: Record<string, number> }): Promise<void> | void;
   onClarification(c: { question: string; choices: { id: string; label: string }[]; actionId: string | null }): Promise<void> | void;
   onActivity(label: string, data?: Record<string, unknown>): Promise<void> | void;
 }
-
-export type AuthorityRequirement =
-  /** Bookkeeping the owner's question implies (saving research, a shopping candidate): no quote needed. */
-  | { level: "record" }
-  /** A read the owner asked for in their own words (a question counts), such as searching their mailbox. */
-  | { level: "asked"; ownerQuote: string | undefined }
-  /** An ordinary reversible request: the owner's words asking for it. */
-  | { level: "routine"; ownerQuote: string | undefined }
-  /** Creating garments, amending the profile or rules, external authorizations, forgetting. */
-  | { level: "sensitive"; ownerQuote: string | undefined }
-  /** Lifting a restriction: the owner must have said its condition ended. */
-  | { level: "lift_restriction"; ownerQuote: string | undefined; restrictionKind: string; subject: string };
 
 export interface CommitRequest {
   tool: string;
   type: string;
   payload: Record<string, unknown>;
   targets: string[];
-  authority: AuthorityRequirement;
-  /** What a read-only connection is shown instead of an execution. */
-  proposalSummary: string;
   /** Durable business key for effects that are identified by a source occurrence rather than by the turn. */
   businessKey?: string;
   occurredAt?: string;
-  /**
-   * Set ONLY by tool code for a follow-up command whose content was built by trusted code from a command
-   * that was just verified in this same tool call (for example the incoming record of a verified order
-   * line). The quote is still verified; the action-intent match is not repeated.
-   */
-  followsVerified?: boolean;
-  /** Never executed on words relayed by a connected assistant (MCP): kept as a proposal for the owner to confirm in the app. */
-  ownerPresentOnly?: boolean;
-  /** Recorded with the turn when this command is authorized, for later checks by trusted code (never read from a model). */
-  grant?: Record<string, unknown>;
 }
 
 export type CommitResult =
   | { status: "committed"; commandId: string; outcome: string; summary: string; result: Record<string, unknown>; undoAvailable: boolean; receipt: CommandReceipt }
-  | { status: "proposed"; summary: string }
+  | { status: "proposed"; summary: string; note: string }
   | { status: "refused"; code: string; message: string };
 
-export function checkAuthority(rt: Pick<TurnRuntime, "ownerTexts">, authority: AuthorityRequirement): AuthorityCheck {
-  if (authority.level === "record") return { ok: true };
-  if (authority.level === "lift_restriction") return verifyRestrictionLift({ quote: authority.ownerQuote, ownerTexts: rt.ownerTexts, restrictionKind: authority.restrictionKind, subject: authority.subject });
-  if (authority.level === "asked") return verifyOwnerStatement({ quote: authority.ownerQuote, ownerTexts: rt.ownerTexts, level: "routine", allowQuestion: true });
-  return verifyOwnerStatement({ quote: authority.ownerQuote, ownerTexts: rt.ownerTexts, level: authority.level });
+/** No turn may leave more than this many requests for the owner to go through. */
+export const MAX_PROPOSALS_PER_TURN = 8;
+/** A wear report is taken without a tap for today and the last week; anything older waits for the owner. */
+const WEAR_REPORT_DAYS = 7;
+
+const PROPOSED_NOTE = "NOT DONE. This was recorded as a request for the owner to confirm in the Garderobe app (Settings, Requests to confirm). Nothing has changed. Tell the owner exactly that; never say it was done.";
+
+function garmentsOf(type: string, payload: Record<string, any>): string[] {
+  const itemIds = (): string[] => ((payload["items"] ?? []) as { garmentId: string }[]).map((i) => i.garmentId);
+  switch (type) {
+    case "wear.record":
+      return [...(payload["garmentIds"] ?? [])];
+    case "wear.amend":
+      return [...(payload["remove"] ?? []), ...(payload["add"] ?? [])];
+    case "care.mark_dirty":
+    case "care.washed":
+      return itemIds();
+    case "feedback.record":
+      return [...(payload["garmentIds"] ?? [])];
+    default:
+      return [];
+  }
+}
+
+function daysBetween(a: string, b: string): number {
+  return Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86_400_000);
+}
+
+interface ObservationGate {
+  ok: boolean;
+  /** The command as it may be recorded (a group report is narrowed to what the owner named). */
+  payload: Record<string, unknown>;
+  provenance: { garmentId: string; basis: "named_by_owner" | "attached_by_owner" | "category_named_by_owner"; matched: string[] }[];
+}
+
+/**
+ * Whether a wear or wash report (or a comfort note) may be recorded without the owner's tap: every garment
+ * in it must have been named by the owner in this turn's own words, in a sentence that reads as their own
+ * report, or attached to the message by the owner. Text in attachments and relayed passages never names
+ * anything. A report that does not pass is not refused: it becomes a proposal.
+ */
+async function observationGate(rt: TurnRuntime, type: string, payload: Record<string, any>): Promise<ObservationGate> {
+  const no: ObservationGate = { ok: false, payload, provenance: [] };
+  rt.naming ??= resolveOwnerNaming(rt.db, rt.principal.userId, rt.ownerTexts.join("\n\n"));
+  const naming = await rt.naming;
+  const date = (payload["wearingDate"] as string | null | undefined) ?? null;
+  if ((type === "wear.record" || type === "wear.amend") && date) {
+    const age = daysBetween(date, rt.localDate);
+    if (age < 0 || age > WEAR_REPORT_DAYS) return no;
+  }
+  let effective: Record<string, unknown> = payload;
+  let ids = garmentsOf(type, payload);
+  const groupReport = type === "care.washed" || type === "care.mark_dirty";
+  const inNamedCategory = new Set<string>();
+  if (groupReport && naming.categories.size > 0) for (const g of await garmentsOfCategories(rt.db, rt.principal.userId, [...naming.categories])) inNamedCategory.add(g.garmentId);
+  if (type === "care.washed" && payload["allOfChannel"]) {
+    if (!naming.handwashGroup) {
+      // "Washed all my socks": the report covers the hand-wash pieces of the categories the owner named.
+      const group = (await garmentsOfCategories(rt.db, rt.principal.userId, [...naming.categories])).filter((g) => g.careChannel === payload["allOfChannel"]);
+      if (group.length === 0) return no;
+      ids = group.map((g) => g.garmentId);
+      effective = { items: ids.map((garmentId) => ({ garmentId })) };
+    } else return { ok: true, payload, provenance: [] };
+  }
+  if (ids.length === 0 && type !== "feedback.record") return no;
+  const provenance: ObservationGate["provenance"] = [];
+  for (const garmentId of [...new Set(ids)]) {
+    const named = naming.named.get(garmentId);
+    if (rt.attachedRefs.includes(garmentId)) provenance.push({ garmentId, basis: "attached_by_owner", matched: [] });
+    else if (named?.direct) provenance.push({ garmentId, basis: "named_by_owner", matched: named.matched });
+    else if (groupReport && inNamedCategory.has(garmentId)) provenance.push({ garmentId, basis: "category_named_by_owner", matched: [] });
+    else return no;
+  }
+  // Words relayed by a connected assistant never record the wear of a piece under an active restriction.
+  if (rt.principal.channel === "mcp" && type === "wear.record" && ids.some((id) => (rt.restrictedGarmentIds ?? []).includes(id))) return no;
+  return { ok: true, payload: effective, provenance };
+}
+
+async function propose(rt: TurnRuntime, req: CommitRequest): Promise<CommitResult> {
+  // What would be executed must be a well-formed command about records that exist: the owner is never
+  // asked to confirm something that could not be carried out.
+  if (rt.service.registry.has(req.type)) {
+    const parsed = rt.service.registry.get(req.type).schema.safeParse(req.payload);
+    if (!parsed.success) {
+      const refusal = { tool: req.tool, code: "invalid_request", message: `that request is not complete or well formed: ${parsed.error.issues.slice(0, 3).map((issue: { path: PropertyKey[]; message: string }) => `${issue.path.join(".")} ${issue.message}`).join("; ")}` };
+      await rt.onRefusal(refusal);
+      return { status: "refused", code: refusal.code, message: `Nothing was changed. ${refusal.message}` };
+    }
+  }
+  const referenced = [...new Set([...garmentsOf(req.type, req.payload), ...(typeof req.payload["garmentId"] === "string" ? [req.payload["garmentId"] as string] : [])])];
+  if (referenced.length > 0) {
+    const known = new Set((await all<{ garment_id: string }>(rt.db, `SELECT garment_id FROM garments WHERE user_id = ? AND garment_id IN (${referenced.map(() => "?").join(",")})`, rt.principal.userId, ...referenced)).map((r) => r.garment_id));
+    const missing = referenced.filter((id) => !known.has(id));
+    if (missing.length > 0) {
+      const refusal = { tool: req.tool, code: "not_found", message: `no such piece in this wardrobe: ${missing.join(", ")}. Look the piece up first; nothing is created to make a reference resolve` };
+      await rt.onRefusal(refusal);
+      return { status: "refused", code: refusal.code, message: `Nothing was changed. ${refusal.message}` };
+    }
+  }
+  rt.proposalCount = (rt.proposalCount ?? 0) + 1;
+  if (rt.proposalCount > MAX_PROPOSALS_PER_TURN) {
+    const refusal = { tool: req.tool, code: "too_many_requests", message: `this turn already left ${MAX_PROPOSALS_PER_TURN} requests for the owner to confirm; no more are added` };
+    await rt.onRefusal(refusal);
+    return { status: "refused", code: refusal.code, message: `Nothing was changed. ${refusal.message}` };
+  }
+  const summary = await describeChange(rt.db, rt.principal.userId, req.type, req.payload);
+  const expectedVersions = await expectedVersionsFor(rt.db, rt.principal.userId, req.type, req.payload);
+  await rt.onProposal({ type: req.type, summary, payload: req.payload, ...(Object.keys(expectedVersions).length > 0 ? { expectedVersions } : {}) });
+  return { status: "proposed", summary, note: PROPOSED_NOTE };
 }
 
 export async function commit(rt: TurnRuntime, req: CommitRequest): Promise<CommitResult> {
-  if (rt.readOnly) {
-    await rt.onProposal({ type: req.type, summary: req.proposalSummary, payload: req.payload });
-    return { status: "proposed", summary: `Not done: this connection can only read. Proposed for the owner to confirm: ${req.proposalSummary}` };
-  }
   if (await rt.isCancelled?.()) {
     const refusal = { tool: req.tool, code: "cancelled", message: "the owner stopped this turn" };
     await rt.onRefusal(refusal);
     return { status: "refused", code: "cancelled", message: "Nothing was changed. The owner stopped this turn." };
   }
-  // Words that arrive through a connected assistant (MCP) are relayed by another model: they are never
-  // enough for a change to the profile, the rules, the wardrobe's contents or a restriction. Such a
-  // request is kept as a proposal for the owner to confirm in the app.
-  if (rt.principal.channel === "mcp" && (req.authority.level === "sensitive" || req.authority.level === "lift_restriction" || req.ownerPresentOnly)) {
-    await rt.onProposal({ type: req.type, summary: req.proposalSummary, payload: req.payload });
-    return { status: "proposed", summary: `Not done: this needs the owner's confirmation in the Garderobe app. Proposed for the owner to confirm: ${req.proposalSummary}` };
+  // A read-only connection changes nothing at all.
+  if (rt.readOnly) return propose(rt, req);
+  const cls = classifyChange(req.type, req.payload, rt.principal.channel);
+  if (cls === "confirm") return propose(rt, req);
+  let payload = req.payload;
+  if (cls === "observation") {
+    const gate = await observationGate(rt, req.type, req.payload);
+    if (!gate.ok) return propose(rt, req);
+    payload = gate.payload;
+    await rt.onGrant?.({ tool: req.tool, type: req.type, basis: "owner_report", messageId: rt.userMessageId, garments: gate.provenance });
   }
-  const check = checkAuthority(rt, req.authority);
-  if (!check.ok) {
-    const refusal = { tool: req.tool, code: check.code ?? "not_authorized", message: check.message ?? "not authorized" };
-    await rt.onRefusal(refusal);
-    return { status: "refused", code: refusal.code, message: `Nothing was changed. ${refusal.message}` };
-  }
-  // The owner's sentence must ask for THIS action on THIS target (policy/intent.ts).
-  if (req.authority.level !== "record" && req.authority.level !== "lift_restriction" && !req.followsVerified) {
-    const intent = await verifyIntent({ db: rt.db, userId: rt.principal.userId, type: req.type, level: req.authority.level === "asked" ? "routine" : req.authority.level, sentence: check.sentence ?? "", ownerTexts: rt.ownerTexts, payload: req.payload, targets: req.targets, attachedRefs: rt.attachedRefs });
-    if (!intent.ok) {
-      await rt.onRefusal({ tool: req.tool, code: intent.code, message: intent.message });
-      return { status: "refused", code: intent.code, message: `Nothing was changed. ${intent.message}` };
-    }
-  }
-  if (req.grant && req.authority.level !== "record") await rt.onGrant?.({ tool: req.tool, type: req.type, level: req.authority.level, ...req.grant });
   try {
     let idempotencyKey: string;
     let actionId: string | undefined;
     if (req.businessKey) {
       idempotencyKey = req.businessKey;
     } else {
-      const intent = await registerActionIntent(rt.db, rt.principal, { parentKind: "turn", parentId: rt.turnId, operation: req.type, targets: req.targets, effect: req.payload, nowMs: rt.now() });
+      const intent = await registerActionIntent(rt.db, rt.principal, { parentKind: "turn", parentId: rt.turnId, operation: req.type, targets: req.targets, effect: payload, nowMs: rt.now() });
       idempotencyKey = intent.idempotencyKey;
       actionId = intent.actionId;
       if (intent.state === "committed" && intent.commandId) {
@@ -182,7 +259,7 @@ export async function commit(rt: TurnRuntime, req: CommitRequest): Promise<Commi
     }
     const receipt = await rt.service.execute(rt.principal, {
       type: req.type,
-      payload: req.payload,
+      payload,
       idempotencyKey,
       authorization: "owner_statement",
       ...(req.occurredAt ? { occurredAt: req.occurredAt } : {}),
@@ -228,5 +305,30 @@ export function retrievalRefusal(rt: Pick<TurnRuntime, "allowedUrls">, url: stri
   const key = urlKey(url);
   if (!key) return "that is not a public https address";
   if (rt.allowedUrls && !rt.allowedUrls.has(key)) return "that address was not given by the owner and did not come from a search in this turn; only those are retrieved. Search first, or ask the owner for the link";
+  return null;
+}
+
+/** Words about the owner's body and health: they leave in a search query only when the request itself used them. */
+const PRIVATE_TERMS = /\b(nerve|neuropath\w*|injur\w*|surgery|operation|diagnos\w*|chemo\w*|cancer|diabet\w*|arthrit\w*|medical|medication|disab\w*|podiatr\w*|physio\w*|rash|eczema|psoriasis|swelling|swollen|pain|weight|kg|kilos?|stone|lbs?|pounds heavy|bmi|password|address|postcode|phone|salary|income)\b/gi;
+
+/**
+ * Why a web search query may not be sent, or null when it may. A query is model-written text that leaves
+ * to a third party, so it must not be a vehicle for the owner's private facts: every number in it (a
+ * measurement, a size, a date of birth) and every word about the owner's body or health must already be
+ * in what was asked in this turn, or be part of a wardrobe or product record's own name (a model number).
+ * This bounds what a search can carry; it does not make search results trustworthy.
+ */
+export async function searchQueryRefusal(rt: Pick<TurnRuntime, "db" | "principal" | "requestText">, query: string): Promise<string | null> {
+  const asked = ` ${(rt.requestText ?? "").toLowerCase()} `;
+  const q = query.toLowerCase();
+  const numbers = q.match(/\d+(?:[.,]\d+)?/g) ?? [];
+  const unknown = numbers.filter((n) => !asked.includes(n) && !(n.length === 4 && Number(n) >= 1800 && Number(n) <= 2099));
+  if (unknown.length > 0) {
+    const names = (await all<{ name: string }>(rt.db, "SELECT name FROM garments WHERE user_id = ? UNION ALL SELECT name FROM products WHERE user_id = ?", rt.principal.userId, rt.principal.userId)).map((r) => r.name.toLowerCase()).join(" ");
+    const leaking = unknown.filter((n) => !names.includes(n));
+    if (leaking.length > 0) return `the query carries a number (${leaking.join(", ")}) that was not in what was asked and is not part of a product name; measurements, sizes and other private values are not sent to a search provider`;
+  }
+  const terms = [...new Set((q.match(PRIVATE_TERMS) ?? []).filter((t) => !asked.includes(t)))];
+  if (terms.length > 0) return `the query mentions ${terms.join(", ")}, which was not in what was asked; the owner's health and personal details are not sent to a search provider`;
   return null;
 }

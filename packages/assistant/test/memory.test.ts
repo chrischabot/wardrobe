@@ -5,7 +5,7 @@ import { all, prepare, stmt } from "@garderobe/domain";
 import { ownerDocuments } from "@garderobe/domain/testing";
 import { extractJudgements, listForgetStates, resolveDateRange } from "../src/index.ts";
 import { setTestCompaction, type FakeRequest } from "../src/testing/index.ts";
-import { createWorld, setNow, submission, type World } from "./helpers.ts";
+import { confirm, createWorld, setNow, submission, type World } from "./helpers.ts";
 
 /**
  * SYNTHETIC CONVERSATION (test fixture): the things said below are scripted test dialogue held against the
@@ -144,10 +144,16 @@ describe("continuous conversation: recall, compaction and forgetting (real Think
   });
 
   it("forgets a message: hidden from recall, transcript, model context and export at once; summaries that covered it are invalidated; erasure is reported per store", async () => {
-    w.model.script({ toolCalls: [{ toolName: "forget", input: { sourceKind: "message", sourceIds: [julyMessageId], ownerQuote: "please forget what I said about that shop visit in July" } }] }, { text: "Forgotten." });
-    const turn = await w.client.runTurn({ submissionId: submission(), text: "please forget what I said about that shop visit in July" });
-    expect(turn.receipts.map((r) => r.type)).toEqual(["conversation.forget_source"]);
-    expect(turn.receipts[0]!.summary).toContain("still in progress");
+    w.model.script({ toolCalls: [{ toolName: "forget", input: { sourceKind: "message", sourceIds: [julyMessageId] } }] }, { text: "Forgotten." });
+    const asked = await w.client.runTurn({ submissionId: submission(), text: "please forget what I said about that shop visit in July" });
+    // Forgetting is irreversible: the owner confirms it. Until then the message is still there.
+    expect(asked.receipts).toEqual([]);
+    expect((await w.client.recallSearch({ text: "What shoes did I like so much last July?" })).hits.length).toBeGreaterThan(0);
+    const receipt = await confirm(w, asked);
+    expect(receipt.type).toBe("conversation.forget_source");
+    expect(receipt.summary).toContain("Still being removed from transcript, summaries, ai search");
+    await w.client.reconcileErasures();
+    await w.client.rebuildSanitizedSession();
 
     expect((await w.client.recallSearch({ text: "What shoes did I like so much last July?" })).hits).toHaveLength(0);
     const transcript = await w.client.transcript({ limit: 200 });
