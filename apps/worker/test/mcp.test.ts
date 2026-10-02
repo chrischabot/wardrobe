@@ -1,7 +1,7 @@
 import { SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { MCP_TOOL_NAMES } from "@garderobe/contracts/ext/api";
-import { APP_ORIGIN, MCP_ORIGIN, connectMcp, decideConsent, provisionOwner, toolResult, type McpConnection, type TestOwner } from "../src/testing/index.ts";
+import { APP_ORIGIN, MCP_ORIGIN, connectMcp, decideConsent, provisionOwner, testApp, toolResult, type McpConnection, type TestOwner } from "../src/testing/index.ts";
 
 /*
  * A real MCP client (the TypeScript SDK's Client over streamable HTTP) against the real Worker:
@@ -143,7 +143,7 @@ describe("commands over MCP", () => {
   });
 });
 
-describe("confirmation of consequential operations", () => {
+describe("sensitive typed commands wait for the owner", () => {
   /** A labelled synthetic garment created for this test only; it is not the owner's real stock. */
   async function syntheticGarment(name: string): Promise<string> {
     const receipt = (await (
@@ -153,75 +153,76 @@ describe("confirmation of consequential operations", () => {
     return receipt.affected.find((a: any) => a.kind === "garment").id;
   }
   const retire = (garmentId: string, key: string) => ({ name: "garderobe_command", arguments: { type: "garment.retire", payload: { garmentId, disposition: "donated" }, idempotencyKey: key } });
+  const retired = async (garmentId: string) => (await owner.api.json("GET", `/v1/commands?entity=garment:${garmentId}`)).receipts.filter((r: any) => r.type === "garment.retire");
+  const pending = async () => (await owner.api.json("GET", "/v1/proposals")).proposals as any[];
 
-  it("asks first, and executes exactly once when the owner confirms", async () => {
+  it("is not executed and not confirmable by the connection, even one that answers yes to every question; the owner's confirmation in the app runs it once", async () => {
     const garmentId = await syntheticGarment("Synthetic test shirt A (not real stock)");
     const asked: string[] = [];
-    const confirming = await connectMcp(owner, { write: true, clientName: "Confirming assistant", redirectUri: "https://confirm.client.test/cb", onElicit: (p) => (asked.push(String(p.message)), { action: "accept", content: { confirm: true } }) });
+    const eager = await connectMcp(owner, { write: true, clientName: "Eager assistant", redirectUri: "https://confirm.client.test/cb", onElicit: (p) => (asked.push(String(p.message)), { action: "accept", content: { confirm: true } }) });
     const key = `retire-${crypto.randomUUID()}`;
-    const result = toolResult(await confirming.client.callTool(retire(garmentId, key)));
-    expect(asked).toHaveLength(1);
-    expect(asked[0]).toContain("garment.retire");
-    expect(result.ok).toBe(true);
-    expect(result.data.receipt.outcome).toBe("committed");
-    // Repeating the whole exchange with the same key cannot retire it twice.
-    const again = toolResult(await confirming.client.callTool(retire(garmentId, key)));
-    expect(again.data.receipt.replayed).toBe(true);
-    expect(again.data.receipt.commandId).toBe(result.data.receipt.commandId);
-    const history = await owner.api.json("GET", `/v1/commands?entity=garment:${garmentId}`);
-    expect(history.receipts.filter((r: any) => r.type === "garment.retire")).toHaveLength(1);
-    await confirming.close();
-  });
-
-  it("does nothing when the owner declines", async () => {
-    const garmentId = await syntheticGarment("Synthetic test shirt B (not real stock)");
-    const declining = await connectMcp(owner, { write: true, clientName: "Declining assistant", redirectUri: "https://decline.client.test/cb", onElicit: () => ({ action: "decline" }) });
-    const result = toolResult(await declining.client.callTool(retire(garmentId, `retire-${crypto.randomUUID()}`)));
+    const result = toolResult(await eager.client.callTool(retire(garmentId, key)));
     expect(result.ok).toBe(false);
-    expect(result.error!.code).toBe("confirmation_required");
-    const history = await owner.api.json("GET", `/v1/commands?entity=garment:${garmentId}`);
-    expect(history.receipts.some((r: any) => r.type === "garment.retire")).toBe(false);
-    await declining.close();
+    expect(result.error).toMatchObject({ code: "confirmation_required", details: { reason: "owner_confirmation_required", state: "pending" } });
+    expect(asked).toEqual([]); // the connection is never asked: its answer would be its own
+    expect(await retired(garmentId)).toEqual([]);
+    // Repeating the call neither executes it nor makes a second proposal.
+    expect(toolResult(await eager.client.callTool(retire(garmentId, key))).error!.code).toBe("confirmation_required");
+    const waiting = (await pending()).filter((p) => p.type === "garment.retire" && p.payload.garmentId === garmentId);
+    expect(waiting).toHaveLength(1);
+    expect(waiting[0]).toMatchObject({ state: "pending", turnId: "", source: { channel: "mcp", assistantName: "Eager assistant" }, payload: { garmentId, disposition: "donated" } });
+    // The summary is written by the service from the exact request.
+    expect(waiting[0].summary).toContain("Retire a garment from the wardrobe");
+    expect(waiting[0].summary).toContain(garmentId);
+    // The same key with a different request is refused and does not replace what the owner will see.
+    const second = await syntheticGarment("Synthetic test shirt A2 (not real stock)");
+    expect(toolResult(await eager.client.callTool(retire(second, key))).error!.code).toBe("idempotency_key_reuse");
+    expect((await pending()).some((p) => p.payload.garmentId === second)).toBe(false);
+
+    // The owner confirms in the app: the change is made once, as the owner's tap.
+    const decided = (await (await owner.api.post(`/v1/proposals/${waiting[0].proposalId}/decision`, { decision: "confirm" })).json()) as any;
+    expect(decided).toMatchObject({ replayed: false, proposal: { state: "confirmed" }, receipt: { type: "garment.retire", outcome: "committed" } });
+    const command = await (await testApp()).db.prepare("SELECT actor, channel, authorization_basis FROM commands WHERE user_id = ? AND command_id = ?").bind(owner.userId, decided.receipt.commandId).first();
+    expect(command).toEqual({ actor: "owner", channel: "ios", authorization_basis: "owner_tap" });
+    // The connection learns the outcome by repeating its call; nothing runs a second time.
+    const again = toolResult(await eager.client.callTool(retire(garmentId, key)));
+    expect(again.ok, JSON.stringify(again.error)).toBe(true);
+    expect(again.data.receipt).toMatchObject({ commandId: decided.receipt.commandId, replayed: true });
+    expect(await retired(garmentId)).toHaveLength(1);
+    await eager.close();
   });
 
-  it("refuses a confirmation replayed onto an altered request, and a forged state", async () => {
-    const first = await syntheticGarment("Synthetic test shirt C (not real stock)");
-    const second = await syntheticGarment("Synthetic test shirt D (not real stock)");
-    const token = writer.oauth.snapshot().accessToken;
-    const meta = { "io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientInfo": { name: "raw-test-client", version: "1.0.0" }, "io.modelcontextprotocol/clientCapabilities": { elicitation: { form: {} } } };
-    const call = async (id: number, args: Record<string, unknown>, extra: Record<string, unknown> = {}) => {
-      const response = await SELF.fetch(`${MCP_ORIGIN}/mcp`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", Authorization: `Bearer ${token}`, "MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call", "Mcp-Name": "garderobe_command" },
-        body: JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: "garderobe_command", arguments: args, _meta: meta, ...extra } }),
-      });
-      const text = await response.text();
-      const payload = text.startsWith("{") ? text : (text.split("\n").find((l) => l.startsWith("data: ")) ?? "data: {}").slice(6);
-      return { status: response.status, body: JSON.parse(payload) as any };
-    };
-    const argsFor = (garmentId: string, key: string) => ({ type: "garment.retire", payload: { garmentId, disposition: "donated" }, idempotencyKey: key });
+  it("does nothing when the owner rejects it, and tells the connection so", async () => {
+    const garmentId = await syntheticGarment("Synthetic test shirt B (not real stock)");
     const key = `retire-${crypto.randomUUID()}`;
-    const asked = await call(1, argsFor(first, key));
-    expect(asked.body.result.resultType).toBe("input_required");
-    const state = asked.body.result.requestState as string;
-    expect(Object.keys(asked.body.result.inputRequests)).toEqual(["confirm"]);
-    const confirm = { confirm: { action: "accept", content: { confirm: true } } };
+    expect(toolResult(await writer.client.callTool(retire(garmentId, key))).error!.code).toBe("confirmation_required");
+    const proposal = (await pending()).find((p) => p.payload.garmentId === garmentId)!;
+    expect((await owner.api.post(`/v1/proposals/${proposal.proposalId}/decision`, { decision: "reject" })).status).toBe(200);
+    const result = toolResult(await writer.client.callTool(retire(garmentId, key)));
+    expect(result.error).toMatchObject({ code: "forbidden", details: { reason: "rejected_by_owner" } });
+    expect(await retired(garmentId)).toEqual([]);
+  });
 
-    // The confirmation for garment C is replayed on a request that retires garment D instead.
-    const altered = await call(2, argsFor(second, key), { inputResponses: confirm, requestState: state });
-    expect(JSON.stringify(altered.body)).toContain("confirmation_required");
-    // A forged or modified state is rejected by the protocol layer before the tool runs.
-    const forged = await call(3, argsFor(first, key), { inputResponses: confirm, requestState: `${state.slice(0, -4)}AAAA` });
-    expect(forged.body.error?.code).toBe(-32602);
-    for (const id of [first, second]) {
-      const history = await owner.api.json("GET", `/v1/commands?entity=garment:${id}`);
-      expect(history.receipts.some((r: any) => r.type === "garment.retire")).toBe(false);
-    }
-    // The untouched confirmation still completes the original request, once.
-    const done = await call(4, argsFor(first, key), { inputResponses: confirm, requestState: state });
-    expect(done.body.result.structuredContent.receipt.outcome).toBe("committed");
-    const repeated = await call(5, argsFor(first, key), { inputResponses: confirm, requestState: state });
-    expect(repeated.body.result.structuredContent.receipt.replayed).toBe(true);
+  it("covers the undo of a sensitive change, while a routine change and its undo still run directly", async () => {
+    const garmentId = await syntheticGarment("Synthetic test shirt C (not real stock)");
+    const created = (await owner.api.json("GET", `/v1/commands?entity=garment:${garmentId}`)).receipts.find((r: any) => r.type === "garment.create");
+    const undo = (commandId: string) => ({ name: "garderobe_command", arguments: { type: "command.undo", payload: { commandId }, idempotencyKey: `undo-${crypto.randomUUID()}` } });
+    // Undoing the creation would remove the garment: it waits for the owner.
+    expect(toolResult(await writer.client.callTool(undo(created.commandId))).error!.code).toBe("confirmation_required");
+    expect((await owner.api.json("GET", "/v1/wardrobe")).items.some((i: any) => i.garment.garmentId === garmentId)).toBe(true);
+    expect((await pending()).some((p) => p.type === "command.undo" && p.payload.commandId === created.commandId)).toBe(true);
+    // A wear report on a garment the connection names is recorded at once, and so is its undo.
+    const wore = toolResult(await writer.client.callTool({ name: "garderobe_command", arguments: { type: "wear.record", payload: { wearingDate: new Date().toISOString().slice(0, 10), garmentIds: [garmentId] }, idempotencyKey: `wear-${crypto.randomUUID()}` } }));
+    expect(wore.ok, JSON.stringify(wore.error)).toBe(true);
+    const undone = toolResult(await writer.client.callTool(undo(wore.data.receipt.commandId)));
+    expect(undone.ok, JSON.stringify(undone.error)).toBe(true);
+  });
+
+  it("refuses an invalid sensitive request before anything is shown to the owner", async () => {
+    const before = (await owner.api.json("GET", "/v1/proposals?state=all")).proposals.length;
+    const result = toolResult(await writer.client.callTool({ name: "garderobe_command", arguments: { type: "garment.retire", payload: { disposition: "donated" }, idempotencyKey: `bad-${crypto.randomUUID()}` } }));
+    expect(result.error!.code).toBe("invalid_command");
+    expect((await owner.api.json("GET", "/v1/proposals?state=all")).proposals.length).toBe(before);
   });
 });
 

@@ -183,6 +183,27 @@ describe("export my wardrobe", () => {
     expect(jsonFile("manifest.json").excluded.join(" ")).toContain("recovery credential verifiers");
   });
 
+  it("contains no storage key: nothing in the package names a path under an owner's storage prefix", async () => {
+    // The owner uploaded a photograph and it was normalised (see beforeAll), so the ledger holds media commands.
+    const app = await testApp();
+    const mediaCommands = (await app.db.prepare("SELECT DISTINCT type FROM commands WHERE user_id = ? AND type IN ('media.finalize_upload', 'media.record_normalization')").bind(owner.userId).all<{ type: string }>()).results.map((r) => r.type);
+    expect(mediaCommands.sort()).toEqual(["media.finalize_upload", "media.record_normalization"]);
+    // A command stored by an earlier version, whose payload named the storage location of a file.
+    const legacy = `u/${owner.userId}/assets/ast_legacy/display-1-abc.jpg`;
+    await app.db.prepare("INSERT INTO commands (user_id, command_id, idempotency_key, type, request_hash, payload_json, channel, actor, authorization_basis, source_json, occurred_at, recorded_at, outcome, receipt_json) VALUES (?, 'cmd_legacy_storage_key', 'legacy-storage-key', 'media.record_normalization', 'x', ?, 'system', 'system', 'system_schedule', '{}', ?, ?, 'noop', '{}')").bind(owner.userId, JSON.stringify({ renditions: [{ objectKey: legacy }] }), new Date().toISOString(), new Date().toISOString()).run();
+    const again = await waitForExport(owner, (await owner.api.json("POST", "/v1/exports", { clientRequestId: `export-${crypto.randomUUID()}` })).exportId);
+    const fresh = unzipSync((await download(owner, again.exportId)).bytes);
+    await app.db.prepare("DELETE FROM commands WHERE user_id = ? AND command_id = 'cmd_legacy_storage_key'").bind(owner.userId).run();
+    const exportedLegacy = JSON.parse(decoder.decode(fresh["records/receipts.json"]!)).tables.commands.rows.find((r: any) => r.command_id === "cmd_legacy_storage_key");
+    expect(JSON.parse(exportedLegacy.payload_json).renditions[0].objectKey).toBe("assets/ast_legacy/display-1-abc.jpg");
+    for (const [path, bytes] of [...Object.entries(files), ...Object.entries(fresh)]) {
+      if (path.startsWith("media/")) continue; // image bytes
+      const content = decoder.decode(bytes);
+      expect(content.includes(`u/${owner.userId}/`), `storage key in ${path}`).toBe(false);
+      expect(/\bu\/usr_[A-Za-z0-9]+\//.test(content), `storage key of some owner in ${path}`).toBe(false);
+    }
+  });
+
   it("downloads only with a short-lived, single-use ticket for that export", async () => {
     expect((await SELF.fetch(`${APP_ORIGIN}/v1/exports/${job.exportId}/download`)).status).toBe(400);
     expect((await SELF.fetch(`${APP_ORIGIN}/v1/exports/${job.exportId}/download?ticket=guess`)).status).toBe(401);
@@ -444,12 +465,28 @@ describe("a laundry batch that was undone", () => {
     expect(before[0]!.withdrawn_at).toBeTruthy();
     expect(before[0]!.withdrawn_by_command_id).toBeTruthy();
 
+    // A column added by a later migration travels too (migration 0004: a scrubbed command stays marked as
+    // scrubbed after a restore). The mark is set directly here, standing in for the foundation's scrub.
+    await app.db.prepare("UPDATE commands SET scrubbed_at = '2026-10-02T00:00:00Z', scrubbed_by_command_id = ? WHERE user_id = ? AND command_id = ?").bind(collected.commandId, source.userId, collected.commandId).run();
+
     const done = await waitForExport(source, (await source.api.json("POST", "/v1/exports", { clientRequestId: `export-${crypto.randomUUID()}` })).exportId);
     const { bytes } = await download(source, done.exportId);
+    const unzipped = unzipSync(bytes);
+    const tablesOf = (path: string) => JSON.parse(new TextDecoder().decode(unzipped[path]!)).tables;
+    expect(tablesOf("records/receipts.json").commands.columns).toEqual(expect.arrayContaining(["scrubbed_at", "scrubbed_by_command_id"]));
+    expect(tablesOf("records/laundry.json").laundry_exceptions.columns).toEqual(expect.arrayContaining(["resolution", "resolved_by_command_id"]));
+    // In the package itself a reader can tell: the row carries when it was withdrawn and by which command,
+    // and the table's description says what that means for a row whose status still reads `collected`.
+    const exported = JSON.parse(new TextDecoder().decode(unzipSync(bytes)["records/laundry.json"]!)).tables.laundry_batches;
+    expect(exported.columns).toEqual(expect.arrayContaining(["status", "withdrawn_at", "withdrawn_by_command_id"]));
+    expect(exported.rows).toHaveLength(1);
+    expect(exported.rows[0]).toMatchObject({ batch_id: before[0]!.batch_id, withdrawn_at: before[0]!.withdrawn_at, withdrawn_by_command_id: before[0]!.withdrawn_by_command_id });
+    expect(exported.description).toMatch(/withdrawn_at is set records a pickup that was undone/);
     const target = await provisionOwner();
     const imported = await target.api.request("POST", "/v1/imports", { raw: bytes, headers: { "Content-Type": "application/zip" } });
     expect(imported.status, await imported.clone().text()).toBe(200);
     expect(await batches(target.userId)).toEqual(before);
+    expect(await app.db.prepare("SELECT scrubbed_at, scrubbed_by_command_id FROM commands WHERE user_id = ? AND command_id = ?").bind(target.userId, collected.commandId).first()).toEqual({ scrubbed_at: "2026-10-02T00:00:00Z", scrubbed_by_command_id: collected.commandId });
     // Seen through the product: nothing is out at the laundry service for either owner.
     expect((await target.api.json("GET", "/v1/laundry")).batches ?? []).toEqual((await source.api.json("GET", "/v1/laundry")).batches ?? []);
   });
