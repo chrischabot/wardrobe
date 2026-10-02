@@ -291,6 +291,7 @@ export function buildMcpServer(app: App, caller: McpCaller): McpServer {
             // none is asked: the exact request waits for the owner's own decision in the app.
             const stored = await recordSubmittedProposal(app.db, { userId: principal.userId, origin: "typed_command", sourceRef: caller.grantId, grantId: caller.grantId, turnId: null, idempotencyKey: args.idempotencyKey, type: args.type, payload: args.payload, expectedVersions: args.expectedVersions ?? {}, occurredAt: args.occurredAt ?? null, nowMs: app.now() });
             if ("conflict" in stored) throw new ApiException("idempotency_key_reuse", "this idempotencyKey was already used for a different request; nothing was changed");
+            if ("limited" in stored) throw new ApiException("rate_limited", "nothing was changed and nothing more was put before the owner: this connection already has many requests waiting for the owner's decision. Ask the owner to decide those in the Garderobe app first.", { reason: "too_many_requests_waiting" });
             const decided = await submittedProposalState(app, principal.userId, stored.row.proposal_id);
             const receipt = decided.state === "confirmed" && decided.commandId ? await app.service.getReceipt(principal, decided.commandId) : null;
             if (receipt) {

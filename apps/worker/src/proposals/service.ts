@@ -32,7 +32,7 @@ import { all, first, json as parseJson, prepare, stmt, toInstant, type Principal
 import type { App } from "../app.ts";
 import { sha256Hex } from "../crypto.ts";
 import { ApiException } from "../errors.ts";
-import { describeProposedChange, listSubmittedProposals, submittedExpectedVersions, submittedPayload } from "./store.ts";
+import { describeProposedChange, garmentIdsIn, listSubmittedProposals, submittedExpectedVersions, submittedPayload, type ProposalReferences } from "./store.ts";
 
 /** A proposal nobody decided is offered for this long; after that it can no longer be confirmed. */
 export const PROPOSAL_LIFETIME_MS = 14 * 86_400_000;
@@ -121,13 +121,21 @@ async function held(app: App, userId: string, limit: number, nowMs: number): Pro
       add({ proposalId: await proposalIdOf(turn.turn_id, p.type, payload), turnId: turn.turn_id, decisionRef: turn.turn_id, type: p.type, ...(typeof p.summary === "string" && p.summary ? { summary: p.summary } : {}), payload, proposedAt: turn.created_at, channel: turn.channel, assistantName: grantId ? (grants.get(grantId) ?? null) : null, expectedVersions, occurredAt: null });
     }
   }
-  for (const row of submitted) {
+  // What the ledger holds under the identifiers these requests name, for the summaries written here.
+  const payloads = submitted.map((row) => submittedPayload(row));
+  const garmentIds = [...payloads.reduce((ids, p) => garmentIdsIn(p, ids), new Set<string>())];
+  const commandIds = [...new Set(submitted.flatMap((row, i) => (row.command_type === "command.undo" && typeof payloads[i]!.commandId === "string" ? [payloads[i]!.commandId as string] : [])))];
+  const refs: ProposalReferences = {
+    garments: new Map(garmentIds.length ? (await all<{ garment_id: string; name: string }>(app.db, "SELECT garment_id, name FROM garments WHERE user_id = ? AND garment_id IN (SELECT value FROM json_each(?))", userId, JSON.stringify(garmentIds))).map((g) => [g.garment_id, g.name]) : []),
+    commands: new Map(commandIds.length ? (await all<{ command_id: string; type: string; recorded_at: string }>(app.db, "SELECT command_id, type, recorded_at FROM commands WHERE user_id = ? AND command_id IN (SELECT value FROM json_each(?))", userId, JSON.stringify(commandIds))).map((c) => [c.command_id, { type: c.type, recordedAt: c.recorded_at }]) : []),
+  };
+  for (const [i, row] of submitted.entries()) {
     let grantId = row.grant_id;
     if (!grantId && row.turn_id) {
       const authRef = grantOfTurn.has(row.turn_id) ? null : (await first<{ auth_ref: string }>(app.db, "SELECT auth_ref FROM assistant_turns WHERE user_id = ? AND turn_id = ?", userId, row.turn_id))?.auth_ref;
       grantId = grantOfTurn.get(row.turn_id) ?? (authRef?.startsWith("mcp:") ? authRef.slice(4) : null);
     }
-    add({ proposalId: row.proposal_id, turnId: row.turn_id ?? "", decisionRef: row.turn_id ?? row.source_ref, type: row.command_type, payload: submittedPayload(row), proposedAt: row.created_at, channel: "mcp", assistantName: grantId ? (grants.get(grantId) ?? null) : null, expectedVersions: submittedExpectedVersions(row), occurredAt: row.occurred_at });
+    add({ proposalId: row.proposal_id, turnId: row.turn_id ?? "", decisionRef: row.turn_id ?? row.source_ref, type: row.command_type, summary: describeProposedChange(row.command_type, payloads[i]!, refs), payload: payloads[i]!, proposedAt: row.created_at, channel: "mcp", assistantName: grantId ? (grants.get(grantId) ?? null) : null, expectedVersions: submittedExpectedVersions(row), occurredAt: row.occurred_at });
   }
   return out.sort((a, b) => (a.proposal.proposedAt < b.proposal.proposedAt ? 1 : a.proposal.proposedAt > b.proposal.proposedAt ? -1 : a.proposal.proposalId < b.proposal.proposalId ? -1 : 1));
 }

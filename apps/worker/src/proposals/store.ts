@@ -46,17 +46,23 @@ const COLUMNS = "proposal_id, origin, source_ref, grant_id, turn_id, idempotency
 export const requestHashOf = (input: Pick<SubmittedProposalInput, "type" | "payload" | "expectedVersions" | "occurredAt">): Promise<string> =>
   sha256Hex(canonicalJson({ type: input.type, payload: input.payload, expectedVersions: input.expectedVersions, occurredAt: input.occurredAt }));
 
+/** How many requests one connection (or one relayed turn) may leave waiting for the owner within a day. */
+export const SUBMITTED_PER_DAY = { typed_command: 40, relayed_turn: 12 } as const;
+
 /**
  * Keep one request as a proposal. Repeating the same request (same origin, source and idempotency key)
  * returns the proposal already kept; the same key with a different request returns `conflict`, and
- * nothing is stored for it.
+ * nothing is stored for it. A source that has already left its day's share of requests gets `limited`:
+ * the owner's list is not something a connected assistant can fill up.
  */
-export async function recordSubmittedProposal(db: Db, input: SubmittedProposalInput): Promise<{ row: SubmittedProposalRow; created: boolean } | { conflict: true }> {
+export async function recordSubmittedProposal(db: Db, input: SubmittedProposalInput): Promise<{ row: SubmittedProposalRow; created: boolean } | { conflict: true } | { limited: true }> {
   const requestHash = await requestHashOf(input);
   const proposalId = `prp_${(await sha256Hex(`submitted\u0000${input.origin}\u0000${input.sourceRef}\u0000${input.idempotencyKey}\u0000${requestHash}`)).slice(0, 32)}`;
   const find = () => first<SubmittedProposalRow>(db, `SELECT ${COLUMNS} FROM submitted_proposals WHERE user_id = ? AND origin = ? AND source_ref = ? AND idempotency_key = ?`, input.userId, input.origin, input.sourceRef, input.idempotencyKey);
   const existing = await find();
   if (existing) return existing.request_hash === requestHash ? { row: existing, created: false } : { conflict: true };
+  const recent = await first<{ n: number }>(db, "SELECT COUNT(*) AS n FROM submitted_proposals WHERE user_id = ? AND origin = ? AND source_ref = ? AND created_at > ?", input.userId, input.origin, input.sourceRef, toInstant(input.nowMs - 86_400_000));
+  if ((recent?.n ?? 0) >= SUBMITTED_PER_DAY[input.origin]) return { limited: true };
   await prepare(
     db,
     stmt(
@@ -109,16 +115,48 @@ const LABELS: Record<string, string> = {
 const clip = (text: string): string => (text.length > 120 ? `${text.slice(0, 120)}…` : text);
 const shown = (value: unknown): string => (typeof value === "string" ? JSON.stringify(clip(value.replace(/\s+/g, " ").trim())) : clip(JSON.stringify(value)));
 
+/** Every garment identifier that appears anywhere in a payload. */
+export function garmentIdsIn(value: unknown, into: Set<string> = new Set()): Set<string> {
+  if (typeof value === "string") {
+    if (/^gmt_[A-Za-z0-9_-]+$/.test(value)) into.add(value);
+  } else if (Array.isArray(value)) {
+    for (const v of value) garmentIdsIn(v, into);
+  } else if (value && typeof value === "object") {
+    for (const v of Object.values(value)) garmentIdsIn(v, into);
+  }
+  return into;
+}
+
+/** What the ledger says about the things a payload refers to by identifier, for the owner's summary. */
+export interface ProposalReferences {
+  /** Name by garment identifier, for the owner's own garments. */
+  garments: Map<string, string>;
+  /** Type and date of the command a `command.undo` would undo. */
+  commands: Map<string, { type: string; recordedAt: string }>;
+}
+
 /**
  * The summary the owner is shown: written here from the command type and the exact payload that would
  * run, never taken from a model or from the requesting assistant. Text values are shown in quotation
- * marks so they read as content of the request, not as a statement by Garderobe.
+ * marks so they read as content of the request, not as a statement by Garderobe. Identifiers are
+ * followed by what the ledger holds under them, so the owner reads a name and not only an identifier;
+ * an identifier that names nothing of the owner's is said to name nothing.
  */
-export function describeProposedChange(type: string, payload: Record<string, unknown>): string {
+export function describeProposedChange(type: string, payload: Record<string, unknown>, refs?: ProposalReferences): string {
   const fields = Object.entries(payload)
     .filter(([key, value]) => key !== "source" && value !== null && value !== undefined && !(Array.isArray(value) && value.length === 0))
     .slice(0, 8)
     .map(([key, value]) => `${key}: ${shown(value)}`);
   const more = Object.keys(payload).length > 9 ? "; further fields are in the full request" : "";
-  return `${LABELS[type] ?? `Run the command ${type}`}${fields.length ? ` (${fields.join("; ")}${more})` : ""}`;
+  const notes: string[] = [];
+  if (refs) {
+    const ids = [...garmentIdsIn(payload)];
+    const named = ids.slice(0, 6).map((id) => (refs.garments.has(id) ? `${JSON.stringify(clip(refs.garments.get(id)!))} (${id})` : `${id} is not a garment in this wardrobe`));
+    if (named.length) notes.push(`Garments: ${named.join(", ")}${ids.length > 6 ? ` and ${ids.length - 6} more` : ""}.`);
+    if (type === "command.undo" && typeof payload.commandId === "string") {
+      const target = refs.commands.get(payload.commandId);
+      notes.push(target ? `The change to undo: ${target.type}, recorded ${target.recordedAt}.` : "The change to undo was not found.");
+    }
+  }
+  return `${LABELS[type] ?? `Run the command ${type}`}${fields.length ? ` (${fields.join("; ")}${more})` : ""}${notes.length ? `. ${notes.join(" ")}` : ""}`;
 }

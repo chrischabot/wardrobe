@@ -78,6 +78,7 @@ export const NEVER_EXPORTED = [
   "mcp_grants and the OAuth provider's KV records (clients, grants, token hashes)",
   "export_tickets, account_deletions",
   "outbox, command_preconditions (internal queues)",
+  "proposal_decisions, submitted_proposals (requests waiting for the owner's decision and the decisions taken; a change that was confirmed is in commands with its receipt)",
   "browser cookies and raw model reasoning (never stored)",
 ];
 
