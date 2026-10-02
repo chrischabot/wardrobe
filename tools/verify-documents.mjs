@@ -97,6 +97,10 @@ console.log(`ok   supplied documents are identical to their ${twins.length} bund
 const at = process.argv.indexOf("--attachments");
 if (at !== -1) {
   const dir = process.argv[at + 1];
+  if (!dir || dir.startsWith("--") || !existsSync(dir) || !statSync(dir).isDirectory()) {
+    console.error("Usage: node tools/verify-documents.mjs --attachments <directory holding the original attachments>");
+    process.exit(2);
+  }
   for (const f of SUPPLIED) {
     const match = readdirSync(dir).find((n) => n.endsWith(f));
     if (!match) fail(`attachment for ${f} not found in ${dir}`);

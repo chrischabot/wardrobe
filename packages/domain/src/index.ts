@@ -7,7 +7,7 @@
 export { CommandService, type CommandServiceOptions } from "./commands/service.ts";
 export { CommandRegistry } from "./commands/registry.ts";
 export { createFoundationRegistry } from "./foundation.ts";
-export type { CommandContext, CommandDefinition, CommandPlan, CommitHook, DomainChanges, PlanFragment, PlannedEffect, PlannedOutbox, Precondition, StoredCommand, VersionResolver } from "./commands/types.ts";
+export type { CommandContext, CommandDefinition, CommandPlan, CommitHook, DomainChanges, OwnerStatementVerifier, PlanFragment, PlannedEffect, PlannedOutbox, Precondition, StoredCommand, VersionResolver } from "./commands/types.ts";
 export { noChanges } from "./commands/types.ts";
 export { CommandError, isCommandError } from "./errors.ts";
 export { createPrincipal, assertPrincipal, requireScope, type Principal } from "./principal.ts";
@@ -35,3 +35,7 @@ export * from "./queries.ts";
 
 // Owners, identity mapping, action intents, effects, outbox
 export * from "./platform.ts";
+
+// Forgetting: scrub the command ledger's own copies of a forgotten source (see scrub.ts)
+export { planLedgerScrub, scrubbedCommands, SCRUBBED_TEXT, type LedgerScrubPlan } from "./scrub.ts";
+export { planExceptionSettlement, planExceptionUnsettle, type ExceptionSettlement } from "./handlers/laundry-exceptions.ts";

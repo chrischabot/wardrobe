@@ -26,6 +26,12 @@ async function syntheticOwnerWithFacts(): Promise<{ h: Harness; owner: TestOwner
 
 const measurementsOf = async (h: Harness, owner: TestOwner) => Object.fromEntries((await getStyleContext(h.db, owner.principal())).measurements.map((m) => [m.key, m.value]));
 
+/** Save as My style does: against the version the editor was opened on (here, the one current just before). */
+async function save(h: Harness, owner: TestOwner, payload: Record<string, unknown>) {
+  const version = (await getStyleContext(h.db, owner.principal())).document.version;
+  return owner.exec("style.save_document", payload, { expectedVersions: { "style_document:owner-profile": version } });
+}
+
 describe("deriving the structured-fact diff of a profile edit (pure)", () => {
   const fact = (id: string, ...quotes: string[]): AnchoredFact => ({ ref: { kind: "rule", id }, label: id, passages: quotes.map((quote) => ({ documentSha256: "a".repeat(64), lineStart: 1, lineEnd: 1, quote })) });
   const before = "One.\nSocks always.\nNo watches.\nLast.";
@@ -76,7 +82,7 @@ describe("Save in My style derives a diff of structured facts", () => {
   it("a reworded passage never changes a fact by itself: the fact stays in force and the conflict stays visible until the owner decides", async () => {
     const { h, owner, ids } = await syntheticOwnerWithFacts();
     const edited = PROFILE.replace("Chest 44 inches; neck 17 inches.", "Chest 43 inches now; neck 17 inches.").replace("Jackets: 46 at Maker A.\n", "");
-    const saved = await owner.exec("style.save_document", { content: edited, source: STATEMENT });
+    const saved = await save(h, owner, { content: edited, source: STATEMENT });
     expect(saved.summary).toContain("3 structured fact(s) no longer match the text and stay in force until decided");
     const diff = saved.result.factDiff as Awaited<ReturnType<typeof previewStyleSave>>;
     expect(diff.conflicts.map((c) => [c.fact, c.reason, c.candidateText])).toEqual([
@@ -97,12 +103,12 @@ describe("Save in My style derives a diff of structured facts", () => {
     ]);
 
     // A further edit elsewhere does not open the same conflict twice or lose it.
-    await owner.exec("style.save_document", { content: edited + "Cloth matters.\n", source: STATEMENT });
+    await save(h, owner, { content: edited + "Cloth matters.\n", source: STATEMENT });
     expect(await listStyleFactConflicts(h.db, owner.principal())).toHaveLength(3);
 
     // Stating the fact anew through its own command settles its conflict without a second decision.
     const direct = await syntheticOwnerWithFacts();
-    await direct.owner.exec("style.save_document", { content: edited, source: STATEMENT });
+    await save(direct.h, direct.owner, { content: edited, source: STATEMENT });
     await direct.owner.exec("measurement.record", { subject: "body", key: "chest", value: 43, unit: "in", source: STATEMENT });
     expect((await listStyleFactConflicts(direct.h.db, direct.owner.principal())).map((c) => c.fact.id).sort()).toEqual([direct.ids.neck, direct.ids.size].sort());
 
@@ -151,14 +157,14 @@ describe("Save in My style derives a diff of structured facts", () => {
     };
 
     // One refused decision refuses the whole save: no new version, no half-applied facts.
-    const bad = await owner.exec("style.save_document", { ...payload, factResolutions: [...payload.factResolutions.slice(0, 2), { fact: { kind: "rule", id: "socks.required" }, resolution: { action: "keep", quote: "Socks are optional." } }] }).catch((e) => e);
+    const bad = await save(h, owner, { ...payload, factResolutions: [...payload.factResolutions.slice(0, 2), { fact: { kind: "rule", id: "socks.required" }, resolution: { action: "keep", quote: "Socks are optional." } }] }).catch((e) => e);
     expect(bad.code).toBe("precondition_failed");
-    const stray = await owner.exec("style.save_document", { ...payload, factResolutions: [...payload.factResolutions, { fact: { kind: "size_experience", id: ids.size }, resolution: { action: "retire" } }] }).catch((e) => e);
+    const stray = await save(h, owner, { ...payload, factResolutions: [...payload.factResolutions, { fact: { kind: "size_experience", id: ids.size }, resolution: { action: "retire" } }] }).catch((e) => e);
     expect(stray.code).toBe("invalid_command"); // the edit does not touch that passage
     let ctx = await getStyleContext(h.db, owner.principal());
     expect([ctx.document.version, ctx.amendments.length, (await measurementsOf(h, owner)).chest]).toEqual([1, 1, 44]);
 
-    const saved = await owner.exec("style.save_document", payload);
+    const saved = await save(h, owner, payload);
     const diff = saved.result.factDiff as Awaited<ReturnType<typeof previewStyleSave>>;
     expect(diff.applied.map((a) => [a.fact.kind, a.action])).toEqual([["rule", "replace"], ["measurement", "replace"], ["measurement", "keep"]]);
     expect(diff.conflicts).toEqual([]);
@@ -183,7 +189,7 @@ describe("Save in My style derives a diff of structured facts", () => {
     const { h, owner, ids } = await syntheticOwnerWithFacts();
     const other = await syntheticOwnerWithFacts();
     const without = PROFILE.replace("Jackets: 46 at Maker A.\n", "");
-    await owner.exec("style.save_document", { content: without, source: STATEMENT });
+    await save(h, owner, { content: without, source: STATEMENT });
     expect((await listStyleFactConflicts(h.db, owner.principal())).map((c) => c.fact.id)).toEqual([ids.size]);
     expect(await listStyleFactConflicts(other.h.db, other.owner.principal())).toEqual([]);
     const foreign = (await listStyleFactConflicts(h.db, owner.principal()))[0]!.conflictId;
@@ -192,7 +198,7 @@ describe("Save in My style derives a diff of structured facts", () => {
     const model = await owner.exec("style.save_document", { content: "# Compacted profile\n", source: { kind: "model_inference" } }, { actor: "assistant", channel: "conversation", authorization: "owner_statement" }).catch((e) => e);
     expect(model.code).toBe("forbidden");
 
-    await owner.exec("style.save_document", { content: PROFILE, source: STATEMENT });
+    await save(h, owner, { content: PROFILE, source: STATEMENT });
     expect(await listStyleFactConflicts(h.db, owner.principal())).toEqual([]);
     expect((await listStyleFactConflicts(h.db, owner.principal(), { status: "all" })).map((c) => c.status)).toEqual(["withdrawn"]);
     expect((await getStyleContext(h.db, owner.principal())).sizeExperiences[0]!.passage).toMatchObject({ documentSha256: await hashOf(PROFILE), lineStart: 6 });
@@ -214,11 +220,11 @@ describe("the owner's real profile: editing prose never lifts the sneakers-only 
     expect(sneakers.note).toContain(HEALING_RESTRICTION_ID);
     expect(preview.anchoredFacts).toBe(preview.unchanged + preview.conflicts.length);
 
-    const lift = await owner.exec("style.save_document", { content: edited, source: STATEMENT, factResolutions: [{ fact: sneakers.fact, resolution: { action: "retire" } }] }).catch((e) => e);
+    const lift = await save(h, owner, { content: edited, source: STATEMENT, factResolutions: [{ fact: sneakers.fact, resolution: { action: "retire" } }] }).catch((e) => e);
     expect(lift.code).toBe("forbidden");
     expect((await getStyleContext(h.db, owner.principal())).document.version).toBe(1);
 
-    await owner.exec("style.save_document", { content: edited, source: STATEMENT });
+    await save(h, owner, { content: edited, source: STATEMENT });
     const ctx = await getStyleContext(h.db, owner.principal());
     expect(ctx.document.version).toBe(2);
     expect(ctx.rules.find((r) => r.key === "footwear.sneakers_only_until_healed")).toMatchObject({ status: "active", kind: "hard" });

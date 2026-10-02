@@ -84,7 +84,9 @@ describe("Save in My style", () => {
   });
 
   it("a save without decisions keeps the affected facts in force and lists each as an open conflict", async () => {
-    const saved = await owner.api.command("style.save_document", { content: edited, source: { kind: "owner_statement" } });
+    // A save names the version it was edited from (the domain refuses a blind save since the foundation review, M6).
+    const current = await owner.api.json("GET", "/v1/style");
+    const saved = await owner.api.command("style.save_document", { content: edited, source: { kind: "owner_statement" } }, { expectedVersions: { [`style_document:${current.document.documentId}`]: current.document.version } });
     const receipt = (await saved.json()) as any;
     expect(saved.status, JSON.stringify(receipt)).toBe(200);
     const open = (await owner.api.json("GET", "/v1/style/conflicts")).conflicts;

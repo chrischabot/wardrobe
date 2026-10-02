@@ -6,17 +6,44 @@ export const GarmentId = z.string().min(1).max(64);
 export const CommandId = z.string().min(1).max(64);
 export const EntityId = z.string().min(1).max(128);
 
+function isRealLocalDate(value: string): boolean {
+  const [y, m, d] = value.split("-").map(Number) as [number, number, number];
+  const date = new Date(Date.UTC(y, m - 1, d));
+  return date.getUTCFullYear() === y && date.getUTCMonth() === m - 1 && date.getUTCDate() === d;
+}
+
+function isRealInstant(value: string): boolean {
+  const ms = Date.parse(value);
+  // The pattern admits 2026-13-45T99:99:99Z and engines roll 02-30 over to March: require an exact round trip.
+  return !Number.isNaN(ms) && new Date(ms).toISOString().slice(0, 19) === value.slice(0, 19);
+}
+
+function isRealTimezone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-GB", { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const LOCAL_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const INSTANT_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
+
 /** Civil date in the owner's (or the event's) timezone: YYYY-MM-DD. */
 export const LocalDate = z
   .string()
-  .regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD")
+  .regex(LOCAL_DATE_PATTERN, "expected YYYY-MM-DD")
+  // A value of the wrong shape is reported once, by the pattern; the calendar check is for well-formed values.
+  .refine((v) => !LOCAL_DATE_PATTERN.test(v) || isRealLocalDate(v), "not a real calendar date")
   .describe("Civil local date, YYYY-MM-DD.");
 /** UTC instant, ISO 8601 with Z. */
 export const Instant = z
   .string()
-  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/, "expected UTC ISO 8601 instant")
+  .regex(INSTANT_PATTERN, "expected UTC ISO 8601 instant")
+  .refine((v) => !INSTANT_PATTERN.test(v) || isRealInstant(v), "not a real date and time")
   .describe("UTC instant, ISO 8601 (e.g. 2026-09-15T06:50:00Z).");
-export const IanaTimezone = z.string().min(1).max(64).describe("IANA timezone, e.g. Europe/London.");
+export const IanaTimezone = z.string().min(1).max(64).refine(isRealTimezone, "not a known IANA timezone").describe("IANA timezone, e.g. Europe/London.");
 
 /** Where a request entered the system. A channel is metadata on a turn/command, never a separate ledger. */
 export const Channel = z.enum(["ios", "web", "mcp", "conversation", "scheduled", "import", "system", "test"]);

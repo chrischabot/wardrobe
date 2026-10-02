@@ -1,6 +1,6 @@
 import type { AuthorizationBasis } from "@garderobe/contracts";
 import { CommandError } from "../errors.ts";
-import type { CommandDefinition, CommitHook, VersionResolver } from "./types.ts";
+import type { CommandDefinition, CommitHook, OwnerStatementVerifier, VersionResolver } from "./types.ts";
 
 const DEFAULT_AUTHORIZATIONS: Record<CommandDefinition["class"], AuthorizationBasis[]> = {
   observation: ["owner_tap", "owner_statement"],
@@ -17,6 +17,21 @@ export class CommandRegistry {
   private readonly definitions = new Map<string, CommandDefinition<any>>();
   private readonly resolvers = new Map<string, VersionResolver>();
   private readonly hooks: { name: string; hook: CommitHook }[] = [];
+  private statementVerifier: OwnerStatementVerifier | null = null;
+
+  /**
+   * Register how an evidence reference (for example `message:<id>`) is checked against what the owner
+   * actually said. The workstream that owns the conversation registers it; the domain never trusts a
+   * reference it cannot check, so without a verifier only the owner himself lifts a restriction.
+   */
+  setOwnerStatementVerifier(verifier: OwnerStatementVerifier): this {
+    this.statementVerifier = verifier;
+    return this;
+  }
+
+  ownerStatementVerifier(): OwnerStatementVerifier | null {
+    return this.statementVerifier;
+  }
 
   register(definition: CommandDefinition<any>): this {
     if (this.definitions.has(definition.type)) throw new Error(`command type already registered: ${definition.type}`);

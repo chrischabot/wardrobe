@@ -203,6 +203,24 @@ export function replayGarment(careChannel: CareChannel, events: StockEvent[]): R
     switch (e.kind) {
       case "receive": {
         const q = Number(e.payload.quantity ?? 1);
+        // A merge carries units to the canonical record where the ledger had them, not home to clean.
+        if (e.payload.to === "service") {
+          const ref = String(e.payload.ref);
+          const h = s.service.get(ref) ?? { quantity: 0, held: Boolean(e.payload.held), pickedUpAtMs: Number(e.payload.pickedUpAtMs ?? e.occurredAtMs), ...(e.payload.lost ? { lost: true } : {}) };
+          h.quantity += q;
+          s.service.set(ref, h);
+          move(null, "service", q);
+          break;
+        }
+        if (e.payload.to === "trip") {
+          const tripId = String(e.payload.tripId);
+          const t = s.trip.get(tripId) ?? { clean: 0, dirty: 0 };
+          if (e.payload.dirty) t.dirty += q;
+          else t.clean += q;
+          s.trip.set(tripId, t);
+          move(null, "trip", q);
+          break;
+        }
         const to = (e.payload.to ?? "clean") as "incoming" | "clean" | "storage" | "tailor";
         s[to] += q;
         move(null, to, q);
@@ -217,6 +235,9 @@ export function replayGarment(careChannel: CareChannel, events: StockEvent[]): R
       }
       case "wear":
       case "extra_unit": {
+        // A wear carried over by a merge that also carried the units themselves: the units arrive in the
+        // state that wear left them in, so the carried event counts the wear without consuming a unit again.
+        if (e.payload.statisticOnly) break;
         const dirtyAt = Number(e.payload.dirtyAtMs ?? e.occurredAtMs);
         const units = e.kind === "extra_unit" ? Number(e.payload.quantity ?? 1) : 1;
         for (let i = 0; i < units; i++) {
@@ -228,6 +249,11 @@ export function replayGarment(careChannel: CareChannel, events: StockEvent[]): R
               trip.dirty += 1;
               move("trip", "trip", 1, "worn from the packed subset");
             }
+            continue;
+          }
+          if (trip && trip.dirty > 0) {
+            // Worn again on the trip: the packed unit is already worn and stays in the suitcase.
+            if (laundered) repair("worn again on the trip; the packed unit stays in the suitcase, already worn");
             continue;
           }
           if (!laundered) {
@@ -307,9 +333,19 @@ export function replayGarment(careChannel: CareChannel, events: StockEvent[]): R
           move("service", "clean", 1, "owner observation: washed, so it is back and clean");
           repair("ledger had this item away at the laundry; the wash observation establishes it is back and clean");
         }
+        if (e.payload.releaseAway && q === 0) {
+          // "It is washed", with no count, when nothing of this garment was awaiting a wash at home: the
+          // statement can only be about a unit that was away, so units reported still away are back and
+          // clean. Units reported lost stay lost, and a missed cycle's units wait for "the laundry is back".
+          for (const [ref, h] of [...s.service.entries()]) {
+            if (!h.held || h.lost || ref.startsWith("cycle:")) continue;
+            s.clean += h.quantity;
+            move("service", "clean", h.quantity, "owner observation: washed, so the unit reported away is back and clean");
+            s.service.delete(ref);
+          }
+        }
         if (e.payload.releaseHeld) {
-          // "It is washed", with no count, about a garment with units reported still away or held by a missed
-          // return: those units are evidently back. Units reported lost stay lost while another unit is clean.
+          // Journal compatibility: events written before `releaseAway` released every held, non-lost holding.
           for (const [ref, h] of [...s.service.entries()]) {
             if (!h.held || h.lost) continue;
             s.clean += h.quantity;
@@ -348,8 +384,25 @@ export function replayGarment(careChannel: CareChannel, events: StockEvent[]): R
         // Item-level exception (still away / lost): the unit is not at home, whatever was inferred.
         const want = Number(e.payload.quantity ?? 1);
         const ref = `exception:${e.payload.exceptionId}`;
+        const isLost = e.payload.kind === "lost";
         let got = takeFromService(want, { allowHeld: false });
         if (got > 0) move("service", "service", got, "held: reported still away");
+        if (isLost && got < want) {
+          // A unit already held as still away (a named batch exception, a missed cycle) is the one now reported lost.
+          let fromHeld = 0;
+          for (const [heldRef, h] of [...s.service.entries()].sort((a, b) => a[1].pickedUpAtMs - b[1].pickedUpAtMs)) {
+            if (got + fromHeld >= want) break;
+            if (!h.held || h.lost || heldRef === ref) continue;
+            const q = Math.min(h.quantity, want - got - fromHeld);
+            h.quantity -= q;
+            fromHeld += q;
+            if (h.quantity === 0) s.service.delete(heldRef);
+          }
+          if (fromHeld > 0) {
+            got += fromHeld;
+            move("service", "service", fromHeld, "reported lost: the unit that was still away");
+          }
+        }
         const fromClean = Math.min(want - got, s.clean);
         if (fromClean > 0) {
           s.clean -= fromClean;
@@ -362,8 +415,10 @@ export function replayGarment(careChannel: CareChannel, events: StockEvent[]): R
           move("dirty", "service", fromDirty, "owner exception: the unit is away, not in the hamper");
         }
         if (got > 0) {
-          const h = s.service.get(ref) ?? { quantity: 0, held: true, pickedUpAtMs: e.occurredAtMs, lost: e.payload.kind === "lost" };
+          const h = s.service.get(ref) ?? { quantity: 0, held: true, pickedUpAtMs: e.occurredAtMs };
           h.quantity += got;
+          h.held = true;
+          if (isLost) h.lost = true;
           s.service.set(ref, h);
         }
         break;

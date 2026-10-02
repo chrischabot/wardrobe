@@ -89,18 +89,19 @@ export async function importOwnerData(service: CommandService, principal: Princi
     });
   }
 
-  // 4. The temporary restriction the profile describes: retained until an explicit owner update.
+  // 4. The inventory: one explicit creation per garment.
+  const c = plan.sourceSha256.slice(0, 16);
+  for (const g of plan.garments) {
+    await exec(`${c}:garment:${g.garmentId}`, "garment.create", g.payload as Record<string, unknown>);
+  }
+
+  // 5. The temporary restriction the profile describes: retained until an explicit owner update. Recorded
+  //    after the inventory, so its receipt names the garments it actually excludes.
   const { quote, ...restriction } = HEALING_RESTRICTION;
   await exec(`${p}:restriction:healing`, "restriction.add", {
     ...restriction,
     source: { ...profileSource, note: `profile section 8.2, line ${locatePassage(docs.profileText, profileSha, quote).lineStart}` },
   });
-
-  // 5. The inventory: one explicit creation per garment.
-  const c = plan.sourceSha256.slice(0, 16);
-  for (const g of plan.garments) {
-    await exec(`${c}:garment:${g.garmentId}`, "garment.create", g.payload as Record<string, unknown>);
-  }
 
   // 6. Row accounting and issues.
   await exec(`${c}:run`, "import.record_run", {
