@@ -33,6 +33,24 @@ export async function loadGarment(ctx: CommandContext, id: string, opts: { follo
   return (await loadGarments(ctx, [id], opts)).get(id)!;
 }
 
+/**
+ * Free text that came in with a command, as it appears inside a receipt summary.
+ *
+ * A summary is prose written by the ledger. Text supplied by the caller (a reason, a direction, a brief,
+ * a new name) is shown inside typographic quotation marks, on one line, with any quotation marks of its
+ * own flattened and its length bounded, so it always reads as something that was said and can never
+ * pass for, or continue, the ledger's own sentence. The stored record keeps the text exactly as given.
+ * Same convention as the assistant lane's `named`.
+ */
+export function quoted(value: string | null | undefined, max = 160): string {
+  const clean = String(value ?? "")
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ")
+    .replace(/[\u201C\u201D\u201E\u201F\u00AB\u00BB\uFF02"]/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+  return `\u201C${clean.length > max ? `${clean.slice(0, max - 1).trimEnd()}\u2026` : clean}\u201D`;
+}
+
 export function nameList(names: string[], max = 6): string {
   if (names.length <= max) return names.join(", ");
   return `${names.slice(0, max).join(", ")} and ${names.length - max} more`;

@@ -1,5 +1,6 @@
 import { FOUNDATION_COMMANDS as C } from "@garderobe/contracts";
 import { first, stmt, type Stmt } from "../db.ts";
+import { quoted } from "./common.ts";
 import { define } from "./garments.ts";
 
 /** Import bookkeeping: one run per source document hash, one accounting row per source line. */
@@ -38,7 +39,7 @@ export const importRecordRun = define({
     }
     const count = (d: string) => p.rows.filter((r) => r.disposition === d).length;
     return {
-      summary: `Import recorded for ${p.sourceName}: ${p.rows.length} lines accounted for (${count("imported")} imported, ${count("merged")} merged, ${count("held")} held, ${count("not_a_data_row")} not data), ${p.issues.length} issue(s) noted`,
+      summary: `Import recorded for ${quoted(p.sourceName, 120)}: ${p.rows.length} lines accounted for (${count("imported")} imported, ${count("merged")} merged, ${count("held")} held, ${count("not_a_data_row")} not data), ${p.issues.length} issue(s) noted`,
       statements,
       affected: [{ kind: "import_run", id: p.importRunId, version: 1 }],
       result: { importRunId: p.importRunId, rows: p.rows.length, issues: p.issues.length },

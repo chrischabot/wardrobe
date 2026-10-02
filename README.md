@@ -19,7 +19,7 @@ Only data and requirements were migrated; no code from any earlier application i
 | Regenerate JSON Schema and Swift contracts | `npm run generate:contracts` |
 
 Node 22+, TypeScript 7.0.2, zod 4.6.5, vitest 4.1.11 with `@cloudflare/vitest-pool-workers` 0.22.0.
-`npm run test:foundation` currently runs 111 foundation tests (14 contracts, 97 domain). Domain tests run inside workerd
+`npm run test:foundation` currently runs 145 foundation tests (14 contracts, 131 domain). Domain tests run inside workerd
 against a real local D1 database; nothing mocks the ledger. The bundled
 workerd accepts compatibility dates up to 2026-08-22.
 
@@ -134,18 +134,60 @@ Contract 1.1.0 additions (all additive; older payloads still parse):
 - **Garment measurements.** `GarmentDetail.measurements` lists the current measurements of the item; an
   empty list means none are recorded.
 
-Ledger rules the other lanes rely on (regression-tested in `packages/domain/test/review-regressions.test.ts`):
+Ledger rules the other lanes rely on (regression-tested in `packages/domain/test/review-regressions.test.ts`,
+`review-pr2.test.ts`, `review-findings.test.ts` and `ledger-scrub.test.ts`):
 
-- **Lifting a restriction.** `restriction.resolve` from any actor other than `owner`, or on the `mcp`
-  channel, needs a non-blank `evidence.ref` pointing at the owner's statement (`forbidden`, reason
-  `evidence_reference_required` otherwise). `command.undo` of a `restriction.add` is `forbidden` (reason
-  `restriction_not_lifted_by_undo`) for an imported restriction whoever asks, and for anyone but the owner
-  in the app otherwise.
-- **Laundry.** `laundry.return` with no open batch first releases what a reported missed cycle is holding
-  and settles that cycle's exception; `stillAway` items become item exceptions. `care.washed` without a
-  quantity brings back units reported still away (not lost) and settles an exception only when its units
-  actually came back. Undo of `laundry.collect` is refused once the batch has returned; otherwise the
-  batch is marked withdrawn (`laundry_batches.withdrawn_at`, migration 0003), never deleted.
+- **Lifting a restriction.** The owner lifts a restriction in the app (`restriction.resolve` as actor
+  `owner`, including when he confirms a proposal). From any other actor, or on the `mcp` channel, the
+  command needs `evidence.ref` AND that reference must be confirmed by the verifier the conversation's
+  owner registered with `registry.setOwnerStatementVerifier(fn)` (the assistant lane checks that
+  `message:<id>` is the owner's own message of the turn issuing the command); otherwise it is `forbidden`
+  (`evidence_reference_required` / `evidence_reference_not_verified`). With no verifier registered, only
+  the owner lifts. `command.undo` of a `restriction.add` is `forbidden` (`restriction_not_lifted_by_undo`)
+  for an imported restriction whoever asks, and for anyone but the owner in the app otherwise; an undo is
+  never itself undoable. `style.upsert_rule` cannot retire or rewrite the rule that carries an active
+  restriction (`rule_carries_active_restriction`).
+- **Saving My style.** `style.save_document` must carry the version it was edited from
+  (`expectedVersions` key `style_document:<documentId>` or `style`); without one it is `invalid_command`
+  (`expected_version_required`), with a stale one `conflict`. A proposal for a profile save must carry it too.
+- **Laundry exceptions follow the units.** An exception is resolved (or reduced) only when a command's
+  replay actually moved units out from under it, and it records why (`laundry_exceptions.resolution`:
+  `returned`, `with_owner`, `inferred_baseline`, `reported_lost`, `withdrawn`) and by which command
+  (migration 0004). Undo restores exactly what its command settled and is refused
+  (`precondition_failed`) if the exception, batch item or batch changed since.
+  - `laundry.return` with no open batch releases what a reported missed cycle holds (from that cycle's
+    baseline on, even if the owner dates the return earlier) and settles the cycle's exception;
+    `stillAway` items become item exceptions.
+  - `care.washed` without a quantity is about the units awaiting a wash at home. Only when none is does it
+    bring back units reported still away; never units reported lost while another unit is at home, and
+    never a missed cycle's units (those return with `laundry.return`, or one at a time when the garment
+    has nothing at home at all).
+  - A unit held as still away that is then reported `lost` is the one that is lost.
+  - Undo of `laundry.collect` is refused once the batch has returned; otherwise the batch is marked
+    withdrawn (`laundry_batches.withdrawn_at`, migration 0003), never deleted. A withdrawn batch keeps
+    status `collected`: every reader, and every consumer of an export, must treat `withdrawn_at IS NOT
+    NULL` as "this pickup was withdrawn; not an open batch".
+- **Wear.** `additionalUnits` is the total of further units used for that garment and day: a repeated
+  report consumes nothing further. A wear resolves only the option sets that offered one of the reported
+  garments, and undo reopens them. A packed garment worn again on its trip stays in the suitcase.
+- **Time.** Instants and local dates must be real (no 13th month, no 31 February), timezones must be
+  IANA zones the runtime knows, and a weekly baseline cannot be applied for a future `asOf`.
+- **Concurrency.** A retry with the same idempotency key always gets the stored receipt, also when it
+  races the first send. An effect with an operation key already on record is not enqueued again and is
+  not listed in the second receipt.
+- **Receipt summaries.** A summary is the ledger's own sentence. Free text that came in with the command
+  (a restriction's reason, a direction, a brief, an amendment, a new name, an alias, a rule key) appears
+  in it only through `quoted()` (`handlers/common.ts`): inside typographic quotation marks, on one line,
+  with its own quotation marks flattened and its length bounded. The stored record keeps the text exactly
+  as given. A lane writing its own summaries should do the same.
+- **Forgetting.** `planLedgerScrub(ctx, commandIds)` returns statements for a forgetting command's own
+  batch that remove a message's text from the ledger's copies (command payload, receipt prose, undo data,
+  source record, delivered effect and outbox payloads, action intents, incidental notes), plus an account:
+  `pendingEffects`/`pendingOutbox` (queued work that still holds its payload; call again once it ran),
+  `retained` (durable owner records such as a profile amendment, kept because their text is the record)
+  and `ledgerCopiesErased`. The scrubbed command keeps type, IDs, versions, outcome and times; its receipt
+  summary becomes `SCRUBBED_TEXT`, its undo is unavailable, and `commands.scrubbed_at` /
+  `scrubbed_by_command_id` say so. No fact is undone by forgetting.
 - **Accessories.** `attributes.accessoryKind` (`AccessoryKind`) classifies a generic accessory; the daily
   service excludes watches and jewellery by this class and does not offer an unclassified accessory.
 

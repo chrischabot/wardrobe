@@ -62,8 +62,22 @@ describe("H2/M2: a restriction is lifted only by the owner's own statement, neve
       expect(bare.code).toBe("forbidden");
     }
     expect(await listRestrictions(h.db, owner.principal(), { status: "active" })).toHaveLength(1);
-    const referenced = await owner.exec("restriction.resolve", { restrictionId: first1, evidence: { kind: "owner_statement", ref: "message:synthetic-42" } }, ASSISTANT);
+    // A reference is not enough either unless the conversation's own record confirms it (PR 2 finding 8):
+    // with no verifier registered, or one that does not know the reference, an invented ID lifts nothing.
+    const invented = { restrictionId: first1, evidence: { kind: "owner_statement", ref: "message:synthetic-42" } };
+    expect((await owner.exec("restriction.resolve", invented, ASSISTANT).catch((e) => e)).details).toMatchObject({ reason: "evidence_reference_not_verified" });
+    h.registry.setOwnerStatementVerifier(async (ctx, ref) => ctx.userId === owner.userId && ref === "message:synthetic-real");
+    expect((await owner.exec("restriction.resolve", invented, ASSISTANT).catch((e) => e)).code).toBe("forbidden");
+    expect(await listRestrictions(h.db, owner.principal(), { status: "active" })).toHaveLength(1);
+    const referenced = await owner.exec("restriction.resolve", { restrictionId: first1, evidence: { kind: "owner_statement", ref: "message:synthetic-real" } }, ASSISTANT);
     expect(referenced.outcome).toBe("committed");
+    // Undoing the lift reinstates the restriction, and that undo cannot itself be undone: no chain of undos lifts it.
+    const reinstated = await owner.exec("command.undo", { commandId: referenced.commandId });
+    expect(await listRestrictions(h.db, owner.principal(), { status: "active" })).toHaveLength(1);
+    expect((await owner.exec("command.undo", { commandId: reinstated.commandId }).catch((e) => e)).code).toBe("not_undoable");
+    expect((await owner.exec("command.undo", { commandId: reinstated.commandId }, ASSISTANT).catch((e) => e)).code).toBe("not_undoable");
+    expect(await listRestrictions(h.db, owner.principal(), { status: "active" })).toHaveLength(1);
+    await owner.exec("restriction.resolve", { restrictionId: first1, evidence: { kind: "owner_statement" } });
     // A connected client acting as the owner is held to the same standard.
     const viaMcp = (await add()).result.restrictionId as string;
     expect((await owner.exec("restriction.resolve", { restrictionId: viaMcp, evidence: { kind: "owner_statement" } }, MCP_OWNER).catch((e) => e)).code).toBe("forbidden");

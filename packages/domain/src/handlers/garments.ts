@@ -6,7 +6,7 @@ import { normalizePhrase } from "../util.ts";
 import { explainGarmentStock, type GarmentRow } from "../stock/planner.ts";
 import { ownedUnits } from "../stock/replay.ts";
 import type { CommandDefinition, CommandPlan } from "../commands/types.ts";
-import { bumpGarment, loadGarment, nameList, simpleStockUndo, stockParts } from "./common.ts";
+import { bumpGarment, loadGarment, nameList, quoted, simpleStockUndo, stockParts } from "./common.ts";
 import { selectGarments } from "./selection.ts";
 import type { CommandContext } from "../commands/types.ts";
 
@@ -16,11 +16,11 @@ export function define<S extends z.ZodType>(def: CommandDefinition<S>): CommandD
 
 const basisFor = (authorization: string) => (authorization === "data_import" ? ("import" as const) : ("observed" as const));
 
-function aliasInsert(ctx: { userId: string; now: string; newId(p: string): string }, garmentId: string, phrase: string, kind: string): Stmt {
+function aliasInsert(ctx: { userId: string; now: string; newId(p: string): string }, garmentId: string, phrase: string, kind: string, aliasId?: string): Stmt {
   return stmt(
     "INSERT INTO garment_aliases (user_id, alias_id, garment_id, phrase, normalized, kind, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
     ctx.userId,
-    ctx.newId("als"),
+    aliasId ?? ctx.newId("als"),
     garmentId,
     phrase,
     normalizePhrase(phrase),
@@ -107,7 +107,7 @@ export const garmentCreate = define({
     const eventId = planner.add(garmentId, "receive", { quantity: p.quantity, to: p.acquisition === "incoming" ? "incoming" : p.initialBucket }, basisFor(ctx.envelope.authorization), ctx.occurredAt);
     const parts = stockParts(await planner.build());
     return {
-      summary: `Added ${p.name} (${p.quantity} ${p.acquisition === "incoming" ? "on order, not yet arrived" : "owned"})`,
+      summary: `Added ${quoted(p.name)} (${p.quantity} ${p.acquisition === "incoming" ? "on order, not yet arrived" : "owned"})`,
       statements: [...statements, ...parts.statements],
       preconditions: [
         { label: `garment ${garmentId} does not exist yet`, sql: "NOT EXISTS (SELECT 1 FROM garments WHERE user_id = ? AND garment_id = ?)", params: [ctx.userId, garmentId], class: "state" },
@@ -183,12 +183,13 @@ const COLUMN_OF: Record<string, string> = {
  * a fact that supersedes the earlier assertion without erasing why it existed. Returns no statements when
  * the garment is already as stated.
  */
-function planCorrection(ctx: CommandContext, full: Record<string, any>, changes: Record<string, unknown>, source: unknown): { statements: Stmt[]; previous: Record<string, unknown>; changed: string[] } {
+function planCorrection(ctx: CommandContext, full: Record<string, any>, changes: Record<string, unknown>, source: unknown): { statements: Stmt[]; previous: Record<string, unknown>; changed: string[]; factIds: string[] } {
   const sets: string[] = [];
   const params: unknown[] = [];
   const previous: Record<string, unknown> = {};
   const statements: Stmt[] = [];
   const changed: string[] = [];
+  const factIds: string[] = [];
   for (const [key, value] of Object.entries(changes)) {
     const column = COLUMN_OF[key]!;
     let stored: unknown = value;
@@ -200,6 +201,7 @@ function planCorrection(ctx: CommandContext, full: Record<string, any>, changes:
     params.push(stored);
     changed.push(key);
     const factId = ctx.newId("fct");
+    factIds.push(factId);
     statements.push(stmt("UPDATE garment_facts SET superseded_by = ? WHERE user_id = ? AND garment_id = ? AND attribute = ? AND superseded_by IS NULL", factId, ctx.userId, full.garment_id, key));
     statements.push(
       stmt(
@@ -216,7 +218,24 @@ function planCorrection(ctx: CommandContext, full: Record<string, any>, changes:
     );
   }
   if (sets.length > 0) statements.unshift(stmt(`UPDATE garments SET ${sets.join(", ")} WHERE user_id = ? AND garment_id = ?`, ...params, ctx.userId, full.garment_id));
-  return { statements, previous, changed };
+  return { statements, previous, changed, factIds };
+}
+
+/**
+ * Undoing a correction withdraws the facts it asserted and makes the facts they superseded current again,
+ * so the fact ledger says what the garment row says. The withdrawn facts stay on record, marked as undone.
+ */
+function factUndoStatements(ctx: CommandContext, factIds: string[] | undefined, aliasId?: string | null): Stmt[] {
+  const out: Stmt[] = [];
+  for (const factId of factIds ?? []) {
+    out.push(
+      stmt("UPDATE garment_facts SET superseded_by = NULL WHERE user_id = ? AND superseded_by = ?", ctx.userId, factId),
+      stmt("UPDATE garment_facts SET superseded_by = ? WHERE user_id = ? AND fact_id = ? AND superseded_by IS NULL", `undone:${ctx.commandId}`, ctx.userId, factId),
+    );
+  }
+  // The name the correction introduced is no longer the garment's name, so it stops resolving to it.
+  if (aliasId) out.push(stmt("UPDATE garment_aliases SET removed_at = ? WHERE user_id = ? AND alias_id = ? AND removed_at IS NULL", ctx.now, ctx.userId, aliasId));
+  return out;
 }
 
 export const garmentCorrect = define({
@@ -227,18 +246,20 @@ export const garmentCorrect = define({
   async plan(ctx, p) {
     const g = await loadGarment(ctx, p.garmentId);
     const full = (await first<Record<string, any>>(ctx.db, "SELECT * FROM garments WHERE user_id = ? AND garment_id = ?", ctx.userId, g.garment_id))!;
-    const { statements, previous, changed } = planCorrection(ctx, full, p.changes, p.source);
+    const { statements, previous, changed, factIds } = planCorrection(ctx, full, p.changes, p.source);
     if (changed.length === 0) return { outcome: "noop", summary: `${g.name}: already as stated`, undo: { unavailableReason: "nothing changed" } };
     const planner = ctx.stock();
     if (p.changes.careChannel && p.changes.careChannel !== g.care_channel) planner.setCareChannel(g.garment_id, p.changes.careChannel);
     else planner.touch(g.garment_id);
     const parts = stockParts(await planner.build());
+    let aliasId: string | null = null;
     if (p.changes.name && p.changes.name !== g.name) {
       // The owner's name governs what he dresses from; the earlier name stays findable as an alias.
-      statements.push(aliasInsert(ctx, g.garment_id, p.changes.name, "owner_name"));
+      aliasId = ctx.newId("als");
+      statements.push(aliasInsert(ctx, g.garment_id, p.changes.name, "owner_name", aliasId));
     }
     return {
-      summary: `${p.changes.name ?? g.name}: corrected ${changed.join(", ")}`,
+      summary: `${g.name}: corrected ${changed.join(", ")}${p.changes.name !== undefined && p.changes.name !== g.name ? `; now named ${quoted(p.changes.name)}` : ""}`,
       statements: [...statements, ...parts.statements],
       preconditions: parts.preconditions,
       affected: parts.affected,
@@ -246,7 +267,7 @@ export const garmentCorrect = define({
       result: { garmentId: g.garment_id, changed },
       changes: { availabilityChanged: [g.garment_id] },
       bumpWardrobe: true,
-      undo: { data: { garmentId: g.garment_id, previous, versionAfter: g.version + 1 } },
+      undo: { data: { garmentId: g.garment_id, previous, versionAfter: g.version + 1, factIds, aliasId } },
     };
   },
   async planUndo(ctx, _original, data) {
@@ -258,7 +279,11 @@ export const garmentCorrect = define({
     const parts = stockParts(await planner.build());
     return {
       summary: `${g.name}: correction undone`,
-      statements: [stmt(`UPDATE garments SET ${cols.map((c) => `${c} = ?`).join(", ")} WHERE user_id = ? AND garment_id = ?`, ...cols.map((c) => data.previous[c]), ctx.userId, g.garment_id), ...parts.statements],
+      statements: [
+        stmt(`UPDATE garments SET ${cols.map((c) => `${c} = ?`).join(", ")} WHERE user_id = ? AND garment_id = ?`, ...cols.map((c) => data.previous[c]), ctx.userId, g.garment_id),
+        ...factUndoStatements(ctx, data.factIds as string[] | undefined, data.aliasId as string | null | undefined),
+        ...parts.statements,
+      ],
       preconditions: [...parts.preconditions, { label: "garment not changed since the correction", sql: "(SELECT version FROM garments WHERE user_id = ? AND garment_id = ?) = ?", params: [ctx.userId, g.garment_id, data.versionAfter], class: "state" }],
       affected: parts.affected,
       changes: { availabilityChanged: [g.garment_id] },
@@ -293,14 +318,14 @@ export const garmentBulkCorrect = define({
     }
     const planner = ctx.stock();
     const statements: Stmt[] = [];
-    const undo: { garmentId: string; previous: Record<string, unknown> }[] = [];
+    const undo: { garmentId: string; previous: Record<string, unknown>; factIds: string[] }[] = [];
     const changedNames: string[] = [];
     const changedKeys = new Set<string>();
     for (const full of rows) {
       const one = planCorrection(ctx, full, p.changes, p.source);
       if (one.changed.length === 0) continue;
       statements.push(...one.statements);
-      undo.push({ garmentId: full.garment_id, previous: one.previous });
+      undo.push({ garmentId: full.garment_id, previous: one.previous, factIds: one.factIds });
       changedNames.push(full.name);
       for (const key of one.changed) changedKeys.add(key);
       if (p.changes.careChannel && p.changes.careChannel !== full.care_channel) planner.setCareChannel(full.garment_id, p.changes.careChannel);
@@ -331,6 +356,7 @@ export const garmentBulkCorrect = define({
     for (const g of garments) {
       const cols = Object.keys(g.previous);
       statements.push(stmt(`UPDATE garments SET ${cols.map((c) => `${c} = ?`).join(", ")} WHERE user_id = ? AND garment_id = ?`, ...cols.map((c) => g.previous[c]), ctx.userId, g.garmentId));
+      statements.push(...factUndoStatements(ctx, (g as { factIds?: string[] }).factIds));
       if ("care_channel" in g.previous) planner.setCareChannel(g.garmentId, g.previous.care_channel as any);
       else planner.touch(g.garmentId);
     }
@@ -364,10 +390,10 @@ export const garmentAddAlias = define({
     const g = await loadGarment(ctx, p.garmentId);
     const normalized = normalizePhrase(p.phrase);
     const existing = await first(ctx.db, "SELECT 1 AS x FROM garment_aliases WHERE user_id = ? AND garment_id = ? AND normalized = ? AND removed_at IS NULL", ctx.userId, g.garment_id, normalized);
-    if (existing) return { outcome: "noop", summary: `${g.name} already answers to "${p.phrase}"`, undo: { unavailableReason: "nothing changed" } };
+    if (existing) return { outcome: "noop", summary: `${g.name} already answers to ${quoted(p.phrase)}`, undo: { unavailableReason: "nothing changed" } };
     const b = bumpGarment(ctx, g.garment_id, g.version);
     return {
-      summary: `${g.name} now also answers to "${p.phrase}"`,
+      summary: `${g.name} now also answers to ${quoted(p.phrase)}`,
       statements: [aliasInsert(ctx, g.garment_id, p.phrase, p.kind), b.statement],
       preconditions: [b.precondition],
       affected: [{ kind: "garment", id: g.garment_id, version: g.version + 1 }],
@@ -393,9 +419,9 @@ export const garmentRemoveAlias = define({
     const g = await loadGarment(ctx, p.garmentId);
     const normalized = normalizePhrase(p.phrase);
     const rows = await all<{ alias_id: string }>(ctx.db, "SELECT alias_id FROM garment_aliases WHERE user_id = ? AND garment_id = ? AND normalized = ? AND removed_at IS NULL", ctx.userId, g.garment_id, normalized);
-    if (rows.length === 0) return { outcome: "noop", summary: `${g.name} had no alias "${p.phrase}"`, undo: { unavailableReason: "nothing changed" } };
+    if (rows.length === 0) return { outcome: "noop", summary: `${g.name} had no alias ${quoted(p.phrase)}`, undo: { unavailableReason: "nothing changed" } };
     return {
-      summary: `${g.name} no longer answers to "${p.phrase}"`,
+      summary: `${g.name} no longer answers to ${quoted(p.phrase)}`,
       statements: rows.map((r) => stmt("UPDATE garment_aliases SET removed_at = ? WHERE user_id = ? AND alias_id = ?", ctx.now, ctx.userId, r.alias_id)),
       affected: [{ kind: "garment", id: g.garment_id, version: g.version }],
       undo: { data: { aliasIds: rows.map((r) => r.alias_id) } },
@@ -421,7 +447,7 @@ export const garmentSetPlanningPolicy = define({
     if (prev!.planning_policy === p.policy && prev!.planning_reason === p.reason) return { outcome: "noop", summary: `${g.name}: planning policy already ${p.policy}`, undo: { unavailableReason: "nothing changed" } };
     const b = bumpGarment(ctx, g.garment_id, g.version);
     return {
-      summary: `${g.name}: planning policy set to ${p.policy}${p.reason ? ` (${p.reason})` : ""}`,
+      summary: `${g.name}: planning policy set to ${p.policy}${p.reason ? `; reason given: ${quoted(p.reason)}` : ""}`,
       statements: [stmt("UPDATE garments SET planning_policy = ?, planning_reason = ? WHERE user_id = ? AND garment_id = ?", p.policy, p.reason, ctx.userId, g.garment_id), b.statement],
       preconditions: [b.precondition],
       affected: [{ kind: "garment", id: g.garment_id, version: g.version + 1 }],
@@ -525,7 +551,9 @@ export const garmentMerge = define({
 
     // Counted-wear keys reconcile: one counted wear per garment and date survives, all observations are kept.
     const srcWears = await all<{ wearing_date: string; status: string; stock_event_id: string | null }>(ctx.db, "SELECT wearing_date, status, stock_event_id FROM daily_wears WHERE user_id = ? AND garment_id = ?", u, S);
-    const dstDates = new Set((await all<{ wearing_date: string }>(ctx.db, "SELECT wearing_date FROM daily_wears WHERE user_id = ? AND garment_id = ? AND status = 'active'", u, T)).map((r) => r.wearing_date));
+    const dstRows = await all<{ wearing_date: string; status: string }>(ctx.db, "SELECT wearing_date, status FROM daily_wears WHERE user_id = ? AND garment_id = ?", u, T);
+    const dstDates = new Set(dstRows.filter((r) => r.status === "active").map((r) => r.wearing_date));
+    const dstAnyDates = new Set(dstRows.map((r) => r.wearing_date));
     const srcEvents = await all<{ event_id: string; payload_json: string; occurred_at: string; basis: string }>(
       ctx.db,
       "SELECT event_id, payload_json, occurred_at, basis FROM stock_events WHERE user_id = ? AND garment_id = ? AND kind = 'wear' AND voided_by_command_id IS NULL",
@@ -538,18 +566,63 @@ export const garmentMerge = define({
       if (w.status !== "active" || dstDates.has(w.wearing_date)) continue;
       const ev = srcEvents.find((e) => e.event_id === w.stock_event_id);
       // The journal is append-only: the target gets its own wear event at the original time.
-      const newEventId = planner.add(T, "wear", ev ? json(ev.payload_json, {}) : { wearingDate: w.wearing_date }, "observed", ev?.occurred_at ?? ctx.occurredAt);
-      statements.push(stmt("UPDATE daily_wears SET stock_event_id = ? WHERE user_id = ? AND garment_id = ? AND wearing_date = ?", newEventId, u, S, w.wearing_date));
+      const carriedPayload = ev ? json<Record<string, unknown>>(ev.payload_json, {}) : { wearingDate: w.wearing_date };
+      const newEventId = planner.add(T, "wear", p.quantityMode === "add_units" ? { ...carriedPayload, statisticOnly: true } : carriedPayload, "observed", ev?.occurred_at ?? ctx.occurredAt);
+      // The surviving row for that date must point at the live event: the source's row when the target has
+      // none, the target's own (retracted, about to become active again) row when it has one.
+      statements.push(stmt("UPDATE daily_wears SET stock_event_id = ? WHERE user_id = ? AND garment_id = ? AND wearing_date = ?", newEventId, u, dstAnyDates.has(w.wearing_date) ? T : S, w.wearing_date));
       carried++;
     }
     const srcStock = await explainGarmentStock(ctx.db, u, S, src.care_channel);
     const srcUnits = ownedUnits(srcStock.state);
     if (p.quantityMode === "add_units" && srcUnits > 0) {
-      planner.add(T, "receive", { quantity: srcUnits, to: "clean", mergedFrom: S }, "reconciliation", ctx.occurredAt);
-      if (srcStock.state.dirty.length > 0 && dst.care_channel !== "none") planner.add(T, "mark_dirty", { quantity: srcStock.state.dirty.length }, "reconciliation", ctx.occurredAt);
+      // Further units of the same garment: each arrives on the canonical record where the ledger had it -
+      // at home, in the hamper, in storage, at the tailor, at the laundry (with its batch or exception) or
+      // in a suitcase. Nothing is brought home or declared clean by merging two records.
+      const st = srcStock.state;
+      const receive = (payload: Record<string, unknown>) => planner.add(T, "receive", { ...payload, mergedFrom: S }, "reconciliation", ctx.occurredAt);
+      if (st.clean > 0) receive({ quantity: st.clean, to: "clean" });
+      if (st.dirty.length > 0) {
+        receive({ quantity: st.dirty.length, to: "clean" });
+        if (dst.care_channel !== "none") planner.add(T, "mark_dirty", { quantity: st.dirty.length }, "reconciliation", ctx.occurredAt);
+      }
+      if (st.storage > 0) receive({ quantity: st.storage, to: "storage" });
+      if (st.tailor > 0) receive({ quantity: st.tailor, to: "tailor" });
+      for (const [ref, h] of st.service) receive({ quantity: h.quantity, to: "service", ref, held: h.held, lost: h.lost === true, pickedUpAtMs: h.pickedUpAtMs });
+      for (const [tripId, t] of st.trip) {
+        if (t.clean > 0) receive({ quantity: t.clean, to: "trip", tripId });
+        if (t.dirty > 0) receive({ quantity: t.dirty, to: "trip", tripId, dirty: true });
+      }
     }
     planner.add(S, "merged_out", { mergedInto: T }, "reconciliation", ctx.occurredAt);
     planner.touch(T);
+
+    // Records kept per garment follow it to the canonical record: measurements (the canonical garment's own
+    // current value wins for the same key; the other stays as superseded history), laundry batch membership
+    // and laundry exceptions.
+    statements.push(
+      stmt(
+        `UPDATE measurements SET superseded_by = (SELECT t.measurement_id FROM measurements t WHERE t.user_id = measurements.user_id AND t.subject = 'garment' AND t.garment_id = ? AND t.key = measurements.key AND t.superseded_by IS NULL)
+          WHERE user_id = ? AND subject = 'garment' AND garment_id = ? AND superseded_by IS NULL
+            AND EXISTS (SELECT 1 FROM measurements t WHERE t.user_id = measurements.user_id AND t.subject = 'garment' AND t.garment_id = ? AND t.key = measurements.key AND t.superseded_by IS NULL)`,
+        T, u, S, T,
+      ),
+      stmt("UPDATE measurements SET garment_id = ? WHERE user_id = ? AND subject = 'garment' AND garment_id = ?", T, u, S),
+      stmt("UPDATE laundry_exceptions SET garment_id = ? WHERE user_id = ? AND garment_id = ?", T, u, S),
+    );
+    const srcItems = await all<{ batch_id: string; quantity: number; returned_quantity: number; still_away: number }>(ctx.db, "SELECT batch_id, quantity, returned_quantity, still_away FROM laundry_batch_items WHERE user_id = ? AND garment_id = ?", u, S);
+    const dstBatches = new Set((await all<{ batch_id: string }>(ctx.db, "SELECT batch_id FROM laundry_batch_items WHERE user_id = ? AND garment_id = ?", u, T)).map((r) => r.batch_id));
+    for (const item of srcItems) {
+      if (dstBatches.has(item.batch_id)) {
+        // Both records were in the same bag: one membership row for the one garment, with the quantities added.
+        statements.push(
+          stmt("UPDATE laundry_batch_items SET quantity = quantity + ?, returned_quantity = returned_quantity + ?, still_away = still_away + ? WHERE user_id = ? AND batch_id = ? AND garment_id = ?", item.quantity, item.returned_quantity, item.still_away, u, item.batch_id, T),
+          stmt("DELETE FROM laundry_batch_items WHERE user_id = ? AND batch_id = ? AND garment_id = ?", u, item.batch_id, S),
+        );
+      } else {
+        statements.push(stmt("UPDATE laundry_batch_items SET garment_id = ? WHERE user_id = ? AND batch_id = ? AND garment_id = ?", T, u, item.batch_id, S));
+      }
+    }
 
     statements.push(
       stmt(
@@ -602,7 +675,7 @@ export const garmentRemoveFabricated = define({
     planner.add(g.garment_id, "merged_out", { removed: p.reason }, "reconciliation", ctx.occurredAt);
     const parts = stockParts(await planner.build());
     return {
-      summary: `Removed ${g.name}: it was never a real garment (${p.reason})`,
+      summary: `Removed ${g.name}: it was never a real garment; reason given: ${quoted(p.reason)}`,
       statements: [
         ...parts.statements,
         stmt("UPDATE garments SET removed_reason = ?, acquisition = 'disposed' WHERE user_id = ? AND garment_id = ?", p.reason, ctx.userId, g.garment_id),
@@ -659,7 +732,7 @@ export const stockPack = define({
     }
     const parts = stockParts(await planner.build());
     return {
-      summary: `Packed ${names.length} item${names.length === 1 ? "" : "s"} for trip ${p.tripId}`,
+      summary: `Packed ${names.length} item${names.length === 1 ? "" : "s"} for trip ${quoted(p.tripId, 64)}`,
       ...parts,
       result: { tripId: p.tripId, packed: p.items.length },
       changes: { availabilityChanged: parts.availabilityChanged },
@@ -687,10 +760,10 @@ export const stockUnpack = define({
       const g = await loadGarment(ctx, item.garmentId);
       eventIds.push(planner.add(g.garment_id, "unpack", item.quantity ? { tripId: p.tripId, quantity: item.quantity } : { tripId: p.tripId }, "observed", ctx.occurredAt));
     }
-    if (eventIds.length === 0) return { outcome: "noop", summary: `Nothing was packed for trip ${p.tripId}`, undo: { unavailableReason: "nothing changed" } };
+    if (eventIds.length === 0) return { outcome: "noop", summary: `Nothing was packed for trip ${quoted(p.tripId, 64)}`, undo: { unavailableReason: "nothing changed" } };
     const parts = stockParts(await planner.build());
     return {
-      summary: `Unpacked ${items.length} item${items.length === 1 ? "" : "s"} from trip ${p.tripId}; laundered pieces are awaiting care, not marked clean`,
+      summary: `Unpacked ${items.length} item${items.length === 1 ? "" : "s"} from trip ${quoted(p.tripId, 64)}; laundered pieces are awaiting care, not marked clean`,
       ...parts,
       result: { tripId: p.tripId, unpacked: items.length },
       changes: { availabilityChanged: parts.availabilityChanged },

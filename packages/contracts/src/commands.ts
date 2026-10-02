@@ -150,7 +150,11 @@ export const GarmentRemoveFabricated = z.object({ garmentId: GarmentId, reason: 
 /** Aggregate owner correction, e.g. "five pairs are clean". Never exposes per-unit identity. */
 export const StockReconcile = z.object({
   garmentId: GarmentId,
-  counts: z.object({ clean: z.number().int().nonnegative(), dirty: z.number().int().nonnegative(), storage: z.number().int().nonnegative(), total: z.number().int().nonnegative() }).partial(),
+  counts: z
+    .object({ clean: z.number().int().nonnegative(), dirty: z.number().int().nonnegative(), storage: z.number().int().nonnegative(), total: z.number().int().nonnegative() })
+    .partial()
+    // A count correction states at least one count: an empty one would verify stock without observing anything.
+    .refine((c) => Object.values(c).some((v) => v !== undefined), "at least one count is required"),
   note: z.string().nullable().default(null),
 });
 

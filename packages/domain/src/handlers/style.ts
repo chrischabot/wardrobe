@@ -4,7 +4,7 @@ import { CommandError } from "../errors.ts";
 import { deepMerge, sha256Hex } from "../util.ts";
 import type { CommandPlan } from "../commands/types.ts";
 import { restrictionCovers } from "../availability/estimator.ts";
-import { attrs, GARMENT_COLS, loadGarments } from "./common.ts";
+import { attrs, GARMENT_COLS, loadGarments, quoted } from "./common.ts";
 import { define } from "./garments.ts";
 import { planFactChanges, planFactUndo, styleResolveFactConflict, type FactUndo } from "./style-facts.ts";
 import type { GarmentRow } from "../stock/planner.ts";
@@ -32,7 +32,7 @@ export const restrictionAdd = define({
     const restrictionId = p.restrictionId ?? ctx.newId("rst");
     const covered = await coveredGarmentIds(ctx, p.scope);
     return {
-      summary: `Restriction recorded (${p.kind}): ${p.reason}. ${covered.length} garment${covered.length === 1 ? "" : "s"} excluded until it is explicitly resolved`,
+      summary: `Restriction recorded (${p.kind}); reason given: ${quoted(p.reason)}. ${covered.length} garment${covered.length === 1 ? "" : "s"} excluded until it is explicitly resolved`,
       statements: [
         stmt(
           "INSERT INTO restrictions (user_id, restriction_id, kind, scope_json, reason, starts_at, expected_end, required_evidence, status, source_json, command_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
@@ -100,15 +100,23 @@ export const restrictionResolve = define({
       throw new CommandError("forbidden", `this restriction is only lifted by ${r.required_evidence.replace(/_/g, " ")}; '${p.evidence.kind}' does not resolve it`, { requiredEvidence: r.required_evidence });
     }
     // The evidence kind is a label the caller writes. Anyone acting for the owner (the assistant, a
-    // connected client) must also point at the statement itself, so the lift can be traced to his words;
-    // the owner's own control in the app is the statement.
+    // connected client) must point at the owner's statement itself, and that reference must check out
+    // against the record of what the owner said: the composition root registers the verifier (the
+    // conversation's own store), and without one nobody but the owner in the app lifts a restriction.
+    // The owner's own control in the app is the statement.
     const actingForOwner = ctx.principal.actor !== "owner" || ctx.principal.channel === "mcp" || ctx.envelope.source.channel === "mcp";
-    if (actingForOwner && !p.evidence.ref?.trim()) {
-      throw new CommandError("forbidden", "lifting a restriction on the owner's behalf needs a reference to the owner's own statement (evidence.ref); a label alone does not lift it", { reason: "evidence_reference_required", requiredEvidence: r.required_evidence });
+    if (actingForOwner) {
+      const ref = p.evidence.ref?.trim();
+      if (!ref) {
+        throw new CommandError("forbidden", "lifting a restriction on the owner's behalf needs a reference to the owner's own statement (evidence.ref); a label alone does not lift it", { reason: "evidence_reference_required", requiredEvidence: r.required_evidence });
+      }
+      if (!(await ctx.verifyOwnerStatement(ref))) {
+        throw new CommandError("forbidden", "the reference does not match a statement the owner made in this conversation; the restriction stays in force", { reason: "evidence_reference_not_verified", requiredEvidence: r.required_evidence });
+      }
     }
     const covered = await coveredGarmentIds(ctx, json(r.scope_json, {}));
     return {
-      summary: `Restriction resolved (${r.kind}): ${r.reason}. ${covered.length} garment${covered.length === 1 ? " is" : "s are"} no longer excluded by it`,
+      summary: `Restriction resolved (${r.kind}); it was recorded with the reason ${quoted(r.reason)}. ${covered.length} garment${covered.length === 1 ? " is" : "s are"} no longer excluded by it`,
       statements: [
         stmt(
           "UPDATE restrictions SET status = 'resolved', resolved_at = ?, resolution_json = ?, resolved_command_id = ? WHERE user_id = ? AND restriction_id = ? AND status = 'active'",
@@ -164,10 +172,10 @@ export const styleImportDocument = define({
       throw new CommandError("precondition_failed", "the document does not match its expected SHA-256; it was not imported", { expected: p.expectedSha256, actual: sha });
     }
     const active = await first<{ version: number; content_sha256: string }>(ctx.db, "SELECT version, content_sha256 FROM style_documents WHERE user_id = ? AND document_id = ? AND status = 'active'", ctx.userId, p.documentId);
-    if (active && active.content_sha256 === sha) return { outcome: "noop", summary: `"${p.title}" is already the active style document`, result: { documentId: p.documentId, version: active.version, contentSha256: sha }, undo: { unavailableReason: "nothing changed" } };
+    if (active && active.content_sha256 === sha) return { outcome: "noop", summary: `${quoted(p.title)} is already the active style document`, result: { documentId: p.documentId, version: active.version, contentSha256: sha }, undo: { unavailableReason: "nothing changed" } };
     if (active) throw new CommandError("precondition_failed", "a different style document is already active; save a new version instead of importing over it");
     return {
-      summary: `Imported "${p.title}" verbatim (${bytes.byteLength} bytes, SHA-256 ${sha.slice(0, 12)}...) as style document version 1`,
+      summary: `Imported ${quoted(p.title)} verbatim (${bytes.byteLength} bytes, SHA-256 ${sha.slice(0, 12)}...) as style document version 1`,
       statements: [
         stmt(
           "INSERT INTO style_documents (user_id, document_id, version, title, content, content_sha256, byte_length, status, source_json, command_id, created_at) VALUES (?, ?, 1, ?, ?, ?, ?, 'active', ?, ?, ?)",
@@ -193,6 +201,11 @@ export const styleSaveDocument = define({
   async plan(ctx, p) {
     // A model-written compaction or extraction can never rewrite the owner's profile.
     if (p.source.kind === "model_inference") throw new CommandError("forbidden", "the profile is the owner's own text; a model inference cannot save a new version of it");
+    // A save must say which version it was edited from, so a device that never saw a newer version gets a
+    // conflict instead of silently overwriting it.
+    if (!Object.keys(ctx.envelope.expectedVersions).some((k) => k === "style" || k === "style_document" || k.startsWith("style_document:"))) {
+      throw new CommandError("invalid_command", "saving My style needs the version it was edited from (expectedVersions 'style_document:<documentId>' or 'style'); nothing was saved", { reason: "expected_version_required" });
+    }
     const active = await first<{ version: number; title: string; content: string; content_sha256: string }>(ctx.db, "SELECT version, title, content, content_sha256 FROM style_documents WHERE user_id = ? AND document_id = ? AND status = 'active'", ctx.userId, p.documentId);
     if (!active) throw new CommandError("not_found", "there is no active style document to edit");
     const bytes = new TextEncoder().encode(p.content);
@@ -289,7 +302,7 @@ export const styleAddAmendment = define({
     if (!active) throw new CommandError("not_found", "there is no active style document to amend");
     const amendmentId = p.amendmentId ?? ctx.newId("amd");
     return {
-      summary: `Profile amendment recorded (${p.kind}): ${p.text}`,
+      summary: `Profile amendment recorded (${p.kind}): ${quoted(p.text)}`,
       statements: [
         stmt(
           "INSERT INTO style_amendments (user_id, amendment_id, document_id, based_on_version, text, kind, status, source_json, command_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)",
@@ -343,7 +356,16 @@ export const styleUpsertRule = define({
   requiredScope: "write",
   allowedAuthorizations: ["owner_tap", "owner_statement", "data_import"],
   async plan(ctx, p) {
-    const current = await first<{ rule_id: string; version: number }>(ctx.db, "SELECT rule_id, version FROM style_rules WHERE user_id = ? AND key = ? AND is_current = 1", ctx.userId, p.key);
+    const current = await first<{ rule_id: string; version: number; status: string; params_json: string }>(ctx.db, "SELECT rule_id, version, status, params_json FROM style_rules WHERE user_id = ? AND key = ? AND is_current = 1", ctx.userId, p.key);
+    // The rule that carries an active restriction stays as it is until the restriction itself is resolved:
+    // rewriting or retiring the rule is not a way to lift it.
+    const carried = current ? json<Record<string, unknown>>(current.params_json, {}).restrictionId : undefined;
+    if (current && typeof carried === "string" && (p.status !== current.status || p.params.restrictionId !== carried)) {
+      const active = await first(ctx.db, "SELECT 1 AS x FROM restrictions WHERE user_id = ? AND restriction_id = ? AND status = 'active'", ctx.userId, carried);
+      if (active) {
+        throw new CommandError("forbidden", "this rule carries an active restriction; only the owner's explicit statement resolves it (restriction.resolve), not a change to the rule", { reason: "rule_carries_active_restriction", restrictionId: carried });
+      }
+    }
     // A machine rule derived from the profile must quote the passage it interprets, verbatim.
     if (p.origin === "profile") {
       if (p.passages.length === 0) throw new CommandError("invalid_command", "a profile-derived rule must reference the passage it interprets");
@@ -369,7 +391,7 @@ export const styleUpsertRule = define({
       ),
     );
     return {
-      summary: `Rule '${p.key}' ${current ? `updated to version ${version}` : "recorded"} (${p.kind}, ${p.status})`,
+      summary: `Rule ${quoted(p.key, 80)} ${current ? `updated to version ${version}` : "recorded"} (${p.kind}, ${p.status})`,
       statements,
       preconditions: [
         current
@@ -387,7 +409,7 @@ export const styleUpsertRule = define({
     const statements: Stmt[] = [stmt("UPDATE style_rules SET is_current = 0, status = 'retired' WHERE user_id = ? AND rule_id = ? AND version = ?", ctx.userId, data.ruleId, data.version)];
     if (data.previousVersion !== null) statements.push(stmt("UPDATE style_rules SET is_current = 1 WHERE user_id = ? AND rule_id = ? AND version = ?", ctx.userId, data.ruleId, data.previousVersion));
     return {
-      summary: `Rule '${data.key}' change undone`,
+      summary: `Rule ${quoted(data.key, 80)} change undone`,
       statements,
       preconditions: [{ label: "rule not changed since", sql: "(SELECT version FROM style_rules WHERE user_id = ? AND key = ? AND is_current = 1) = ?", params: [ctx.userId, data.key, data.version], class: "state" }],
       changes: { styleChanged: true },
@@ -407,7 +429,7 @@ export const styleAddDirection = define({
     if (p.source.kind === "model_inference") throw new CommandError("forbidden", "a standing direction needs an owner source; a fleeting reaction is feedback, not a rule");
     const directionId = p.directionId ?? ctx.newId("dir");
     return {
-      summary: `Standing direction in effect: ${p.text}`,
+      summary: `Standing direction in effect: ${quoted(p.text)}`,
       statements: [
         stmt(
           "INSERT INTO standing_directions (user_id, direction_id, version, text, scope, check_key, status, source_json, command_id, created_at, updated_at) VALUES (?, ?, 1, ?, ?, ?, 'active', ?, ?, ?, ?)",
@@ -442,7 +464,7 @@ export const styleRetireDirection = define({
     if (!d) throw new CommandError("not_found", `no standing direction '${p.directionId}'`);
     if (d.status !== "active") return { outcome: "noop", summary: "That direction was already retired", undo: { unavailableReason: "nothing changed" } };
     return {
-      summary: `Standing direction retired: ${d.text}`,
+      summary: `Standing direction retired: ${quoted(d.text)}`,
       statements: [stmt("UPDATE standing_directions SET status = 'retired', version = version + 1, updated_at = ? WHERE user_id = ? AND direction_id = ?", ctx.now, ctx.userId, p.directionId)],
       changes: { styleChanged: true },
       bumpStyle: true,
@@ -468,7 +490,7 @@ export const styleSetBrief = define({
   async plan(ctx, p) {
     const briefId = p.briefId ?? ctx.newId("brf");
     return {
-      summary: `Brief for ${p.localDate}: ${p.text}`,
+      summary: `Brief for ${p.localDate}: ${quoted(p.text)}`,
       statements: [
         stmt(
           "INSERT INTO temporary_briefs (user_id, brief_id, local_date, text, status, source_json, command_id, created_at, updated_at) VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)",
@@ -528,7 +550,7 @@ export const measurementRecord = define({
     }
     const measurementId = ctx.newId("msr");
     return {
-      summary: `Recorded ${p.subject} ${p.key}: ${p.qualifier ? `${p.qualifier} ` : ""}${p.value} ${p.unit}${p.measuredOn ? ` (${p.measuredOn})` : ""}`,
+      summary: `Recorded ${p.subject} measurement ${quoted(p.key, 60)}: ${p.qualifier ? `${quoted(p.qualifier, 60)} ` : ""}${p.value} ${p.unit}${p.measuredOn ? ` (${p.measuredOn})` : ""}`,
       statements: [
         // A newer dated value settles any conflict a profile edit left open on the value it supersedes.
         supersedeOpenConflicts(
@@ -565,7 +587,7 @@ export const sizeExperienceRecord = define({
   async plan(ctx, p) {
     const id = ctx.newId("szx");
     return {
-      summary: `Size experience recorded: ${p.maker}${p.productFamily ? ` ${p.productFamily}` : ""} - ${p.sizeLabel}`,
+      summary: `Size experience recorded: maker ${quoted(p.maker, 80)}${p.productFamily ? `, product ${quoted(p.productFamily, 80)}` : ""}, size ${quoted(p.sizeLabel, 40)}`,
       statements: [
         stmt(
           "INSERT INTO size_experiences (user_id, size_experience_id, maker, product_family, size_label, note, noted_on, passage_json, command_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -640,7 +662,9 @@ export const exposurePublish = define({
   async plan(ctx, p) {
     const exposureId = p.exposureId ?? ctx.newId("exp");
     const ids = [...new Set(p.options.flatMap((o) => [...o.garmentIds, ...o.alternativeGroups.flat()]))];
-    await loadGarments(ctx, ids); // an option can only reference real garments of this owner
+    const loaded = await loadGarments(ctx, ids); // an option can only reference real garments of this owner
+    // A merged-away record stands for its canonical garment: the option is stored under the garment that exists.
+    const canonical = (id: string) => loaded.get(id)!.garment_id;
     const optionIds = new Set(p.options.map((o) => o.optionId));
     if (optionIds.size !== p.options.length) throw new CommandError("invalid_command", "option IDs must be unique within a set");
     const statements: Stmt[] = [
@@ -651,13 +675,15 @@ export const exposurePublish = define({
     ];
     for (const o of p.options) {
       const seen = new Set<string>();
-      for (const g of o.garmentIds) {
+      for (const raw of o.garmentIds) {
+        const g = canonical(raw);
         if (seen.has(g)) continue;
         seen.add(g);
         statements.push(stmt("INSERT INTO exposure_items (user_id, exposure_id, option_id, garment_id, alt_group) VALUES (?, ?, ?, ?, 0)", ctx.userId, exposureId, o.optionId, g));
       }
       o.alternativeGroups.forEach((group, i) => {
-        for (const g of group) {
+        for (const raw of group) {
+          const g = canonical(raw);
           if (seen.has(g)) continue;
           seen.add(g);
           statements.push(stmt("INSERT INTO exposure_items (user_id, exposure_id, option_id, garment_id, alt_group) VALUES (?, ?, ?, ?, ?)", ctx.userId, exposureId, o.optionId, g, i + 1));

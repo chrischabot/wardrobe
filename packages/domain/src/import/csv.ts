@@ -1,4 +1,8 @@
-/** Minimal RFC 4180 CSV parser (quoted fields, doubled quotes, CRLF/LF). Returns rows with 1-based line numbers. */
+/**
+ * Minimal RFC 4180 CSV parser (quoted fields, doubled quotes, CRLF/LF). Returns rows with 1-based line
+ * numbers. A blank physical line is returned as a row with no fields, so every line of the file can be
+ * accounted for; only the absence of a line after the final newline is not a row.
+ */
 export interface CsvRow {
   /** 1-based physical line on which the record starts. */
   line: number;
@@ -45,6 +49,7 @@ export function parseCsv(text: string): CsvRow[] {
     } else if (ch === "\n" || ch === "\r") {
       if (ch === "\r" && src[i + 1] === "\n") i++;
       if (sawAny || field !== "" || fields.length > 0) endRecord();
+      else rows.push({ line: recordLine, fields: [] });
       line++;
       recordLine = line;
     } else {

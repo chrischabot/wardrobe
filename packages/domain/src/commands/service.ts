@@ -1,6 +1,6 @@
 import { CommandEnvelope, CONTRACT_VERSION, DEFAULT_OWNER_SETTINGS, OwnerSettings } from "@garderobe/contracts";
 import type { CommandReceipt, EntityVersion, ParsedCommandEnvelope } from "@garderobe/contracts";
-import { all, first, json, prepare, stmt, type Db, type Stmt } from "../db.ts";
+import { all, allIn, first, json, prepare, stmt, type Db, type Stmt } from "../db.ts";
 import { CommandError, isCommandError } from "../errors.ts";
 import { assertPrincipal, requireScope, type Principal } from "../principal.ts";
 import { StockPlanner } from "../stock/planner.ts";
@@ -31,7 +31,7 @@ interface CommandRow {
 }
 
 const PRECONDITION_MARKERS = ["garderobe_precondition_failed", "CHECK constraint failed: ok = 1"];
-const IDEMPOTENCY_MARKERS = ["garderobe_idempotency_key_unique", "commands.user_id, commands.idempotency_key"];
+const EFFECT_KEY_MARKERS = ["effects.user_id, effects.operation_key"];
 
 function errorText(e: unknown): string {
   const parts: string[] = [];
@@ -68,7 +68,7 @@ export class CommandService {
     this.db = options.db;
     this.registry = options.registry;
     this.clock = options.clock ?? (() => Date.now());
-    this.maxAttempts = options.maxAttempts ?? 6;
+    this.maxAttempts = options.maxAttempts ?? 12;
   }
 
   async execute(principal: Principal, input: CommandEnvelope | Record<string, unknown>): Promise<CommandReceipt> {
@@ -95,6 +95,14 @@ export class CommandService {
 
     let lastConflict: string | null = null;
     for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
+      // Commands for one owner serialise on a revision. After a lost race, wait a little (more each time,
+      // with jitter) so a burst of simultaneous commands drains instead of colliding again in step.
+      if (attempt > 1) await new Promise((resolve) => setTimeout(resolve, Math.min(250, 5 * attempt + Math.random() * 15 * attempt)));
+      // A retry of this same request may have committed while this one was planning or waiting.
+      if (attempt > 1) {
+        const landed = await this.findByIdempotencyKey(principal.userId, envelope.idempotencyKey);
+        if (landed) return this.replay(landed, requestHash);
+      }
       const ctx = await this.buildContext(principal, envelope);
       const plan = await def.plan(ctx, parsedPayload.data);
       const changes: DomainChanges = { ...noChanges(), ...(plan.changes ?? {}) };
@@ -108,7 +116,7 @@ export class CommandService {
       lastConflict = result.label;
       // result.kind === "retry": a concurrent commit changed something this plan read; re-plan from fresh state.
     }
-    throw new CommandError("internal", "the command could not be committed after repeated concurrent changes; nothing was written", { lastConflict });
+    throw new CommandError("internal", "the command could not be committed after repeated concurrent changes; nothing was written. It is safe to send it again with the same idempotency key", { lastConflict, retryable: true });
   }
 
   /** The stored receipt of a command (never recomputed). */
@@ -128,13 +136,15 @@ export class CommandService {
       filter.kind && filter.entityId
         ? await all<{ receipt_json: string }>(
             this.db,
-            "SELECT c.receipt_json FROM commands c JOIN command_entities e ON e.user_id = c.user_id AND e.command_id = c.command_id WHERE c.user_id = ? AND e.kind = ? AND e.entity_id = ? ORDER BY c.recorded_at DESC, c.command_id DESC LIMIT ?",
+            "SELECT c.receipt_json FROM commands c JOIN command_entities e ON e.user_id = c.user_id AND e.command_id = c.command_id WHERE c.user_id = ? AND e.kind = ? AND e.entity_id = ? ORDER BY julianday(c.recorded_at) DESC, c.rowid DESC LIMIT ?",
             principal.userId,
             filter.kind,
             filter.entityId,
             limit,
           )
-        : await all<{ receipt_json: string }>(this.db, "SELECT receipt_json FROM commands WHERE user_id = ? ORDER BY recorded_at DESC, command_id DESC LIMIT ?", principal.userId, limit);
+        // Instants are stored with or without milliseconds, so they are ordered as instants, not as text;
+        // commands recorded in the same instant keep their commit order.
+        : await all<{ receipt_json: string }>(this.db, "SELECT receipt_json FROM commands WHERE user_id = ? ORDER BY julianday(recorded_at) DESC, rowid DESC LIMIT ?", principal.userId, limit);
     return rows.map((r) => JSON.parse(r.receipt_json) as CommandReceipt);
   }
 
@@ -232,6 +242,10 @@ export class CommandService {
       styleRevision: owner.style_revision ?? 0,
       newId,
       stock: () => new StockPlanner(db, userId, commandId, now, newId),
+      verifyOwnerStatement: async (ref: string) => {
+        const verifier = this.registry.ownerStatementVerifier();
+        return verifier ? (await verifier(ctx, ref)) === true : false;
+      },
     };
     return ctx;
   }
@@ -288,7 +302,18 @@ export class CommandService {
     }
 
     const affected = dedupeAffected([...(plan.affected ?? []), ...fragments.flatMap((f) => f.affected ?? [])]);
-    const effects: (PlannedEffect & { effectId: string })[] = [...(plan.effects ?? []), ...fragments.flatMap((f) => f.effects ?? [])].map((e) => ({ ...e, effectId: newId("eff") }));
+    // An external operation is enqueued once: a repeated operation key (a re-run of the same projection)
+    // adds no second effect, and the receipt lists only the effects this command really created.
+    const plannedEffects = [...(plan.effects ?? []), ...fragments.flatMap((f) => f.effects ?? [])];
+    const knownKeys = new Set(
+      (await allIn<{ operation_key: string }>(this.db, "SELECT operation_key FROM effects WHERE user_id = ? AND operation_key IN (:ids)", [userId], [...new Set(plannedEffects.map((e) => e.operationKey))])).map((r) => r.operation_key),
+    );
+    const effects: (PlannedEffect & { effectId: string })[] = [];
+    for (const e of plannedEffects) {
+      if (knownKeys.has(e.operationKey)) continue;
+      knownKeys.add(e.operationKey);
+      effects.push({ ...e, effectId: newId("eff") });
+    }
     const outbox: PlannedOutbox[] = [...(plan.outbox ?? []), ...fragments.flatMap((f) => f.outbox ?? [])];
     const wardrobeRevision = ctx.wardrobeRevision + (bumpWardrobe ? 1 : 0);
 
@@ -395,10 +420,11 @@ export class CommandService {
     } catch (e) {
       if (isCommandError(e)) throw e;
       const text = errorText(e);
-      if (IDEMPOTENCY_MARKERS.some((m) => text.includes(m))) {
-        const row = await this.findByIdempotencyKey(userId, envelope.idempotencyKey);
-        if (row) return { kind: "replayed", receipt: this.replay(row, requestHash) };
-      }
+      // Whatever made the batch fail, a retry of this same request that committed first is the answer:
+      // the caller gets the stored receipt, never an error about a change its own request made.
+      const landed = await this.findByIdempotencyKey(userId, envelope.idempotencyKey);
+      if (landed) return { kind: "replayed", receipt: this.replay(landed, requestHash) };
+      if (EFFECT_KEY_MARKERS.some((m) => text.includes(m))) return { kind: "retry", label: "an effect with the same operation key was enqueued concurrently" };
       if (PRECONDITION_MARKERS.some((m) => text.includes(m))) {
         const failed = await this.findFailedPrecondition(preconditions);
         if (!failed) return { kind: "retry", label: "transient precondition failure" };

@@ -201,6 +201,10 @@ export async function buildInventoryImportPlan(csvText: string, sourceName = "wa
   }
   for (const r of parsed.slice(0, headerIndex)) {
     const text = r.fields.filter((f) => f.trim() !== "").join(" ");
+    if (text === "") {
+      rows.push({ sourceRow: r.line, sourceKey: `line:${r.line}`, disposition: "not_a_data_row", garmentId: null, garmentName: null, reason: "blank line", raw: { text } });
+      continue;
+    }
     title ??= text;
     rows.push({ sourceRow: r.line, sourceKey: `line:${r.line}`, disposition: "not_a_data_row", garmentId: null, garmentName: null, reason: "sheet title row", raw: { text } });
   }
@@ -231,7 +235,7 @@ export async function buildInventoryImportPlan(csvText: string, sourceName = "wa
       issue("row_held", "needs_owner", `Line ${d.line} ("${item}") was not imported: ${reason}`, null, [d.line]);
     };
     if (!category && !item) {
-      rows.push({ sourceRow: d.line, sourceKey, disposition: "not_a_data_row", garmentId: null, garmentName: null, reason: "empty row", raw: rec });
+      rows.push({ sourceRow: d.line, sourceKey, disposition: "not_a_data_row", garmentId: null, garmentName: null, reason: Object.values(rec).every((v) => v.trim() === "") ? "blank line" : "empty row", raw: rec });
       continue;
     }
     const mapping = mapCategory(category, item);

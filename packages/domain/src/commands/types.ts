@@ -115,7 +115,15 @@ export interface CommandContext {
   newId(prefix: string): string;
   /** A stock planner bound to this command (journal + replay + balance materialization). */
   stock(): StockPlanner;
+  /**
+   * Whether `ref` names a statement the owner really made, as far as this command's own conversation is
+   * concerned. Answered by the verifier the composition root registered; false when there is none.
+   */
+  verifyOwnerStatement(ref: string): Promise<boolean>;
 }
+
+/** Checks an evidence reference against the record of what the owner said (registered by the conversation's owner). */
+export type OwnerStatementVerifier = (ctx: CommandContext, ref: string) => Promise<boolean>;
 
 export interface CommandDefinition<S extends z.ZodType = z.ZodType> {
   type: string;

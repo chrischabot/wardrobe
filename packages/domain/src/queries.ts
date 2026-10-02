@@ -117,7 +117,7 @@ export async function buildEstimatorInput(db: Db, userId: string, forDate: strin
     list.push({ bucket: b.bucket, ref: b.ref, quantity: b.quantity, held: b.held === 1 });
     balances.set(b.garment_id, list);
   }
-  const imported = await all<{ garment_id: string; at: string }>(db, "SELECT garment_id, MIN(occurred_at) AS at FROM stock_events WHERE user_id = ? AND kind = 'receive' AND basis = 'import' AND voided_by_command_id IS NULL GROUP BY garment_id", userId);
+  const imported = await all<{ garment_id: string; at: string }>(db, "SELECT garment_id, occurred_at AS at FROM stock_events WHERE user_id = ? AND kind = 'receive' AND basis = 'import' AND voided_by_command_id IS NULL GROUP BY garment_id HAVING julianday(occurred_at) = MIN(julianday(occurred_at))", userId);
   const verified = new Set(
     (await all<{ garment_id: string }>(db, "SELECT DISTINCT garment_id FROM stock_events WHERE user_id = ? AND kind IN ('wash', 'return', 'reconcile') AND voided_by_command_id IS NULL AND garment_id IS NOT NULL", userId)).map((r) => r.garment_id),
   );
@@ -132,7 +132,7 @@ export async function buildEstimatorInput(db: Db, userId: string, forDate: strin
   const garments: EstimatorGarment[] = garmentRows.map((r) => {
     const at = importedAt.get(r.garment_id);
     const cycle = lastCycle.get(r.care_channel);
-    const unverified = at !== undefined && r.care_channel !== "none" && !verified.has(r.garment_id) && !(cycle && cycle.baseline_at > at);
+    const unverified = at !== undefined && r.care_channel !== "none" && !verified.has(r.garment_id) && !(cycle && Date.parse(cycle.baseline_at) > Date.parse(at));
     return {
       garmentId: r.garment_id,
       category: r.category,
