@@ -79,6 +79,16 @@ public final class ComposerModel {
     public var isStreaming: Bool { follower?.isActive ?? false }
     public var pendingInput: PendingInput? { if case .needsInput(let input)? = follower?.phase { return input }; return nil }
     public var activity: String? { isStreaming ? follower?.activity : nil }
+    /// What the last answer asked for and did not do: each waits for the owner in Requests to
+    /// confirm. Shown so a reply is never mistaken for a change that was made.
+    public var awaitingConfirmation: [String] { (follower?.phase.isTerminal ?? false) ? (follower?.proposals ?? []).map(\.summary) : [] }
+    /// One sentence for those requests, or nil when there are none.
+    public var confirmationLine: String? {
+        let waiting = awaitingConfirmation
+        guard !waiting.isEmpty else { return nil }
+        let lead = waiting.count == 1 ? "Not done yet. This waits for your confirmation" : "Not done yet. These wait for your confirmation"
+        return "\(lead): \(waiting.joined(separator: "; "))."
+    }
 
     /// Why Send is disabled, or nil when it is enabled.
     public var blockedReason: String? {

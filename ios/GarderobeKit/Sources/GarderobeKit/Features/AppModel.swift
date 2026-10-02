@@ -33,6 +33,8 @@ public enum AppRoute: Codable, Sendable, Hashable {
     case bulkEdit
     case temperaturePreview
     case projects
+    /// Requests waiting for the owner's confirmation.
+    case proposals
 }
 
 /// Sheets presented over any destination.

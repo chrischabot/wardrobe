@@ -220,6 +220,29 @@ struct ConversationTests {
         #expect(reopened.transcript.entries.map(\.id) == ["msg_o", "msg_r"]) // the local copy is replaced, not duplicated
     }
 
+    @Test("A reply that asked for a change without making it says so, names it in the backend's words, and records nothing as done")
+    func turnLeavesRequestsToConfirm() async throws {
+        let router = Router()
+        router.json("POST", "/v1/conversation/turns", accepted("run_test_p"))
+        router.json("GET", "/v1/conversation/messages", Synthetic.page([]))
+        let proposals: [JSONValue] = [["type": "assistant.lift_restriction", "summary": "Test: lift the sneakers-only restriction", "payload": ["restrictionId": "rst_test"]],
+                                      ["type": "garment.create", "summary": "Test: add \"Test navy cardigan\" as owned", "payload": ["name": "Test navy cardigan"]]]
+        router.json("GET", "/v1/runs/run_test_p", Synthetic.run("run_test_p", reply: ("msg_test_p", "That needs your confirmation."), proposals: proposals))
+        let transport = router.transport
+        transport.setStream(path: "/v1/runs/run_test_p/events", chunks: [Synthetic.sse([Synthetic.event(1, run: "run_test_p", type: "run_finished", data: ["state": "completed"])])])
+        let env = TestSupport.environment(transport: transport)
+        let composer = ComposerModel(environment: env, transcript: TranscriptModel(environment: env), sleep: { _ in })
+        #expect(composer.confirmationLine == nil)
+        composer.draft = "My feet have healed, and I bought a navy cardigan"
+        await composer.send()
+        #expect(composer.follower?.phase == .completed)
+        #expect(composer.awaitingConfirmation == ["Test: lift the sneakers-only restriction", "Test: add \"Test navy cardigan\" as owned"])
+        #expect(composer.confirmationLine == "Not done yet. These wait for your confirmation: Test: lift the sneakers-only restriction; Test: add \"Test navy cardigan\" as owned.")
+        #expect(composer.follower?.receipts.isEmpty == true && env.center.receipts.isEmpty)   // nothing is shown as recorded
+        #expect(transport.commands.isEmpty)                                                   // and the phone sends no command for it
+        #expect(!transport.requests.contains { $0.path.hasPrefix("/v1/proposals") })           // deciding is the owner's separate act
+    }
+
     @Test("A final refusal returns the text to the composer instead of losing it")
     func refusalKeepsText() async {
         let router = Router()

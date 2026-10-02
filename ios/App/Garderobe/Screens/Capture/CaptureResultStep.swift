@@ -47,6 +47,19 @@ struct CaptureResultStep: View {
                                  choose: { await capture.answer(choiceId: $0) },
                                  reply: { await capture.answer(text: $0) })
             }
+            if let waiting = capture.confirmationLine {
+                VStack(alignment: .leading, spacing: Metrics.unit) {
+                    Label(waiting, systemImage: "checkmark.shield")
+                        .font(.subheadline)
+                    Button("Review requests") {
+                        app.capture.reset()
+                        app.sheet = nil
+                        app.push(.proposals)
+                    }
+                    .buttonStyle(.borderless)
+                    .touchTarget()
+                }
+            }
             if let notice = capture.notice {
                 Label(notice, systemImage: "info.circle")
                     .font(.footnote)

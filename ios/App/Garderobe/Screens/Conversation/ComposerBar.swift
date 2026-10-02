@@ -70,6 +70,16 @@ struct ComposerBar: View {
                 .font(.footnote)
                 .foregroundStyle(Color.supporting)
         }
+        if let waiting = composer.confirmationLine {
+            VStack(alignment: .leading, spacing: Metrics.unit) {
+                Label(waiting, systemImage: "checkmark.shield")
+                    .font(.footnote)
+                Button("Review requests") { app.push(.proposals) }
+                    .buttonStyle(.borderless)
+                    .touchTarget()
+                    .accessibilityHint("Shows each request with exactly what it would change, to confirm or reject.")
+            }
+        }
         if let activity = composer.activity {
             Text(activity)
                 .font(.caption)

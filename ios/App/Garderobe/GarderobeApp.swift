@@ -116,6 +116,7 @@ struct MainTabs: View {
                         case .bulkEdit: BulkEditScreen()
                         case .temperaturePreview: TemperaturePreviewScreen()
                         case .projects: ProjectsScreen()
+                        case .proposals: ProposalsScreen()
                         }
                     }
                     .modifier(BannerInsets())

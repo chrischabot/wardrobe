@@ -38,9 +38,6 @@ struct WardrobeScreen: View {
                     .accessibilityIdentifier(AXID.wardrobeCounts)
             }
             FreshnessLabel(text: app.wardrobe.freshnessLine, freshness: app.wardrobe.snapshot.freshness)
-            Button { app.sheet = .laundry } label: { Label("Laundry", systemImage: "washer") }
-                .secondaryAction()
-                .accessibilityIdentifier(AXID.laundryButton)
             if app.wardrobe.isSearchingSavedCopy {
                 Label("Offline: searching the wardrobe saved on this phone.", systemImage: "wifi.slash")
                     .font(.footnote).foregroundStyle(Color.supporting)
@@ -68,6 +65,11 @@ struct WardrobeScreen: View {
     }
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
+        // A visible control in the bar, as on Today: Laundry is never tucked into the overflow menu.
+        ToolbarItem(placement: .topBarTrailing) {
+            Button { app.sheet = .laundry } label: { Label("Laundry", systemImage: "washer") }
+                .accessibilityIdentifier(AXID.laundryButton)
+        }
         ToolbarItemGroup(placement: .secondaryAction) {
             Button { showsFilters = true } label: { Label("Filters", systemImage: "line.3.horizontal.decrease.circle") }
                 .accessibilityIdentifier(AXID.wardrobeFilters)

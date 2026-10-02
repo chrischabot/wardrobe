@@ -130,6 +130,8 @@ public final class CaptureModel {
     public var pendingInput: PendingInput? { isMine ? composer.pendingInput : nil }
     public var activity: String? { isMine ? composer.activity : nil }
     public var notice: String? { isMine ? composer.notice : nil }
+    /// What this capture asked for that waits for the owner's confirmation (nothing was changed).
+    public var confirmationLine: String? { isMine ? composer.confirmationLine : nil }
 
     /// True while the turn is saved on the phone but not yet accepted (offline).
     public var isWaitingToSend: Bool { composer.pending.contains { $0.clientTurnId == submittedTurnId && $0.state == .waitingToSend } }

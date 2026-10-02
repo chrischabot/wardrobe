@@ -154,10 +154,10 @@ enum Synthetic {
         ["messages": .array(messages), "nextBefore": nextBefore.map(JSONValue.string) ?? .null, "nextAfter": nextAfter.map(JSONValue.string) ?? .null, "total": .integer(messages.count)]
     }
 
-    static func run(_ id: String, state: String = "completed", reply: (String, String)? = nil, receipts: [JSONValue] = [], pendingInput: JSONValue = .null, lastEventId: Int = 0, activity: String? = nil) -> JSONValue {
+    static func run(_ id: String, state: String = "completed", reply: (String, String)? = nil, receipts: [JSONValue] = [], pendingInput: JSONValue = .null, lastEventId: Int = 0, activity: String? = nil, proposals: [JSONValue] = []) -> JSONValue {
         [
             "runId": .string(id), "kind": "conversation_turn", "state": .string(state), "createdAt": .string(now), "updatedAt": .string(now), "activity": activity.map(JSONValue.string) ?? .null,
-            "lastEventId": .integer(lastEventId), "pendingInput": pendingInput, "receipts": .array(receipts), "proposals": [],
+            "lastEventId": .integer(lastEventId), "pendingInput": pendingInput, "receipts": .array(receipts), "proposals": .array(proposals),
             "result": reply.map { ["reply": ["messageId": .string($0.0), "text": .string($0.1)], "options": [], "board": .null, "research": .null, "exportId": .null, "importId": .null] } ?? .null,
             "error": .null,
         ]

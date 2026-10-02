@@ -40,6 +40,9 @@ public final class RunFollower {
     public private(set) var activity: String?
     /// Receipts of commands the run committed; they stay committed if the run is cancelled.
     public private(set) var receipts: [RunReceiptRef] = []
+    /// Changes the run asked for but did not make: they wait for the owner's confirmation
+    /// (Requests to confirm). The summaries are the backend's; nothing here was changed.
+    public private(set) var proposals: [Run.ProposalsItem] = []
     public private(set) var lastEventId = 0
     public private(set) var result: Run.Result?
     /// Options the run produced outside a message (recommendation runs).
@@ -185,6 +188,7 @@ public final class RunFollower {
         activity = run.activity
         lastEventId = max(lastEventId, run.lastEventId)
         for ref in run.receipts { record(ref) }
+        proposals = run.proposals
         result = run.result
         if let reply = run.result?.reply {
             text = [reply.messageId: reply.text]
