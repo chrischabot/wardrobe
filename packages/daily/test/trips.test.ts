@@ -54,7 +54,12 @@ describe("packing proposal", () => {
     expect(role("bottom").length).toBeLessThan(proposal.days.length);
     expect(role("footwear")).toHaveLength(1);
     expect(role("outer").length).toBeLessThanOrEqual(1);
-    expect(role("socks").reduce((n, i) => n + i.quantity, 0)).toBe(3); // a pair per wearing day; the dinner reuses the day's pair
+    // A pair of socks per wearing day (the dinner reuses the day's pair), and no pair is planned for two days.
+    expect(role("socks").reduce((n, i) => n + i.quantity, 0)).toBe(3);
+    const sockByDay = new Map(proposal.days.filter((d) => d.segment === "day").map((d) => [d.localDate, d.slots.find((s) => s.role === "socks")!.garmentId]));
+    for (const item of role("socks")) expect([...sockByDay.values()].filter((id) => id === item.garmentId).length, `${item.name}: days planned against pairs packed`).toBe(item.quantity);
+    const dinner = proposal.days.find((d) => d.segment === "evening")!;
+    expect(dinner.slots.find((s) => s.role === "socks")!.garmentId).toBe(sockByDay.get(dinner.localDate));
     expect(proposal.repeatExceptionForTrip).toBe(true);
     expect(proposal.notes.join(" ")).toMatch(/applies to this trip only/);
     // Every day is a valid outfit under the trip's repeat exception (the hard rules still hold).
@@ -77,6 +82,33 @@ describe("packing proposal", () => {
     const repeat = await first<{ status: string; params_json: string }>(h.db, "SELECT status, params_json FROM style_rules WHERE user_id = ? AND key = 'variety.repeat_horizon' AND is_current = 1", owner.userId);
     expect(repeat!.status).toBe("active");
     expect(JSON.parse(repeat!.params_json).days).toBe(7);
+  });
+
+  it("SYNTHETIC: one clean pair of socks is never planned for two days; when the pairs run out the proposal says so instead of reusing one", async () => {
+    const h = await createDailyHarness({ startAt: "2026-09-21T18:00:00Z", isolate: true });
+    const owner = await h.createSyntheticOwner({
+      settings: { homeLocation: { label: "London", latitude: 51.5085, longitude: -0.1257 } } as never,
+      garments: [
+        { id: "shirt-a", name: "synthetic blue oxford", colour: "Blue", category: "shirt", roles: ["top"], careChannel: "service" },
+        { id: "shirt-b", name: "synthetic white oxford", colour: "White", category: "shirt", roles: ["top"], careChannel: "service" },
+        { id: "shirt-c", name: "synthetic moss oxford", colour: "Moss", category: "shirt", roles: ["top"], careChannel: "service" },
+        { id: "trouser-a", name: "synthetic beige chinos", colour: "Beige", category: "trousers", roles: ["bottom"], careChannel: "service" },
+        { id: "trouser-b", name: "synthetic olive fatigues", colour: "Olive", category: "trousers", roles: ["bottom"], careChannel: "service" },
+        { id: "sock-a", name: "synthetic navy socks", colour: "Navy", category: "socks", roles: ["socks"], careChannel: "handwash", quantity: 1 },
+        { id: "sock-b", name: "synthetic grey socks", colour: "Grey", category: "socks", roles: ["socks"], careChannel: "handwash", quantity: 1 },
+        { id: "shoe", name: "synthetic sneakers", colour: "Grey", category: "footwear", roles: ["footwear"], careChannel: "none", attributes: { footwearKind: "sneaker" } },
+      ],
+    });
+    for (const d of ["2026-09-24", "2026-09-25", "2026-09-26"]) h.weather.setForecast(d, PARIS_DAY);
+    await owner.exec("trip.create", { tripId: "synthetic-three-days", name: "Synthetic three days", departsOn: "2026-09-24", returnsOn: "2026-09-26", destinations: [PARIS], source: { kind: "owner_statement", note: "synthetic trip for a boundary test" } });
+    const proposal = await proposePacking(h.deps, owner.principal(), { tripId: "synthetic-three-days", clientRequestId: "pp-synthetic", nowMs: h.clock.now() });
+
+    // Two single pairs cover two days. The third day is not dressed in a pair already planned.
+    expect(proposal.days.map((d) => d.localDate)).toEqual(["2026-09-24", "2026-09-25"]);
+    const socks = proposal.days.map((d) => d.slots.find((s) => s.role === "socks")!.garmentId);
+    expect([...socks].sort()).toEqual(["sock-a", "sock-b"]);
+    expect(proposal.items.filter((i) => i.role === "socks").map((i) => [i.garmentId, i.quantity]).sort()).toEqual([["sock-a", 1], ["sock-b", 1]]);
+    expect(proposal.notes.join(" ")).toMatch(/No complete valid outfit could be proposed for 2026-09-26/);
   });
 });
 

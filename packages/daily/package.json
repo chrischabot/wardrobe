@@ -11,7 +11,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "verify:contracts": "node --experimental-transform-types scripts/verify-open-meteo.ts && node --experimental-strip-types scripts/verify-google-calendar.ts"
+    "verify:contracts": "node --experimental-transform-types scripts/verify-open-meteo.ts && node --experimental-strip-types scripts/verify-google-calendar.ts && node --experimental-transform-types scripts/verify-unauthenticated.ts"
   },
   "dependencies": {
     "@garderobe/contracts": "1.0.0",

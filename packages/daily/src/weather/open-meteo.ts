@@ -30,7 +30,7 @@
  */
 import type { WeatherLocation } from "@garderobe/contracts/ext/daily";
 import { addDays, toInstant } from "@garderobe/domain";
-import { WeatherProviderError } from "../ports.ts";
+import { WeatherProviderError, withRequestTimeout } from "../ports.ts";
 import type { FetchLike, ForecastRequest, Geocoder, ProviderForecast, ProviderHour, WeatherProvider } from "../ports.ts";
 import { localTimeOf } from "./assess.ts";
 
@@ -240,12 +240,13 @@ export function openMeteoForecastUrl(request: ForecastRequest, baseUrl: string =
   return `${baseUrl.replace(/\/+$/, "")}/v1/forecast?${params.toString()}`;
 }
 
-export function createOpenMeteoProvider(opts: { fetch: FetchLike; baseUrl?: string; now?: () => number }): WeatherProvider {
+export function createOpenMeteoProvider(opts: { fetch: FetchLike; baseUrl?: string; now?: () => number; timeoutMs?: number }): WeatherProvider {
   const now = opts.now ?? (() => Date.now());
+  const fetchFn = withRequestTimeout(opts.fetch, opts.timeoutMs);
   return {
     name: PROVIDER,
     async forecast(request: ForecastRequest): Promise<ProviderForecast> {
-      const body = await getJson(opts.fetch, openMeteoForecastUrl(request, opts.baseUrl), "Open-Meteo forecast");
+      const body = await getJson(fetchFn, openMeteoForecastUrl(request, opts.baseUrl), "Open-Meteo forecast");
       return normalizeOpenMeteoForecast(body, request, now());
     },
   };
@@ -253,14 +254,15 @@ export function createOpenMeteoProvider(opts: { fetch: FetchLike; baseUrl?: stri
 
 /* -------------------------------- geocoding ---------------------------- */
 
-export function createOpenMeteoGeocoder(opts: { fetch: FetchLike; baseUrl?: string }): Geocoder {
+export function createOpenMeteoGeocoder(opts: { fetch: FetchLike; baseUrl?: string; timeoutMs?: number }): Geocoder {
   const baseUrl = (opts.baseUrl ?? OPEN_METEO_GEOCODING_BASE_URL).replace(/\/+$/, "");
+  const fetchFn = withRequestTimeout(opts.fetch, opts.timeoutMs);
   return {
     async geocode(label: string): Promise<WeatherLocation | null> {
       const name = label.trim();
       if (name === "") return null;
       const params = new URLSearchParams({ name, count: "1", language: "en", format: "json" });
-      const body = await getJson(opts.fetch, `${baseUrl}/v1/search?${params.toString()}`, "Open-Meteo geocoding");
+      const body = await getJson(fetchFn, `${baseUrl}/v1/search?${params.toString()}`, "Open-Meteo geocoding");
       // No match: the live API answers 200 with no `results` key at all.
       if (body.results === undefined) return null;
       if (!Array.isArray(body.results)) return fail("Open-Meteo geocoding: results is not an array", false);

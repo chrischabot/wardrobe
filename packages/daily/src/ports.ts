@@ -6,6 +6,43 @@ import type { CalendarEventContext, OutfitCandidate, WeatherLocation, WeatherPro
 
 export type FetchLike = (input: string, init?: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal }) => Promise<Response>;
 
+/** Deadline for one request to an external service, body included. A phase must never wait on a silent provider. */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+
+/**
+ * Wrap a fetch so one exchange (headers AND body) is abandoned after `timeoutMs`: the request is aborted
+ * and the call rejects, which every adapter already reports as a retryable network failure. The body is
+ * read inside the deadline and handed on as a buffered response, so a provider that sends headers and
+ * then stalls cannot hold a scheduled phase either. `timeoutMs <= 0` disables the deadline.
+ */
+export function withRequestTimeout(fetchFn: FetchLike, timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS): FetchLike {
+  if (!(timeoutMs > 0)) return fetchFn;
+  return async (input, init) => {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error(`no complete response within ${timeoutMs} ms`));
+      }, timeoutMs);
+    });
+    // The losing promise of the race must not surface as an unhandled rejection.
+    deadline.catch(() => undefined);
+    try {
+      const exchange = (async () => {
+        const response = await fetchFn(input, { ...(init ?? {}), signal: controller.signal });
+        const text = await response.text();
+        const bodiless = response.status === 204 || response.status === 205 || response.status === 304;
+        return new Response(bodiless ? null : text, { status: response.status, statusText: response.statusText, headers: response.headers });
+      })();
+      exchange.catch(() => undefined);
+      return await Promise.race([exchange, deadline]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  };
+}
+
 /* ------------------------------- weather ------------------------------- */
 
 /** One normalized forecast hour. `null` = the provider did not supply the value (never zero). */

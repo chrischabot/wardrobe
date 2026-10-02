@@ -41,7 +41,7 @@
  *
  * Runs in the Cloudflare Workers runtime: only the injected `fetch`; no Node APIs.
  */
-import { CalendarApiError, CalendarNotConnectedError } from "../ports.ts";
+import { CalendarApiError, CalendarNotConnectedError, withRequestTimeout } from "../ports.ts";
 import type { CalendarEventRaw, CalendarReader, CalendarWriter, FetchLike, ManagedEvent, ManagedEventWrite } from "../ports.ts";
 
 const DEFAULT_BASE_URL = "https://www.googleapis.com/calendar/v3";
@@ -211,8 +211,11 @@ export function createGoogleCalendar(opts: {
   fetch: FetchLike;
   getAccessToken: (userId: string) => Promise<string | null>;
   baseUrl?: string;
+  /** Deadline for one request, body included (default 15 s; 0 disables). A timeout is a retryable network failure. */
+  timeoutMs?: number;
 }): CalendarReader & CalendarWriter {
   const baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
+  const fetchFn = withRequestTimeout(opts.fetch, opts.timeoutMs);
 
   const eventsPath = (calendarId: string): string => `/calendars/${encodeURIComponent(calendarId)}/events`;
   const eventPath = (calendarId: string, eventId: string): string => `${eventsPath(calendarId)}/${encodeURIComponent(eventId)}`;
@@ -237,7 +240,7 @@ export function createGoogleCalendar(opts: {
     let response: Response;
     let text: string;
     try {
-      response = await opts.fetch(url, init);
+      response = await fetchFn(url, init);
       text = await response.text();
     } catch {
       // The outcome of a write is unknown here: the projector reads the event back before retrying.
