@@ -762,10 +762,11 @@ export type RunCancelResponse = z.infer<typeof RunCancelResponse>;
 /* ------------------------------------------------------------------ */
 
 /**
- * A change the assistant was asked for but may not make on its own authority: the request came through
- * a read-only connection, or it is a sensitive change (what the owner owns, the profile, a rule, a
- * measurement, a restriction, a mailbox search) relayed by a connected assistant. `type` and `payload`
- * are the typed command exactly as it would run. Only the owner, in the app, decides it.
+ * A change that waits for the owner's decision: the assistant was asked for it but may not make it on
+ * its own authority (a read-only connection, or a change relayed by a connected assistant that is not
+ * a plain wear or wash report), or a connected assistant sent a sensitive typed command. `type` and
+ * `payload` are the typed command exactly as it would run; `summary` is written by the service, never
+ * by a model or the requesting assistant. Only the owner, in the app, decides it.
  */
 export const Proposal = z.object({
   proposalId: z.string(),
@@ -1162,7 +1163,30 @@ export const MCP_RESOURCES = [
 ] as const;
 
 /**
- * Command types that are consequential (irreversible or identity-changing): over MCP they are executed
- * only after an explicit confirmation round (`input_required`), bound to the exact request.
+ * Sensitive command types: what the owner owns, the owner's profile, rules and measurements, forgetting,
+ * deleting an image, and authorizations towards other parties. A connected assistant cannot execute
+ * them: sent through `garderobe_command` they are kept as a proposal (see `Proposal`) that only the
+ * signed-in owner confirms in the app. The connection's own answer to a confirmation question is not
+ * accepted, so none is asked. The undo of one of these is treated the same way.
  */
-export const CONSEQUENTIAL_COMMAND_TYPES = ["garment.remove_fabricated", "garment.merge", "garment.retire", "style.save_document", "conversation.forget_source", "media.delete_asset"] as const;
+export const CONSEQUENTIAL_COMMAND_TYPES = [
+  "garment.create",
+  "garment.receive",
+  "garment.retire",
+  "garment.merge",
+  "garment.remove_fabricated",
+  "garment.bulk_correct",
+  "stock.reconcile",
+  "style.add_amendment",
+  "style.set_amendment_status",
+  "style.save_document",
+  "style.import_document",
+  "style.upsert_rule",
+  "style.add_direction",
+  "style.retire_direction",
+  "style.resolve_fact_conflict",
+  "measurement.record",
+  "conversation.forget_source",
+  "media.delete_asset",
+  "lifecycle.authorize_action",
+] as const;
