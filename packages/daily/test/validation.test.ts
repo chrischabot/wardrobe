@@ -7,6 +7,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Role } from "@garderobe/contracts";
 import type { OutfitValidation } from "@garderobe/contracts/ext/daily";
+import { addDays } from "@garderobe/domain";
 import type { TestOwner } from "@garderobe/domain/testing";
 import { fetchWeatherSnapshot, suggestOutfits, temperaturePreview, validateOutfit } from "../src/index.ts";
 import { createDailyHarness, garmentsByName, realOwner, syntheticOwner, system, type DailyHarness } from "./helpers.ts";
@@ -18,7 +19,8 @@ let nextDay = 0;
 
 /** Record a forecast for a fresh date: `departure` at 08:00, `peak` mid-afternoon. Returns the date. */
 async function day(departure: number, peak: number, who: TestOwner = owner): Promise<string> {
-  const date = `2026-10-${String(1 + nextDay++).padStart(2, "0")}`;
+  // Always a real calendar date: the helper is called more than thirty times in this file.
+  const date = addDays("2026-10-01", nextDay++);
   h.weather.setForecast(date, { temperatureByHour: { 0: departure, 8: departure, 14: peak, 19: Math.min(departure, peak), 23: Math.min(departure, peak) } });
   await fetchWeatherSnapshot(h.deps, await system(h, who), { localDate: date, purpose: "adhoc" });
   return date;

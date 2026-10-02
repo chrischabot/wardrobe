@@ -111,6 +111,50 @@ try {
   check(false, `geocoding call failed: ${error instanceof Error ? error.message : String(error)}`);
 }
 
+/* --------------------------- daylight-saving change --------------------- */
+// The adapter's central claim about this API: hourly labels carry ONE fixed offset across a clock change,
+// so real local hours must be derived from the instant. Checked on the next change inside the forecast range.
+console.log("\nDaylight-saving change inside the forecast range");
+try {
+  const zones = [
+    { timezone: "Australia/Sydney", latitude: -33.87, longitude: 151.21 },
+    { timezone: "Europe/London", latitude: 51.51, longitude: -0.13 },
+    { timezone: "America/New_York", latitude: 40.71, longitude: -74.01 },
+    { timezone: "America/Santiago", latitude: -33.45, longitude: -70.67 },
+    { timezone: "Pacific/Auckland", latitude: -36.85, longitude: 174.76 },
+  ];
+  const dayHours = (date: string, tz: string) => Math.round((zonedToUtcMs(addDays(date, 1), "00:00", tz) - zonedToUtcMs(date, "00:00", tz)) / 3_600_000);
+  let found: { zone: (typeof zones)[number]; date: string; hours: number } | null = null;
+  for (const zone of zones) {
+    const start = localDateOf(Date.now(), zone.timezone);
+    for (let i = 1; i <= 12 && !found; i++) {
+      const date = addDays(start, i);
+      const hours = dayHours(date, zone.timezone);
+      if (hours !== 24) found = { zone, date, hours };
+    }
+  }
+  if (!found) {
+    console.log("  skipped: no clock change in the next 12 days in any of the probed timezones (not a failure, and not a pass)");
+  } else {
+    const { zone, date, hours } = found;
+    const forecast = await createOpenMeteoProvider({ fetch: recordingFetch }).forecast({ latitude: zone.latitude, longitude: zone.longitude, timezone: zone.timezone, startDate: addDays(date, -1), endDate: addDays(date, 1) });
+    const raw = exchanges[exchanges.length - 1]!.body as { utc_offset_seconds?: number; hourly?: { time?: string[] } };
+    const labels = raw.hourly?.time ?? [];
+    const steps = new Set(labels.slice(1).map((label, i) => Date.parse(`${label}:00Z`) - Date.parse(`${labels[i]}:00Z`)));
+    console.log(`  ${zone.timezone}, clock change on ${date} (a ${hours}-hour local day); ${labels.length} raw labels, utc_offset_seconds ${String(raw.utc_offset_seconds)}`);
+    check(steps.size === 1 && steps.has(3_600_000), "raw labels advance by exactly one hour with no gap or repeat: one fixed offset across the change, as the adapter assumes");
+    const onDay = forecast.hours.filter((h) => h.localTime.startsWith(date));
+    check(onDay.length === hours, `the adapter yields ${onDay.length} local hours on ${date} (expected ${hours})`);
+    check(forecast.hours.length === 48 + hours, `${forecast.hours.length} hours for the three local days (expected ${48 + hours})`);
+    const instants = forecast.hours.map((h) => Date.parse(h.at));
+    check(instants.every((ms, i) => i === 0 || ms - instants[i - 1]! === 3_600_000), "normalized instants are consecutive hours");
+    check(forecast.hours[0]?.at === toInstant(zonedToUtcMs(addDays(date, -1), "00:00", zone.timezone)), `first instant ${forecast.hours[0]?.at} is local midnight of the first day`);
+    check(new Set(forecast.hours.map((h) => h.localTime)).size === (hours === 25 ? forecast.hours.length - 1 : forecast.hours.length), "local wall times follow the real clock (a 23-hour day skips an hour; a 25-hour day repeats one)");
+  }
+} catch (error) {
+  check(false, `daylight-saving check failed: ${error instanceof Error ? error.message : String(error)}`);
+}
+
 if (problems.length > 0) {
   console.log(`\nRESULT: FAILED, ${problems.length} problem(s): the live contract does not match the adapter.`);
   process.exit(1);

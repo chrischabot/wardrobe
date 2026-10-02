@@ -33,7 +33,8 @@
  *  - https://developer.apple.com/weatherkit/ ("Apple Weather and third-party attribution"): display the
  *    Apple Weather trademark and the legal link to other data sources.
  * Verified live without credentials: the endpoint exists and answers HTTP 401 with {"reason": "..."} to a
- * missing or malformed token.
+ * missing or malformed token. `scripts/verify-unauthenticated.ts` repeats that through this adapter with
+ * a token signed by a throwaway key, which is the only live exchange this file has ever had.
  *
  * NOT verifiable without credentials (assumptions, each handled defensively):
  *  - that Apple accepts the token this code signs (the tests only prove it verifies with the public key);
@@ -44,7 +45,7 @@
  *  - the shape of weatherAlerts for a country without alert coverage (absent becomes alerts: null).
  */
 import { addDays, toInstant, zonedToUtcMs } from "@garderobe/domain";
-import { WeatherProviderError } from "../ports.ts";
+import { WeatherProviderError, withRequestTimeout } from "../ports.ts";
 import type { FetchLike, ForecastRequest, ProviderForecast, ProviderHour, WeatherProvider } from "../ports.ts";
 import { localTimeOf } from "./assess.ts";
 
@@ -235,10 +236,13 @@ export interface WeatherKitProviderOptions {
    */
   countryCode?: string | ((request: ForecastRequest) => string | null);
   baseUrl?: string;
+  /** Deadline for one request, body included (default 15 s; 0 disables). A timeout is a retryable network failure. */
+  timeoutMs?: number;
 }
 
 export function createWeatherKitProvider(opts: WeatherKitProviderOptions): WeatherProvider {
   const now = opts.now ?? (() => Date.now());
+  const fetchFn = withRequestTimeout(opts.fetch, opts.timeoutMs);
   const baseUrl = (opts.baseUrl ?? WEATHERKIT_BASE_URL).replace(/\/+$/, "");
   const language = opts.language ?? "en";
   let cached: { token: string; expiresAtMs: number } | null = null;
@@ -268,7 +272,7 @@ export function createWeatherKitProvider(opts: WeatherKitProviderOptions): Weath
       const bearer = await token();
       let response: Response;
       try {
-        response = await opts.fetch(url, { method: "GET", headers: { authorization: `Bearer ${bearer}`, accept: "application/json" } });
+        response = await fetchFn(url, { method: "GET", headers: { authorization: `Bearer ${bearer}`, accept: "application/json" } });
       } catch (cause) {
         return fail(`WeatherKit: network failure (${cause instanceof Error ? cause.message : String(cause)})`, true);
       }

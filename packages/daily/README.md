@@ -13,9 +13,20 @@ packing and pause/resume. Every mutation goes through the shared command service
 | Tests (workerd, real local D1, real owner data) | `npm test` |
 | Check the live external contracts the adapters rely on | `npm run verify:contracts` |
 
-`verify:contracts` calls the live Open-Meteo forecast and geocoding endpoints through the real adapter
-and checks every Google Calendar v3 method, parameter and field the Calendar adapter uses against
-Google's published discovery document. It needs network access and no credentials.
+`verify:contracts` needs network access and no credentials. It runs three checks:
+
+- `scripts/verify-open-meteo.ts`: the live Open-Meteo forecast and geocoding endpoints through the real
+  adapter, including the next daylight-saving change inside the forecast range (the adapter's claim
+  that the hourly labels carry one fixed offset).
+- `scripts/verify-google-calendar.ts`: every Google Calendar v3 method, parameter and field the
+  Calendar adapter uses, against Google's published discovery document.
+- `scripts/verify-unauthenticated.ts`: every Calendar operation of the real adapter sent to the real
+  service with a value that is not a token (Google must answer 401 on each exact URL and verb, so
+  nothing can be written), and one WeatherKit request signed with a throwaway key (Apple must answer
+  401). This proves the endpoints, verbs and error contracts, and nothing behind authentication.
+
+Every adapter abandons one request, body included, after `timeoutMs` (15 seconds by default) and
+reports it as a retryable network failure, so a silent provider cannot hold a scheduled phase.
 
 ## What is real and what is a stand-in in the tests
 

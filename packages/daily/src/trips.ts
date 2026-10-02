@@ -232,6 +232,8 @@ export async function proposePacking(deps: DailyDeps, principal: Principal, inpu
   const notes: string[] = [];
   const reuse = new Map<Role, { garmentId: string; uses: number }>();
   const usedTops: string[] = [];
+  /** Clean pairs at home of each sock already in the proposal. */
+  const sockUnits = new Map<string, number>();
   const REUSE_LIMIT: Partial<Record<Role, number>> = { bottom: 2, outer: 99, footwear: 99, belt: 99 };
 
   for (let date = trip.departsOn; date <= trip.returnsOn; date = addDays(date, 1)) {
@@ -242,11 +244,16 @@ export async function proposePacking(deps: DailyDeps, principal: Principal, inpu
     for (const segment of segments) {
       const occasion = trip.occasions.find((o) => o.localDate === date && o.segment === segment) ?? null;
       const eveningSnapshot = segment === "evening" ? await fetchWeatherSnapshot(deps, principal, { localDate: date, location: destination, purpose: "trip", segment: "evening", nowMs }) : snapshot;
+      // A pair of socks is worn for one day. Pairs already planned for earlier days are not planned
+      // again: once every clean pair of a sock is allocated, that sock is excluded for the remaining
+      // days (the same day's dinner still reuses the pair worn that day).
+      const wornToday = days.find((d) => d.localDate === date)?.slots.find((s) => s.role === "socks")?.garmentId ?? null;
+      const allocatedSocks = [...items.values()].filter((i) => i.role === "socks" && i.garmentId !== wornToday && i.quantity >= (sockUnits.get(i.garmentId) ?? 1)).map((i) => i.garmentId);
       const rc = await assembleContext(deps.db, principal, {
         localDate: date,
         nowMs,
         scope: segment === "evening" ? "home:evening" : "home",
-        brief: DayBrief.parse({ allowRepeat: true, requestedCount: 1, segment }),
+        brief: DayBrief.parse({ allowRepeat: true, requestedCount: 1, segment, exclude: allocatedSocks }),
         weather: eveningSnapshot,
         calendar: occasionSnapshot(trip, date, segment, nowMs),
       });
@@ -275,8 +282,11 @@ export async function proposePacking(deps: DailyDeps, principal: Principal, inpu
         const entry = items.get(s.garmentId) ?? { garmentId: s.garmentId, name: g.name, role: s.role, quantity: 0 };
         // Interchangeable units (socks) are counted per wearing day; other pieces are packed once.
         const sameDayReuse = days.some((d) => d !== days[days.length - 1] && d.localDate === date && d.slots.some((x) => x.garmentId === s.garmentId));
-        if (s.role === "socks") entry.quantity = sameDayReuse ? entry.quantity : Math.min(entry.quantity + 1, Math.max(1, g.availability.cleanObserved));
-        else entry.quantity = 1;
+        if (s.role === "socks") {
+          const units = Math.max(1, g.availability.cleanObserved);
+          sockUnits.set(s.garmentId, units);
+          entry.quantity = sameDayReuse ? entry.quantity : Math.min(entry.quantity + 1, units);
+        } else entry.quantity = 1;
         items.set(s.garmentId, entry);
         if (s.role === "top") usedTops.push(s.garmentId);
         if (REUSE_LIMIT[s.role] !== undefined) {
