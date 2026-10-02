@@ -45,6 +45,7 @@ export function toTurnRecord(row: TurnRow, accepted: boolean): TurnRecord {
     reply: row.reply_message_id ? { messageId: row.reply_message_id, text: row.reply_text ?? "" } : null,
     receipts: json(row.receipts_json, []),
     refusals: json(row.refusals_json, []),
+// The record versions a proposal was built against stay in the stored proposal (the owner's confirmation route reads them there); a turn record shows what would change.
     proposals: json<{ type: string; summary: string; payload: Record<string, unknown> }[]>(row.proposals_json, []).map((p) => ({ type: p.type, summary: p.summary, payload: p.payload })),
     clarification: json(row.clarification_json, null),
     result: json(row.result_json, null),
@@ -122,7 +123,7 @@ export async function recordRefusal(db: Db, userId: string, turnId: string, refu
   await appendJson(db, userId, turnId, "refusals_json", refusal);
 }
 
-export async function recordProposal(db: Db, userId: string, turnId: string, proposal: { type: string; summary: string; payload: Record<string, unknown> }): Promise<void> {
+export async function recordProposal(db: Db, userId: string, turnId: string, proposal: { type: string; summary: string; payload: Record<string, unknown>; expectedVersions?: Record<string, number> }): Promise<void> {
   const key = JSON.stringify([proposal.type, proposal.payload]);
   await appendJson(db, userId, turnId, "proposals_json", { ...proposal, key }, { path: "$.key", value: key });
 }
@@ -135,7 +136,7 @@ export async function readTurnEvents(db: Db, userId: string, turnId: string, aft
   return { events: rows.map((r) => ({ seq: r.seq, type: r.type, at: r.at, data: json(r.data_json, {}) })), expired: oldest?.seq !== null && oldest?.seq !== undefined && afterSeq > 0 && afterSeq + 1 < oldest.seq };
 }
 
-/** A verified owner authorization of this turn. Written only by trusted code after the quote and the intent were verified. */
+/** Why an observation of this turn was recorded without a tap (which garments the owner named or attached). Written only by trusted code. */
 export async function recordGrant(db: Db, userId: string, turnId: string, grant: Record<string, unknown>): Promise<void> {
   await appendJson(db, userId, turnId, "grants_json", grant);
 }

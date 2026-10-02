@@ -34,7 +34,7 @@ describe("conversation in the Durable Object (real Think session, real D1, real 
   it("turns an owner statement into one domain command with a receipt written by the ledger, not by the model", async () => {
     const shoe = await w.garment("990v4");
     w.model.script(
-      { toolCalls: [{ toolName: "record_wear", input: { garmentIds: [shoe.garmentId], ownerQuote: "I wore the grey 990s today" } }] },
+      { toolCalls: [{ toolName: "record_wear", input: { garmentIds: [shoe.garmentId] } }] },
       { text: "MODEL PROSE: I have totally reorganised your wardrobe." },
     );
     const turn = await w.client.runTurn({ submissionId: submission(), text: "I wore the grey 990s today" });
@@ -88,7 +88,7 @@ describe("conversation in the Durable Object (real Think session, real D1, real 
 
   it("does not mint a second command when a resampled model proposes the same effect under a new tool-call ID", async () => {
     const shirt = await w.garment("California plaid");
-    const call = { toolName: "mark_dirty", input: { garmentIds: [shirt.garmentId], ownerQuote: "the California plaid is filthy" } };
+    const call = { toolName: "mark_dirty", input: { garmentIds: [shirt.garmentId] } };
     w.model.script({ toolCalls: [{ ...call, toolCallId: "call_A" }] }, { toolCalls: [{ ...call, toolCallId: "call_B_resampled" }] }, { text: "Noted." });
     const turn = await w.client.runTurn({ submissionId: submission(), text: "the California plaid is filthy" });
     expect(turn.receipts).toHaveLength(1);
@@ -101,7 +101,7 @@ describe("conversation in the Durable Object (real Think session, real D1, real 
     const reader = w.clientFor(w.owner.principal({ channel: "mcp", scopes: ["read"] }));
     const count = async () => (await all(w.h.db, "SELECT command_id FROM commands WHERE user_id = ? AND type = 'wear.record'", w.owner.userId)).length;
     const before = await count();
-    w.model.script({ toolCalls: [{ toolName: "record_wear", input: { garmentIds: [shoe.garmentId], wearingDate: "2026-09-14", ownerQuote: "log that I wore the grey 990s yesterday" } }] }, { text: "I cannot change anything on this connection; I have proposed it." });
+    w.model.script({ toolCalls: [{ toolName: "record_wear", input: { garmentIds: [shoe.garmentId], wearingDate: "2026-09-14" } }] }, { text: "I cannot change anything on this connection; I have proposed it." });
     const turn = await reader.runTurn({ submissionId: submission(), text: "log that I wore the grey 990s yesterday" });
     expect(turn.receipts).toHaveLength(0);
     expect(turn.proposals).toHaveLength(1);

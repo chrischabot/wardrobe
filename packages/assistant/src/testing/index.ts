@@ -60,3 +60,4 @@ export class TestAssistant extends GarderobeAssistantBase {
   }
 }
 export * from "./fake-google.ts";
+export * from "./corpora.ts";

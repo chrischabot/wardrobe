@@ -9,7 +9,7 @@
 import { z } from "zod";
 import { GarmentId, IanaTimezone, Instant, LocalDate, Scope } from "../primitives.ts";
 
-export const ASSISTANT_CONTRACT_VERSION = "1.0.0";
+export const ASSISTANT_CONTRACT_VERSION = "1.1.0";
 
 const Id = z.string().min(1).max(128);
 const MinorAmount = z.number().int().describe("Amount in the currency's minor unit (pence, cents).");
@@ -81,6 +81,10 @@ export const TurnRecord = z.object({
   /** Refusals by trusted policy during the turn (nothing was written for these). */
   refusals: z.array(z.object({ tool: z.string(), code: z.string(), message: z.string() })),
   /** Writes a read-only connection asked for: described, not executed. */
+  /**
+   * Changes that were NOT made: each waits for the owner's confirmation in the app. `summary` is written by
+   * trusted code and states the exact change.
+   */
   proposals: z.array(z.object({ type: z.string(), summary: z.string(), payload: z.record(z.string(), z.unknown()) })),
   /** One pending question with the distinguishing facts; answering resumes the same pending action. */
   clarification: z
@@ -259,7 +263,27 @@ export const PurchaseImportOrder = z.object({
   /** The order this one replaces or remakes; linked, never double-counted. */
   replaces: z.object({ merchantKey: z.string(), orderNumber: z.string() }).nullable().default(null),
   sourceRefs: z.array(z.string().max(500)).default([]),
+  /**
+   * Wardrobe records to create as INCOMING (ordered, not arrived) for lines of this order, in the same
+   * command as the order itself. Only a line this command adds, that has no record yet, gets one.
+   */
+  incoming: z
+    .array(z.object({ lineKey: z.string().min(1).max(200), category: z.string().min(1).max(40), roles: z.array(z.string().min(1).max(40)).min(1), careChannel: z.enum(["service", "handwash", "none"]), maker: z.string().max(200).nullable().default(null) }))
+    .max(20)
+    .default([]),
 });
+
+/**
+ * Lifting a restriction as ONE change: the restriction is resolved and the profile gets a dated
+ * amendment saying so. Only the signed-in owner's own confirmation in the app carries this out.
+ */
+export const AssistantLiftRestriction = z.object({ restrictionId: z.string().min(1).max(128) });
+
+/**
+ * The owner's arrival observation as ONE change: the incoming record becomes owned and wearable and the
+ * order line it came from is marked delivered. An email or a tracking page never causes this.
+ */
+export const AssistantReportArrival = z.object({ garmentId: GarmentId, deliveredOn: LocalDate });
 
 /** A dispatch, refund, cancellation, return or carrier delivery notice enriching an existing order. */
 export const PurchaseRecordEvent = z.object({
@@ -490,6 +514,8 @@ export const LifecycleOpenProject = z.object({
   nextAction: z.string().nullable().default(null),
   /** Tailoring: requested work and expected return. Sale: known prices, listing copy, photo references. */
   details: z.record(z.string(), z.unknown()).default({}),
+  /** Sale and consignment: hold the pieces back from suggestions (a for-sale restriction) in the same command. */
+  holdForSale: z.boolean().default(false),
 });
 
 export const LifecycleEventKind = z.enum([
@@ -523,6 +549,11 @@ export const LifecycleRecordEvent = z.object({
   externalOperationKey: z.string().max(200).optional(),
   nextAction: z.string().nullable().optional(),
   state: LifecycleState.optional(),
+  /**
+   * For a physical event the owner reports (sent to or back from the tailor, stored, retrieved, picked
+   * up, discarded): also move or retire the pieces in the same command.
+   */
+  moveStock: z.boolean().default(false),
 });
 
 export const LifecycleUpdateProject = z.object({
@@ -969,6 +1000,8 @@ export type TurnGrant = z.infer<typeof TurnGrant>;
 
 /** Assistant-lane command types and their payload schemas. */
 export const ASSISTANT_COMMANDS = {
+  "assistant.lift_restriction": AssistantLiftRestriction,
+  "assistant.report_arrival": AssistantReportArrival,
   "purchase.import_order": PurchaseImportOrder,
   "purchase.record_event": PurchaseRecordEvent,
   "purchase.link_line": PurchaseLinkLine,

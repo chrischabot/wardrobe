@@ -129,7 +129,9 @@ describe("restoring a backup", () => {
     const forgot = await owner.api.command("conversation.forget_source", { sourceKind: "message", sourceIds: [secretMessage.messageId] });
     expect(forgot.status, await forgot.clone().text()).toBe(200);
     journal = await owner.api.json("GET", "/v1/backups/tombstones");
-    expect(journal.tombstones.map((t: any) => t.sourceId)).toEqual([secretMessage.messageId]);
+    // Forgetting a message also forgets the assistant's reply to it: two tombstones, the message and its reply.
+    expect(journal.tombstones.map((t: any) => t.sourceId)).toContain(secretMessage.messageId);
+    expect(journal.tombstones).toHaveLength(2);
     expect(journal.ownerRef).toBe(backup.restoreManifest.ownerRef);
     // A photograph deleted after the backup is in the journal too (the visual wardrobe's deletion journal).
     const deleted = await owner.api.command("media.delete_asset", { assetId: doomedAssetId });
@@ -141,7 +143,7 @@ describe("restoring a backup", () => {
     const app = await testApp();
     await runScheduledBackups(app, Date.now());
     const stored = await app.env.EXPORT_BUCKET.get(`backups/${owner.userId}/tombstones.json`);
-    expect(((await stored!.json()) as any).tombstones).toHaveLength(1);
+    expect(((await stored!.json()) as any).tombstones).toHaveLength(2);
     // A second copy is named by the owner reference a backup package carries, so a restore here finds it from the package alone.
     const byRef = await app.env.EXPORT_BUCKET.get(`backup-journals/${backup.restoreManifest.ownerRef}/tombstones.json`);
     expect(((await byRef!.json()) as any).mediaDeletions.deletedAssets).toHaveLength(1);
@@ -157,7 +159,7 @@ describe("restoring a backup", () => {
     const verified = await target.api.json("POST", "/v1/restore/verify", { restoreManifest: backup.restoreManifest, tombstones: journal });
     expect(verified.checks.filter((c: any) => !c.ok)).toEqual([]);
     expect(verified.complete).toBe(true);
-    expect(verified.tombstonesReplayed).toBe(1);
+    expect(verified.tombstonesReplayed).toBe(2);
     // The photograph deleted after the backup: its bytes were in the package, and it is not readable after the restore.
     expect(Object.keys(unzipSync(zip)).filter((p) => p.startsWith("media/") && p.includes(doomedAssetId)).length).toBeGreaterThan(0);
     expect(verified.checks.find((c: any) => c.name === "images deleted after the backup stay deleted")).toMatchObject({ ok: true, actual: [] });
