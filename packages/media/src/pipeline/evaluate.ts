@@ -98,17 +98,30 @@ export function evaluateCandidate(garment: DiscoveryGarment, page: DiscoveryCand
 
   if (reasons.length > 0) return { decision: "rejected", rejectionReasons: [...new Set(reasons)], reviewQuestion: null, exactIdentifier, rank, evidence };
 
-  // Strong identity: an exact product/fabric code (which fixes the colourway), the garment's own recorded
-  // purchase page WHEN that page also names the maker or the product, or maker + product together. Without
-  // a code the colourway must also be stated and match. The recorded link alone proves nothing about what
-  // the page shows today.
+  // Strong identity: an exact product/fabric code (which fixes the colourway), or the PRODUCT named on the
+  // page matching the recorded one, on the garment's own recorded purchase page or together with the maker.
+  // Without a code the colourway must also be stated and match. The recorded link alone proves nothing
+  // about what the page shows today, and neither does the maker's name on it: on a maker's own shop every
+  // page names the maker, and an address can be reused for another product.
   if (exactIdentifier) return { decision: "eligible", rejectionReasons: [], reviewQuestion: null, exactIdentifier, rank, evidence };
-  if ((recordedPurchasePage && (makerMatch || productMatch)) || (makerMatch && productMatch)) {
+  if (productMatch && (recordedPurchasePage || makerMatch)) {
     if (!colourKnown || colourMatch) return { decision: "eligible", rejectionReasons: [], reviewQuestion: null, exactIdentifier, rank, evidence };
     return {
       decision: "needs_review",
       rejectionReasons: [],
       reviewQuestion: `The page matches ${recordedPurchasePage ? "the recorded purchase link" : "the maker and product"} but does not state the colourway. Is this the ${garment.colour} one?`,
+      exactIdentifier,
+      rank,
+      evidence,
+    };
+  }
+  if (recordedPurchasePage && makerMatch) {
+    // Still the recorded address and the same maker, but the product named there is not the recorded one:
+    // never adopted; the owner decides. (Nothing from the page is quoted into the question.)
+    return {
+      decision: "needs_review",
+      rejectionReasons: [],
+      reviewQuestion: `The recorded purchase link names the same maker, but the product shown there now does not match the recorded name. Is this ${garment.name}?`,
       exactIdentifier,
       rank,
       evidence,

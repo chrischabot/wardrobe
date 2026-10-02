@@ -5,7 +5,7 @@
 import { z } from "zod";
 import { all, allIn, CommandError, define, first, loadGarment, stmt, type CommandContext, type CommandDefinition, type CommandPlan, type Stmt } from "@garderobe/domain";
 import { FidelityCheckResult, FidelityCheckName, MEDIA_COMMANDS as C, MediaRenditionKind, TransformationStep } from "@garderobe/contracts/ext/media";
-import { assertOwnedKey } from "../keys.ts";
+import { assertOwnedKey, renditionKey } from "../keys.ts";
 import { limitsOf, resolveDeps, type MediaDepsSource } from "../runtime.ts";
 import { enqueueJob, insertRendition, isRealGarmentImage, loadAsset, loadGarmentMediaRow, loadRenditions, upsertGarmentMedia, type AssetRow, type GarmentMediaRow } from "../store.ts";
 
@@ -24,11 +24,15 @@ export function photoRequestFor(name: string, category: string): string {
   return `A front-on photo of ${name} laid flat or on a hanger against a plain, light background in daylight.`;
 }
 
+/*
+ * A recorded rendition names no storage location. Where its file lives follows from the owner, the asset,
+ * the kind, the version, the checksum and the type (`renditionKey`), so the command record, which the owner
+ * can export, never holds a storage key, and a caller cannot point a rendition at any other object.
+ */
 export const RecordedRendition = z.object({
   renditionId: z.string().min(1).max(64),
   kind: MediaRenditionKind,
   version: z.number().int().positive(),
-  objectKey: z.string().min(1).max(512),
   contentType: z.string(),
   width: z.number().int().positive().nullable(),
   height: z.number().int().positive().nullable(),
@@ -152,8 +156,7 @@ export function assetCommands(depsSource: MediaDepsSource): CommandDefinition<an
       if (!asset) throw new CommandError("not_found", "no such asset for this owner");
       if (asset.status === "deleted" || asset.status === "rejected") {
         // The owner removed the photo while it was being processed: store nothing, purge what the job wrote.
-        const keys = p.renditions.map((r) => r.objectKey);
-        keys.forEach((k) => assertOwnedKey(ctx.userId, k));
+        const keys = p.renditions.map((r) => renditionKey(ctx.userId, p.assetId, r.kind, r.version, r.sha256, r.contentType));
         const purge = keys.length > 0 ? enqueueJob(ctx, { jobId: ctx.newId("job"), kind: "purge_objects", subjectId: p.assetId, dedupeKey: `purge:${ctx.commandId}`, payload: { keys, cacheShas: [] }, maxAttempts: maxAttempts() }) : { statements: [], outbox: [] };
         return { outcome: "noop", summary: "The photo was removed before processing finished; its derivatives were discarded", statements: [finishJob(ctx, p.jobId, "succeeded", { discarded: true }, null), ...purge.statements], outbox: purge.outbox, undo: { unavailableReason: "nothing was stored" } };
       }
@@ -161,7 +164,6 @@ export function assetCommands(depsSource: MediaDepsSource): CommandDefinition<an
       const original = existing.find((r) => r.kind === "original");
       const statements: Stmt[] = [];
       for (const r of p.renditions) {
-        assertOwnedKey(ctx.userId, r.objectKey);
         if (r.kind === "original") throw new CommandError("invalid_command", "the original is immutable and cannot be re-recorded");
         if (!existing.some((e) => e.rendition_id === r.sourceRenditionId) && !p.renditions.some((o) => o.renditionId === r.sourceRenditionId)) {
           throw new CommandError("invalid_command", "a rendition must name the rendition it was derived from");
@@ -171,7 +173,7 @@ export function assetCommands(depsSource: MediaDepsSource): CommandDefinition<an
         const sourceEdited = source ? ("edited" in source && typeof source.edited === "boolean" ? source.edited : (source as { edited: number }).edited === 1) : false;
         const edited = r.edited || sourceEdited || r.kind === "edited" || r.transformations.some((t) => t.generative);
         statements.push(stmt("UPDATE media_renditions SET status = 'superseded' WHERE user_id = ? AND asset_id = ? AND kind = ? AND status = 'active'", ctx.userId, p.assetId, r.kind));
-        statements.push(insertRendition(ctx, { ...r, assetId: p.assetId, edited }));
+        statements.push(insertRendition(ctx, { ...r, assetId: p.assetId, objectKey: renditionKey(ctx.userId, p.assetId, r.kind, r.version, r.sha256, r.contentType), edited }));
       }
       // Order matters: renditions inserted after their sources (sources first in the payload).
       for (const f of p.fidelity) {

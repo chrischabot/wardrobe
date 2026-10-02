@@ -7,6 +7,7 @@ import { all, assertPrincipal, CommandError, first, requireScope, toInstant, typ
 import { MEDIA_THUMBNAIL_WIDTHS } from "@garderobe/contracts/ext/media";
 import type { MediaRenditionKind, SignedMediaUrl } from "@garderobe/contracts/ext/media";
 import { assertOwnedKey } from "./keys.ts";
+import { decodeImage, encodeJpeg, encodePng } from "./image/index.ts";
 import { limitsOf, type MediaRuntime } from "./runtime.ts";
 import { signClaims, verifyToken } from "./signing.ts";
 import { loadAsset, loadRenditions, pickDisplayRendition, type RenditionRow } from "./store.ts";
@@ -62,6 +63,37 @@ async function loadActiveRendition(rt: MediaRuntime, userId: string, renditionId
   return row;
 }
 
+/**
+ * The original is the photograph exactly as supplied, with whatever metadata it carried (including a GPS
+ * position). Only the owner, in their own app, ever receives those bytes. Any other principal (the
+ * assistant, whatever scope its grant holds, and anything arriving on the `mcp` channel) gets derived,
+ * metadata-free copies only: asking for the original by name finds nothing, and where the original is
+ * the only picture there is yet, a copy re-encoded from its pixels is served instead.
+ */
+function originalsWithheld(principal: Principal): boolean {
+  return principal.actor !== "owner" || principal.channel === "mcp";
+}
+
+/** A copy of a stored original written again from its decoded pixels: no EXIF, GPS or any other metadata. */
+async function metadataFreeCopy(rt: MediaRuntime, userId: string, row: RenditionRow): Promise<OpenedImage> {
+  assertOwnedKey(userId, row.object_key);
+  if (!SERVABLE_IMAGE_TYPES.has(row.content_type)) throw new CommandError("not_found", "no such image");
+  const object = await rt.deps.bucket.get(row.object_key);
+  if (!object) throw new CommandError("not_found", "no such image");
+  let clean: Uint8Array;
+  let contentType: "image/png" | "image/jpeg";
+  try {
+    const { raster, probe } = await decodeImage(new Uint8Array(await object.arrayBuffer()), { maxPixels: limitsOf(rt.deps).maxPixels });
+    // The format is kept (a PNG stays lossless); only the pixels are carried over.
+    contentType = probe.format === "png" ? "image/png" : "image/jpeg";
+    clean = contentType === "image/png" ? await encodePng(raster) : encodeJpeg(raster, 88);
+  } catch {
+    // A format this package cannot decode (HEIC, WebP) has no metadata-free copy until it has been processed.
+    throw new CommandError("not_found", "no such image");
+  }
+  return { body: new Response(clean).body!, contentType, etag: `"${row.sha256.slice(0, 32)}-clean"`, byteLength: clean.length, delivery: "stored" };
+}
+
 /** The only content types ever served; anything else stored under a rendition is treated as not there. */
 export const SERVABLE_IMAGE_TYPES: ReadonlySet<string> = new Set(["image/jpeg", "image/png", "image/webp", "image/heic"]);
 
@@ -112,6 +144,7 @@ export async function openRendition(rt: MediaRuntime, principal: Principal, rend
   requireScope(principal, "read");
   const width = checkWidth(opts.width);
   const row = await loadActiveRendition(rt, principal.userId, renditionId);
+  if (row.kind === "original" && originalsWithheld(principal)) throw new CommandError("not_found", "no such image");
   return readRendition(rt, principal.userId, row, width);
 }
 
@@ -124,8 +157,11 @@ export async function openAssetImage(rt: MediaRuntime, principal: Principal, ass
   if (!asset || asset.status === "deleted" || asset.status === "rejected") throw new CommandError("not_found", "no such image");
   const renditions = await loadRenditions(rt.db, principal.userId, assetId);
   const variant = opts.variant ?? "display";
+  const withheld = originalsWithheld(principal);
+  if (withheld && variant === "original") throw new CommandError("not_found", "no such image");
   const chosen = variant === "display" ? pickDisplayRendition(renditions) : pickDisplayRendition(renditions, [variant as MediaRenditionKind]);
   if (!chosen) throw new CommandError("not_found", variant === "original" ? "the full-resolution original is no longer kept" : "no such image");
+  if (chosen.kind === "original" && withheld) return metadataFreeCopy(rt, principal.userId, chosen);
   return readRendition(rt, principal.userId, chosen, width);
 }
 
@@ -140,6 +176,7 @@ export async function signRenditionUrl(rt: MediaRuntime, principal: Principal, r
   const width = checkWidth(opts.width);
   const limits = limitsOf(rt.deps);
   const row = await loadActiveRendition(rt, principal.userId, renditionId);
+  if (row.kind === "original" && originalsWithheld(principal)) throw new CommandError("not_found", "no such image");
   const audience = opts.audience ?? "app";
   if (audience === "calendar" && (row.asset_kind === "selfie" || row.asset_kind === "attachment")) {
     throw new CommandError("forbidden", "a selfie or attachment is never linked from Calendar or any shared text");

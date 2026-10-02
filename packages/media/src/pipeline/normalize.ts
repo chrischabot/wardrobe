@@ -104,7 +104,7 @@ export async function runNormalizeJob(rt: MediaRuntime, job: JobRow): Promise<vo
     await rt.deps.bucket.put(objectKey, bytes, { httpMetadata: { contentType }, customMetadata: { assetId: asset.asset_id, kind, sha256 } });
     const rendition: RecordedRendition = {
       renditionId: await stableId("rnd", userId, asset.asset_id, kind, String(version)),
-      kind, version, objectKey, contentType, width: raster.width, height: raster.height, byteLength: bytes.length, sha256, sourceRenditionId, transformations, edited,
+      kind, version, contentType, width: raster.width, height: raster.height, byteLength: bytes.length, sha256, sourceRenditionId, transformations, edited,
     };
     renditions.push(rendition);
     return rendition;

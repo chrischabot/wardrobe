@@ -143,18 +143,34 @@ export async function handleMediaQueue(rt: MediaRuntime, batch: MessageBatch<unk
  * Also picks up jobs whose lease expired after a crash. With `idleForMs`, only jobs nobody has touched
  * for that long are taken: a job whose queue message was lost or whose retries ran out, without racing
  * the queue consumer for work it is about to do.
+ *
+ * Two separate selections, each with its own `limit`, so neither can crowd the other out:
+ *   - removals of deleted files, for every account whatever its status, least recently tried first, so a
+ *     removal that keeps failing does not hold back the others;
+ *   - all other work, for ACTIVE accounts only. A disabled account's other jobs stay queued (they resume
+ *     if the account is enabled again) but are never selected, so they cannot occupy the sweep.
  */
 export async function runQueuedMediaJobs(rt: MediaRuntime, opts: { limit?: number; userId?: string; idleForMs?: number } = {}): Promise<Record<JobRunResult, number>> {
   const now = toInstant(rt.clock());
   const idleBefore = toInstant(rt.clock() - (opts.idleForMs ?? 0));
-  const rows = await all<{ user_id: string; job_id: string }>(
+  const due = "((j.state = 'queued' AND j.updated_at <= ?) OR (j.state = 'running' AND j.lease_until < ?))";
+  const forUser = opts.userId ? "AND j.user_id = ?" : "";
+  const params = opts.userId ? [idleBefore, now, opts.userId] : [idleBefore, now];
+  const limit = opts.limit ?? 10;
+  const purges = await all<{ user_id: string; job_id: string }>(
     rt.db,
-    `SELECT user_id, job_id FROM media_jobs WHERE ((state = 'queued' AND updated_at <= ?) OR (state = 'running' AND lease_until < ?)) ${opts.userId ? "AND user_id = ?" : ""} ORDER BY created_at, job_id LIMIT ?`,
-    ...(opts.userId ? [idleBefore, now, opts.userId] : [idleBefore, now]),
-    opts.limit ?? 10,
+    `SELECT j.user_id, j.job_id FROM media_jobs j WHERE ${due} AND j.kind = 'purge_objects' ${forUser} ORDER BY j.updated_at, j.created_at, j.job_id LIMIT ?`,
+    ...params,
+    limit,
+  );
+  const others = await all<{ user_id: string; job_id: string }>(
+    rt.db,
+    `SELECT j.user_id, j.job_id FROM media_jobs j JOIN users u ON u.user_id = j.user_id WHERE ${due} AND j.kind != 'purge_objects' AND u.status = 'active' ${forUser} ORDER BY j.created_at, j.job_id LIMIT ?`,
+    ...params,
+    limit,
   );
   const out: Record<JobRunResult, number> = { succeeded: 0, skipped: 0, retry: 0, dead: 0 };
-  for (const r of rows) out[await runMediaJob(rt, r.user_id, r.job_id)]++;
+  for (const r of [...purges, ...others]) out[await runMediaJob(rt, r.user_id, r.job_id)]++;
   return out;
 }
 

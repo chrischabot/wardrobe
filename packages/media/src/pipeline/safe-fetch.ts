@@ -53,22 +53,67 @@ export function refuseUrl(raw: string): UrlRefusal | null {
 /** Resolves a host name to the addresses it currently points at (IPv4 and IPv6, as text). Throws when it cannot. */
 export type HostResolver = (host: string) => Promise<string[]>;
 
-/** Whether a resolved address is private, local, link-local, shared, multicast or otherwise not a public destination. */
+/** An IPv6 address as its eight 16-bit groups, whatever its written form (compressed, hex, dotted IPv4 tail), or null. */
+export function parseIpv6(text: string): number[] | null {
+  let a = text.trim().toLowerCase();
+  if (a.startsWith("[") && a.endsWith("]")) a = a.slice(1, -1);
+  if (a === "" || a.includes("%") || !/^[0-9a-f:.]+$/.test(a)) return null;
+  // A dotted IPv4 tail stands for the last two groups.
+  const lastColon = a.lastIndexOf(":");
+  if (a.includes(".")) {
+    const v4 = ipv4Parts(a.slice(lastColon + 1));
+    if (!v4 || lastColon < 0) return null;
+    a = `${a.slice(0, lastColon + 1)}${((v4[0]! << 8) | v4[1]!).toString(16)}:${((v4[2]! << 8) | v4[3]!).toString(16)}`;
+  }
+  const halves = a.split("::");
+  if (halves.length > 2) return null;
+  const groups = (part: string): number[] | null => {
+    if (part === "") return [];
+    const out: number[] = [];
+    for (const g of part.split(":")) {
+      if (!/^[0-9a-f]{1,4}$/.test(g)) return null;
+      out.push(parseInt(g, 16));
+    }
+    return out;
+  };
+  const head = groups(halves[0]!);
+  const tail = halves.length === 2 ? groups(halves[1]!) : [];
+  if (!head || !tail) return null;
+  if (halves.length === 1) return head.length === 8 ? head : null;
+  const missing = 8 - head.length - tail.length;
+  if (missing < 1) return null;
+  return [...head, ...new Array<number>(missing).fill(0), ...tail];
+}
+
+/**
+ * Whether a resolved address is private, local, link-local, shared, multicast or otherwise not a public
+ * destination. IPv6 is judged on its parsed groups, so the form an address is written in (DNS answers use
+ * the hex form) makes no difference. Only global unicast (2000::/3) is ever public, and within it and
+ * around it every range that carries an IPv4 address inside (IPv4-mapped, NAT64, 6to4) is judged by that
+ * IPv4 address, while tunnelling and documentation ranges are refused outright.
+ */
 export function isPrivateAddress(address: string): boolean {
   const a = address.trim().toLowerCase();
   const v4 = ipv4Parts(a);
   if (v4) return isPrivateV4(v4);
   if (!a.includes(":")) return true; // not an address at all: never treated as public
-  const mapped = /^(?:::ffff:|64:ff9b::)(\d{1,3}(?:\.\d{1,3}){3})$/.exec(a);
-  if (mapped) {
-    const parts = ipv4Parts(mapped[1]!);
-    return !parts || isPrivateV4(parts);
-  }
-  if (a === "::" || a === "::1" || a.startsWith("::ffff:")) return true;
-  const first = parseInt(a.split(":")[0] || "0", 16);
-  if (Number.isNaN(first)) return true;
-  // fc00::/7 unique local, fe80::/10 link-local, fec0::/10 site-local, ff00::/8 multicast, 2001:db8::/32 documentation.
-  return (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80 || (first & 0xffc0) === 0xfec0 || (first & 0xff00) === 0xff00 || a.startsWith("2001:db8:") || first === 0;
+  const g = parseIpv6(a);
+  if (!g) return true;
+  const embedded = (hi: number, lo: number): boolean => isPrivateV4([hi >> 8, hi & 0xff, lo >> 8, lo & 0xff]);
+  const zeroThrough = (n: number) => g.slice(0, n).every((x) => x === 0);
+  // ::ffff:a.b.c.d (IPv4-mapped): judged by the IPv4 address. Everything else under ::/96 (unspecified,
+  // loopback, the deprecated IPv4-compatible form) is refused.
+  if (zeroThrough(5) && g[5] === 0xffff) return embedded(g[6]!, g[7]!);
+  if (zeroThrough(6)) return true;
+  // 64:ff9b::/96 (well-known NAT64): judged by the IPv4 address. 64:ff9b:1::/48 (local-use NAT64): refused.
+  if (g[0] === 0x64 && g[1] === 0xff9b) return g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0 ? embedded(g[6]!, g[7]!) : true;
+  // Only global unicast is public: this refuses fc00::/7, fe80::/10, fec0::/10, ff00::/8, 100::/64 and the rest.
+  if ((g[0]! & 0xe000) !== 0x2000) return true;
+  // 2002::/16 (6to4): the IPv4 address is in the next 32 bits.
+  if (g[0] === 0x2002) return embedded(g[1]!, g[2]!);
+  // 2001::/23 (IETF protocol assignments, including Teredo 2001::/32) and 2001:db8::/32 (documentation).
+  if (g[0] === 0x2001 && (g[1]! < 0x200 || g[1] === 0xdb8)) return true;
+  return false;
 }
 
 /**

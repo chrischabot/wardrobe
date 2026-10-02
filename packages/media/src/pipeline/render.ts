@@ -83,5 +83,5 @@ export async function runRenderJob(rt: MediaRuntime, job: JobRow): Promise<void>
   const previewSha256 = await sha256Hex(png);
   await rt.deps.bucket.put(previewKey, png, { httpMetadata: { contentType: "image/png" }, customMetadata: { manifestHash: row.manifest_hash, sha256: previewSha256 } });
   await rt.deps.bucket.put(svgKey, svg, { httpMetadata: { contentType: "image/svg+xml" }, customMetadata: { manifestHash: row.manifest_hash } });
-  await execSystem(rt, userId, "media.record_composite", { manifestHash: row.manifest_hash, jobId: job.job_id, previewKey, previewSha256, previewBytes: png.length, svgKey, renderer }, `rendered:${job.job_id}`);
+  await execSystem(rt, userId, "media.record_composite", { manifestHash: row.manifest_hash, jobId: job.job_id, previewSha256, previewBytes: png.length, hasSvg: true, renderer }, `rendered:${job.job_id}`);
 }
