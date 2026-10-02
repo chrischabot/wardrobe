@@ -301,8 +301,8 @@ describe("outfit previews through the command service, the queue and private sto
     expect(his.manifestHash).not.toBe(hash);
     expect(his.manifest.layers.every((l) => l.renditionId === null && l.imageLabel === "missing")).toBe(true);
     expect(his.preview.state).toBe("none");
-    // A client cannot record a preview, least of all one that points into another owner's storage.
-    const forged = { manifestHash: hash, jobId: "job_x", previewKey: `u/${owner.userId}/composites/${hash}.png`, previewSha256: "c".repeat(64), previewBytes: 10, svgKey: null, renderer: "forged" };
+    // A client cannot record a preview (and the command names no storage location, so it could not point into another owner's storage).
+    const forged = { manifestHash: hash, jobId: "job_x", previewSha256: "c".repeat(64), previewBytes: 10, hasSvg: false, renderer: "forged" };
     expect(await code(bob.exec("media.record_composite", forged, { authorization: "system_schedule" }))).toBe("forbidden");
     expect(await code(owner.exec("media.record_composite", forged, { authorization: "system_schedule" }))).toBe("forbidden");
   });

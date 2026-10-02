@@ -220,7 +220,7 @@ export async function runDiscoveryJob(rt: MediaRuntime, job: JobRow): Promise<vo
         const objectKey = originalKey(userId, assetId, sha256, image.contentType);
         await rt.deps.bucket.put(objectKey, image.bytes, { httpMetadata: { contentType: image.contentType }, customMetadata: { assetId, sha256, kind: "original" } });
         const stored = {
-          assetId, renditionId: await stableId("rnd", userId, assetId, "original"), objectKey, contentType: image.contentType, width: image.width, height: image.height, byteLength: image.bytes.length, sha256,
+          assetId, renditionId: await stableId("rnd", userId, assetId, "original"), contentType: image.contentType, width: image.width, height: image.height, byteLength: image.bytes.length, sha256,
           sourceKind: page.sourceClass === "purchase_source" ? ("purchase_source" as const) : page.sourceClass === "maker" ? ("maker_catalogue" as const) : page.sourceClass === "retailer" ? ("retailer" as const) : ("search_result" as const),
         };
         const evidence = { ...evaluation.evidence, ...(ownerPhoto ? { ownerPhotoComparison: ownerPhoto } : {}), imageSha256: sha256, imageSize: [image.width, image.height], adoptionBasis: decision === "eligible" ? "product identity evidence and image-quality checks" : "awaiting the owner's decision" };

@@ -63,8 +63,8 @@ export function sameDocument(a: string, b: string): boolean {
  * `recordedLink` is the purchase link stored on the garment. The page counts as the garment's recorded
  * purchase page only when `pageUrl` (where the fetch ENDED) is that same document: a link that now
  * redirects to a collection page, a search page or another product is just some page on the web.
- * A page without a structured Product block yields nothing: a site banner in an Open Graph tag is not a
- * product photograph.
+ * A page without a structured Product block yields nothing, and so does a Product block without an image
+ * of its own: a site banner in an Open Graph tag is not a product photograph.
  */
 export function extractProductPage(html: string, pageUrl: string, retrievedAt: string, recordedLink: string = pageUrl): DiscoveryCandidatePage | null {
   const products: Record<string, unknown>[] = [];
@@ -80,7 +80,7 @@ export function extractProductPage(html: string, pageUrl: string, retrievedAt: s
   }
   const product = products[0] ?? null;
   if (!product) return null;
-  const rawImage = firstImage(product.image) ?? metaContent(html, "og:image");
+  const rawImage = firstImage(product.image);
   if (!rawImage) return null;
   let imageUrl: string;
   try {

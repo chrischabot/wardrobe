@@ -2,19 +2,23 @@
 import { z } from "zod";
 import { CommandError, define, first, stableId, stmt, type CommandContext, type CommandDefinition, type CommandPlan, type Db, type Stmt } from "@garderobe/domain";
 import { CompositionManifest, MEDIA_COMMANDS as C } from "@garderobe/contracts/ext/media";
-import { assertOwnedKey, compositeKey } from "../keys.ts";
+import { compositeKey } from "../keys.ts";
 import { limitsOf, resolveDeps, type MediaDepsSource } from "../runtime.ts";
 import { enqueueJob } from "../store.ts";
 import { composeResolved, resolveSlots } from "../studio/shared.ts";
 import { finishJob, requireSystemActor, SYSTEM_AUTH } from "./assets.ts";
 
+/*
+ * No storage location is named: a preview's files live where `compositeKey` puts them for this owner and
+ * manifest, so the command record never holds a storage key and cannot point at any other object.
+ */
 export const RecordComposite = z.object({
   manifestHash: z.string().length(64),
   jobId: z.string().min(1).max(64),
-  previewKey: z.string().min(1).max(512),
   previewSha256: z.string().length(64),
   previewBytes: z.number().int().positive(),
-  svgKey: z.string().min(1).max(512).nullable(),
+  /** Whether the SVG scene was stored beside the PNG. */
+  hasSvg: z.boolean(),
   renderer: z.string().max(120),
 });
 
@@ -118,8 +122,8 @@ export function compositeCommands(depsSource: MediaDepsSource): CommandDefinitio
     allowedAuthorizations: SYSTEM_AUTH,
     async plan(ctx, p) {
       requireSystemActor(ctx);
-      assertOwnedKey(ctx.userId, p.previewKey);
-      if (p.svgKey) assertOwnedKey(ctx.userId, p.svgKey);
+      const previewKey = compositeKey(ctx.userId, p.manifestHash, "image/png");
+      const svgKey = p.hasSvg ? compositeKey(ctx.userId, p.manifestHash, "image/svg+xml") : null;
       const row = await first<CompositeRow>(ctx.db, `SELECT ${COMPOSITE_COLS} FROM outfit_composites WHERE user_id = ? AND manifest_hash = ?`, ctx.userId, p.manifestHash);
       if (!row) throw new CommandError("not_found", "no such composite for this owner");
       CompositionManifest.parse(JSON.parse(row.manifest_json));
@@ -131,7 +135,7 @@ export function compositeCommands(depsSource: MediaDepsSource): CommandDefinitio
       return {
         summary: "Outfit preview rendered and stored privately",
         statements: [
-          stmt("UPDATE outfit_composites SET preview_state = 'rendered', preview_key = ?, preview_sha256 = ?, preview_bytes = ?, svg_key = ?, failure = NULL, rendered_at = ?, updated_at = ? WHERE user_id = ? AND manifest_hash = ?", p.previewKey, p.previewSha256, p.previewBytes, p.svgKey, ctx.now, ctx.now, ctx.userId, p.manifestHash),
+          stmt("UPDATE outfit_composites SET preview_state = 'rendered', preview_key = ?, preview_sha256 = ?, preview_bytes = ?, svg_key = ?, failure = NULL, rendered_at = ?, updated_at = ? WHERE user_id = ? AND manifest_hash = ?", previewKey, p.previewSha256, p.previewBytes, svgKey, ctx.now, ctx.now, ctx.userId, p.manifestHash),
           finishJob(ctx, p.jobId, "succeeded", { renderer: p.renderer, sha256: p.previewSha256 }, null),
         ],
         // Checked again inside the commit: a deletion that lands between this plan and its commit fails the

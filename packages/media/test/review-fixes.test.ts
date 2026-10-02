@@ -79,7 +79,7 @@ describe("review H1: a preview rendered across a deletion is never stored or ser
     await h.bindings.MEDIA_BUCKET.put(svg, "<svg/>");
     // ...case 1: the image is deleted and the composite was invalidated by that deletion.
     await owner.exec("media.delete_asset", { assetId: shirt.asset!.assetId });
-    const recorded = await execSystem(h.rt, owner.userId, "media.record_composite", { manifestHash: hash, jobId, previewKey: png, previewSha256: "a".repeat(64), previewBytes: 100, svgKey: svg, renderer: "raced" }, `raced-record:${jobId}`);
+    const recorded = await execSystem(h.rt, owner.userId, "media.record_composite", { manifestHash: hash, jobId, previewSha256: "a".repeat(64), previewBytes: 100, hasSvg: true, renderer: "raced" }, `raced-record:${jobId}`);
     expect(recorded.summary).toBe("The outfit preview was discarded: an image it used was deleted");
     expect(recorded.result).toMatchObject({ discarded: true });
     await h.settle(owner);
@@ -96,7 +96,7 @@ describe("review H1: a preview rendered across a deletion is never stored or ser
     await h.db.prepare("UPDATE media_renditions SET status = 'superseded' WHERE user_id = ? AND kind = 'cutout'").bind(second.userId).run();
     const key2 = `u/${second.userId}/composites/${hash2}.png`;
     await h.bindings.MEDIA_BUCKET.put(key2, await encodePng(syntheticShirt({ size: 64 })));
-    const stale = await execSystem(h.rt, second.userId, "media.record_composite", { manifestHash: hash2, jobId: String(again.result.jobId), previewKey: key2, previewSha256: "b".repeat(64), previewBytes: 100, svgKey: null, renderer: "raced" }, `raced-record:${again.result.jobId}`);
+    const stale = await execSystem(h.rt, second.userId, "media.record_composite", { manifestHash: hash2, jobId: String(again.result.jobId), previewSha256: "b".repeat(64), previewBytes: 100, hasSvg: false, renderer: "raced" }, `raced-record:${again.result.jobId}`);
     expect(stale.result).toMatchObject({ discarded: true, reason: "an image it used was deleted or replaced while the preview was being prepared" });
     await h.settle(second);
     expect(await compositesOf(second)).toEqual([]);

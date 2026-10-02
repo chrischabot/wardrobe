@@ -3,7 +3,7 @@ import { z } from "zod";
 import { all, CommandError, define, first, json, loadGarment, stableId, stmt, type CommandContext, type CommandDefinition, type PlannedOutbox, type Stmt } from "@garderobe/domain";
 import { CandidateRejectionReason, DiscoveryStrategy, MEDIA_COMMANDS as C } from "@garderobe/contracts/ext/media";
 import type { MediaSource } from "@garderobe/contracts/ext/media";
-import { assertOwnedKey } from "../keys.ts";
+import { originalKey } from "../keys.ts";
 import { limitsOf, resolveDeps, type MediaDepsSource } from "../runtime.ts";
 import { enqueueJob, insertRendition, isRealGarmentImage, loadAsset, loadGarmentMediaRow, upsertGarmentMedia, type AssetRow, type GarmentMediaRow } from "../store.ts";
 import { finishJob, photoRequestFor, planAssetRemoval, requireSystemActor, SYSTEM_AUTH } from "./assets.ts";
@@ -14,7 +14,7 @@ export const DISCOVERY_BATCH = 40;
 const StoredImage = z.object({
   assetId: z.string().min(1).max(64),
   renditionId: z.string().min(1).max(64),
-  objectKey: z.string().min(1).max(512),
+  // No storage location: the file lives where `originalKey` puts it for this owner, asset, checksum and type.
   contentType: z.string(),
   width: z.number().int().positive().nullable(),
   height: z.number().int().positive().nullable(),
@@ -176,7 +176,6 @@ export function discoveryCommands(depsSource: MediaDepsSource): CommandDefinitio
         if (c.decision === "adopted" && !c.stored) throw new CommandError("invalid_command", "an adopted candidate must have a stored, validated image");
         if (c.decision === "adopted" && adoptedAssetId) throw new CommandError("invalid_command", "only one candidate can be adopted per investigation");
         if (c.stored) {
-          assertOwnedKey(ctx.userId, c.stored.objectKey);
           const source: MediaSource = { kind: c.stored.sourceKind, imageUrl: c.imageUrl, pageUrl: c.pageUrl, retrievedAt: c.retrievedAt ?? ctx.now, permittedUse: "private_catalogue_only", note: "Found by image discovery; kept in the private catalogue only. Finding it grants no publication right." };
           statements.push(
             stmt(
@@ -186,7 +185,7 @@ export function discoveryCommands(depsSource: MediaDepsSource): CommandDefinitio
               JSON.stringify(source), JSON.stringify(c.evidence), ctx.commandId, ctx.now, ctx.now,
             ),
             insertRendition(ctx, {
-              renditionId: c.stored.renditionId, assetId: c.stored.assetId, kind: "original", version: 1, objectKey: c.stored.objectKey, contentType: c.stored.contentType,
+              renditionId: c.stored.renditionId, assetId: c.stored.assetId, kind: "original", version: 1, objectKey: originalKey(ctx.userId, c.stored.assetId, c.stored.sha256, c.stored.contentType), contentType: c.stored.contentType,
               width: c.stored.width, height: c.stored.height, byteLength: c.stored.byteLength, sha256: c.stored.sha256, sourceRenditionId: null, transformations: [], edited: false,
             }),
           );
