@@ -15,9 +15,8 @@ struct ConversationScreen: View {
             .navigationTitle(AppTab.conversation.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button { showsRecall = true } label: { Label("Search history", systemImage: "magnifyingglass") }
-                        .accessibilityIdentifier(AXID.historySearch)
+                // One item here besides Capture: more would squeeze the title until it is cut off.
+                ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button { app.push(.projects) } label: { Label("Projects", systemImage: "folder") }
                         Button { app.push(.returns) } label: { Label("Returns", systemImage: "arrow.uturn.left") }
@@ -34,25 +33,29 @@ struct ConversationScreen: View {
             }
     }
 
-    /// Pinned above the transcript: the history bar, when the conversation was last checked,
-    /// and a failure to load other messages. Absent when there is nothing to say.
+    /// Pinned above the transcript: Search history, the history bar, when the conversation was
+    /// last checked, and a failure to load other messages.
     @ViewBuilder
     private var header: some View {
         let transcript = app.transcript
-        if transcript.isViewingHistory || !transcript.freshnessLine.isEmpty || transcript.olderFailure != nil {
+        Group {
             VStack(alignment: .leading, spacing: Metrics.unit * 2) {
+                Button { showsRecall = true } label: { Label("Search history", systemImage: "magnifyingglass") }
+                    .buttonStyle(.borderless)
+                    .touchTarget()
+                    .accessibilityIdentifier(AXID.historySearch)
                 if transcript.isViewingHistory { historyBar }
                 if !transcript.freshnessLine.isEmpty {
                     Label(transcript.freshnessLine, systemImage: transcript.isOffline ? "wifi.slash" : "clock")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.supporting)
                         .accessibilityElement(children: .combine)
                         .accessibilityIdentifier("freshness")
                 }
                 if let failure = transcript.olderFailure {
                     Label("Those messages could not be loaded. \(failure.ownerMessage)", systemImage: "exclamationmark.triangle")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.supporting)
                         .accessibilityElement(children: .combine)
                 }
             }

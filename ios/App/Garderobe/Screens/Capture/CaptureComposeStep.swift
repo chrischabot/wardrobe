@@ -26,10 +26,18 @@ struct CaptureComposeStep: View {
             if let access = capture.accessMessage {
                 Label(access, systemImage: "exclamationmark.triangle")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
             }
             AttachmentStrip(uploads: capture.uploads, picked: $picked) { data, contentType in
                 await app.capture.addPhoto(data: data, contentType: contentType)
+            }
+            if capture.asksPhotoRole {
+                // The purpose does not say what the photo shows, so the owner may. Left unsaid, nothing is assumed.
+                Picker("This photo is", selection: $capture.identifyRole) {
+                    Text("Not said").tag(PhotoRole?.none)
+                    ForEach(PhotoRole.choices, id: \.self) { role in Text(role.title).tag(PhotoRole?.some(role)) }
+                }
+                .frame(minHeight: Metrics.touch)
             }
             TextField("Add a note (optional)", text: $capture.note, axis: .vertical)
                 .lineLimit(2...6)
@@ -40,7 +48,7 @@ struct CaptureComposeStep: View {
                 if let reason = capture.blockedReason {
                     Text(reason)
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.supporting)
                 }
                 Button(action: submit) {
                     Text("Submit").frame(maxWidth: .infinity)
@@ -51,7 +59,7 @@ struct CaptureComposeStep: View {
                 .accessibilityIdentifier(AXID.captureSubmit)
                 Text("Sending the photo does not record anything by itself.")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
             }
         }
         .fullScreenCover(isPresented: $showsCamera) {
@@ -70,7 +78,7 @@ struct CaptureComposeStep: View {
                 .accessibilityAddTraits(.isHeader)
             Text(intent.explanation)
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.supporting)
             // Photos are uploaded for the chosen purpose, so changing it starts again.
             Button("Choose something else") { app.capture.reset() }
                 .buttonStyle(.borderless)

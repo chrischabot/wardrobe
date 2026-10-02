@@ -17,7 +17,7 @@ struct RecoveryIssueRow: View {
                     if let capability = issue.capability {
                         Text("Affects: \(capability)")
                             .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.supporting)
                     }
                     Text(issue.message)
                 }
@@ -44,7 +44,7 @@ struct RecoveryIssueRow: View {
                 } else {
                     Text("Reconnect it from Settings, Connections.")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.supporting)
                 }
             case .retry:
                 Button("Retry") {

@@ -31,14 +31,29 @@ public final class StudioModel {
     public private(set) var suggestions: [StudioSuggestion] = []
     public private(set) var suggestionNote: String?
     public private(set) var composition: Composition?
+    /// The backend-rendered picture of the current combination, when the owner asked for one.
+    public private(set) var preview: PreviewState = .none
+    private let sleep: @Sendable (TimeInterval) async -> Void
+
+    /// A rendered preview is background work on the backend: asked for, then read when ready.
+    public enum PreviewState: Sendable, Equatable {
+        case none
+        case requesting
+        /// Asked for and not rendered yet.
+        case queued
+        /// The backend's rendered PNG.
+        case rendered(Data)
+        case failed(String)
+    }
     public private(set) var lastOutcome: SubmissionOutcome?
     public private(set) var isSubmitting = false
     private var validationGeneration = 0
 
     private struct Saved: Codable { var mode: String; var slots: [String: String]; var locked: [String] }
 
-    public init(environment: AppEnvironment) {
+    public init(environment: AppEnvironment, sleep: @escaping @Sendable (TimeInterval) async -> Void = { try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }) {
         self.environment = environment
+        self.sleep = sleep
         let saved: Saved? = environment.restoration.load("studio.state")
         let initialMode = saved.flatMap { StudioMode(rawValue: $0.mode) } ?? .forToday
         mode = initialMode
@@ -144,6 +159,7 @@ public final class StudioModel {
         validationGeneration += 1
         validation = selection.isEmpty ? .none : .unchecked("Not checked yet.")
         composition = nil
+        preview = .none
     }
 
     // MARK: The combination
@@ -243,6 +259,7 @@ public final class StudioModel {
         validationGeneration += 1
         validation = .checked(suggestion.validation)
         composition = nil
+        preview = .none
         persist()
     }
 
@@ -251,6 +268,86 @@ public final class StudioModel {
         guard !selection.isEmpty else { composition = nil; return }
         let mine = validationGeneration
         if let result = try? await environment.api.composeStudio(StudioComposeRequest(slots: slotInputs())), mine == validationGeneration { composition = result }
+    }
+
+    /// The pieces the backend placed without a photograph, by name, for the line under the
+    /// canvas. Empty when every piece has one or no layout has been read.
+    public var piecesWithoutPhoto: [String] {
+        guard let composition else { return [] }
+        let missing = Set(composition.missingImages)
+        return composition.manifest.layers.filter { layer in layer.garmentId.map(missing.contains) ?? false }.map(\.name)
+    }
+
+    // MARK: Rendered preview (a background job on the backend)
+
+    /// How often and how many times the preview is looked for after asking.
+    static let previewChecks = 6
+    static let previewInterval: TimeInterval = 2
+
+    /// Asks the backend to render the current combination as one picture and waits a short
+    /// while for it. Plans and logs nothing. If it is not ready in that time the state stays
+    /// "queued" and `checkPreview` looks again; nothing is shown as ready before it is.
+    public func requestPreview() async {
+        guard !selection.isEmpty, preview != .requesting else { return }
+        let mine = validationGeneration
+        preview = .requesting
+        do {
+            let response = try await environment.api.requestStudioPreview(StudioPreviewRequest(clientRequestId: environment.ids.next("preview"), slots: slotInputs()))
+            environment.center.noteRead(failure: nil)
+            guard mine == validationGeneration else { return }
+            preview = .queued
+            for attempt in 0..<StudioModel.previewChecks {
+                if attempt > 0 { await sleep(StudioModel.previewInterval) }
+                guard mine == validationGeneration else { return }
+                if await readPreview(manifestHash: response.manifestHash, generation: mine) { return }
+            }
+        } catch let failure as APIFailure {
+            environment.center.noteRead(failure: failure)
+            guard mine == validationGeneration else { return }
+            preview = .failed(failure.isTransport ? "Offline. A picture needs a connection." : failure.ownerMessage)
+        } catch {
+            guard mine == validationGeneration else { return }
+            preview = .failed("The picture could not be asked for.")
+        }
+    }
+
+    /// Looks once more for a preview that was still being rendered.
+    public func checkPreview() async {
+        guard preview == .queued, let hash = composition?.manifestHash else { return }
+        _ = await readPreview(manifestHash: hash, generation: validationGeneration)
+    }
+
+    /// Reads the composition's preview state. Returns true when it is settled (rendered or failed).
+    private func readPreview(manifestHash: String, generation: Int) async -> Bool {
+        guard let current = try? await environment.api.composition(manifestHash: manifestHash), generation == validationGeneration else { return false }
+        composition = current
+        switch current.preview.state {
+        case .rendered:
+            // A rendered preview is identified by its content hash, so cached bytes never go stale.
+            let key = "preview:\(manifestHash):\(current.preview.sha256 ?? "")"
+            if let cached = environment.media.data(for: key) { preview = .rendered(cached); return true }
+            guard let data = try? await environment.api.compositionPreview(manifestHash: manifestHash), generation == validationGeneration else { return false }
+            environment.media.store(data, for: key)
+            preview = .rendered(data)
+            return true
+        case .failed:
+            preview = .failed(current.preview.failure.map { "The picture could not be made: \($0)" } ?? "The picture could not be made.")
+            return true
+        case .none, .queued, .unknown:
+            preview = .queued
+            return false
+        }
+    }
+
+    /// One sentence for the preview's state, or nil when there is nothing to say.
+    public var previewLine: String? {
+        switch preview {
+        case .none: return nil
+        case .requesting: return "Asking for a picture..."
+        case .queued: return "The picture is being made. It is not ready yet."
+        case .rendered: return "Picture made by the backend from these pieces."
+        case .failed(let message): return message
+        }
     }
 
     // MARK: The three distinct effects

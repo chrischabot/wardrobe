@@ -39,7 +39,7 @@ struct OutfitCalendarControls: View {
                         VStack(alignment: .leading, spacing: Metrics.unit) {
                             Text(calendar.name)
                             if let note = note(calendar) {
-                                Text(note).font(.footnote).foregroundStyle(.secondary)
+                                Text(note).font(.footnote).foregroundStyle(Color.supporting)
                             }
                         }
                     }

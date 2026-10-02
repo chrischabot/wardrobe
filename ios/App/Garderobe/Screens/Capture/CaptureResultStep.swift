@@ -32,7 +32,7 @@ struct CaptureResultStep: View {
             if let activity = capture.activity {
                 Label(activity, systemImage: "ellipsis")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
             }
             if !capture.receipts.isEmpty {
                 VStack(alignment: .leading, spacing: Metrics.unit * 2) {
@@ -50,11 +50,11 @@ struct CaptureResultStep: View {
             if let notice = capture.notice {
                 Label(notice, systemImage: "info.circle")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
             }
             Text("The reply appears in Conversation.")
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.supporting)
             Group {
                 if typeSize.isAccessibilitySize {
                     VStack(alignment: .leading, spacing: Metrics.unit * 3) { buttons }

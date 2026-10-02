@@ -18,7 +18,7 @@ struct StyleSaveResultSection: View {
                 if !diff.addedText.isEmpty {
                     Text("New or reworded text is kept as written. No rule or measurement is created from it; say it in Conversation if it should become one.")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.supporting)
                 }
             }
         }
@@ -103,11 +103,11 @@ private struct StyleFactQuestionRow: View {
         VStack(alignment: .leading, spacing: Metrics.unit * 2) {
             Text(question.label).font(.body.weight(.medium))
             Text("\(StyleFactPhrases.kind(question.fact.kind)). \(question.reasonLine)")
-                .font(.footnote).foregroundStyle(.secondary)
+                .font(.footnote).foregroundStyle(Color.supporting)
             ForEach(question.previousQuotes, id: \.self) { quote in quoted("Before", quote) }
             if let now = question.newWording, !now.isEmpty { quoted("Now", now) }
             if let note = question.note, !note.isEmpty {
-                Text(note).font(.footnote).foregroundStyle(.secondary)
+                Text(note).font(.footnote).foregroundStyle(Color.supporting)
             }
             if let decided {
                 Label("Your decision: \(decided.title.lowercased())", systemImage: "checkmark.circle")
@@ -140,7 +140,7 @@ private struct StyleFactQuestionRow: View {
         }
         if question.fact.kind == .rule {
             Text("To change what this rule does, say so in Conversation.")
-                .font(.footnote).foregroundStyle(.secondary)
+                .font(.footnote).foregroundStyle(Color.supporting)
         }
     }
 
@@ -172,7 +172,7 @@ private struct StyleFactQuestionRow: View {
 
     private func quoted(_ title: String, _ text: String) -> some View {
         VStack(alignment: .leading, spacing: Metrics.unit) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(title).font(.caption).foregroundStyle(Color.supporting)
             Text(text).font(.footnote).textSelection(.enabled)
         }
         .accessibilityElement(children: .combine)

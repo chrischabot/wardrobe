@@ -16,61 +16,82 @@ struct GarmentImageView: View {
     var aspectRatio: CGFloat = 3.0 / 4.0
     /// Decorative when a sibling text already names the garment (avoids VoiceOver reading it twice).
     var decorative = false
+    /// What the tile says when no photograph exists.
+    var missing: MissingTile = .nameAndNote
+
+    /// What a tile without a photograph shows. Text in a tile is ordinary text: it wraps and the
+    /// tile grows taller with the text size, so nothing is squeezed, cut off or swapped out.
+    enum MissingTile {
+        /// The garment's name and the backend's note ("No photo yet").
+        case nameAndNote
+        /// The note only, where the name is written directly beside or below the tile.
+        case note
+        /// A neutral mark only, for tiles too small for words (a 64-point list thumbnail, a
+        /// positioned layer). The caller writes the name and the note as text next to it.
+        case symbol
+    }
 
     @State private var uiImage: UIImage?
     @State private var resolved = false
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack {
-                if let uiImage {
-                    Image(uiImage: uiImage)
-                        .resizable()
-                        .scaledToFit()
-                        .padding(Metrics.unit * 2)
-                } else if resolved {
-                    missingTile
-                } else {
-                    Color.clear // reserved space while loading; no spinner, no entrance animation
+        ZStack {
+            // The reserved space: the tile is never smaller than this, so loading moves nothing.
+            Color.clear
+                .aspectRatio(aspectRatio, contentMode: .fit)
+                .overlay {
+                    GeometryReader { proxy in
+                        ZStack {
+                            Color.clear // no spinner, no entrance animation
+                            if let uiImage {
+                                Image(uiImage: uiImage)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .padding(Metrics.unit * 2)
+                            }
+                        }
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .task(id: taskKey(width: proxy.size.width)) { await load(points: proxy.size.width) }
+                    }
                 }
-            }
-            .frame(width: proxy.size.width, height: proxy.size.height)
-            .task(id: taskKey(width: proxy.size.width)) { await load(points: proxy.size.width) }
+            if uiImage == nil, resolved { missingTile }
         }
-        .aspectRatio(aspectRatio, contentMode: .fit)
         .catalogueCanvas()
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(decorative ? "" : accessibilityText)
         .accessibilityHidden(decorative)
     }
 
-    /// No photograph exists: the garment's name where the tile has room for it, otherwise a
-    /// neutral placeholder mark. Text is never squeezed or cut off; the name is always available
-    /// to VoiceOver from the element's label or from the text beside the tile.
-    private var missingTile: some View {
-        ViewThatFits(in: .vertical) {
+    private var missingNote: String { image?.missingImageNote ?? "No photo yet" }
+
+    /// No photograph exists. The name is always available to VoiceOver from the element's
+    /// label or from the text beside the tile.
+    @ViewBuilder private var missingTile: some View {
+        switch missing {
+        case .nameAndNote:
             VStack(spacing: Metrics.unit) {
-                Text(name)
-                    .font(.footnote.weight(.semibold))
-                    .multilineTextAlignment(.center)
-                Text(image?.missingImageNote ?? "No photo yet")
-                    .font(.caption)
-                    .multilineTextAlignment(.center)
+                Text(name).font(.footnote.weight(.semibold))
+                Text(missingNote).font(.caption)
             }
+            .multilineTextAlignment(.center)
             .foregroundStyle(.black)
             .fixedSize(horizontal: false, vertical: true)
             .padding(Metrics.unit * 2)
-            Text(image?.missingImageNote ?? "No photo yet")
+            .accessibilityHidden(true)
+        case .note:
+            Text(missingNote)
                 .font(.caption)
-                .foregroundStyle(.black)
                 .multilineTextAlignment(.center)
+                .foregroundStyle(.black)
                 .fixedSize(horizontal: false, vertical: true)
-                .padding(Metrics.unit)
+                .padding(Metrics.unit * 2)
+                .accessibilityHidden(true)
+        case .symbol:
             Image(systemName: "photo")
                 .font(.title3)
                 .foregroundStyle(.black)
+                .accessibilityHidden(true)
         }
-        .accessibilityHidden(true)
     }
 
     private var accessibilityText: String {
@@ -103,6 +124,7 @@ struct GarmentImageView: View {
 /// A full-screen inspection view of a garment image on the neutral canvas, with pinch to zoom
 /// and a visible Close button.
 struct GarmentInspectionView: View {
+    @Environment(AppModel.self) private var app
     @Environment(\.dismiss) private var dismiss
     let garmentId: String
     let name: String
@@ -110,10 +132,26 @@ struct GarmentInspectionView: View {
 
     @State private var scale: CGFloat = 1
     @State private var steadyScale: CGFloat = 1
+    /// The full-size rendition, read through a short-lived signed address.
+    @State private var fullSize: UIImage?
 
     var body: some View {
         NavigationStack {
-            GarmentImageView(garmentId: garmentId, name: name, image: image)
+            Group {
+                if let fullSize {
+                    Image(uiImage: fullSize)
+                        .resizable()
+                        .scaledToFit()
+                        .accessibilityLabel("Photo of \(name)")
+                } else {
+                    // Shown at once from what is already on the phone, and when there is no photo.
+                    GarmentImageView(garmentId: garmentId, name: name, image: image)
+                }
+            }
+                .task(id: image?.renditionId) {
+                    guard let image, let data = await app.images.inspectionData(for: image), let decoded = UIImage(data: data) else { return }
+                    fullSize = decoded
+                }
                 .scaleEffect(scale)
                 .gesture(
                     MagnifyGesture()

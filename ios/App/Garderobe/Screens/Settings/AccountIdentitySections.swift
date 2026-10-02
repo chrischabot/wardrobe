@@ -29,11 +29,11 @@ struct AccountIdentityRow: View {
             if let email = identity.displayEmail {
                 Text(email)
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
             }
             Text("Linked \(SettingsInstant(app: app).relative(identity.linkedAt))")
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.supporting)
             if identity.current {
                 Label("This sign-in", systemImage: "person.crop.circle.badge.checkmark")
                     .font(.footnote)
@@ -76,7 +76,7 @@ struct AccountLinkSection: View {
                     .accessibilityValue(ticket.linkCode)
                 Text("This code expires \(SettingsInstant(app: app).relative(ticket.expiresAt)).")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
                 Text("Sign in to Garderobe with the other identity, on another device or on this phone after signing out. Note the code first: it is not kept here once you sign out. The app will say that sign-in is not linked yet; choose \"I have a link code from my other sign-in\" and enter this code.")
                     .font(.footnote)
             }

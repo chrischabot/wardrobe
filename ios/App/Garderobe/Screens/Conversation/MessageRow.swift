@@ -27,7 +27,7 @@ struct MessageRow: View {
             if entry.forgotten {
                 Text("Message removed at your request.")
                     .italic()
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
             } else if !entry.text.isEmpty {
                 Text(entry.text)
                     .foregroundStyle(entry.role == .user || entry.role == .assistant ? Color.primary : Color.secondary)
@@ -36,7 +36,7 @@ struct MessageRow: View {
             if let delivery {
                 Label(delivery.text, systemImage: delivery.symbol)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
             }
         }
         .font(.body)

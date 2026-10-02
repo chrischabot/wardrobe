@@ -351,9 +351,81 @@ describe("iOS fixture cassettes", () => {
     await rec.changeRaw("upload-bytes", authorization.method, authorization.url, png, authorization.requiredHeaders, false);
     const completed = await rec.change("upload-complete", "POST", `/v1/uploads/${authorization.uploadId}/complete`, {});
     expect(completed.state).toBe("finalized");
-    await turn("capture-turn", { text: "What I wore", attachmentIds: [completed.asset.assetId], intent: "what_i_wore" }, "I can see the photo. Tell me what you had on and I will log it.");
+    await turn("capture-turn", { text: "What I wore", attachmentIds: [completed.asset.assetId], imageRoles: { [completed.asset.assetId]: "selfie" }, intent: "what_i_wore" }, "I can see the photo. Tell me what you had on and I will log it.");
 
     await expect(rec.render()).toMatchFileSnapshot(`${OUT}/owner-conversation.json`);
+  });
+
+  it("owner-media: a garment photo and its signed full-size read, a rendered Studio preview requested and read, and this phone registered for notifications and removed", async () => {
+    const { rec } = await start("owner-media", [
+      "The garment photo is a labelled TEST IMAGE (a generated PNG), attached to one of the owner's real garments in the test database only. A local run has no Images service, so the photo is stored but never becomes the garment's display image.",
+      "The notification token is a labelled FIXTURE value, not a token issued by Apple; no notification service is contacted when a device is registered.",
+      "The Studio preview is whatever the local Worker's render job produced in the time the recorder waited; its state is recorded as it was.",
+    ]);
+    const wardrobe = await rec.get("/v1/wardrobe");
+    const studio = await rec.get("/v1/studio", { mode: "for_today" });
+    await rec.get("/v1/devices");
+
+    // A garment photo: authorize, send the bytes, finalize (the three requests UploadModel makes).
+    const top = studio.selectors.find((s: any) => s.role === "top").items.find((i: any) => i.garmentId && i.eligibleToday);
+    const garment = wardrobe.items.find((i: any) => i.garment.garmentId === top.garmentId).garment;
+    const png = testPng();
+    rec.note("photo-bytes", { fixturePngBase64: btoa(String.fromCharCode(...png)), garmentId: garment.garmentId, label: "TEST IMAGE: a generated PNG, not a photograph" });
+    const authorization = await rec.change("upload-authorize", "POST", "/v1/uploads", { clientUploadId: `fixture-${crypto.randomUUID()}`, intent: "garment_photo", contentType: "image/png", byteLength: png.length, garmentId: garment.garmentId });
+    await rec.changeRaw("upload-bytes", authorization.method, authorization.url, png, authorization.requiredHeaders, false);
+    const completed = await rec.change("upload-complete", "POST", `/v1/uploads/${authorization.uploadId}/complete`, {});
+    expect(completed.state).toBe("finalized");
+
+    // The item page names the photo; the full-size image is read through a signed address, without the sign-in.
+    // The item page lists the photo's stored rendition. Making the cutout that becomes the garment's display
+    // image needs the Images service, which a local run does not have, so the display image stays unresolved
+    // here; the full-size read below therefore signs the photo's stored rendition.
+    const item = await rec.get(`/v1/items/${garment.garmentId}`);
+    const asset = item.media?.assets?.find((a: any) => a.assetId === completed.asset.assetId);
+    expect(asset?.renditions?.length, JSON.stringify(item.media).slice(0, 600)).toBeGreaterThan(0);
+    const renditionId = asset.renditions[0].renditionId;
+    expect(item.media.image.hasRealImage).toBe(false);
+    const signed = await rec.post(`/v1/media/renditions/${renditionId}/sign`, { width: 1280, ttlSeconds: 60 });
+    expect(signed.url).toMatch(/^\/v1\/media\/signed\//);
+    const served = await rec.getPublic(signed.url);
+    expect(served.status).toBe(200);
+    expect(served.bodyBase64).toBeTruthy();
+
+    // Studio: the opening outfit as StudioModel sends it, composed, then a rendered preview asked for and read.
+    const ROLE_ORDER = ["outer", "mid_layer", "top", "one_piece", "bottom", "belt", "socks", "footwear", "neckwear", "accessory"];
+    const offered = (role: string, garmentId: string) => studio.selectors.find((s: any) => s.role === role)?.items.some((i: any) => i.garmentId === garmentId);
+    const slots = studio.opening
+      .filter((s: any) => s.garmentId && offered(s.role, s.garmentId))
+      .map((s: any) => ({ role: s.role, garmentId: s.garmentId, locked: false }))
+      .sort((a: any, b: any) => ROLE_ORDER.indexOf(a.role) - ROLE_ORDER.indexOf(b.role) || a.role.localeCompare(b.role));
+    expect(slots.length).toBeGreaterThanOrEqual(3);
+    const composed = await rec.post("/v1/studio/compose", { slots });
+    const preview = await rec.change("preview-request", "POST", "/v1/studio/previews", { clientRequestId: `fixture-${crypto.randomUUID()}`, slots });
+    expect(preview.manifestHash).toBe(composed.manifestHash);
+    let composition: any;
+    for (let i = 0; i < 50; i++) {
+      composition = await (await rec["api"].get(`/v1/studio/compositions/${preview.manifestHash}`)).json();
+      if (["rendered", "failed"].includes(composition.preview.state)) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    await rec.get(`/v1/studio/compositions/${preview.manifestHash}`);
+    if (composition.preview.state === "rendered") await rec.get(`/v1/studio/compositions/${preview.manifestHash}/preview`);
+    rec.note("preview-state", { state: composition.preview.state });
+
+    // Notifications: this installation registers the address Apple gave it, then removes it.
+    const deviceId = "device-fixture-000001";
+    const token = Array.from({ length: 32 }, (_, i) => (0xa0 + i).toString(16).padStart(2, "0")).join("");
+    rec.note("device", { deviceId, tokenHex: token, label: "FIXTURE token: not issued by Apple" });
+    const registered = await rec.change("device-register", "POST", "/v1/devices", { deviceId, token, environment: "development" });
+    expect(registered.status).toBe("active");
+    const listed = await rec.get("/v1/devices");
+    expect(listed.devices).toHaveLength(1);
+    expect(JSON.stringify(listed)).not.toContain(token); // the token is never returned
+    const removed = await rec.change("device-remove", "POST", `/v1/devices/${deviceId}/remove`, {});
+    expect(removed.removed).toBe(true);
+    expect((await rec.get("/v1/devices")).devices).toEqual([]);
+
+    await expect(rec.render()).toMatchFileSnapshot(`${OUT}/owner-media.json`);
   });
 
   it("owner-proposals: a connected assistant's requests are listed for the owner; one is confirmed with its receipt, one is rejected", async () => {

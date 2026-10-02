@@ -335,6 +335,8 @@ struct OwnerConversationJourney {
         let captureTurn = try GarderobeJSON.decode(JSONValue.self, from: captureBody)
         #expect(captureTurn["intent"]?.stringValue == "what_i_wore")
         #expect(captureTurn["attachmentIds"]?.arrayValue?.count == 1)
+        // "What I wore" says what the photo is, so the turn carries that role for exactly that photo.
+        #expect(captureTurn["imageRoles"] == .object([captureTurn["attachmentIds"]?.arrayValue?.first?.stringValue ?? "": "selfie"]))
         #expect(composer.follower?.phase == .completed)
         #expect(j.backend.log.allSatisfy { $0.path != "/v1/commands" })              // capture never sends a wear command itself
         #expect(transcript.entries.count == 6)

@@ -21,7 +21,7 @@ struct CalendarPresentationControls: View {
                 Text("All-day board: the board sits at the top of the day with no start time, so nothing marks the morning itself. Its reminder is separate and is set on its own.")
             }
             .font(.footnote)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Color.supporting)
         } header: {
             Text("How the board appears in Calendar")
         }

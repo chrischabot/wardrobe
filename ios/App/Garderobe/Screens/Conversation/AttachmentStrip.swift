@@ -29,6 +29,8 @@ enum PickedPhoto {
 struct AttachmentStrip: View {
     let uploads: UploadModel
     @Binding var picked: [PhotosPickerItem]
+    /// The composer lets the owner say what each photo is; the capture sheet asks once for all.
+    var offersRole = false
     /// Starts the upload of one photo (the composer and the capture sheet use different intents).
     let add: (Data, UploadContentType) async -> Void
 
@@ -37,12 +39,12 @@ struct AttachmentStrip: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Metrics.unit * 2) {
             ForEach(Array(uploads.items.enumerated()), id: \.element.id) { index, item in
-                UploadRow(item: item, position: index + 1, uploads: uploads)
+                UploadRow(item: item, position: index + 1, uploads: uploads, offersRole: offersRole)
             }
             if let message {
                 Label(message, systemImage: "exclamationmark.triangle")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
             }
         }
         .onChange(of: picked) { _, items in
@@ -75,6 +77,7 @@ struct UploadRow: View {
     let item: UploadItem
     let position: Int
     let uploads: UploadModel
+    var offersRole = false
 
     @State private var thumbnail: UIImage?
 
@@ -112,12 +115,25 @@ struct UploadRow: View {
     private var status: some View {
         Text("Photo \(position): \(item.statusLine)")
             .font(.footnote)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Color.supporting)
             .fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder
     private var actions: some View {
+        if offersRole {
+            // What the photo is, in the owner's words. Optional; nothing is guessed from the picture.
+            Menu {
+                Button("Not said") { uploads.setRole(nil, for: item.id) }
+                ForEach(PhotoRole.choices, id: \.self) { role in
+                    Button(role.title) { uploads.setRole(role, for: item.id) }
+                }
+            } label: {
+                Text(item.role?.title ?? "What is it?")
+            }
+            .touchTarget()
+            .accessibilityLabel("Photo \(position) is: \(item.role?.title ?? "not said")")
+        }
         if item.canRetry {
             Button("Retry") { Task { await uploads.retry(item.id) } }
                 .buttonStyle(.borderless)

@@ -85,7 +85,7 @@ struct ItemAvailabilitySection: View {
                         if let availability = model.availability, availability.status == .estimated {
                             Text("Estimated chance that a clean one is at home: \(Int((availability.pAvailable * 100).rounded())) percent. This is an estimate, not an observation.")
                                 .font(.footnote)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.supporting)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }

@@ -29,7 +29,7 @@ struct ProductComparisonCard: View {
             VStack(alignment: .leading, spacing: Metrics.unit) {
                 Text(comparison.checkedLine(now: now, timeZone: app.environment.timeZone))
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
                 if comparison.isStale(now: now) {
                     Label("May be out of date", systemImage: "clock")
                         .font(.footnote.weight(.semibold))
@@ -106,11 +106,11 @@ struct SourcesCard: View {
                 .font(.subheadline)
             Text(detail(source))
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.supporting)
             if let excerpt = source.excerpt, !excerpt.isEmpty {
                 Text(excerpt)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
             }
             if let url = webURL(source.url) {
                 Link(destination: url) {

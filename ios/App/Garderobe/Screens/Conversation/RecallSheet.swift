@@ -33,7 +33,7 @@ struct RecallSheet: View {
                 if recall.result != nil {
                     Section("Results") {
                         if recall.hits.isEmpty {
-                            Text("Nothing matching was found.").foregroundStyle(.secondary)
+                            Text("Nothing matching was found.").foregroundStyle(Color.supporting)
                         }
                         ForEach(Array(recall.hits.enumerated()), id: \.offset) { _, hit in
                             Button { open(hit) } label: { hitView(hit) }
@@ -43,7 +43,7 @@ struct RecallSheet: View {
                     }
                     if let coverage = recall.coverageLine {
                         Section("What was searched") {
-                            Text(coverage).font(.footnote).foregroundStyle(.secondary)
+                            Text(coverage).font(.footnote).foregroundStyle(Color.supporting)
                         }
                     }
                 }
@@ -78,12 +78,12 @@ struct RecallSheet: View {
             ForEach(Array(hit.judgements.enumerated()), id: \.offset) { _, judgement in
                 Text("\(kindTitle(judgement.kind.rawValue)): \(judgement.subject)")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
             }
             ForEach(Array(hit.laterDevelopments.enumerated()), id: \.offset) { _, later in
                 Text("Later (\(later.kind.replacingOccurrences(of: "_", with: " "))): \(later.quote)")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
             }
         }
         .frame(maxWidth: .infinity, minHeight: Metrics.touch, alignment: .leading)

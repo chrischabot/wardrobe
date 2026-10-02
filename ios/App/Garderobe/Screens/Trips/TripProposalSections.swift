@@ -21,7 +21,7 @@ struct TripProposalSections: View {
         let rows = trips.packingRows(trip)
         return Section {
             if rows.isEmpty {
-                Text("No packing proposal yet.").foregroundStyle(.secondary)
+                Text("No packing proposal yet.").foregroundStyle(Color.supporting)
             }
             ForEach(rows.indices, id: \.self) { index in
                 let row = rows[index]
@@ -49,7 +49,7 @@ struct TripProposalSections: View {
                 VStack(alignment: .leading, spacing: Metrics.unit * 2) {
                     Text(title(day)).font(.headline)
                     ForEach(names.indices, id: \.self) { position in Text(names[position]) }
-                    Text(day.reason).font(.subheadline).foregroundStyle(.secondary)
+                    Text(day.reason).font(.subheadline).foregroundStyle(Color.supporting)
                     Button { Task { await app.trips.wore(trip, day: day) } } label: {
                         Label("I wore this", systemImage: "tshirt").frame(minHeight: Metrics.touch)
                     }
@@ -73,7 +73,7 @@ struct TripProposalSections: View {
                     Text("\(weather.label), \(Phrases.dayMonth(weather.localDate))").font(.subheadline.weight(.semibold))
                     Text(weather.line)
                     if let stale = caveat(weather.freshness) {
-                        Label(stale, systemImage: "clock").font(.footnote).foregroundStyle(.secondary)
+                        Label(stale, systemImage: "clock").font(.footnote).foregroundStyle(Color.supporting)
                     }
                 }
                 .accessibilityElement(children: .combine)

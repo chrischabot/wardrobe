@@ -19,7 +19,7 @@ struct TripsScreen: View {
                         VStack(alignment: .leading, spacing: Metrics.unit) {
                             Text(trip.name).font(.headline)
                             Text(trips.datesLine(trip)).font(.subheadline)
-                            Text(trips.packedLine(trip)).font(.subheadline).foregroundStyle(.secondary)
+                            Text(trips.packedLine(trip)).font(.subheadline).foregroundStyle(Color.supporting)
                         }
                         .padding(.vertical, Metrics.unit)
                     }
@@ -27,7 +27,7 @@ struct TripsScreen: View {
                 }
                 // Only say there are none once the list has actually been read (live or from the cache).
                 if trips.activeTrips.isEmpty, trips.trips.value != nil {
-                    Text("No trips planned.").foregroundStyle(.secondary)
+                    Text("No trips planned.").foregroundStyle(Color.supporting)
                 }
             } header: {
                 Text("Trips")

@@ -18,6 +18,9 @@ public struct UploadItem: Sendable, Equatable, Identifiable {
     public var intent: UploadIntent
     public var garmentId: String?
     public var wearingDate: LocalDate?
+    /// What the owner said this photograph is, when they said. Sent with the turn; never guessed
+    /// from the picture.
+    public var role: PhotoRole?
     public var state: State
     public var id: String { clientUploadId }
 
@@ -43,6 +46,24 @@ public struct UploadItem: Sendable, Equatable, Identifiable {
     }
 }
 
+/// What a photograph is, in the owner's words: the contract's image roles.
+public typealias PhotoRole = TurnRequest.ImageRolesValue
+
+extension TurnRequest.ImageRolesValue {
+    /// The roles the owner can choose (the tolerance member for unknown values is not one).
+    public static let choices: [PhotoRole] = [.selfie, .itemPhoto, .shopPhoto, .receipt, .other]
+    public var title: String {
+        switch self {
+        case .selfie: return "Me wearing it"
+        case .itemPhoto: return "Something I own"
+        case .shopPhoto: return "Something in a shop"
+        case .receipt: return "A receipt"
+        case .other: return "Something else"
+        case .unknown: return "Not said"
+        }
+    }
+}
+
 /// Attachments for the composer and the capture sheet. Items keep their position while they
 /// upload and can be retried one at a time.
 @MainActor
@@ -54,13 +75,23 @@ public final class UploadModel {
     public init(environment: AppEnvironment) { self.environment = environment }
 
     public var readyAssetIds: [String] { items.compactMap(\.assetId) }
+    /// The role of each finalized photograph the owner gave one to, by asset ID.
+    public var readyImageRoles: [String: PhotoRole] {
+        var roles: [String: PhotoRole] = [:]
+        for item in items { if let asset = item.assetId, let role = item.role, role != .unknown { roles[asset] = role } }
+        return roles
+    }
+    /// The owner says (or takes back) what a photograph is. Nothing is sent by this.
+    public func setRole(_ role: PhotoRole?, for id: String) {
+        if let i = items.firstIndex(where: { $0.id == id }) { items[i].role = role == .unknown ? nil : role }
+    }
     /// True while any attachment is neither ready nor removed.
     public var hasUnfinished: Bool { items.contains { $0.assetId == nil } }
 
     /// Adds a photo and starts uploading it. Adding a photo sends no turn and no command.
     @discardableResult
-    public func add(data: Data, contentType: UploadContentType, intent: UploadIntent, garmentId: String? = nil, wearingDate: LocalDate? = nil) async -> String {
-        let item = UploadItem(clientUploadId: environment.ids.next("upload"), data: data, contentType: contentType, intent: intent, garmentId: garmentId, wearingDate: wearingDate, state: .waiting)
+    public func add(data: Data, contentType: UploadContentType, intent: UploadIntent, garmentId: String? = nil, wearingDate: LocalDate? = nil, role: PhotoRole? = nil) async -> String {
+        let item = UploadItem(clientUploadId: environment.ids.next("upload"), data: data, contentType: contentType, intent: intent, garmentId: garmentId, wearingDate: wearingDate, role: role, state: .waiting)
         items.append(item)
         await upload(item.id)
         return item.id

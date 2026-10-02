@@ -27,7 +27,7 @@ struct TemperaturePreviewScreen: View {
                 Text("\(Int(temperature)) °C").font(.title3.weight(.semibold))
                 if let model, let failure = model.preview.failure {
                     Label(failure.ownerMessage, systemImage: failure.isTransport ? "wifi.slash" : "exclamationmark.triangle")
-                        .font(.footnote).foregroundStyle(.secondary)
+                        .font(.footnote).foregroundStyle(Color.supporting)
                 }
             }
             if let preview = model?.preview.value {
@@ -36,7 +36,7 @@ struct TemperaturePreviewScreen: View {
                         VStack(alignment: .leading, spacing: Metrics.unit) {
                             Text(item.name)
                             Text("\(Phrases.role(item.role))\(item.inStorage ? " · In storage" : "") · \(item.basis)")
-                                .font(.footnote).foregroundStyle(.secondary)
+                                .font(.footnote).foregroundStyle(Color.supporting)
                         }
                     }
                 }
@@ -44,7 +44,7 @@ struct TemperaturePreviewScreen: View {
                     ForEach(preview.notWearable, id: \.garmentId) { item in
                         VStack(alignment: .leading, spacing: Metrics.unit) {
                             Text(item.name)
-                            Text(item.why).font(.footnote).foregroundStyle(.secondary)
+                            Text(item.why).font(.footnote).foregroundStyle(Color.supporting)
                         }
                     }
                 }

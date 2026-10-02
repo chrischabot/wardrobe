@@ -54,4 +54,4 @@ echo "parsed $count files"
 step "9/9 static rules for the app sources"
 python3 ios/Tools/check-app-sources.py
 
-printf '\nAll checks that can run without a Mac passed. The app is built and UI-tested by .github/workflows/ios.yml on macOS: see ios/README.md.\n'
+printf '\nAll checks that can run without a Mac passed. This script does not build or run the app: .github/workflows/ios.yml does that on macOS, and ios/README.md states its latest result, including any failing UI test.\n'

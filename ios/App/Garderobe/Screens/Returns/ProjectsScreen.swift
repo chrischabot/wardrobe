@@ -13,14 +13,14 @@ struct ProjectsScreen: View {
             Section {
                 Text("Projects are worked on in Conversation. This list shows where each one stands.")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
                 FreshnessLabel(text: model.freshnessLine, freshness: model.projects.freshness)
                 if let unavailable = model.unavailableLine {
                     Label(unavailable, systemImage: "exclamationmark.triangle").font(.subheadline)
                 }
             }
             if model.isEmpty {
-                Section { Text("No projects.").foregroundStyle(.secondary) }
+                Section { Text("No projects.").foregroundStyle(Color.supporting) }
             }
             ForEach(model.all, id: \.projectId) { project in
                 Section {

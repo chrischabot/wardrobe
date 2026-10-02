@@ -9,14 +9,14 @@ struct StyleAmendmentsSection: View {
         let amendments = app.settings.activeAmendments
         Section {
             if amendments.isEmpty {
-                Text("No amendments are active.").foregroundStyle(.secondary)
+                Text("No amendments are active.").foregroundStyle(Color.supporting)
             }
             ForEach(amendments) { amendment in
                 VStack(alignment: .leading, spacing: Metrics.unit) {
                     Text(amendment.text)
                     Text("\(kindName(amendment.kind)) \u{00B7} added \(SettingsInstant(app: app).relative(amendment.createdAt)) \u{00B7} written against profile version \(amendment.basedOnVersion)")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.supporting)
                 }
                 .accessibilityElement(children: .combine)
             }
@@ -48,14 +48,14 @@ struct StyleDirectionsSection: View {
         let settings = app.settings
         Section {
             if settings.activeDirections.isEmpty {
-                Text("No standing directions.").foregroundStyle(.secondary)
+                Text("No standing directions.").foregroundStyle(Color.supporting)
             }
             ForEach(settings.activeDirections) { direction in
                 VStack(alignment: .leading, spacing: Metrics.unit) {
                     Text(direction.text)
                     Text("Added \(SettingsInstant(app: app).relative(direction.createdAt))")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.supporting)
                     Button("Retire") {
                         Task { await settings.retireDirection(direction.directionId) }
                     }

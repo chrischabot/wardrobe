@@ -49,7 +49,7 @@ struct OptionCarousel: View {
     private var positionText: some View {
         Text("\(currentIndex + 1) of \(options.count)")
             .font(.subheadline)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Color.supporting)
             .accessibilityLabel("Option \(currentIndex + 1) of \(options.count)")
     }
 

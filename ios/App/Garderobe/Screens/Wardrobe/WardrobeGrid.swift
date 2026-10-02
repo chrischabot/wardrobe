@@ -37,14 +37,14 @@ private struct WardrobeTile: View {
     var body: some View {
         Button { app.push(.item(garmentId: item.garment.garmentId)) } label: {
             VStack(alignment: .leading, spacing: Metrics.unit * 2) {
-                GarmentImageView(garmentId: item.garment.garmentId, name: item.garment.name, decorative: true)
+                GarmentImageView(garmentId: item.garment.garmentId, name: item.garment.name, decorative: true, missing: .note)
                 Text(item.garment.name)
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.primary)
                     .multilineTextAlignment(.leading)
                 Text(app.wardrobe.subtitle(for: item))
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
                     .multilineTextAlignment(.leading)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -67,15 +67,15 @@ private struct WardrobeRow: View {
         Button { app.push(.item(garmentId: item.garment.garmentId)) } label: {
             HStack(alignment: .center, spacing: Metrics.unit * 3) {
                 if !typeSize.isAccessibilitySize {
-                    GarmentImageView(garmentId: item.garment.garmentId, name: item.garment.name, decorative: true)
+                    GarmentImageView(garmentId: item.garment.garmentId, name: item.garment.name, decorative: true, missing: .symbol)
                         .frame(width: 64)
                 }
                 VStack(alignment: .leading, spacing: Metrics.unit) {
                     Text(item.garment.name).font(.body).foregroundStyle(.primary).multilineTextAlignment(.leading)
-                    Text(app.wardrobe.subtitle(for: item)).font(.footnote).foregroundStyle(.secondary).multilineTextAlignment(.leading)
+                    Text(app.wardrobe.subtitle(for: item)).font(.footnote).foregroundStyle(Color.supporting).multilineTextAlignment(.leading)
                 }
                 Spacer(minLength: 0)
-                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.tertiary)
+                Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(Color.supporting)
             }
             .frame(maxWidth: .infinity, minHeight: Metrics.touch, alignment: .leading)
             .contentSurface(padding: Metrics.unit * 3)

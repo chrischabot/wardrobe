@@ -22,7 +22,8 @@ struct WardrobeScreen: View {
         .accessibilityIdentifier(AXID.wardrobeSearch)
         .background(Color(.systemGroupedBackground))
         .navigationTitle("Wardrobe")
-        .searchable(text: $wardrobe.filters.search, prompt: "Names, makers, codes")
+        // The system's own short prompt: a longer one is cut off in the search field at larger text sizes.
+        .searchable(text: $wardrobe.filters.search)
         .onSubmit(of: .search) { Task { await app.wardrobe.applyFilters() } }
         .refreshable { await app.wardrobe.refresh() }
         .task { await app.wardrobe.open() }
@@ -38,16 +39,19 @@ struct WardrobeScreen: View {
                     .accessibilityIdentifier(AXID.wardrobeCounts)
             }
             FreshnessLabel(text: app.wardrobe.freshnessLine, freshness: app.wardrobe.snapshot.freshness)
+            Text("Search finds names, makers and product codes.")
+                .font(.footnote)
+                .foregroundStyle(Color.supporting)
             Button { app.sheet = .laundry } label: { Label("Laundry", systemImage: "washer") }
                 .secondaryAction()
                 .accessibilityIdentifier(AXID.laundryButton)
             if app.wardrobe.isSearchingSavedCopy {
                 Label("Offline: searching the wardrobe saved on this phone.", systemImage: "wifi.slash")
-                    .font(.footnote).foregroundStyle(.secondary)
+                    .font(.footnote).foregroundStyle(Color.supporting)
             }
             if app.wardrobe.isPartial {
                 Label("Showing part of the wardrobe.", systemImage: "ellipsis.circle")
-                    .font(.footnote).foregroundStyle(.secondary)
+                    .font(.footnote).foregroundStyle(Color.supporting)
             }
             if !app.wardrobe.filters.isEmpty {
                 Button("Clear filters") {

@@ -21,7 +21,7 @@ struct StudioScreen: View {
                      ? "Explore includes pieces in storage and marked shopping candidates. Nothing here is planned or logged."
                      : "For today shows what you own and can wear today.")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
                 FreshnessLabel(text: app.studio.freshnessLine, freshness: app.studio.studio.freshness)
 
                 StudioCanvas()

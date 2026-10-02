@@ -18,11 +18,11 @@ struct ItemFactsSection: View {
                 if !model.careLine.isEmpty { Text(model.careLine) }
                 if let wear = model.wearLine { Text(wear) }
                 if let caveat = model.detail?.wearCountCaveat, !caveat.isEmpty {
-                    Text(caveat).font(.footnote).foregroundStyle(.secondary)
+                    Text(caveat).font(.footnote).foregroundStyle(Color.supporting)
                 }
                 if let wears = model.detail?.recentWears.filter({ $0.status == .active }), !wears.isEmpty {
                     Text("Recently worn: " + Phrases.list(wears.prefix(8).map { Phrases.dayMonth($0.wearingDate) }))
-                        .font(.footnote).foregroundStyle(.secondary)
+                        .font(.footnote).foregroundStyle(Color.supporting)
                 }
             }
             if !model.measurements.isEmpty {
@@ -31,7 +31,7 @@ struct ItemFactsSection: View {
                         let row = StyleFactPhrases.measurement(measurement)
                         VStack(alignment: .leading, spacing: Metrics.unit) {
                             DetailRow(label: row.label, value: row.value)
-                            Text(row.note).font(.caption).foregroundStyle(.secondary)
+                            Text(row.note).font(.caption).foregroundStyle(Color.supporting)
                         }
                     }
                 }
@@ -46,7 +46,7 @@ struct ItemFactsSection: View {
                         VStack(alignment: .leading, spacing: Metrics.unit) {
                             Text(combination.name ?? "Saved combination")
                             Text("\(Phrases.count(combination.slots.count, "piece"))" + (combination.validation.valid ? "" : " · not wearable as checked"))
-                                .font(.footnote).foregroundStyle(.secondary)
+                                .font(.footnote).foregroundStyle(Color.supporting)
                             Button("Open in Studio") {
                                 app.studio.show(combination)
                                 app.selectedTab = .studio
@@ -66,7 +66,7 @@ struct ItemFactsSection: View {
                     VStack(alignment: .leading, spacing: Metrics.unit) {
                         DetailRow(label: fact.attribute.replacingOccurrences(of: "_", with: " ").replacingOccurrences(of: ".", with: " "), value: ItemModel.factValue(fact))
                         Text("Source: \(fact.source.kind.rawValue.replacingOccurrences(of: "_", with: " "))")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(Color.supporting)
                     }
                 }
             }
@@ -111,7 +111,7 @@ struct ItemFeedbackSection: View {
                 VStack(alignment: .leading, spacing: Metrics.unit) {
                     Text(entry.text)
                     Text([Self.name(entry.kind), entry.wearingDate.map(Phrases.dayMonth), entry.scope].compactMap { $0 }.joined(separator: " · "))
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundStyle(Color.supporting)
                     Button("Remove", role: .destructive) { Task { await model.retractFeedback(entry.feedbackId) } }
                         .font(.footnote)
                         .touchTarget()

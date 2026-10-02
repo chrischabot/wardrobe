@@ -93,6 +93,15 @@ export class Recorder {
     return exchange.body as T;
   }
 
+  /** Records a GET made WITHOUT the sign-in (a signed image address carries its own authority). */
+  async getPublic(pathWithQuery: string): Promise<Exchange> {
+    const exchange = await capture(await SELF.fetch(`${APP_ORIGIN}${pathWithQuery}`));
+    const [path, query = ""] = pathWithQuery.split("?");
+    const items = query.length > 0 ? query.split("&").map((item) => decodeURIComponent(item)).sort() : [];
+    this.current.reads[`GET ${path}${items.length > 0 ? `?${items.join("&")}` : ""}`] = exchange;
+    return exchange;
+  }
+
   /** Records a POST that changes nothing (validation, suggestion, search). */
   async post<T = any>(path: string, body: unknown): Promise<T> {
     const exchange = await capture(await this.api.post(path, body));

@@ -241,18 +241,42 @@ final class GarderobeUITests: XCTestCase {
         XCTAssertTrue(tab("Today").waitForExistence(timeout: 10))
         // Every issue on every destination is collected, counted by kind and element, and reported together.
         var found: [String: Int] = [:]
+        var excluded: [String: Int] = [:]
+        let settled = ["Today": AXID.todayCarousel, "Wardrobe": AXID.wardrobeCounts, "Studio": AXID.studioCanvas, "Conversation": AXID.composerField]
+        let screen = app.windows.firstMatch.frame
         for title in ["Today", "Wardrobe", "Studio", "Conversation"] {
             tab(title).tap()
+            // The audit measures what is on screen, so it starts only after the destination has
+            // loaded its content and its images have stopped arriving.
+            XCTAssertTrue(element(settled[title]!).waitForExistence(timeout: 10), "\(title) did not load")
+            RunLoop.current.run(until: Date().addingTimeInterval(3))
+            let barTitles = Set(app.navigationBars.staticTexts.allElementsBoundByIndex.map(\.label))
+            let searchPrompts = Set(app.searchFields.allElementsBoundByIndex.compactMap { $0.placeholderValue })
             // Contrast, hit-region size, element description, Dynamic Type clipping and traits.
             try app.performAccessibilityAudit { issue in
                 let element = issue.element
-                let name = [element?.identifier, element?.label].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "/")
-                found["\(title): \(issue.compactDescription) [\(name.prefix(48))]", default: 0] += 1
+                let label = element?.label ?? ""
+                let name = [element?.identifier, label].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "/")
+                // Where and what the element is, so a failure can be understood from the log alone.
+                var detail = ""
+                if let element {
+                    let f = element.frame
+                    detail = " {type \(element.elementType.rawValue) x\(Int(f.minX)) y\(Int(f.minY)) w\(Int(f.width)) h\(Int(f.height)) of \(Int(screen.width))x\(Int(screen.height))}"
+                }
+                let key = "\(title): \(issue.compactDescription) [\(name.prefix(48))]\(detail)"
+                // Excluded, and still counted and printed: text the system draws inside its own
+                // bars. The navigation bar's title and the search field's prompt are rendered by
+                // iOS on its glass material; the app sets only their words.
+                let systemDrawn = (issue.auditType == .contrast && element?.elementType == .staticText && barTitles.contains(label))
+                    || (issue.auditType == .textClipped && (element?.elementType == .searchField || searchPrompts.contains(label)))
+                if systemDrawn { excluded[key, default: 0] += 1 } else { found[key, default: 0] += 1 }
                 return true
             }
         }
         let lines = found.sorted { $0.key < $1.key }.map { $0.value > 1 ? "\($0.key) x\($0.value)" : $0.key }
-        XCTAssertTrue(found.isEmpty, "\(found.values.reduce(0, +)) accessibility audit issues: " + lines.joined(separator: " || "))
+        let skipped = excluded.sorted { $0.key < $1.key }.map(\.key)
+        XCTAssertTrue(found.isEmpty, "\(found.values.reduce(0, +)) accessibility audit issues: " + lines.joined(separator: " || ")
+                      + " ## excluded as system-drawn (\(excluded.values.reduce(0, +))): " + skipped.joined(separator: " || "))
     }
 
     /// On relaunch Today is on screen by the time the app has finished launching. This is a

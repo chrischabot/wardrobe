@@ -241,6 +241,15 @@ func collect() async throws -> [Sample] {
     _ = try? await api.weather(date: env.today)
     _ = try? await api.availability(date: env.today)
     _ = try? await api.resolve(phrase: "dark jeans")
+    // Notifications, the rendered Studio preview, signed image delivery, and a photo turn with its role.
+    _ = try? await api.devices()
+    _ = try? await api.registerDevice(DeviceRegistration(deviceId: env.ids.next("device"), token: String(repeating: "ab", count: 32), environment: .production))
+    _ = try? await api.removeDevice(id: "device-example-000001")
+    _ = try? await api.requestStudioPreview(StudioPreviewRequest(clientRequestId: env.ids.next("preview"), slots: [StudioSlotInput(role: .top, garmentId: shirt.id, locked: false)]))
+    _ = try? await api.composition(manifestHash: String(repeating: "a", count: 64))
+    _ = try? await api.signRendition(id: "rnd_example", SignRenditionRequest(width: 1280, ttlSeconds: GarmentImageLoader.signedLifetime))
+    _ = try? await api.submitTurn(PendingTurn(clientTurnId: env.ids.next("turn"), text: "What I wore", attachmentIds: ["ast_example"], imageRoles: ["ast_example": .selfie, "ast_absent": .receipt],
+                                              attachedRefs: [], intent: .whatIWore, sharedUrl: nil, createdAt: env.time.now(), state: .waitingToSend, turnId: nil, runId: nil).request)
 
     // Commands still in the offline queues are the exact envelopes the app would send.
     var queued: [Sample] = []

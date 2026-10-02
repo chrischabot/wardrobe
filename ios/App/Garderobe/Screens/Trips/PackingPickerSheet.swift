@@ -52,13 +52,13 @@ private struct PackingPickerList: View {
             }
             Section {
                 if model.rows.isEmpty {
-                    Text("Nothing matches.").foregroundStyle(.secondary)
+                    Text("Nothing matches.").foregroundStyle(Color.supporting)
                 }
                 ForEach(model.rows) { row in
                     Stepper(value: Binding(get: { row.quantity }, set: { model.setQuantity($0, for: row.id) }), in: 0...row.atHome) {
                         VStack(alignment: .leading, spacing: Metrics.unit) {
                             Text(row.item.garment.name)
-                            Text(detail(row)).font(.footnote).foregroundStyle(.secondary)
+                            Text(detail(row)).font(.footnote).foregroundStyle(Color.supporting)
                         }
                     }
                     .accessibilityValue("\(row.quantity) to pack")

@@ -16,7 +16,7 @@ struct AccountDeletionSection: View {
                     if let expires = deletion.expiresAt {
                         Text("This confirmation expires \(SettingsInstant(app: app).relative(expires)).")
                             .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.supporting)
                     }
                     Button(account.isWorking ? "Working..." : "Delete my account", role: .destructive) {
                         Task { await account.confirmDeletion() }

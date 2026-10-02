@@ -20,7 +20,7 @@ struct ReconcileScreen: View {
             Section {
                 Text("Only if you want to. Tell Garderobe what is actually there and it will take your word; you never need to do this for the app to work.")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
                 FreshnessLabel(text: app.wardrobe.freshnessLine, freshness: app.wardrobe.snapshot.freshness)
             }
             ForEach(items) { item in
@@ -30,7 +30,7 @@ struct ReconcileScreen: View {
                     } label: {
                         VStack(alignment: .leading, spacing: Metrics.unit) {
                             Text(item.garment.name)
-                            Text(app.wardrobe.subtitle(for: item)).font(.footnote).foregroundStyle(.secondary)
+                            Text(app.wardrobe.subtitle(for: item)).font(.footnote).foregroundStyle(Color.supporting)
                         }
                     }
                 }

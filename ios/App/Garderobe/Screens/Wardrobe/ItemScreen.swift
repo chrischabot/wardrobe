@@ -36,7 +36,7 @@ struct ItemScreen: View {
                 VStack(alignment: .leading, spacing: Metrics.unit * 2) {
                     Text(garment.name).font(.title2.weight(.semibold))
                     Text(model.statusLine).font(.headline).accessibilityIdentifier(AXID.itemStatus)
-                    if let quantity = model.quantityLine { Text(quantity).font(.subheadline).foregroundStyle(.secondary) }
+                    if let quantity = model.quantityLine { Text(quantity).font(.subheadline).foregroundStyle(Color.supporting) }
                     FreshnessLabel(text: model.freshnessLine, freshness: model.item.freshness)
                     OutcomeLine(outcome: model.lastOutcome)
                     Button {
@@ -73,14 +73,14 @@ struct ItemScreen: View {
                 GarmentInspectionView(garmentId: garment.garmentId, name: garment.name, image: model.image)
             }
             if let label = model.image?.displayLabel, label != .productPhoto, label != .yourPhoto, label != .unknown {
-                Text(label.rawValue).font(.caption).foregroundStyle(.secondary)
+                Text(label.rawValue).font(.caption).foregroundStyle(Color.supporting)
             }
             if let request = model.photoRequest {
-                Label(request, systemImage: "camera").font(.footnote).foregroundStyle(.secondary)
+                Label(request, systemImage: "camera").font(.footnote).foregroundStyle(Color.supporting)
             }
             if !model.mediaAvailable {
                 Label("Photos could not be loaded. The details below are still current.", systemImage: "photo.badge.exclamationmark")
-                    .font(.footnote).foregroundStyle(.secondary)
+                    .font(.footnote).foregroundStyle(Color.supporting)
             }
         }
     }

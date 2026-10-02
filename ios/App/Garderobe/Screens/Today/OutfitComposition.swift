@@ -5,6 +5,7 @@ import GarderobeKit
 /// gave them. The grid is deterministic: nothing is reordered, layered or chosen here.
 /// VoiceOver reads it as one element whose label names the garments.
 struct OutfitComposition: View {
+    @Environment(\.dynamicTypeSize) private var typeSize
     let garments: [BoardGarmentLine]
     /// What VoiceOver reads: the garments by name (for an option, `OptionPresentation.accessibilityLabel`).
     let label: String
@@ -38,12 +39,14 @@ struct OutfitComposition: View {
 
     private var spacing: CGFloat { compact ? Metrics.unit : Metrics.unit * 2 }
 
-    /// One garment fills the canvas; up to four sit two across; more sit three across.
+    /// One garment fills the canvas; up to four sit two across; more sit three across. At
+    /// accessibility text sizes there are never more than two across, so a tile without a
+    /// photograph has room for its name.
     private var columns: Int {
         switch garments.count {
         case 0, 1: return 1
         case 2...4: return 2
-        default: return 3
+        default: return typeSize.isAccessibilitySize ? 2 : 3
         }
     }
 

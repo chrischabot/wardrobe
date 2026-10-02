@@ -19,15 +19,15 @@ struct ReceiptCard: View {
             }
             Text(detailLine)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.supporting)
             ForEach(record.receipt.repairs, id: \.self) { repair in
-                Text(repair).font(.caption).foregroundStyle(.secondary)
+                Text(repair).font(.caption).foregroundStyle(Color.supporting)
             }
             if let external = Phrases.externalEffect(record.receipt) {
-                Text(external).font(.caption).foregroundStyle(.secondary)
+                Text(external).font(.caption).foregroundStyle(Color.supporting)
             }
             if record.undoneBy != nil {
-                Text("Undone.").font(.caption).foregroundStyle(.secondary)
+                Text("Undone.").font(.caption).foregroundStyle(Color.supporting)
             } else if record.receipt.undo.available {
                 Button {
                     Task {
@@ -42,7 +42,7 @@ struct ReceiptCard: View {
                 .disabled(isUndoing)
                 .accessibilityHint(Phrases.undoLine(record.receipt))
             } else {
-                Text(Phrases.undoLine(record.receipt)).font(.caption).foregroundStyle(.secondary)
+                Text(Phrases.undoLine(record.receipt)).font(.caption).foregroundStyle(Color.supporting)
             }
             OutcomeLine(outcome: undoOutcome)
         }
@@ -71,7 +71,6 @@ struct UndoBannerView: View {
             HStack(spacing: Metrics.unit * 3) {
                 Text(banner.record.receipt.summary)
                     .font(.subheadline)
-                    .lineLimit(3)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Button("Undo") { Task { await center.undo(banner.record) } }
                     .fontWeight(.semibold)
@@ -143,18 +142,18 @@ struct PendingActionsView: View {
                     Section { Text("You are looking at demo data recorded from a real backend run. Changes are not saved.") }
                 }
                 Section("Waiting to be sent") {
-                    if center.pending.isEmpty { Text("Nothing is waiting.").foregroundStyle(.secondary) }
+                    if center.pending.isEmpty { Text("Nothing is waiting.").foregroundStyle(Color.supporting) }
                     ForEach(center.pending) { command in
                         VStack(alignment: .leading, spacing: Metrics.unit) {
                             Text(command.label)
                             Text("Saved \(Phrases.relativeTime(command.createdAt, now: app.environment.time.now(), timeZone: app.environment.timeZone)). Not yet recorded on the server.")
-                                .font(.caption).foregroundStyle(.secondary)
+                                .font(.caption).foregroundStyle(Color.supporting)
                         }
                     }
                     ForEach(app.composer.pending.filter { $0.state == .waitingToSend }) { turn in
                         VStack(alignment: .leading, spacing: Metrics.unit) {
-                            Text(turn.text).lineLimit(3)
-                            Text("Message waiting to be sent.").font(.caption).foregroundStyle(.secondary)
+                            Text(turn.text)
+                            Text("Message waiting to be sent.").font(.caption).foregroundStyle(Color.supporting)
                         }
                     }
                 }
@@ -163,7 +162,7 @@ struct PendingActionsView: View {
                         ForEach(center.rejected) { command in
                             VStack(alignment: .leading, spacing: Metrics.unit) {
                                 Text(command.label)
-                                Text(command.rejection?.message ?? "The server refused this.").font(.caption).foregroundStyle(.secondary)
+                                Text(command.rejection?.message ?? "The server refused this.").font(.caption).foregroundStyle(Color.supporting)
                                 Button("Dismiss") { Task { await center.dismissRejected(command.id) } }
                                     .buttonStyle(.borderless)
                             }

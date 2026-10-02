@@ -55,7 +55,7 @@ struct ComparisonList: View {
     private func names(_ option: OptionPresentation) -> some View {
         VStack(alignment: .leading, spacing: Metrics.unit * 2) {
             if option.id == highlightedId {
-                Label("Opened from your link", systemImage: "link").font(.footnote).foregroundStyle(.secondary)
+                Label("Opened from your link", systemImage: "link").font(.footnote).foregroundStyle(Color.supporting)
             }
             Text(option.option.name).font(.headline).accessibilityAddTraits(.isHeader)
             if option.isChosen {

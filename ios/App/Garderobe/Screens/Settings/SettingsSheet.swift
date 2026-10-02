@@ -22,7 +22,7 @@ struct SettingsSheet: View {
                             .font(.headline)
                         Text("You are looking at data recorded from a real run. Changes are not saved.")
                             .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.supporting)
                         Button("Leave demo") { leaveDemo() }
                     }
                 } else {
@@ -35,7 +35,7 @@ struct SettingsSheet: View {
                                     .font(.headline)
                                 Text("Account and sign-in")
                                     .font(.footnote)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(Color.supporting)
                             }
                         }
                     }
@@ -43,6 +43,7 @@ struct SettingsSheet: View {
                 Section("Style and delivery") {
                     link("My style", symbol: "text.book.closed", identifier: AXID.settingsMyStyle) { MyStyleScreen() }
                     link("Delivery and location", symbol: "clock") { DeliverySettingsScreen() }
+                    link("Notifications", symbol: "bell") { NotificationsScreen() }
                 }
                 Section("Recommendations") {
                     Text(settings.pauseLine)
@@ -54,7 +55,7 @@ struct SettingsSheet: View {
                         .accessibilityIdentifier(AXID.settingsResume)
                         Text("Nothing is replayed and no questions are asked about the days you missed.")
                             .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.supporting)
                     } else {
                         link("Pause recommendations", symbol: "pause.circle", identifier: AXID.settingsPause) { PauseScreen() }
                     }

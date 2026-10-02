@@ -22,7 +22,7 @@ struct ConnectionsScreen: View {
                 }
                 Text("Gmail is used to find order receipts, and Calendar to read the day and write the outfit calendar. These are separate from your sign-in.")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
                     .onChange(of: scenePhase) { _, phase in
                         // Back from the browser: read the connection states again.
                         if phase == .active { Task { await settings.connections.refresh() } }

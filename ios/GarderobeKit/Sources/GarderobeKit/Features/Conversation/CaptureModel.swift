@@ -33,6 +33,16 @@ public enum CaptureIntent: String, Sendable, CaseIterable, Identifiable {
         case .whatIWore: return .whatIWore
         }
     }
+    /// What a photograph taken for this purpose is, when the purpose itself says so: the owner
+    /// who taps "What I wore" has said the photo shows them wearing it. "Identify this" says
+    /// nothing about the photo, so the owner is asked and may leave it unsaid.
+    var photoRole: PhotoRole? {
+        switch self {
+        case .addItem: return .itemPhoto
+        case .identify: return nil
+        case .whatIWore: return .selfie
+        }
+    }
     var uploadIntent: UploadIntent {
         switch self {
         case .addItem: return .garmentPhoto
@@ -54,7 +64,11 @@ public final class CaptureModel {
     private let composer: ComposerModel
     public let uploads: UploadModel
 
-    public var intent: CaptureIntent?
+    public var intent: CaptureIntent? { didSet { if intent != oldValue { identifyRole = nil } } }
+    /// For "Identify this": what the owner says the photo is. Unset until they say.
+    public var identifyRole: PhotoRole? {
+        didSet { for item in uploads.items { uploads.setRole(roleForNewPhoto, for: item.id) } }
+    }
     public var note = ""
     public private(set) var photoAccessDenied = false
     public private(set) var submittedTurnId: String?
@@ -65,10 +79,15 @@ public final class CaptureModel {
         uploads = UploadModel(environment: environment)
     }
 
+    /// The role a photo added now carries: the purpose's own, or what the owner chose.
+    private var roleForNewPhoto: PhotoRole? { intent?.photoRole ?? (intent == .identify ? identifyRole : nil) }
+    /// True when the sheet should ask what the photo is (the purpose does not say).
+    public var asksPhotoRole: Bool { intent == .identify }
+
     /// Adds a photo for the chosen intent. Uploads it; sends no turn and no command.
     public func addPhoto(data: Data, contentType: UploadContentType) async {
         guard let intent else { return }
-        await uploads.add(data: data, contentType: contentType, intent: intent.uploadIntent, wearingDate: intent == .whatIWore ? environment.today : nil)
+        await uploads.add(data: data, contentType: contentType, intent: intent.uploadIntent, wearingDate: intent == .whatIWore ? environment.today : nil, role: roleForNewPhoto)
     }
 
     /// The platform reports that camera or photo access is denied.
@@ -95,7 +114,7 @@ public final class CaptureModel {
     public func submit() async {
         guard canSubmit, let intent else { return }
         let text = note.trimmingCharacters(in: .whitespacesAndNewlines)
-        let turn = PendingTurn(clientTurnId: environment.ids.next("turn"), text: text.isEmpty ? intent.title : text, attachmentIds: uploads.readyAssetIds, attachedRefs: [],
+        let turn = PendingTurn(clientTurnId: environment.ids.next("turn"), text: text.isEmpty ? intent.title : text, attachmentIds: uploads.readyAssetIds, imageRoles: uploads.readyImageRoles, attachedRefs: [],
                                intent: intent.turnIntent, sharedUrl: nil, createdAt: environment.time.now(), state: .waitingToSend, turnId: nil, runId: nil)
         submittedTurnId = turn.clientTurnId
         note = ""
@@ -119,7 +138,7 @@ public final class CaptureModel {
     public func answer(text: String) async { await composer.answer(text: text) }
 
     public func reset() {
-        intent = nil; note = ""; submittedTurnId = nil
+        intent = nil; note = ""; submittedTurnId = nil; identifyRole = nil
         uploads.removeAll()
     }
 }

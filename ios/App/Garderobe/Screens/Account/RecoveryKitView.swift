@@ -43,7 +43,7 @@ struct RecoveryKitView: View {
                     .font(.body)
                 Text("Issued \(SettingsInstant(app: app).relative(kit.issuedAt)).")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
 
                 ShareLink(item: RecoveryKitFile(fileName: kit.downloadFileName, text: kit.downloadText),
                           preview: SharePreview(kit.downloadFileName)) {

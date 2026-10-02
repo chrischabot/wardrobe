@@ -27,7 +27,7 @@ struct DayRecordView: View {
             }
             Text("This is today's record. It will not be restyled.")
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.supporting)
             Button { showsCorrection = true } label: { Label("Correct this", systemImage: "pencil") }
                 .secondaryAction()
                 .controlSize(.large)
@@ -45,7 +45,7 @@ struct DayRecordView: View {
             SectionHeading(title: "Another outfit for later")
             Text("Ask for one more outfit, for dinner for example. Today's record stays as it is.")
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.supporting)
             TextField("What is it for? (optional)", text: $anotherBrief, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .frame(minHeight: Metrics.touch)
@@ -98,11 +98,11 @@ struct DayRecordView: View {
                 ForEach(option.visibleGarments) { line in Text(line.name).font(.body) }
             }
             if let qualification = option.option.qualification {
-                Label(qualification, systemImage: "info.circle").font(.subheadline).foregroundStyle(.secondary)
+                Label(qualification, systemImage: "info.circle").font(.subheadline).foregroundStyle(Color.supporting)
             }
             if !option.footwearChoices.isEmpty {
                 VStack(alignment: .leading, spacing: Metrics.unit) {
-                    Text("Shoes").font(.subheadline).foregroundStyle(.secondary)
+                    Text("Shoes").font(.subheadline).foregroundStyle(Color.supporting)
                     ForEach(option.footwearChoices) { choice in
                         let selected = choice.garmentId == option.selectedFootwearId
                         Button {

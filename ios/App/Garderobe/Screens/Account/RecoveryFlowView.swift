@@ -20,7 +20,7 @@ struct RecoveryFlowView: View {
                         Text("Use this when you can no longer sign in the way you used to. You need the recovery code from the kit you stored when the account was set up.")
                         Text("An email address that matches, or knowing what is in the wardrobe, does not prove the account is yours. Only the recovery code does.")
                             .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.supporting)
                     }
                     if let transaction = account.recoveryTransaction {
                         attempt(transaction)
@@ -55,7 +55,7 @@ struct RecoveryFlowView: View {
                 .accessibilityLabel("Recovery code")
             Text("\(Phrases.count(transaction.attemptsRemaining, "attempt")) remaining. This attempt expires \(SettingsInstant(app: app).relative(transaction.expiresAt)).")
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.supporting)
         } header: {
             Text("Recovery code")
         }
