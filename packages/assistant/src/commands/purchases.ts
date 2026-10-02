@@ -1,6 +1,7 @@
 import { ASSISTANT_COMMANDS as C } from "@garderobe/contracts/ext/assistant";
-import { CommandError, all, define, first, json, stmt, type CommandContext, type Stmt } from "@garderobe/domain";
+import { CommandError, all, define, first, json, stmt, type CommandContext, type CommandPlan, type Stmt } from "@garderobe/domain";
 import { NO_UNDO, plural, requireGarments, named } from "./common.ts";
+import { mergePlans, subPlan } from "./composite.ts";
 
 interface OrderRow {
   order_id: string;
@@ -118,6 +119,11 @@ export const purchaseImportOrder = define({
     const knownKeys = new Map(currentLines.map((l) => [l.line_key, l]));
     const working = currentLines.map((l) => ({ ...l }));
     const addedLines: { lineId: string; lineKey: string; productName: string }[] = [];
+    // Incoming wardrobe records asked for with the order: planned by the foundation's own garment.create and
+    // committed in this same command, so an order never lands without the records it was confirmed with.
+    const incomingByKey = new Map(p.incoming.map((i) => [i.lineKey, i]));
+    const garmentPlans: CommandPlan[] = [];
+    const createdGarments: { lineId: string; garmentId: string }[] = [];
 
     if (!existing) {
       statements.push(
@@ -141,19 +147,31 @@ export const purchaseImportOrder = define({
       const lineId = ctx.newId("oln");
       const replaced = line.replacesLineKey ? replacedLines.find((l) => l.line_key === line.replacesLineKey) : undefined;
       if (line.replacesLineKey && !replaced) throw new CommandError("not_found", `the replaced line '${line.replacesLineKey}' is not on the original order; nothing was written`);
+      let incomingGarmentId: string | null = null;
+      const wanted = incomingByKey.get(line.lineKey);
+      if (wanted && !replaced?.garment_id) {
+        const created = await subPlan(ctx, "garment.create", {
+          name: line.productName, category: wanted.category, roles: wanted.roles, careChannel: wanted.careChannel, colour: line.colour, size: line.size, maker: wanted.maker ?? p.merchant,
+          acquisition: "incoming", quantity: line.quantity, source: { kind: "receipt", ref: `order:${orderId}` },
+        });
+        incomingGarmentId = String(created.result?.["garmentId"] ?? "");
+        if (!incomingGarmentId) throw new CommandError("internal", "the incoming record could not be planned; nothing was written");
+        garmentPlans.push(created);
+        createdGarments.push({ lineId, garmentId: incomingGarmentId });
+      }
       statements.push(
         stmt(
           `INSERT INTO order_lines (user_id, order_id, line_id, line_key, product_name, product_code, fabric_code, size, colour, fit_options_json, price_minor, currency, quantity, arrival_estimate, state, garment_id, replaces_order_id, replaces_line_id)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ordered', ?, ?, ?)`,
           ctx.userId, orderId, lineId, line.lineKey, line.productName, line.productCode, line.fabricCode, line.size, line.colour, JSON.stringify(line.fitOptions), line.priceMinor, line.currency ?? p.currency, line.quantity, line.arrivalEstimate,
           // A remake represents the same physical purchase: it takes over the original line's garment record.
-          replaced?.garment_id ?? null, replaced ? replacesOrderId : null, replaced?.line_id ?? null,
+          replaced?.garment_id ?? incomingGarmentId, replaced ? replacesOrderId : null, replaced?.line_id ?? null,
         ),
       );
       if (replaced) {
         statements.push(stmt("UPDATE order_lines SET state = 'exchanged', garment_id = NULL WHERE user_id = ? AND order_id = ? AND line_id = ?", ctx.userId, replacesOrderId, replaced.line_id));
       }
-      working.push({ line_id: lineId, line_key: line.lineKey, product_name: line.productName, state: "ordered", garment_id: replaced?.garment_id ?? null, quantity: line.quantity, price_minor: line.priceMinor, refunded_minor: 0 });
+      working.push({ line_id: lineId, line_key: line.lineKey, product_name: line.productName, state: "ordered", garment_id: replaced?.garment_id ?? incomingGarmentId, quantity: line.quantity, price_minor: line.priceMinor, refunded_minor: 0 });
       addedLines.push({ lineId, lineKey: line.lineKey, productName: line.productName });
     }
 
@@ -187,18 +205,19 @@ export const purchaseImportOrder = define({
       statements.push(stmt("UPDATE orders SET version = version + 1, source_refs_json = ?, updated_at = ? WHERE user_id = ? AND order_id = ?", JSON.stringify(mergedRefs), ctx.now, ctx.userId, orderId));
     }
     const stillNeeding = working.filter((l) => !l.garment_id && l.state !== "cancelled").map((l) => l.line_id);
-    return {
+    const records = createdGarments.length > 0 ? ` ${plural(createdGarments.length, "wardrobe record")} created as ordered, not arrived.` : "";
+    return mergePlans({
       outcome: existing ? "merged" : "committed",
       summary: existing
-        ? `${p.merchant} order ${p.orderNumber} updated: ${plural(addedLines.length, "new line")}, ${plural(newEvents, "new event")}. Nothing has arrived until you say so`
-        : `Logged ${p.merchant} order ${p.orderNumber} with ${plural(p.lines.length, "line")}${replacesOrderId ? ", linked to the order it replaces" : ""}. Ordered, not arrived: nothing is wearable yet`,
+        ? `${named(p.merchant)} order ${named(p.orderNumber)} updated: ${plural(addedLines.length, "new line")}, ${plural(newEvents, "new event")}.${records} Nothing has arrived until you say so`
+        : `Logged ${named(p.merchant)} order ${named(p.orderNumber)} with ${plural(p.lines.length, "line")}${replacesOrderId ? ", linked to the order it replaces" : ""}.${records} Ordered, not arrived: nothing is wearable yet`,
       statements,
       preconditions: existing ? [{ label: `order ${orderId} unchanged since read`, sql: "(SELECT version FROM orders WHERE user_id = ? AND order_id = ?) = ?", params: [ctx.userId, orderId, existing.version], class: "internal" }] : [],
       affected: [{ kind: "order", id: orderId, version }],
       outbox: [{ topic: "search.index", entityKind: "order", entityId: orderId, revision: version }],
-      result: { orderId, addedLineIds: addedLines.map((l) => l.lineId), lineIds: working.map((l) => l.line_id), linesNeedingGarment: stillNeeding, replacesOrderId },
+      result: { orderId, addedLineIds: addedLines.map((l) => l.lineId), lineIds: working.map((l) => l.line_id), linesNeedingGarment: stillNeeding, replacesOrderId, incomingRecords: createdGarments },
       undo: NO_UNDO("an order record is corrected with a further event, not removed"),
-    };
+    }, garmentPlans, { partsFirst: true });
   },
 });
 

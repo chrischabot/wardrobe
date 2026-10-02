@@ -9,6 +9,7 @@
  * never resurrect a forgotten fact. Typed judgements here are extracted lexically (deterministic, no
  * inference); semantic paraphrase beyond this lexicon is AI Search's job.
  */
+import { isAboutSomeoneElse, ownerAuthoredText } from "../policy/voice.ts";
 import type { JudgementKind, RecallHit, RecallResult } from "@garderobe/contracts/ext/assistant";
 import { all, first, getSettings, localDateOf, normalizePhrase, prepare, sha256Hex, stmt, toInstant, type Db, type Principal, type Stmt } from "@garderobe/domain";
 import { tombstonedIds } from "../queries.ts";
@@ -148,7 +149,10 @@ export async function indexMessages(db: Db, userId: string, conversationId: stri
       ),
     ];
     let n = 0;
-    for (const j of extractJudgements(m.text)) {
+    // A judgement is attributed to the owner only from the owner's own voice (relayed, quoted and pasted
+    // passages are removed) and never from a sentence about somebody else's liking or buying.
+    const judged = speaker === "owner" ? extractJudgements(ownerAuthoredText(m.text)).filter((j) => !isAboutSomeoneElse(j.subject)) : extractJudgements(m.text);
+    for (const j of judged) {
       const jWords = tokens(j.subject);
       batch.push(
         stmt(

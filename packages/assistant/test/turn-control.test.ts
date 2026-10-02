@@ -120,20 +120,20 @@ describe("research runs in its own task actor (real Durable Objects; FAKE MODELS
 describe("Stop and simultaneous turns in the conversation (real Durable Object; FAKE MODEL)", () => {
   it("Stop on a running turn keeps what was already committed, reports it, and dispatches nothing further", async () => {
     const w = await createWorld();
-    const worn = await w.garment("oxford");
+    const worn = await w.garment("Clark oxford — evergreen");
     const other = await w.garment("990");
     const g = gate();
     w.model.script(
-      { toolCalls: [{ toolName: "record_wear", input: { garmentIds: [worn.garmentId], ownerQuote: "I wore the oxford" } }] },
+      { toolCalls: [{ toolName: "record_wear", input: { garmentIds: [worn.garmentId] } }] },
       async () => {
         await g.hold();
         // What a model that ignored the stop would try next.
-        return { toolCalls: [{ toolName: "mark_dirty", input: { garmentIds: [other.garmentId], ownerQuote: "I wore the oxford and the 990s are dirty" } }] };
+        return { toolCalls: [{ toolName: "mark_dirty", input: { garmentIds: [other.garmentId] } }] };
       },
       { text: "Both done." },
     );
     const submissionId = submission("stop");
-    const running = w.client.runTurn({ submissionId, text: "I wore the oxford and the 990s are dirty" });
+    const running = w.client.runTurn({ submissionId, text: "I wore the evergreen Clark oxford and the 990s are dirty" });
     await until("the second model step", async () => g.entered());
     const turnId = (await turnIdOf(w, submissionId))!;
     expect((await w.client.getTurn(turnId))!.receipts.map((r) => r.type)).toEqual(["wear.record"]);
@@ -181,7 +181,7 @@ describe("Stop and simultaneous turns in the conversation (real Durable Object; 
 
   it("simultaneous iOS and MCP messages get stable separate turns, run one after the other, and each acts under its own connection", async () => {
     const w = await createWorld();
-    const worn = await w.garment("oxford");
+    const worn = await w.garment("Clark oxford — evergreen");
     const ios = w.clientFor(w.owner.principal({ channel: "ios" }));
     const mcp = w.clientFor(w.owner.principal({ channel: "mcp" }));
     const active: string[] = [];
@@ -194,19 +194,19 @@ describe("Stop and simultaneous turns in the conversation (real Durable Object; 
         active.push(said);
         await sleep(40);
       }
-      if (said.includes("I wore the oxford") && !answering) return { toolCalls: [{ toolName: "record_wear", input: { garmentIds: [worn.garmentId], ownerQuote: "I wore the oxford" } }] };
+      if (said.includes("I wore the evergreen Clark oxford") && !answering) return { toolCalls: [{ toolName: "record_wear", input: { garmentIds: [worn.garmentId] } }] };
       active.length = 0;
-      return { text: said.includes("I wore the oxford") ? "Logged from the phone." : "You wore the oxford." };
+      return { text: said.includes("I wore the evergreen Clark oxford") ? "Logged from the phone." : "You wore the evergreen Clark oxford." };
     });
     const iosSubmission = submission("ios");
     const mcpSubmission = submission("mcp");
-    const [a, b] = await Promise.all([ios.runTurn({ submissionId: iosSubmission, text: "I wore the oxford today" }), mcp.runTurn({ submissionId: mcpSubmission, text: "what did I wear today?" })]);
+    const [a, b] = await Promise.all([ios.runTurn({ submissionId: iosSubmission, text: "I wore the evergreen Clark oxford today" }), mcp.runTurn({ submissionId: mcpSubmission, text: "what did I wear today?" })]);
     expect(a.status).toBe("completed");
     expect(b.status).toBe("completed");
     expect(a.turnId).not.toBe(b.turnId);
     expect(overlapped).toBe(false);
     expect(a.reply?.text).toBe("Logged from the phone.");
-    expect(b.reply?.text).toBe("You wore the oxford.");
+    expect(b.reply?.text).toBe("You wore the evergreen Clark oxford.");
     expect(a.receipts.map((r) => r.type)).toEqual(["wear.record"]);
     expect(b.receipts).toHaveLength(0);
     // One conversation, never interleaved: each owner message is followed by its own reply.
@@ -220,7 +220,7 @@ describe("Stop and simultaneous turns in the conversation (real Durable Object; 
     // A retransmission from either client returns its own turn and starts nothing.
     const calls = w.model.requests.length;
     expect((await mcp.runTurn({ submissionId: mcpSubmission, text: "what did I wear today?" })).turnId).toBe(b.turnId);
-    expect((await ios.runTurn({ submissionId: iosSubmission, text: "I wore the oxford today" })).turnId).toBe(a.turnId);
+    expect((await ios.runTurn({ submissionId: iosSubmission, text: "I wore the evergreen Clark oxford today" })).turnId).toBe(a.turnId);
     expect(w.model.requests.length).toBe(calls);
     expect(await all(w.h.db, "SELECT 1 FROM commands WHERE user_id = ? AND type = 'wear.record'", w.owner.userId)).toHaveLength(1);
   });

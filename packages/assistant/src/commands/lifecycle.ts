@@ -1,6 +1,7 @@
 import { ASSISTANT_COMMANDS as C } from "@garderobe/contracts/ext/assistant";
-import { CommandError, all, define, first, json, stmt, type CommandContext, type Stmt } from "@garderobe/domain";
+import { CommandError, all, define, first, json, stmt, type CommandContext, type CommandPlan, type Stmt } from "@garderobe/domain";
 import { NO_UNDO, money, plural, requireGarments, named } from "./common.ts";
+import { mergePlans, subPlan, subUndo } from "./composite.ts";
 
 interface ProjectRow {
   project_id: string;
@@ -61,20 +62,28 @@ export const lifecycleOpenProject = define({
       ...p.items.map((i) => stmt("INSERT INTO lifecycle_project_items (user_id, project_id, garment_id, quantity, state) VALUES (?, ?, ?, ?, 'included')", ctx.userId, projectId, i.garmentId, i.quantity)),
       stmt("INSERT INTO lifecycle_events (user_id, event_id, project_id, kind, detail_json, occurred_at, command_id) VALUES (?, ?, ?, 'opened', '{}', ?, ?)", ctx.userId, ctx.newId("lce"), projectId, ctx.occurredAt, ctx.commandId),
     ];
-    return {
-      summary: `${named(p.title)}: ${p.kind.replace(/_/g, " ")} project opened with ${plural(p.items.length, "piece")}${p.nextAction ? `. Next: ${named(p.nextAction)}` : ""}. ${STILL_HERE[p.kind]}`,
-      statements,
-      affected: [{ kind: "lifecycle_project", id: projectId, version: 1 }],
-      result: { projectId, garmentIds: ids },
-      undo: { data: { projectId } },
-    };
+    // A sale or consignment holds its pieces back from suggestions: the for-sale restriction is recorded in
+    // this same command, so a project is never open without its hold or held without its project.
+    const hold = p.holdForSale && (p.kind === "sale" || p.kind === "consignment") ? await subPlan(ctx, "restriction.add", { kind: "for_sale", scope: { garmentIds: ids }, reason: `For sale: ${p.title}`, source: { kind: "owner_statement", ref: `command:${ctx.commandId}` } }) : null;
+    const holdUndo = hold?.undo && "data" in hold.undo ? hold.undo.data : null;
+    return mergePlans(
+      {
+        summary: `${named(p.title)}: ${p.kind.replace(/_/g, " ")} project opened with ${plural(p.items.length, "piece")}${p.nextAction ? `. Next: ${named(p.nextAction)}` : ""}. ${STILL_HERE[p.kind]}${hold ? ". The pieces are held back from suggestions while for sale" : ""}`,
+        statements,
+        affected: [{ kind: "lifecycle_project", id: projectId, version: 1 }],
+        result: { projectId, garmentIds: ids, forSaleRestrictionId: hold?.result?.["restrictionId"] ?? null },
+        undo: { data: { projectId, hold: holdUndo } },
+      },
+      hold ? [hold] : [],
+    );
   },
-  async planUndo(ctx, _o, data) {
-    return {
-      summary: "Project cancelled; no stock had changed",
+  async planUndo(ctx, original, data) {
+    const cancelled: CommandPlan = {
+      summary: data.hold ? "Project cancelled and its for-sale hold withdrawn; no stock had changed" : "Project cancelled; no stock had changed",
       statements: [stmt("UPDATE lifecycle_projects SET state = 'cancelled', version = version + 1, updated_at = ? WHERE user_id = ? AND project_id = ?", ctx.now, ctx.userId, data.projectId)],
       undo: NO_UNDO("already an undo"),
     };
+    return data.hold ? mergePlans(cancelled, [await subUndo(ctx, "restriction.add", original, data.hold)]) : cancelled;
   },
 });
 
@@ -95,6 +104,16 @@ const EVENT_LABEL: Record<string, string> = {
   discarded: "Discarded",
   handoff_prepared: "Ready for you at the prepared step",
   note: "Note added",
+};
+
+/** The stock movement that goes with a physical project event. */
+const STOCK_FOR_EVENT: Record<string, { type: string; build: (garmentId: string) => Record<string, unknown> }> = {
+  sent_to_tailor: { type: "garment.move", build: (garmentId) => ({ garmentId, to: "tailor" }) },
+  returned_from_tailor: { type: "garment.move", build: (garmentId) => ({ garmentId, to: "clean", from: "tailor" }) },
+  stored: { type: "garment.move", build: (garmentId) => ({ garmentId, to: "storage" }) },
+  retrieved: { type: "garment.move", build: (garmentId) => ({ garmentId, to: "clean", from: "storage" }) },
+  pickup_completed: { type: "garment.retire", build: (garmentId) => ({ garmentId, disposition: "sold" }) },
+  discarded: { type: "garment.retire", build: (garmentId) => ({ garmentId, disposition: "discarded" }) },
 };
 
 const EXTERNAL_ACTION_FOR_EVENT: Record<string, string> = { submission_attempted: "submit_listing", submission_confirmed: "submit_listing" };
@@ -154,15 +173,24 @@ export const lifecycleRecordEvent = define({
       ),
     );
     const proceeds = p.kind === "proceeds_recorded" ? ` ${money(p.proceedsMinor, p.currency)}` : "";
-    const next = p.nextAction ? ` Next: ${p.nextAction}` : "";
-    return {
-      summary: `${named(project.title)}: ${EVENT_LABEL[p.kind]}${proceeds}.${next}`,
-      statements,
-      preconditions: [unchanged(ctx, project)],
-      affected: [{ kind: "lifecycle_project", id: p.projectId, version: project.version + 1 }],
-      result: { projectId: p.projectId, kind: p.kind, garmentIds: targets, state },
-      undo: NO_UNDO("project history is corrected with a further note"),
-    };
+    const next = p.nextAction ? ` Next: ${named(p.nextAction)}` : "";
+    // A physical event the owner reports also moves the stock, in this same command: the project never says
+    // "discarded" while the wardrobe still offers the piece, and nothing leaves without the project event.
+    const move = p.moveStock ? STOCK_FOR_EVENT[p.kind] : undefined;
+    const stockPlans: CommandPlan[] = [];
+    if (move) for (const garmentId of [...new Set(targets)]) stockPlans.push(await subPlan(ctx, move.type, move.build(garmentId)));
+    const stock = stockPlans.length > 0 ? ` ${stockPlans.map((s) => s.summary).join(". ")}.` : "";
+    return mergePlans(
+      {
+        summary: `${named(project.title)}: ${EVENT_LABEL[p.kind]}${proceeds}.${stock}${next}`,
+        statements,
+        preconditions: [unchanged(ctx, project)],
+        affected: [{ kind: "lifecycle_project", id: p.projectId, version: project.version + 1 }],
+        result: { projectId: p.projectId, kind: p.kind, garmentIds: targets, state, stockMoved: stockPlans.length },
+        undo: NO_UNDO("project history is corrected with a further note"),
+      },
+      stockPlans,
+    );
   },
 });
 

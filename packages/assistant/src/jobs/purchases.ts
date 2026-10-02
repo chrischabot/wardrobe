@@ -62,7 +62,11 @@ Not about an order (newsletter, marketing, account notice): {"isOrderEmail": fal
 About an order: {"isOrderEmail": true, "kind": "confirmation"|"dispatch"|"delivery"|"refund"|"cancellation"|"remake"|"return", "merchant": string, "orderNumber": string, "lines": [{"productName": string, "productCode"?: string, "fabricCode"?: string, "size"?: string, "colour"?: string, "price"?: "195.00", "currency"?: "GBP", "quantity"?: number, "arrivalEstimate"?: string}], "total"?: "195.00", "currency"?: "GBP", "refundAmount"?: "195.00", "originalOrderNumber"?: string}
 Copy values exactly as written. Leave out any field the excerpt does not state. Never invent an order number, a size, a price or a product.`;
 
-const RELEVANT = /order|confirm|receipt|invoice|dispatch|shipp|deliver|tracking|refund|return|exchange|remake|cancel|item|qty|quantity|size|colou?r|price|total|subtotal|£|\$|€|\b(gbp|eur|usd)\b|\b\d+[.,]\d{2}\b|#\s?\w{4,}/i;
+/** Order vocabulary that keeps a line on its own. */
+const RELEVANT_STRONG = /order|receipt|invoice|dispatch|shipp|deliver|tracking|refund|exchange|remake|cancel|\u00a3|\$|\u20ac|\b(gbp|eur|usd)\b|\b\d+[.,]\d{2}\b|#\s?\w{4,}/i;
+/** Words that are ordinary prose too ("the right size for you", "our total commitment"): they keep a line only when it also carries a figure. */
+const RELEVANT_WITH_FIGURE = /\b(item|qty|quantity|size|colou?r|price|total|subtotal|return|confirm\w*)\b/i;
+const RELEVANT = { test: (line: string) => RELEVANT_STRONG.test(line) || (RELEVANT_WITH_FIGURE.test(line) && /\d/.test(line)) };
 export const MAX_EXCERPT_CHARS = 4_000;
 
 /**
@@ -82,12 +86,21 @@ export function minimumExcerpt(message: MailMessage): { excerpt: string; keptLin
   return { excerpt: `${head}\n\n${body}`, keptLines: kept.length, totalLines: lines.length };
 }
 
-/** True only when `reference` names a turn of this owner, not relayed through MCP, whose verified grants include logging for this job. */
+/**
+ * True only when this job was created by the owner's own confirmation: the command that created it is on
+ * the ledger as the signed-in owner's tap (`owner_tap`, actor owner), which is how a confirmed proposal
+ * is carried out. A value in the job's parameters proves nothing: a job created any other way (a model,
+ * a connected assistant, a schedule) searches and drafts, and never logs.
+ */
 export async function importAuthorization(db: Db, userId: string, jobId: string, reference: string | null): Promise<boolean> {
-  if (!reference || !reference.startsWith("turn:")) return false;
-  const turn = await first<{ channel: string; grants_json: string }>(db, "SELECT channel, grants_json FROM assistant_turns WHERE user_id = ? AND turn_id = ?", userId, reference.slice(5));
-  if (!turn || turn.channel === "mcp") return false;
-  return json<{ tool?: string; jobId?: string; logOrders?: boolean }[]>(turn.grants_json, []).some((g) => g.tool === "search_mailbox_for_purchases" && g.jobId === jobId && g.logOrders === true);
+  if (!reference) return false;
+  const created = await first<{ authorization_basis: string; actor: string }>(
+    db,
+    "SELECT c.authorization_basis, c.actor FROM commands c JOIN command_entities e ON e.user_id = c.user_id AND e.command_id = c.command_id WHERE c.user_id = ? AND c.type = 'job.create' AND e.kind = 'job' AND e.entity_id = ? ORDER BY c.recorded_at LIMIT 1",
+    userId,
+    jobId,
+  );
+  return created?.authorization_basis === "owner_tap" && created.actor === "owner";
 }
 
 export interface PurchaseInvestigationDeps {

@@ -21,7 +21,10 @@ export { createGatewayModel, createGatewayModelService, assertGatewayId, gateway
 export { createCompositionModel, parseCandidates, type CompositionRequest, type CompositionCandidate } from "./inference/composition.ts";
 
 export { assembleMandatoryContext, ASSISTANT_POLICY, ASSISTANT_PROMPT_VERSION, estimateTokens, type MandatoryContext } from "./context/mandatory.ts";
-export { verifyOwnerStatement, verifyRestrictionLift, ownerAuthoredText } from "./policy/authority.ts";
+export { ownerAuthoredText, isDirectReport } from "./policy/voice.ts";
+export { classifyChange, mayCommitFromConversation, OBSERVATION_TYPES, type ChangeClass } from "./policy/classes.ts";
+export { resolveOwnerNaming, type OwnerNaming } from "./policy/naming.ts";
+export { describeChange } from "./policy/describe.ts";
 export { redactSecrets, redactDeep, SECRET_PLACEHOLDER } from "./policy/secrets.ts";
 export { recall, indexMessages, indexWatermark, extractJudgements, type CanonicalMessage, type RecallInput } from "./recall/index.ts";
 export { resolveDateRange } from "./recall/temporal.ts";

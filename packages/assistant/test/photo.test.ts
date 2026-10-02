@@ -68,19 +68,19 @@ describe("photo intake through the conversation (REAL media upload and private r
     expect(JSON.parse(evidence[0]!.evidence_json).images).toEqual([photo.assetId]);
   });
 
-  it("'what I wore' with a photo alone logs nothing: the model's attempt has no owner words to stand on", async () => {
+  it("'what I wore' with a photo alone logs nothing and creates nothing: what the model saw is at most a request the owner confirms", async () => {
     const selfie = await upload(p(), "selfie");
     const shirt = await w.garment("oxford");
     const before = await getDailyRecord(w.h.db, p(), "2026-09-15");
     const garments = (await listInventory(w.h.db, p())).total;
     w.model.script(
-      { toolCalls: [{ toolName: "record_wear", input: { garmentIds: [shirt.garmentId], ownerQuote: "what the owner is wearing" } }, { toolName: "add_garment", input: { name: "Striped shirt from the photo", category: "shirt", state: "owned", ownerQuote: "photo attached" } }] },
+      { toolCalls: [{ toolName: "record_wear", input: { garmentIds: [shirt.garmentId] } }, { toolName: "add_garment", input: { name: "Striped shirt from the photo", category: "shirt", state: "owned" } }] },
       { text: "I can see a striped shirt. Tell me if that is what you wore and I will log it." },
     );
     const turn = await w.client.runTurn({ submissionId: submission("photo"), images: [{ assetId: selfie.assetId, role: "selfie" }] });
     expect(turn.status).toBe("completed");
     expect(turn.receipts).toHaveLength(0);
-    expect(turn.refusals.map((r) => r.tool).sort()).toEqual(["add_garment", "record_wear"]);
+    expect(turn.proposals.map((x) => x.type).sort()).toEqual(["garment.create", "wear.record"]);
     expect(await getDailyRecord(w.h.db, p(), "2026-09-15")).toEqual(before);
     expect((await listInventory(w.h.db, p())).total).toBe(garments);
     expect(w.model.requests.at(-2)!.images).toHaveLength(1);
@@ -89,33 +89,40 @@ describe("photo intake through the conversation (REAL media upload and private r
   it("a photo with a question still logs nothing, and the marker text of the photo is never owner authority", async () => {
     const selfie = await upload(p(), "selfie");
     const shirt = await w.garment("oxford");
-    w.model.script({ toolCalls: [{ toolName: "record_wear", input: { garmentIds: [shirt.garmentId], ownerQuote: "photo attached: the owner photographed what they are wearing" } }] }, { text: "It looks fine. I have not logged anything." });
+    const before = await getDailyRecord(w.h.db, p(), "2026-09-15");
+    w.model.script({ toolCalls: [{ toolName: "record_wear", input: { garmentIds: [shirt.garmentId] } }] }, { text: "It looks fine. I have not logged anything." });
     const turn = await w.client.runTurn({ submissionId: submission("photo"), text: "does this work?", images: [{ assetId: selfie.assetId, role: "selfie" }] });
     expect(turn.receipts).toHaveLength(0);
-    expect(turn.refusals).toHaveLength(1);
+    expect(turn.proposals.map((x) => x.type)).toEqual(["wear.record"]);
+    expect(await getDailyRecord(w.h.db, p(), "2026-09-15")).toEqual(before);
   });
 
   it("a shop photo becomes a product record outside the wardrobe, never a garment", async () => {
     const shop = await upload(p(), "attachment");
     const garments = (await listInventory(w.h.db, p())).total;
     w.model.script(
-      { toolCalls: [{ toolName: "save_shopping_candidate", input: { name: "Striped poplin shirt seen in a shop", note: "From the owner's shop photo; maker and size not visible" } }, { toolName: "add_garment", input: { name: "Striped poplin shirt", category: "shirt", state: "owned", ownerQuote: "should I get this?" } }] },
+      { toolCalls: [{ toolName: "save_shopping_candidate", input: { name: "Striped poplin shirt seen in a shop", note: "From the owner's shop photo; maker and size not visible" } }, { toolName: "add_garment", input: { name: "Striped poplin shirt", category: "shirt", state: "owned" } }] },
       { text: "Saved as something you are considering. I cannot see the maker or the size." },
     );
     const turn = await w.client.runTurn({ submissionId: submission("photo"), text: "should I get this?", images: [{ assetId: shop.assetId, role: "shop_photo" }] });
     expect(turn.receipts.map((r) => r.type)).toEqual(["product.record"]);
-    expect(turn.refusals.map((r) => r.tool)).toEqual(["add_garment"]);
+    expect(turn.proposals.map((x) => x.type)).toEqual(["garment.create"]);
     expect((await listInventory(w.h.db, p())).total).toBe(garments);
     expect((await all(w.h.db, "SELECT 1 FROM products WHERE user_id = ? AND name = 'Striped poplin shirt seen in a shop'", w.owner.userId))).toHaveLength(1);
     const stored = (await w.client.transcript({})).messages.find((m) => m.turnId === turn.turnId && m.role === "user")!;
     expect(stored.text).toContain("a product seen in a shop, not owned");
   });
 
-  it("a photo plus the owner's own statement does log the wear, once", async () => {
+  it("a photo plus the owner's own statement naming the piece does log the wear, once; naming only a kind of piece does not", async () => {
     const selfie = await upload(p(), "selfie");
-    const shirt = await w.garment("oxford");
-    w.model.script({ toolCalls: [{ toolName: "record_wear", input: { garmentIds: [shirt.garmentId], ownerQuote: "I'm wearing the oxford today" } }] }, { text: "Logged." });
-    const turn = await w.client.runTurn({ submissionId: submission("photo"), text: "I'm wearing the oxford today", images: [{ assetId: selfie.assetId, role: "selfie" }] });
+    const shirt = await w.garment("Clark oxford — evergreen");
+    // "The oxford" is a kind of shirt (the owner has many): the model's pick from the photo is a request, not a record.
+    w.model.script({ toolCalls: [{ toolName: "record_wear", input: { garmentIds: [shirt.garmentId] } }] }, { text: "Which oxford?" });
+    const vague = await w.client.runTurn({ submissionId: submission("photo"), text: "I'm wearing the oxford today", images: [{ assetId: selfie.assetId, role: "selfie" }] });
+    expect(vague.receipts).toEqual([]);
+    expect(vague.proposals.map((x) => x.type)).toEqual(["wear.record"]);
+    w.model.script({ toolCalls: [{ toolName: "record_wear", input: { garmentIds: [shirt.garmentId] } }] }, { text: "Logged." });
+    const turn = await w.client.runTurn({ submissionId: submission("photo"), text: "I'm wearing the evergreen Clark oxford today", images: [{ assetId: selfie.assetId, role: "selfie" }] });
     expect(turn.receipts.map((r) => r.type)).toEqual(["wear.record"]);
     const day = await getDailyRecord(w.h.db, p(), "2026-09-15");
     expect(JSON.stringify(day)).toContain(shirt.garmentId);

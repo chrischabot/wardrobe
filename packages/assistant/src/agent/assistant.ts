@@ -47,7 +47,7 @@ import { registerAssistant } from "../commands/index.ts";
 import { ASSISTANT_PROMPT_VERSION, assembleMandatoryContext, estimateTokens } from "../context/mandatory.ts";
 import { BudgetExceededError, InferenceFailedError, ModelService, NoSelectableProfileError, type ModelCallMeta } from "../inference/service.ts";
 import { PROFILE_SPECS, TASK_SPECS, type ProfileSpec } from "../inference/registry.ts";
-import { ownerAuthoredText } from "../policy/authority.ts";
+import { ownerAuthoredText } from "../policy/voice.ts";
 import { redactDeep, redactSecrets } from "../policy/secrets.ts";
 import { tombstonedIds } from "../queries.ts";
 import { indexMessages, indexWatermark, recall, type CanonicalMessage, type RecallInput } from "../recall/index.ts";
@@ -204,7 +204,12 @@ export interface ConversationBackup extends ConversationExport {
   kind: "garderobe-conversation-backup";
   overlays: { id: string; fromMessageId: string; toMessageId: string; createdAt: string; summary: string }[];
   overlaysOmitted: string | null;
-  pendingTurns: { turnId: string; submissionId: string; status: string; kind: string; userMessageId: string }[];
+  /**
+   * Turns that had not settled when the backup was taken. `row` is the complete turn record (every column
+   * of the turn ledger except the owner) and `events` its replayable event stream, so a restore re-creates
+   * the turn itself under the restored owner, not just a mention of it.
+   */
+  pendingTurns: { turnId: string; submissionId: string; status: string; kind: string; userMessageId: string; row?: Record<string, unknown>; events?: { seq: number; type: string; at: string; data_json: string }[] }[];
 }
 
 export interface RequestRejection {
@@ -428,14 +433,17 @@ export abstract class GarderobeAssistantBase extends Think<any> {
       localDate: context.localDate,
       ownerTexts: await this.ownerTexts(message),
       attachedRefs,
+      restrictedGarmentIds: context.restrictedGarmentIds,
+      requestText: row.kind === "research" ? ((message.parts as { type: string; text?: string }[]).find((x) => x.type === "text")?.text ?? "") : (await this.ownerTexts(message)).map((t) => ownerAuthoredText(t)).join("\n"),
       conversationId: userId,
       unindexedSource: () => (this.taskTurnId ? Promise.resolve([]) : this.unindexedMessages()),
       ports: this.ports(),
       // A stopped turn dispatches nothing further, even if the model's step was already in flight.
       isCancelled: async () => this.cancelledTurns.has(row.turn_id) || (await findTurn(db, userId, row.turn_id))?.status === "cancelled",
-      // Addresses the assistant may retrieve in this turn: the ones in the owner's message and its
-      // attachments. Search results of the turn are added by the search tool itself.
-      allowedUrls: new Set(urlsIn((message.parts as { type: string; text?: string }[]).map((x) => x.text ?? "").join("\n"))),
+      // Addresses the assistant may retrieve in this turn: the ones the owner wrote in their OWN words
+      // (never an attachment's, a pasted or a quoted passage's). Search results of the turn are added by
+      // the search tool itself. A research request's own address was given by whoever asked for the research.
+      allowedUrls: new Set(urlsIn(row.kind === "research" ? (message.parts as { type: string; text?: string }[]).filter((x) => x.type === "text").slice(0, 1).map((x) => x.text ?? "").join("\n") : ownerAuthoredText(ownerTextOf(message)))),
       readOriginal: (messageId) => this.readOriginal(messageId),
       extractProduct: async (page) => ({ ...(await extractProductRecord(this.models(), { userId, parent: { kind: "turn", id: row.turn_id } }, page)) }),
       sessionSearch: (query, limit) => this.sessionSearch(query, limit),
@@ -533,7 +541,10 @@ export abstract class GarderobeAssistantBase extends Think<any> {
     const nowMs = this.now();
     const messages = this.messages;
     const at = messages.findIndex((m) => m.id === row.user_message_id);
-    const replies = at === -1 ? [] : messages.slice(at + 1).filter((m) => m.role === "assistant");
+    // The replies of THIS turn: assistant messages after the owner's message that no other turn already
+    // owns (a turn resumed later, after other turns ran, must not take their replies or result cards as its own).
+    const owned = new Map(this.ledgerRows().map((r) => [r.message_id, r.turn_id]));
+    const replies = at === -1 ? [] : messages.slice(at + 1).filter((m) => m.role === "assistant" && (!owned.has(m.id) || owned.get(m.id) === turnId));
     const reply = replies[replies.length - 1];
     const replyText = redactSecrets(replies.map((m) => textOf(m.parts as { type: string; text?: string }[])).filter(Boolean).join("\n")).text;
     for (const m of replies) this.ledger(m.id, "assistant", turnId, row.channel, "reply", toInstant(nowMs));
@@ -959,7 +970,7 @@ export abstract class GarderobeAssistantBase extends Think<any> {
     const g = TurnGrant.parse(grant);
     if (g.scopes.includes("write")) {
       const principal = createPrincipal({ userId: this.userId, actor: "assistant", channel: g.channel, scopes: g.scopes, authRef: g.authRef });
-      const receipt = await this.commands().execute(principal, { type: "job.create", payload: { jobId: `job_${row.turn_id}`, kind: request.kind === "history" ? "historical_research" : request.kind === "purchases" ? "email_investigation" : "product_investigation", title: request.topic.slice(0, 180), params: { turnId: row.turn_id, url: request.url ?? null } }, idempotencyKey: `research-job:${row.turn_id}`, authorization: "owner_statement", source: { channel: g.channel, parentKind: "turn", parentId: row.turn_id } });
+      const receipt = await this.commands().execute(principal, { type: "job.create", payload: { jobId: `job_${row.turn_id}`, kind: request.kind === "history" ? "historical_research" : request.kind === "product" ? "product_investigation" : "other", title: request.topic.slice(0, 180), params: { turnId: row.turn_id, url: request.url ?? null } }, idempotencyKey: `research-job:${row.turn_id}`, authorization: "owner_statement", source: { channel: g.channel, parentKind: "turn", parentId: row.turn_id } });
       jobId = String(receipt.result["jobId"]);
     }
     if (row.status === "accepted") {
@@ -1107,13 +1118,21 @@ export abstract class GarderobeAssistantBase extends Think<any> {
     const held = await all<{ pending_stores_json: string }>(this.db, "SELECT pending_stores_json FROM source_tombstones WHERE user_id = ? AND source_kind = 'message' AND state = 'suppressed'", this.userId);
     const tainted = held.some((r) => json<string[]>(r.pending_stores_json, []).includes("summaries"));
     const overlays = tainted ? [] : (await this.session.getCompactions()).map((c) => ({ id: c.id, fromMessageId: c.fromMessageId, toMessageId: c.toMessageId, createdAt: c.createdAt, summary: redactSecrets(c.summary).text }));
-    const pending = await all<{ turn_id: string; submission_id: string; status: string; kind: string; user_message_id: string }>(this.db, "SELECT turn_id, submission_id, status, kind, user_message_id FROM assistant_turns WHERE user_id = ? AND status IN ('accepted', 'running', 'needs_input', 'resumable') ORDER BY created_at", this.userId);
+    const pending = await all<Record<string, unknown> & { turn_id: string; submission_id: string; status: string; kind: string; user_message_id: string }>(this.db, "SELECT * FROM assistant_turns WHERE user_id = ? AND status IN ('accepted', 'running', 'needs_input', 'resumable') ORDER BY created_at", this.userId);
+    const pendingTurns: ConversationBackup["pendingTurns"] = [];
+    for (const t of pending) {
+      const row: Record<string, unknown> = {};
+      // Copied as stored: what a turn records was redacted before it was stored, and redacting again would damage identifiers.
+      for (const [k, v] of Object.entries(t)) if (k !== "user_id") row[k] = v;
+      const events = await all<{ seq: number; type: string; at: string; data_json: string }>(this.db, "SELECT seq, type, at, data_json FROM assistant_turn_events WHERE user_id = ? AND turn_id = ? ORDER BY seq", this.userId, t.turn_id);
+      pendingTurns.push({ turnId: t.turn_id, submissionId: t.submission_id, status: t.status, kind: t.kind, userMessageId: t.user_message_id, row, events });
+    }
     return {
       ...base,
       kind: "garderobe-conversation-backup",
       overlays,
       overlaysOmitted: tainted ? "summaries that covered forgotten messages are pending regeneration and were left out" : null,
-      pendingTurns: pending.map((t) => ({ turnId: t.turn_id, submissionId: t.submission_id, status: t.status, kind: t.kind, userMessageId: t.user_message_id })),
+      pendingTurns,
       watermarks: await this.conversationWatermarks(),
     };
   }
@@ -1143,7 +1162,41 @@ export abstract class GarderobeAssistantBase extends Think<any> {
       restored++;
     }
     await (this as unknown as { syncMessagesFromStorage(): Promise<unknown> }).syncMessagesFromStorage();
-    return { imported, overlaysRestored: restored, overlaysSkipped: skipped, pendingTurns: backup.pendingTurns.length, watermarks: await this.conversationWatermarks() };
+    const pendingTurns = await this.restorePendingTurns(backup.pendingTurns, forgotten);
+    return { imported, overlaysRestored: restored, overlaysSkipped: skipped, pendingTurns, watermarks: await this.conversationWatermarks() };
+  }
+
+  /**
+   * Re-create the turns that had not settled at backup time, under THIS (restored) owner. Nothing runs: a
+   * turn that was accepted or running comes back as `resumable` (its inference was lost with the old
+   * actor and is repeated only when the owner resumes it; commands it had already committed are in the
+   * restored ledger and are never run again, by their action intents), a turn waiting for the owner's answer
+   * comes back still waiting. A turn whose message was forgotten is not restored. Returns how many now exist.
+   */
+  private async restorePendingTurns(turns: ConversationBackup["pendingTurns"], forgotten: Set<string>): Promise<number> {
+    const columns = new Set(["turn_id", "submission_id", "request_hash", "kind", "channel", "scopes_json", "auth_ref", "status", "user_message_id", "reply_message_id", "reply_text", "receipts_json", "refusals_json", "proposals_json", "grants_json", "clarification_json", "result_json", "failure_json", "model_profile", "next_event_seq", "created_at", "updated_at", "completed_at"]);
+    const now = toInstant(this.now());
+    for (const t of turns) {
+      if (!t.row || forgotten.has(t.userMessageId)) continue;
+      if (await findTurn(this.db, this.userId, t.turnId)) continue; // already there (restored with the records, or restored twice)
+      const row: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(t.row)) if (columns.has(k)) row[k] = v;
+      if (row["status"] === "accepted" || row["status"] === "running") {
+        row["status"] = "resumable";
+        row["failure_json"] = JSON.stringify({ code: "restored_from_backup", message: "This request was still running when the backup was taken. It was restored and can be resumed; nothing it had already recorded is repeated.", resumable: true });
+        row["completed_at"] = now;
+      }
+      // The connection that made the request is not restored (sign-ins and assistant grants never are).
+      row["auth_ref"] = "restored";
+      row["updated_at"] = now;
+      const keys = Object.keys(row);
+      await prepare(this.db, stmt(`INSERT INTO assistant_turns (user_id, ${keys.join(", ")}) VALUES (?, ${keys.map(() => "?").join(", ")}) ON CONFLICT DO NOTHING`, this.userId, ...keys.map((k) => row[k]))).run();
+      for (const e of t.events ?? []) {
+        await prepare(this.db, stmt("INSERT INTO assistant_turn_events (user_id, turn_id, seq, type, at, data_json) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING", this.userId, t.turnId, e.seq, e.type, e.at, e.data_json)).run();
+      }
+    }
+    const count = await first<{ n: number }>(this.db, "SELECT COUNT(*) AS n FROM assistant_turns WHERE user_id = ? AND status IN ('accepted', 'running', 'needs_input', 'resumable')", this.userId);
+    return count?.n ?? 0;
   }
 
   /**
