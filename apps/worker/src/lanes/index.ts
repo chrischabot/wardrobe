@@ -145,7 +145,7 @@ function guardRelayedText(r: CommandRegistry): void {
       let kept = false;
       if (turnId) {
         const stored = await recordSubmittedProposal(ctx.db, { userId: ctx.userId, origin: "relayed_turn", sourceRef: turnId, grantId: null, turnId, idempotencyKey: ctx.envelope.idempotencyKey, type, payload: payload as Record<string, unknown>, expectedVersions: ctx.envelope.expectedVersions ?? {}, occurredAt: ctx.envelope.occurredAt ?? null, nowMs: ctx.nowMs });
-        kept = !("conflict" in stored);
+        kept = "row" in stored;
       }
       throw new CommandError("forbidden", `this cannot be changed from a message relayed by a connected assistant${kept ? "; it is kept as a proposal for the owner to confirm in the Garderobe app" : "; the owner changes it in the Garderobe app"}`, { reason: "relayed_text_not_owner_statement", proposed: kept });
     };

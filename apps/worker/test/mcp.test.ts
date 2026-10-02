@@ -171,9 +171,9 @@ describe("sensitive typed commands wait for the owner", () => {
     const waiting = (await pending()).filter((p) => p.type === "garment.retire" && p.payload.garmentId === garmentId);
     expect(waiting).toHaveLength(1);
     expect(waiting[0]).toMatchObject({ state: "pending", turnId: "", source: { channel: "mcp", assistantName: "Eager assistant" }, payload: { garmentId, disposition: "donated" } });
-    // The summary is written by the service from the exact request.
+    // The summary is written by the service from the exact request, with the garment's name from the ledger.
     expect(waiting[0].summary).toContain("Retire a garment from the wardrobe");
-    expect(waiting[0].summary).toContain(garmentId);
+    expect(waiting[0].summary).toContain(`"Synthetic test shirt A (not real stock)" (${garmentId})`);
     // The same key with a different request is refused and does not replace what the owner will see.
     const second = await syntheticGarment("Synthetic test shirt A2 (not real stock)");
     expect(toolResult(await eager.client.callTool(retire(second, key))).error!.code).toBe("idempotency_key_reuse");
@@ -210,12 +210,30 @@ describe("sensitive typed commands wait for the owner", () => {
     // Undoing the creation would remove the garment: it waits for the owner.
     expect(toolResult(await writer.client.callTool(undo(created.commandId))).error!.code).toBe("confirmation_required");
     expect((await owner.api.json("GET", "/v1/wardrobe")).items.some((i: any) => i.garment.garmentId === garmentId)).toBe(true);
-    expect((await pending()).some((p) => p.type === "command.undo" && p.payload.commandId === created.commandId)).toBe(true);
+    const undoProposal = (await pending()).find((p) => p.type === "command.undo" && p.payload.commandId === created.commandId);
+    expect(undoProposal.summary).toContain("The change to undo: garment.create, recorded ");
     // A wear report on a garment the connection names is recorded at once, and so is its undo.
     const wore = toolResult(await writer.client.callTool({ name: "garderobe_command", arguments: { type: "wear.record", payload: { wearingDate: new Date().toISOString().slice(0, 10), garmentIds: [garmentId] }, idempotencyKey: `wear-${crypto.randomUUID()}` } }));
     expect(wore.ok, JSON.stringify(wore.error)).toBe(true);
     const undone = toolResult(await writer.client.callTool(undo(wore.data.receipt.commandId)));
     expect(undone.ok, JSON.stringify(undone.error)).toBe(true);
+  });
+
+  it("says so when a request names a garment that is not in the wardrobe, and stops a connection from filling the owner's list", async () => {
+    // A synthetic owner, so the real owner's list is not filled by a test.
+    const other = await provisionOwner();
+    const noisy = await connectMcp(other, { write: true, clientName: "Noisy assistant (test)", redirectUri: "https://noisy.client.test/cb" });
+    const ask = (n: number) => noisy.client.callTool({ name: "garderobe_command", arguments: { type: "garment.retire", payload: { garmentId: `gmt_invented_${n}`, disposition: "discarded" }, idempotencyKey: `noisy-${n}-${crypto.randomUUID()}` } });
+    for (let n = 0; n < 40; n++) expect(toolResult(await ask(n)).error!.code, `request ${n}`).toBe("confirmation_required");
+    const over = toolResult(await ask(40));
+    expect(over.error).toMatchObject({ code: "rate_limited", details: { reason: "too_many_requests_waiting" } });
+    const listed = (await other.api.json("GET", "/v1/proposals")).proposals as any[];
+    expect(listed).toHaveLength(40);
+    expect(listed[0].summary).toMatch(/gmt_invented_\d+ is not a garment in this wardrobe/);
+    // Confirming such a request changes nothing: the command refuses it and the proposal stays open.
+    expect((await other.api.post(`/v1/proposals/${listed[0].proposalId}/decision`, { decision: "confirm" })).status).toBe(404);
+    expect((await other.api.json("GET", "/v1/proposals")).proposals).toHaveLength(40);
+    await noisy.close();
   });
 
   it("refuses an invalid sensitive request before anything is shown to the owner", async () => {
