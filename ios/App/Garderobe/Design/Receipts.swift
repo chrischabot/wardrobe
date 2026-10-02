@@ -120,7 +120,8 @@ struct StatusBannerView: View {
                     .frame(minHeight: Metrics.touch)
             }
             .buttonStyle(.plain)
-            .background(Color(.tertiarySystemFill))
+            // Opaque: content scrolling beneath the banner must never show through its text.
+            .background(Color(.systemGray5))
             .accessibilityIdentifier(app.environment.isDemo ? AXID.demoLabel : AXID.statusBanner)
             .accessibilityHint("Shows actions waiting to be sent")
             .sheet(isPresented: $showsPending) { PendingActionsView() }

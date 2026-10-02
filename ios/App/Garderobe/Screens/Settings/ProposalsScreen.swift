@@ -22,10 +22,12 @@ struct ProposalsScreen: View {
             ForEach(model.pending, id: \.proposalId) { proposal in
                 Section {
                     ProposalDetail(proposal: proposal)
-                    Button("Confirm") { Task { await model.confirm(proposal) } }
-                        .disabled(model.isWorking)
-                        .accessibilityHint("Makes this change now, as your own action.")
-                        .accessibilityIdentifier(AXID.proposalConfirm(proposal.proposalId))
+                    if model.canConfirm(proposal) {
+                        Button("Confirm") { Task { await model.confirm(proposal) } }
+                            .disabled(model.isWorking)
+                            .accessibilityHint("Makes this change now, as your own action.")
+                            .accessibilityIdentifier(AXID.proposalConfirm(proposal.proposalId))
+                    }
                     Button("Reject", role: .destructive) { Task { await model.reject(proposal) } }
                         .disabled(model.isWorking)
                         .accessibilityHint("Discards the request. Nothing is changed.")

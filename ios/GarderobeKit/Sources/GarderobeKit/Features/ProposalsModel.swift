@@ -22,9 +22,14 @@ public final class ProposalsModel {
     public private(set) var message: String?
     /// Receipts of proposals confirmed in this session, by proposal ID, for the receipt card.
     public private(set) var confirmedReceipts: [String: CommandReceipt] = [:]
+    /// Proposals the backend refused to confirm because what they would change has changed since
+    /// they were made (the answer was a conflict). They stay open on the backend until rejected;
+    /// the phone remembers the refusal so Confirm is not offered again for the same request.
+    public private(set) var staleIds: Set<String> { didSet { environment.restoration.save("proposals.stale", staleIds.sorted()) } }
 
     public init(environment: AppEnvironment) {
         self.environment = environment
+        staleIds = Set(environment.restoration.load("proposals.stale", as: [String].self) ?? [])
         let api = environment.api
         proposals = environment.resource("proposals") { try await api.proposals(ProposalsQuery(state: .all)) }
     }
@@ -32,8 +37,17 @@ public final class ProposalsModel {
     /// Shows the saved list at once, then checks it.
     public func open() async {
         proposals.loadCached()
-        await proposals.refresh()
+        if await proposals.refresh() { forgetSettledStale() }
     }
+
+    /// A refusal is remembered only while its proposal is still waiting.
+    private func forgetSettledStale() {
+        let waiting = Set((proposals.value?.proposals ?? []).filter { $0.state == .pending }.map(\.proposalId))
+        if !staleIds.isSubset(of: waiting) { staleIds = staleIds.intersection(waiting) }
+    }
+
+    /// True when the backend refused to confirm this request because it was made against an older version.
+    public func isStale(_ p: Proposal) -> Bool { p.state == .pending && staleIds.contains(p.proposalId) }
 
     /// Waiting for the owner, oldest first.
     public var pending: [Proposal] { (proposals.value?.proposals ?? []).filter { $0.state == .pending }.sorted { $0.proposedAt < $1.proposedAt } }
@@ -55,7 +69,9 @@ public final class ProposalsModel {
 
     public func stateLine(_ p: Proposal) -> String {
         switch p.state {
-        case .pending: return "Waiting for your decision. Nothing has been changed."
+        case .pending:
+            return isStale(p) ? "No longer applies: what it would change has changed since it was asked for. Nothing was changed. You can reject it."
+                              : "Waiting for your decision. Nothing has been changed."
         case .confirmed: return "Confirmed by you."
         case .rejected: return "Rejected by you. Nothing was changed."
         case .expired: return "Expired without a decision. Nothing was changed."
@@ -63,8 +79,9 @@ public final class ProposalsModel {
         }
     }
 
-    /// An expired proposal can only be rejected; the backend enforces it, this only hides the button.
-    public func canConfirm(_ p: Proposal) -> Bool { p.state == .pending }
+    /// An expired proposal can only be rejected, and so can one the backend refused as out of
+    /// date; the backend enforces both, this only hides the button.
+    public func canConfirm(_ p: Proposal) -> Bool { p.state == .pending && !isStale(p) }
     public func canReject(_ p: Proposal) -> Bool { p.state == .pending || p.state == .expired }
 
     /// The proposed command, field by field, exactly as the backend holds it. Nothing is
@@ -121,17 +138,33 @@ public final class ProposalsModel {
         do {
             let response = try await environment.api.decideProposal(id: p.proposalId, ProposalDecisionRequest(decision: decision))
             environment.center.noteRead(failure: nil)
+            staleIds.remove(p.proposalId)
             await proposals.refresh()
             return response
         } catch let failure as APIFailure {
             environment.center.noteRead(failure: failure)
             // A decision is never queued: the owner decides on what the backend holds now.
-            message = failure.isTransport ? "Offline. A decision needs a connection; nothing was sent." : failure.ownerMessage
-            if !failure.isTransport { await proposals.refresh() }
+            if decision == .confirm, ProposalsModel.isConflict(failure) {
+                // The request was made against an older version: nothing was applied and it never will be.
+                staleIds.insert(p.proposalId)
+                message = "That request no longer applies: what it would change has changed since it was asked for. Nothing was changed."
+            } else {
+                message = failure.isTransport ? "Offline. A decision needs a connection; nothing was sent." : failure.ownerMessage
+            }
+            if !failure.isTransport, await proposals.refresh() { forgetSettledStale() }
             return nil
         } catch {
             message = "The decision could not be sent."
             return nil
+        }
+    }
+
+    /// The backend's answer for a request that has gone stale: HTTP 409, or the contract's conflict code.
+    static func isConflict(_ failure: APIFailure) -> Bool {
+        switch failure {
+        case .api(let status, let error): return status == 409 || error.code == .conflict
+        case .status(let status): return status == 409
+        default: return false
         }
     }
 

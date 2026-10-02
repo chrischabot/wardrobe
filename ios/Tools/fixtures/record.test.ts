@@ -428,10 +428,10 @@ describe("iOS fixture cassettes", () => {
     await expect(rec.render()).toMatchFileSnapshot(`${OUT}/owner-media.json`);
   });
 
-  it("owner-proposals: a connected assistant's requests are listed for the owner; one is confirmed with its receipt, one is rejected", async () => {
+  it("owner-proposals: a connected assistant's requests are listed for the owner; one is confirmed with its receipt, one is rejected, and one that has gone stale is refused and then rejected", async () => {
     const { owner, rec } = await start("owner-proposals", [
-      `The two requests were relayed through a real MCP connection (garderobe_ask) with the ${FAKE_MODEL_LABEL} scripted to act on them; the proposals, the decision route and the receipt are the Worker's.`,
-      "The confirmed garment is a labelled FIXTURE entry in the test database, not one of the owner's garments.",
+      `Two requests were relayed through a real MCP connection (garderobe_ask) with the ${FAKE_MODEL_LABEL} scripted to act on them, and one was sent as a typed command (garderobe_command); the proposals, the decision route, the refusal and the receipt are the Worker's.`,
+      "The confirmed garment is a labelled FIXTURE entry in the test database, not one of the owner's garments; the two standing directions behind the stale request are labelled FIXTURE text in the test database, not the owner's words.",
     ]);
     const model = await enableFakeModel(owner);
     const mcp = await connectMcp(owner, { write: true, clientName: "Connected assistant (fixture)", onElicit: () => ({ action: "accept", content: { confirm: true } }) });
@@ -446,10 +446,23 @@ describe("iOS fixture cassettes", () => {
     await relay("I bought a navy merino cardigan, add it to my wardrobe", "add_garment", { name: "Navy merino cardigan (FIXTURE, relayed request)", category: "knitwear", quantity: 1, state: "owned" });
     await relay(`I threw away the ${socks.name}`, "retire_garment", { garmentId: socks.garmentId, disposition: "discarded" });
 
+    // A sensitive typed command from the connected assistant, made against a version that then changes: a
+    // standing direction sent against the style revision of that moment, after which the owner adds a
+    // (labelled FIXTURE) direction of his own. Confirming the request will be refused and nothing applied;
+    // it stays open until the owner rejects it. The profile text itself is not touched.
+    const styleBefore = await owner.api.json("GET", "/v1/style");
+    const typed = toolResult(await mcp.client.callTool({ name: "garderobe_command", arguments: { type: "style.add_direction", payload: { text: "FIXTURE (stale request): prefer brown belts", source: { kind: "owner_statement" } }, expectedVersions: { style: styleBefore.styleRevision }, idempotencyKey: `fixture-${crypto.randomUUID()}` } }));
+    expect(typed.error?.code, JSON.stringify(typed)).toBe("confirmation_required");
+    const own = await owner.api.command("style.add_direction", { text: "FIXTURE: the owner's own direction, added after the request", source: { kind: "owner_statement" } });
+    expect(own.status, await own.clone().text()).toBe(200);
+    expect((await owner.api.json("GET", "/v1/style")).styleRevision).toBeGreaterThan(styleBefore.styleRevision);
+
     const listed = await rec.get("/v1/proposals", { state: "all" });
-    expect(listed.pending).toBe(2);
+    expect(listed.pending).toBe(3);
     const add = listed.proposals.find((p: any) => p.type === "garment.create");
     const retire = listed.proposals.find((p: any) => p.type === "garment.retire");
+    const stale = listed.proposals.find((p: any) => p.type === "style.add_direction");
+    expect(stale.turnId).toBe(""); // a typed command has no conversation turn behind it
     const confirmed = await rec.change("confirm-add", "POST", `/v1/proposals/${add.proposalId}/decision`, { decision: "confirm" });
     expect(confirmed.receipt.outcome).toBe("committed");
     await rec.get("/v1/proposals", { state: "all" });
@@ -457,7 +470,15 @@ describe("iOS fixture cassettes", () => {
     expect(rejected.proposal.state).toBe("rejected");
     expect(rejected.receipt).toBeNull();
     const after = await rec.get("/v1/proposals", { state: "all" });
-    expect(after.pending).toBe(0);
+    expect(after.pending).toBe(1);
+
+    await rec.change("confirm-stale", "POST", `/v1/proposals/${stale.proposalId}/decision`, { decision: "confirm" });
+    expect((rec as any).steps.at(-1).response.status, JSON.stringify((rec as any).steps.at(-1).response).slice(0, 600)).toBe(409);
+    const stillOpen = await rec.get("/v1/proposals", { state: "all" });
+    expect(stillOpen.pending).toBe(1);
+    const dropped = await rec.change("reject-stale", "POST", `/v1/proposals/${stale.proposalId}/decision`, { decision: "reject" });
+    expect(dropped.proposal.state).toBe("rejected");
+    expect((await rec.get("/v1/proposals", { state: "all" })).pending).toBe(0);
     await mcp.close?.();
 
     await expect(rec.render()).toMatchFileSnapshot(`${OUT}/owner-proposals.json`);
