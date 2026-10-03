@@ -108,8 +108,15 @@ const STATED: Record<string, string[]> = {
   "command.undo": ["commandId"],
 };
 
-/** A machine code word (`mid_layer`, `owner_statement`): shown with spaces. Free text is never of this exact shape. */
+/** A machine code word (`mid_layer`, `owner_statement`): shown with spaces, but only in a field that holds codes. */
 const CODE_WORD = /^[a-z]+(?:_[a-z]+)+$/;
+/**
+ * Fields whose values are codes from a fixed vocabulary. Only these are reworded (underscores as spaces);
+ * a free-text field that happens to look like a code is shown exactly as it would be stored.
+ */
+const CODE_FIELDS = new Set(["kind", "status", "state", "speaker", "disposition", "acquisition", "careChannel", "allOfChannel", "category", "role", "roles", "to", "from", "action", "concerns", "triggerEvent", "sourceKind", "subject", "basis", "channel", "importAuthorizedBy", "condition", "location"]);
+/** Fields that hold a reference to a record or a message. Only these are looked up and named. */
+const REFERENCE_FIELD = /(?:Ids?|Refs?)$|^(?:ref|remove|add)$/;
 
 /** Records a payload can refer to by identifier, and how each is named to the owner. */
 const RECORDS: Record<string, { sql: string; say: (row: Record<string, unknown>) => string }> = {
@@ -120,11 +127,25 @@ const RECORDS: Record<string, { sql: string; say: (row: Record<string, unknown>)
   mem: { sql: "SELECT text FROM memory_conclusions WHERE user_id = ? AND conclusion_id = ?", say: (r) => `the remembered conclusion ${quoted(r["text"])}` },
   rem: { sql: "SELECT title FROM reminders WHERE user_id = ? AND reminder_id = ?", say: (r) => `the reminder ${quoted(r["title"])}` },
   rst: { sql: "SELECT kind, reason FROM restrictions WHERE user_id = ? AND restriction_id = ?", say: (r) => `the restriction (${words(r["kind"])}) whose reason is ${quoted(r["reason"])}` },
+  trp: { sql: "SELECT name, departs_on, returns_on FROM trips WHERE user_id = ? AND trip_id = ?", say: (r) => `the trip ${quoted(r["name"])} (${r["departs_on"]} to ${r["returns_on"]})` },
+  brd: { sql: "SELECT local_date FROM boards WHERE user_id = ? AND board_id = ?", say: (r) => `the outfit board for ${r["local_date"]}` },
+  opt: { sql: "SELECT o.position, o.revision, b.local_date FROM board_options o JOIN boards b ON b.user_id = o.user_id AND b.board_id = o.board_id WHERE o.user_id = ? AND o.option_id = ? ORDER BY o.revision DESC LIMIT 1", say: (r) => `outfit option ${Number(r["position"]) + 1} on the board for ${r["local_date"]} (revision ${r["revision"]})` },
+  lb: { sql: "SELECT channel, picked_up_at FROM laundry_batches WHERE user_id = ? AND batch_id = ?", say: (r) => `the ${r["channel"] === "handwash" ? "hand-wash" : "laundry service"} bag picked up on ${String(r["picked_up_at"]).slice(0, 10)}` },
+  cmd: { sql: "SELECT type, receipt_json FROM commands WHERE user_id = ? AND command_id = ?", say: (r) => `the earlier change whose receipt read ${quoted(receiptSummary(r["receipt_json"]))}` },
   job: { sql: "SELECT title FROM assistant_jobs WHERE user_id = ? AND job_id = ?", say: (r) => `the background work ${quoted(r["title"])}` },
   ret: { sql: "SELECT c.kind, g.name FROM return_cases c LEFT JOIN garments g ON g.user_id = c.user_id AND g.garment_id = c.garment_id WHERE c.user_id = ? AND c.case_id = ?", say: (r) => `the ${words(r["kind"])}${r["name"] ? ` of ${quoted(r["name"])}` : ""}` },
 };
 
-const when = (instant: unknown) => `${String(instant).slice(0, 10)} at ${String(instant).slice(11, 16)} UTC`;
+function receiptSummary(receiptJson: unknown): string {
+  try {
+    return String((JSON.parse(String(receiptJson)) as { summary?: string }).summary ?? "");
+  } catch {
+    return "";
+  }
+}
+
+/** When a message was sent, to the second: two messages of the same minute do not read alike. */
+const when = (instant: unknown) => `${String(instant).slice(0, 10)} at ${String(instant).slice(11, 19)} UTC`;
 
 /**
  * A value that refers to a record, in words: a message of the conversation by when it was sent, a record
@@ -136,8 +157,9 @@ async function referenceInWords(db: Db, userId: string, value: string): Promise<
     const turn = await first<{ created_at: string }>(db, "SELECT created_at FROM assistant_turns WHERE user_id = ? AND user_message_id = ?", userId, value.replace(/^message:/, ""));
     return turn ? `your message of ${when(turn.created_at)}` : null;
   }
-  const record = RECORDS[value.slice(0, 3)];
-  if (!record || value[3] !== "_") return null;
+  const cut = value.indexOf("_");
+  const record = cut > 0 ? RECORDS[value.slice(0, cut)] : undefined;
+  if (!record) return null;
   const row = await first<Record<string, unknown>>(db, record.sql, userId, value);
   return row ? record.say(row) : null;
 }
@@ -146,16 +168,21 @@ async function referenceInWords(db: Db, userId: string, value: string): Promise<
 const IDENTIFIER = /^[a-z]{2,5}_[A-Za-z0-9_]{6,}$/;
 
 /**
- * One stored value as the owner reads it: a reference by what it refers to, a code word in words,
- * anything else quoted in full. An identifier in an identifier field that names no record on file (the
- * identifier a new record will get) is said to be that, rather than printed.
+ * One stored value as the owner reads it. What is done depends on the FIELD, never on what the value
+ * happens to look like: a reference field is named by the record it refers to; a code field is shown in
+ * words; every other value is quoted exactly as it would be stored. A reference that names no record on
+ * file is never hidden: it is shown in full and said to match nothing (the one exception, an identifier
+ * trusted code minted in this turn for the record being created, is handled by the caller).
  */
 async function shown(db: Db, userId: string, value: string | number | boolean, field = ""): Promise<string> {
   if (typeof value !== "string") return String(value);
-  const reference = await referenceInWords(db, userId, value);
-  if (reference) return reference;
-  if (/Ids?$/.test(field) && IDENTIFIER.test(value)) return "a record that is not on file yet";
-  return quoted(CODE_WORD.test(value) ? words(value) : value);
+  if (REFERENCE_FIELD.test(field)) {
+    const reference = await referenceInWords(db, userId, value);
+    if (reference) return reference;
+    if (IDENTIFIER.test(value)) return `an identifier that matches no record on file (${quoted(value)})`;
+    return quoted(value);
+  }
+  return quoted(CODE_FIELDS.has(field) && CODE_WORD.test(value) ? words(value) : value);
 }
 
 /** What kind of source trusted code recorded for the change, in words. */
@@ -166,7 +193,7 @@ const SOURCE_KINDS: Record<string, string> = {
 };
 
 /** The fields of the payload the sentence did not state, each by name and in full, in words. */
-async function unstated(db: Db, userId: string, type: string, payload: Record<string, unknown>): Promise<string> {
+async function unstated(db: Db, userId: string, type: string, payload: Record<string, unknown>, minted: ReadonlySet<string>): Promise<string> {
   const stated = new Set(STATED[type] ?? []);
   let rest = leaves(payload).filter((leaf) => !stated.has(leaf.path.map((s) => (/^\d+$/.test(s) ? "*" : s)).join(".")));
   // The provenance trusted code attaches to a change reads as one phrase rather than two fields.
@@ -180,7 +207,13 @@ async function unstated(db: Db, userId: string, type: string, payload: Record<st
   // A field holding a record's identifier is named by the record ("garment id" reads "garment").
   const label = (path: string[]) => path.map((s) => (/^\d+$/.test(s) ? `${Number(s) + 1}` : words(s.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase()))).join(" ").replace(/ ids?\b/g, "").replace(/ refs?\b/g, " reference");
   const parts: string[] = [];
-  for (const leaf of rest) parts.push(`${label(leaf.path)} ${await shown(db, userId, leaf.value, leaf.path.filter((s) => !/^\d+$/.test(s)).at(-1) ?? "")}`);
+  for (const leaf of rest) {
+    const field = leaf.path.filter((s) => !/^\d+$/.test(s)).at(-1) ?? "";
+    // The identifier trusted code made up in this turn for the record this very request creates names
+    // nothing the owner knows yet, and no model chose it: it is said to be new rather than printed.
+    if (typeof leaf.value === "string" && minted.has(leaf.value) && REFERENCE_FIELD.test(field)) parts.push(`a new ${label(leaf.path)} record is created`);
+    else parts.push(`${label(leaf.path)} ${await shown(db, userId, leaf.value, field)}`);
+  }
   return ` ${STATED[type] ? "Also written with it" : "Written exactly"}: ${parts.join("; ")}.${provenance}`;
 }
 
@@ -195,8 +228,8 @@ const STOCK_MOVING_EVENTS = new Set(["sent_to_tailor", "returned_from_tailor", "
  * too long to read, or holds a value too long to show, this throws `invalid_command` and the caller
  * proposes nothing.
  */
-export async function describeChange(db: Db, userId: string, type: string, p: P): Promise<string> {
-  const summary = `${await sentenceFor(db, userId, type, p)}${await unstated(db, userId, type, p)}`;
+export async function describeChange(db: Db, userId: string, type: string, p: P, opts: { minted?: readonly string[] } = {}): Promise<string> {
+  const summary = `${await sentenceFor(db, userId, type, p)}${await unstated(db, userId, type, p, new Set(opts.minted ?? []))}`;
   if (summary.length > MAX_SUMMARY) throw tooLong("This request");
   return summary;
 }
@@ -216,9 +249,10 @@ async function sentenceFor(db: Db, userId: string, type: string, p: P): Promise<
       return `Keep a comfort note (${words(p.kind)}) about ${await g(p.garmentIds ?? [])}: ${quoted(p.text)}.`;
     case "garment.create": {
       const care: Record<string, string> = { service: "goes to the laundry service", handwash: "is washed by hand", none: "is not washed" };
-      const roles = ((p.roles ?? []) as unknown[]).map((r) => words(r));
+      // A role is a code from a fixed vocabulary; anything of another shape is shown as the value it is.
+      const roles = ((p.roles ?? []) as unknown[]).map((r) => (/^[a-z]+(?:_[a-z]+)*$/.test(String(r)) ? words(r) : quoted(r)));
       const facts = fields(p, ["colour", "fabric", "maker", "size"]);
-      return `Add a piece to your wardrobe as ${p.acquisition === "incoming" ? "ordered, not yet arrived" : "owned"}: ${quoted(p.name)} (${words(p.category)}${p.quantity && p.quantity !== 1 ? `, quantity ${p.quantity}` : ""})${facts ? `, ${facts}` : ""}. It is worn as ${list(roles)} and ${care[String(p.careChannel)] ?? `has the care ${quoted(words(p.careChannel))}`}.`;
+      return `Add a piece to your wardrobe as ${p.acquisition === "incoming" ? "ordered, not yet arrived" : "owned"}: ${quoted(p.name)} (${words(p.category)}${p.quantity && p.quantity !== 1 ? `, quantity ${p.quantity}` : ""})${facts ? `, ${facts}` : ""}. It ${roles.length > 0 ? `is worn as ${list(roles)} and ` : ""}${care[String(p.careChannel)] ?? `has the care ${quoted(words(p.careChannel))}`}.`;
     }
     case "assistant.report_arrival":
     case "garment.receive":
@@ -300,7 +334,8 @@ async function sentenceFor(db: Db, userId: string, type: string, p: P): Promise<
       return `Remove the reminder ${r ? quoted(r.title) : quoted(p.reminderId)}.`;
     }
     case "settings.update":
-      return `Change settings: ${quoted(JSON.stringify(p.patch ?? {}))}.`;
+      // Each setting is listed after this sentence by name and value, never as raw JSON.
+      return "Change your settings.";
     case "memory.record_conclusion":
       return `Remember as ${p.status === "active" ? "settled" : "a candidate"} (${words(p.kind)}), attributed to ${p.speaker === "owner" ? "you" : "the assistant"}: ${quoted(p.text)}.`;
     case "memory.set_status": {

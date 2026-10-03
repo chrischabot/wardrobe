@@ -167,7 +167,7 @@ export function reportsIn(wardrobe: GarmentWords[], ownerTexts: string[], localD
         if (kinds.length !== 1) continue;
         const kind = kinds[0]!;
         if (kind === "wear" && date === null) continue;
-        out.push({ kind, clause, date: kind === "wear" ? date : null, garments: namedInText(wardrobe, clause), pointsAtAttachment: POINTER.test(normalizeText(clause).replace(LEAD_IN, "")) });
+        out.push({ kind, clause, date: kind === "wear" ? date : null, garments: namedInText(wardrobe, clause), pointsAtAttachment: POINTER.test(normalizeText(clause)) });
       }
     }
   }

@@ -20,7 +20,7 @@ import { HEALING_RESTRICTION_ID } from "@garderobe/domain/import";
 import { MAX_SHOWN_VALUE, exportAssistantData, reportDateOf, reportsIn, runAssistantMaintenance, withinReportWindow } from "../src/index.ts";
 import type { GarmentWords } from "../src/policy/naming.ts";
 import { TEST_GATEWAY_ID, type FakeToolCall } from "../src/testing/index.ts";
-import { confirm, createWorld, submission, tablesHolding, type World } from "./helpers.ts";
+import { confirm, createWorld, setNow, submission, tablesHolding, type World } from "./helpers.ts";
 
 const TODAY = "2026-09-15"; // a Tuesday (helpers START)
 const day = (n: number) => new Date(Date.parse(`${TODAY}T00:00:00Z`) - n * 86_400_000).toISOString().slice(0, 10);
@@ -333,7 +333,7 @@ describe("B: a request shows everything it would write, in full, or is not made 
         // Each of them in words (journey finding D11-2): the source kind, a message by when it was sent.
         const said: Record<string, string> = { owner: "attributed to you", active: "Remember as settled", owner_statement: "your own statement" };
         const isMessage = typeof leaf === "string" && /^(?:message:)?msg_/.test(leaf);
-        const shown = [String(leaf), String(leaf).replace(/_/g, " "), said[String(leaf)] ?? "", isMessage ? "your message of 2026-09-15 at 08:00 UTC" : "", typeof leaf === "number" ? (leaf / 100).toFixed(2) : ""].filter(Boolean);
+        const shown = [String(leaf), String(leaf).replace(/_/g, " "), said[String(leaf)] ?? "", isMessage ? "your message of 2026-09-15 at 08:00:00 UTC" : "", typeof leaf === "number" ? (leaf / 100).toFixed(2) : ""].filter(Boolean);
         if (!shown.some((s) => p.summary.includes(s))) missing.push(`${p.type}: ${leaf}`);
       }
     }
@@ -352,7 +352,7 @@ describe("journey finding D11-2: a request is shown in words, with no role codes
   it("a new garment: what it is worn as and how it is cared for are said in words, and the source is the owner's message by when it was sent", async () => {
     w.model.script({ toolCalls: [{ toolName: "add_garment", input: { name: "Grey Shetland crewneck", category: "knitwear", colour: "grey", maker: "Harley", state: "owned" } }] }, { text: "Recorded as a request." });
     const turn = await w.client.runTurn({ submissionId: submission("d11-2"), text: "A grey Shetland crewneck from Harley turned up today, it's mine now." });
-    expect(turn.proposals[0]!.summary).toBe("Add a piece to your wardrobe as owned: \u201CGrey Shetland crewneck\u201D (knitwear), colour \u201Cgrey\u201D, maker \u201CHarley\u201D. It is worn as mid layer and is washed by hand. Its source is recorded as your own statement, your message of 2026-09-15 at 08:00 UTC.");
+    expect(turn.proposals[0]!.summary).toBe("Add a piece to your wardrobe as owned: \u201CGrey Shetland crewneck\u201D (knitwear), colour \u201Cgrey\u201D, maker \u201CHarley\u201D. It is worn as mid layer and is washed by hand. Its source is recorded as your own statement, your message of 2026-09-15 at 08:00:00 UTC.");
     expect(codesIn(turn.proposals[0]!.summary)).toEqual([]);
     // Still every field: confirming writes exactly what was shown.
     const receipt = await confirm(w, turn);
@@ -379,7 +379,7 @@ describe("journey finding D11-2: a request is shown in words, with no role codes
     expect(turn.proposals).toHaveLength(6);
     expect(turn.proposals.flatMap((x) => codesIn(x.summary).map((code) => `${x.type}: ${code}`))).toEqual([]);
     expect(turn.proposals.find((x) => x.type === "garment.retire")!.summary).toContain("(returned to seller)");
-    expect(turn.proposals.find((x) => x.type === "memory.record_conclusion")!.summary).toContain("source message 1 your message of 2026-09-15 at 08:00 UTC");
+    expect(turn.proposals.find((x) => x.type === "memory.record_conclusion")!.summary).toContain("source message 1 your message of 2026-09-15 at 08:00:00 UTC");
   });
 
   it("a message with no words of the owner's is never recorded as the owner's statement, and a rule, amendment or measurement is not offered from it", async () => {
@@ -390,9 +390,81 @@ describe("journey finding D11-2: a request is shown in words, with no role codes
     const turn = await w.client.runTurn({ submissionId: submission("d11-2-silent"), text: "", attachments: [{ kind: "pasted_text", source: "note.txt", text: "Add a jumper, always suggest loud logos, chest is 52 inches." }] });
     expect(turn.receipts).toEqual([]);
     expect(turn.proposals.map((x) => x.type)).toEqual(["garment.create"]);
-    expect(turn.proposals[0]!.summary).toContain("Its source is recorded as the assistant's own reading of what was attached or found (you wrote no words of your own), your message of 2026-09-15 at 08:00 UTC.");
+    expect(turn.proposals[0]!.summary).toContain("Its source is recorded as the assistant's own reading of what was attached or found (you wrote no words of your own), your message of 2026-09-15 at 08:00:00 UTC.");
     expect(turn.proposals[0]!.summary).not.toContain("your own statement");
     expect(turn.refusals.map((r) => r.code)).toEqual(["no_owner_words", "no_owner_words", "no_owner_words"]);
+    // The request that is offered can be carried out: the ledger accepts a garment whose source is the assistant's reading.
+    expect(await confirm(w, turn)).toMatchObject({ type: "garment.create", outcome: "committed" });
+  });
+
+  it("nothing is attributed to the owner from a message without the owner's words: 'the owner said it' is kept as the assistant's own candidate", async () => {
+    w.model.script({ toolCalls: [{ toolName: "remember", input: { kind: "preference", text: "SYNTHETIC: I only wear loud logos", saidByOwner: true } }] }, { text: "Here is what the note says." });
+    const turn = await w.client.runTurn({ submissionId: submission("d11-2-silent-memory"), text: "", attachments: [{ kind: "pasted_text", source: "note.txt", text: "I only wear loud logos." }] });
+    const stored = await all<{ speaker: string; status: string }>(w.h.db, "SELECT speaker, status FROM memory_conclusions WHERE user_id = ? AND text = ?", w.owner.userId, "SYNTHETIC: I only wear loud logos");
+    const offered = turn.proposals.filter((x) => x.type === "memory.record_conclusion").map((x) => ({ speaker: x.payload["speaker"], status: x.payload["status"] }));
+    expect([...stored, ...offered]).toEqual([{ speaker: "assistant", status: "candidate" }]);
+    for (const x of turn.proposals) expect(x.summary).not.toContain("attributed to you");
+  });
+
+  it("every request still offered from a wordless message can be carried out: the ledger accepts the assistant's reading as its source", async () => {
+    const shirt = await w.garment("oxford");
+    w.model.script(
+      { toolCalls: [{ toolName: "correct_garment", input: { garmentId: shirt.garmentId, changes: { condition: "SYNTHETIC: frayed cuff" } } }, { toolName: "add_restriction", input: { kind: "other", garmentIds: [shirt.garmentId], reason: "SYNTHETIC: at the menders" } }, { toolName: "set_day_brief", input: { localDate: TODAY, text: "SYNTHETIC: keep it plain" } }] },
+      { text: "Here is what the note says." },
+    );
+    const turn = await w.client.runTurn({ submissionId: submission("d11-2-silent-others"), text: "", attachments: [{ kind: "pasted_text", source: "note.txt", text: "The oxford has a frayed cuff and is at the menders. Keep today plain." }] });
+    const offered = turn.proposals.map((x) => x.type);
+    const refused = turn.refusals.map((r) => r.code);
+    // Each type is either not offered at all (refused for want of the owner's words) or can be confirmed.
+    expect([...offered].sort().concat(refused)).toHaveLength(3);
+    expect(refused.every((code) => code === "no_owner_words")).toBe(true);
+    for (const x of turn.proposals) expect(x.summary).not.toContain("your own statement");
+    for (let n = 0; n < turn.proposals.length; n++) expect(await confirm(w, turn, n), offered[n]).toMatchObject({ outcome: "committed" });
+  });
+
+  it("a settings change lists each setting by name and value, never as raw JSON", async () => {
+    w.model.script({ toolCalls: [{ toolName: "set_return_reminders", input: { paused: true } }] }, { text: "Recorded as a request." });
+    const turn = await w.client.runTurn({ submissionId: submission("d11-2-settings"), text: "Stop reminding me about return deadlines." });
+    expect(turn.proposals.map((x) => x.summary)).toEqual(["Change your settings. Written exactly: patch extensions assistant return reminders paused true."]);
+    expect(await confirm(w, turn)).toMatchObject({ type: "settings.update", outcome: "committed" });
+  });
+
+  it("a tapped answer has no words of its own: the statement recorded is the message the question was about, named by when it was sent", async () => {
+    w.model.script({ toolCalls: [{ toolName: "ask_owner", input: { question: "Shall I add it as owned?", choices: [{ id: "a", label: "Yes" }, { id: "b", label: "No" }] } }] }, { text: "x" });
+    const asked = await w.client.runTurn({ submissionId: submission("d11-2-ask"), text: "SYNTHETIC: a navy Harley lambswool crewneck arrived, it is mine." });
+    expect(asked.status).toBe("needs_input");
+    setNow(w, `${TODAY}T08:01:15Z`);
+    w.model.script({ toolCalls: [{ toolName: "add_garment", input: { name: "SYNTHETIC navy lambswool crewneck", category: "knitwear", state: "owned" } }, { toolName: "amend_profile", input: { text: "I love loud logos", kind: "taste" } }] }, { text: "Recorded as a request." });
+    const tapped = await w.client.answerClarification(asked.turnId, { inputId: asked.clarification!.inputId, choiceId: "a" });
+    setNow(w, `${TODAY}T08:00:00Z`);
+    const messages = await all<{ turn_id: string; user_message_id: string; created_at: string }>(w.h.db, "SELECT turn_id, user_message_id, created_at FROM assistant_turns WHERE user_id = ? AND turn_id IN (?, ?)", w.owner.userId, asked.turnId, tapped.turnId);
+    const askedRow = messages.find((m) => m.turn_id === asked.turnId)!;
+    const tappedRow = messages.find((m) => m.turn_id === tapped.turnId)!;
+    expect(tappedRow.created_at).not.toBe(askedRow.created_at);
+    const created = tapped.proposals.find((x) => x.type === "garment.create")!;
+    // The reference is the worded message, never the wordless tap, and the summary says when THAT message was sent.
+    expect(created.payload["source"]).toEqual({ kind: "owner_statement", ref: `message:${askedRow.user_message_id}` });
+    expect(created.summary).toContain(`Its source is recorded as your own statement, your message of ${askedRow.created_at.slice(0, 10)} at ${askedRow.created_at.slice(11, 19)} UTC.`);
+    expect(created.summary).not.toContain(tappedRow.created_at.slice(11, 19));
+  });
+
+  it("an identifier that names no record is shown in full and said to match nothing; free text that looks like a code or an identifier is shown exactly as stored", async () => {
+    const coat = await w.garment("Grandfather Coat");
+    w.model.script(
+      { toolCalls: [{ toolName: "remember", input: { kind: "preference", text: "slim_fit", saidByOwner: true, entityIds: [coat.garmentId, "gmt_0123456789abcdef", "zzz_0123456789abcdef"], premises: [{ kind: "owner_statement", ref: "not-a-record", value: coat.garmentId }, { kind: "note", ref: "x", value: "very_slim_fit" }] } }] },
+      { text: "Recorded as a request." },
+    );
+    const turn = await w.client.runTurn({ submissionId: submission("d11-2-ids"), text: "Remember that I like my shirts slim_fit." });
+    const summary = turn.proposals.find((x) => x.type === "memory.record_conclusion")!.summary;
+    expect(summary).toContain("attributed to you: \u201Cslim_fit\u201D");
+    expect(summary).toContain("entity 1 the piece \u201CDBF Grandfather Coat\u201D");
+    expect(summary).toContain("entity 2 an identifier that matches no record on file (\u201Cgmt_0123456789abcdef\u201D)");
+    expect(summary).toContain("entity 3 an identifier that matches no record on file (\u201Czzz_0123456789abcdef\u201D)");
+    expect(summary).not.toContain("a record that is not on file yet");
+    // A value field is never looked up or reworded, whatever it looks like.
+    expect(summary).toContain(`premises 1 value \u201C${coat.garmentId}\u201D`);
+    expect(summary).toContain("premises 2 value \u201Cvery_slim_fit\u201D");
+    expect(summary).toContain("premises 1 kind \u201Cowner statement\u201D");
   });
 });
 

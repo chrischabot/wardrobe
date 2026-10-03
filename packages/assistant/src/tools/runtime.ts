@@ -60,8 +60,16 @@ export interface TurnRuntime {
   readOnly: boolean;
   now(): number;
   localDate: string;
-  /** Owner text of this turn first, then the most recent earlier owner messages. */
+  /**
+   * The owner's words that can stand behind a change in this turn: this turn's own text and, ONLY when
+   * this turn answers a question the assistant asked, the text of the message that question was about.
+   * No other earlier message is ever in this list. Empty texts are left out.
+   */
   ownerTexts: string[];
+  /** The owner's own text of this turn's message alone ("" for a photograph, an attachment or a tapped choice). */
+  currentOwnerText: string;
+  /** When this turn answers the assistant's question: the ID of the owner's message that question was about. */
+  askedMessageId?: string;
   attachedRefs: string[];
   /** True when the owner attached a photograph to this turn's message. */
   hasImages?: boolean;
@@ -104,6 +112,11 @@ export interface CommitRequest {
   type: string;
   payload: Record<string, unknown>;
   targets: string[];
+  /**
+   * Identifiers TRUSTED CODE made up in this turn for the record this command creates (never a value the
+   * model supplied). The summary says such a record is new instead of printing the identifier.
+   */
+  minted?: string[];
   /** Durable business key for effects that are identified by a source occurrence rather than by the turn. */
   businessKey?: string;
   occurredAt?: string;
@@ -186,8 +199,9 @@ async function propose(rt: TurnRuntime, req: CommitRequest): Promise<CommitResul
   // What the ledger accepts only on the owner's own statement is not offered from a message in which the
   // owner said nothing: the confirmation could never be carried out, and a photograph or an attachment is
   // not a statement.
+  // Decided from the turn itself, not from a field a tool may or may not have put in the payload.
   const sourceKind = (req.payload["source"] as { kind?: unknown } | undefined)?.kind;
-  if (NEEDS_OWNER_WORDS.has(req.type) && (sourceKind === "photograph" || sourceKind === "model_inference")) {
+  if (NEEDS_OWNER_WORDS.has(req.type) && (!ownerSpoke(rt) || sourceKind === "photograph" || sourceKind === "model_inference")) {
     const refusal = { tool: req.tool, code: "no_owner_words", message: "the owner wrote nothing in their own words in this message; a rule, a profile amendment or a measurement is recorded only from what the owner says. Tell the owner what you found and let them say it" };
     await rt.onRefusal(refusal);
     return { status: "refused", code: refusal.code, message: `Nothing was changed. ${refusal.message}` };
@@ -206,7 +220,7 @@ async function propose(rt: TurnRuntime, req: CommitRequest): Promise<CommitResul
   // not proposed: the owner never confirms text they were not shown (third review, finding B).
   let summary: string;
   try {
-    summary = await describeChange(rt.db, rt.principal.userId, req.type, req.payload);
+    summary = await describeChange(rt.db, rt.principal.userId, req.type, req.payload, { minted: req.minted ?? [] });
   } catch (e) {
     if (!isCommandError(e)) throw e;
     const refusal = { tool: req.tool, code: "too_long_to_confirm", message: (e as CommandError).message };
@@ -286,9 +300,16 @@ export function forModel(result: CommitResult): Record<string, unknown> {
   return result;
 }
 
-/** Whether the owner wrote anything in their own words in this turn (attachments, photographs and relayed passages are not their words). */
+const hasWords = (text: string) => ownerAuthoredText(text).trim().length > 0;
+
+/**
+ * Whether words of the owner's own stand behind this turn: written in this turn's message or, when this
+ * turn answers the assistant's question, in the message that question was about (attachments,
+ * photographs, relayed passages and tapped choice labels are not their words). An earlier message is
+ * never counted otherwise: `ownerTexts` holds nothing else.
+ */
 export function ownerSpoke(rt: Pick<TurnRuntime, "ownerTexts">): boolean {
-  return rt.ownerTexts.some((text) => ownerAuthoredText(text).trim().length > 0);
+  return rt.ownerTexts.some(hasWords);
 }
 
 /**
@@ -299,7 +320,10 @@ export function ownerSpoke(rt: Pick<TurnRuntime, "ownerTexts">): boolean {
  */
 export function ownerSource(rt: TurnRuntime): { kind: "owner_statement" | "photograph" | "model_inference"; ref: string } {
   const ref = `message:${rt.userMessageId}`;
-  if (ownerSpoke(rt)) return { kind: "owner_statement", ref };
+  if (hasWords(rt.currentOwnerText)) return { kind: "owner_statement", ref };
+  // A tapped answer has no words of its own: the statement is the message the question was about, and
+  // the reference names THAT message, never the wordless one.
+  if (rt.askedMessageId && ownerSpoke(rt)) return { kind: "owner_statement", ref: `message:${rt.askedMessageId}` };
   return { kind: rt.hasImages ? "photograph" : "model_inference", ref };
 }
 

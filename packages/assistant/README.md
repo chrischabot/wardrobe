@@ -83,19 +83,27 @@ Control, zero-width, bidirectional and private-use characters are removed from s
 quotation-mark look-alike becomes an apostrophe, so a value cannot appear to end early. The Worker binds
 the stored summary into the proposal identifier.
 
-The summary is in words, not codes (journey finding D11-2). A field that refers to a record names it:
-a piece, shopping candidate, order, project, reminder, restriction, remembered conclusion or return by
-its name, and a message of the conversation by when it was sent ("your message of 2026-09-15 at 08:00
-UTC"). A code word (`mid_layer`) is shown with spaces; a new garment says what it is worn as and how it
-is cared for. An identifier in an identifier field that names no record on file, which is the identifier
-a new record will get, reads "a record that is not on file yet"; such a value has no spaces and cannot
-carry prose. Any other value that names no record is shown as it is, in full.
+The summary is in words, not codes (journey finding D11-2). What is done with a value depends on the
+field it is in, never on what the value looks like. A field that refers to a record (`…Id`, `…Ids`,
+`…Ref`) names it: a piece, shopping candidate, order, project, reminder, restriction, remembered
+conclusion, return, trip, outfit board, board option, laundry bag or earlier change by its name or
+date, and a message of the conversation by when it was sent, to the second ("your message of 2026-09-15
+at 08:00:00 UTC"). A field that holds a code from a fixed vocabulary (`kind`, `status`, `roles` and the
+like) is shown with spaces; a new garment says what it is worn as and how it is cared for. Every other
+value is quoted exactly as it would be stored, even when it looks like a code or an identifier. A
+reference that names no record on file is never hidden: it is shown in full and said to match no record.
+The one identifier that is not printed is one trusted code made up in that turn for the record the
+request itself creates (a tool passes it as `minted`; today only the mailbox-search job), which reads
+"a new job record is created"; a value the model supplied is never treated that way.
 
 The source of a change is recorded as what it was (`ownerSource` in `src/tools/runtime.ts`): "your own
-statement" only when the owner wrote words of their own in that message. A message that was only a
-photograph or an attachment is recorded and shown as the assistant's reading of it, and a rule, a
-profile amendment or a measurement is not offered from such a message at all (`no_owner_words`),
-because the ledger records those only from the owner's statement.
+statement" only when the owner wrote words of their own in that message. A tapped answer to the
+assistant's question has no words of its own, so the statement recorded is the message the question was
+about, and the reference names that message. A message that was only a photograph or an attachment is
+recorded and shown as the assistant's reading of it; a rule, a profile amendment or a measurement is not
+offered from such a message at all (`no_owner_words`, decided from the turn, not from the payload),
+because the ledger records those only from the owner's statement, and a conclusion the model says "the
+owner said" is kept only as the assistant's own candidate.
 
 A proposal is confirmed against the record it described (`expectedVersionsFor` in
 `src/policy/describe.ts`). Every proposal that corrects, renames, moves, receives or retires a piece,

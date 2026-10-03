@@ -399,6 +399,13 @@ export abstract class GarderobeAssistantBase extends Think<any> {
     return out.filter((t) => t && t !== FORGOTTEN_TEXT);
   }
 
+  /** When this turn answers the assistant's question: the owner's message that question was about. */
+  private async askedMessageId(current: UIMessage): Promise<string | undefined> {
+    const answers = (current.metadata as { garderobe?: { answersTurnId?: string } } | undefined)?.garderobe?.answersTurnId;
+    const asked = answers ? await findTurn(this.db, this.userId, answers) : null;
+    return asked?.user_message_id ?? undefined;
+  }
+
   override async beforeTurn(ctx: TurnContext): Promise<TurnConfig | void> {
     if (!this.taskTurnId) await this.reconcileErasures();
     const bound = await this.boundTurn();
@@ -421,6 +428,8 @@ export abstract class GarderobeAssistantBase extends Think<any> {
     const readOnly = !principal.scopes.includes("write") && !principal.scopes.includes("admin");
     const userId = this.userId;
     const db = this.db;
+    const ownText = ownerTextOf(message);
+    const askedMessageId = await this.askedMessageId(message);
     const rt: TurnRuntime = {
       db,
       service: this.commands(),
@@ -432,6 +441,8 @@ export abstract class GarderobeAssistantBase extends Think<any> {
       now: () => this.now(),
       localDate: context.localDate,
       ownerTexts: await this.ownerTexts(message),
+      currentOwnerText: ownText === FORGOTTEN_TEXT ? "" : ownText,
+      ...(askedMessageId ? { askedMessageId } : {}),
       attachedRefs,
       hasImages: (meta.images ?? []).length > 0,
       restrictedGarmentIds: context.restrictedGarmentIds,

@@ -276,7 +276,7 @@ describe("purchase investigation as a durable job (REAL Gmail adapter over the F
     // Reading the owner's mailbox starts only on the owner's confirmation.
     const asked = await runAndConfirm(w, { submissionId: submission(), text: "what have I bought since August?" });
     expect(asked.proposals.map((x) => x.type)).toEqual(["job.create"]);
-    expect(asked.proposals[0]!.summary).toBe("Search your mailbox for purchases from 2026-08-01 to 2026-09-01; found orders are kept as a draft and nothing is logged. Also written with it: job a record that is not on file yet.");
+    expect(asked.proposals[0]!.summary).toBe("Search your mailbox for purchases from 2026-08-01 to 2026-09-01; found orders are kept as a draft and nothing is logged. Also written with it: a new job record is created.");
     expect(asked.receipts.map((r) => r.type)).toEqual(["job.create"]);
     const jobId = (await listJobs(w.h.db, w.owner.principal())).find((j) => j.kind === "email_investigation")!.jobId;
 
