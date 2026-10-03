@@ -22,6 +22,8 @@ export interface CanonicalMessage {
   role: "user" | "assistant" | "system";
   /** Owner-authored or assistant text only (attachments and tool payloads are not indexed as speech). */
   text: string;
+  /** Everything else the message carries: attachments of an owner message, tool calls and results of an assistant message. Never recalled as speech; kept as terms so that forgetting can find reuse. */
+  dataText?: string;
   authoredAt: string;
   channel: string | null;
   turnId: string | null;
@@ -50,6 +52,11 @@ const STOP = new Set("the a an and or but so of to in on at for with from by is 
 
 function tokens(text: string): string[] {
   return normalizePhrase(text).split(" ").filter((w) => w.length > 1 && !STOP.has(w));
+}
+/** The index terms of a text (words and their stems), as stored in `conversation_index.terms`. */
+export function termsOfText(text: string): string[] {
+  const words = tokens(text);
+  return [...new Set([...words, ...words.map(stem)])];
 }
 function stem(word: string): string {
   return word.length > 4 ? word.replace(/(ies|es|s|ed|ing)$/, "") : word;
@@ -124,11 +131,12 @@ export async function indexMessages(db: Db, userId: string, conversationId: stri
   let skipped = 0;
   const ordered = [...messages].sort((a, b) => a.position - b.position);
   for (const m of ordered) {
-    if (m.role === "system" || !m.text.trim() || forgotten.has(m.messageId)) {
+    if (m.role === "system" || (!m.text.trim() && !m.dataText) || forgotten.has(m.messageId)) {
       skipped++;
       continue;
     }
-    const hash = await sha256Hex(`${m.role}\u001f${m.text}`);
+    const dataTerms = m.dataText ? termsOfText(m.dataText.slice(0, 60_000)).join(" ") : "";
+    const hash = await sha256Hex(`${m.role}\u001f${m.text}\u001f${dataTerms}`);
     const existing = await first<{ source_hash: string }>(db, "SELECT source_hash FROM conversation_index WHERE user_id = ? AND message_id = ?", userId, m.messageId);
     if (existing?.source_hash === hash) {
       skipped++;
@@ -142,10 +150,10 @@ export async function indexMessages(db: Db, userId: string, conversationId: stri
     const batch: Stmt[] = [
       stmt("DELETE FROM conversation_judgements WHERE user_id = ? AND message_id = ?", userId, m.messageId),
       stmt(
-        `INSERT INTO conversation_index (user_id, message_id, conversation_id, position, channel, turn_id, speaker, authored_at, authored_date, entity_ids_json, terms, excerpt, source_hash, indexed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (user_id, message_id) DO UPDATE SET position = excluded.position, entity_ids_json = excluded.entity_ids_json, terms = excluded.terms, excerpt = excluded.excerpt, source_hash = excluded.source_hash, indexed_at = excluded.indexed_at`,
-        userId, m.messageId, conversationId, m.position, m.channel, m.turnId, speaker, m.authoredAt, authoredDate, JSON.stringify(entityIds), terms, m.text.slice(0, 1200), hash, now,
+        `INSERT INTO conversation_index (user_id, message_id, conversation_id, position, channel, turn_id, speaker, authored_at, authored_date, entity_ids_json, terms, data_terms, excerpt, source_hash, indexed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (user_id, message_id) DO UPDATE SET position = excluded.position, entity_ids_json = excluded.entity_ids_json, terms = excluded.terms, data_terms = excluded.data_terms, excerpt = excluded.excerpt, source_hash = excluded.source_hash, indexed_at = excluded.indexed_at`,
+        userId, m.messageId, conversationId, m.position, m.channel, m.turnId, speaker, m.authoredAt, authoredDate, JSON.stringify(entityIds), terms, dataTerms, m.text.slice(0, 1200), hash, now,
       ),
     ];
     let n = 0;

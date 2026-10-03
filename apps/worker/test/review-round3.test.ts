@@ -300,11 +300,7 @@ describe("a garment attached to a message (finding A7)", () => {
     expect(await count(o, "SELECT COUNT(*) AS n FROM commands WHERE user_id = ? AND type = 'wear.record'")).toBe(0);
   });
 
-  // WAITING ON THE ASSISTANT WORKSTREAM (its pull request 25): its gate compares the bare identifier, while the
-  // Worker passes the attachment as `garment:<id>`, so today this report becomes a request to confirm. Marked
-  // as an expected failure so the suite turns red when the gate is fixed; that pull request changes `it.fails`
-  // to `it` (agreed with the assistant thread, 2026-10-03).
-  it.fails("records the wear, with no tap, when the owner attaches the piece and says 'Wore this today.'", async () => {
+  it("records the wear, with no tap, when the owner attaches the piece and says 'Wore this today.'", async () => {
     const run = await say(o, { text: "Wore this today.", attachedRefs: attachedRefs() }, [{ toolName: "record_wear", input: { garmentIds: [garmentId] } }]);
     expect(run.state).toBe("completed");
     expect(run.receipts.map((r) => r.type)).toEqual(["wear.record"]);

@@ -1,6 +1,7 @@
 import { ASSISTANT_COMMANDS as C } from "@garderobe/contracts/ext/assistant";
 import { CommandError, SCRUBBED_TEXT, all, define, first, json, planLedgerScrub, stmt, type CommandContext, type Stmt } from "@garderobe/domain";
 import { NO_UNDO, plural } from "./common.ts";
+import { termsOfText } from "../recall/index.ts";
 
 /**
  * A source-linked conclusion. A model extraction can only ever be a candidate: it becomes active by the
@@ -139,6 +140,11 @@ async function scrubAssistantRecords(ctx: CommandContext, commandIds: string[], 
       cancelledEffectTargets.push(`job:${job.job_id}`);
       count++;
     }
+    // A shopping candidate the command saved or updated.
+    for (const product of await all<{ entity_id: string }>(ctx.db, "SELECT entity_id FROM command_entities WHERE user_id = ? AND kind = 'product' AND command_id = ?", ctx.userId, commandId)) {
+      statements.push(scrubProduct(ctx, product.entity_id));
+      count++;
+    }
   }
   for (const messageId of messageIds) {
     statements.push(stmt("UPDATE products SET name = ?, maker = NULL, url = NULL, product_code = NULL, note = NULL, version = version + 1, updated_at = ? WHERE user_id = ? AND source_ref = ?", FORGOTTEN, ctx.now, ctx.userId, `message:${messageId}`));
@@ -146,27 +152,166 @@ async function scrubAssistantRecords(ctx: CommandContext, commandIds: string[], 
   return { statements, count, cardMessageIds, cancelledEffectTargets };
 }
 
-/** Later assistant messages that repeat what a forgotten message first said: they share at least two words that message introduced to the conversation. */
-async function echoesOf(ctx: CommandContext, messageId: string): Promise<string[]> {
-  const row = await first<{ position: number; terms: string; conversation_id: string }>(ctx.db, "SELECT position, terms, conversation_id FROM conversation_index WHERE user_id = ? AND message_id = ?", ctx.userId, messageId);
-  if (!row) return [];
-  const mine = new Set(row.terms.split(" ").filter((t) => t.length >= 5 && !t.startsWith("topic:")));
-  if (mine.size === 0) return [];
-  const others = await all<{ message_id: string; position: number; speaker: string; terms: string }>(ctx.db, "SELECT message_id, position, speaker, terms FROM conversation_index WHERE user_id = ? AND conversation_id = ? AND message_id != ? ORDER BY position DESC LIMIT 4000", ctx.userId, row.conversation_id, messageId);
-  for (const o of others) if (o.position < row.position) for (const t of o.terms.split(" ")) mine.delete(t);
-  // Words of the wardrobe's own records (names, makers, colours) are not what a message introduced.
-  const records = await all<{ words: string }>(ctx.db, "SELECT lower(name || ' ' || coalesce(maker, '') || ' ' || coalesce(colour, '') || ' ' || coalesce(fabric, '') || ' ' || category) AS words FROM garments WHERE user_id = ?", ctx.userId);
-  for (const r of records) for (const t of r.words.split(/[^\p{L}\p{N}]+/u)) for (const m of [...mine]) if (m === t || (t.length > 4 && (m.startsWith(t) || t.startsWith(m)))) mine.delete(m);
-  if (mine.size === 0) return [];
-  const need = mine.size === 1 ? 1 : 2;
-  const out: string[] = [];
-  for (const o of others) {
-    if (o.position <= row.position || o.speaker !== "assistant") continue;
-    const terms = new Set(o.terms.split(" "));
-    let shared = 0;
-    for (const t of mine) if (terms.has(t)) shared++;
-    if (shared >= need && (need > 1 || [...mine][0]!.length >= 7)) out.push(o.message_id);
+const scrubProduct = (ctx: CommandContext, productId: string): Stmt =>
+  stmt("UPDATE products SET name = ?, maker = NULL, url = NULL, product_code = NULL, note = NULL, version = version + 1, updated_at = ? WHERE user_id = ? AND product_id = ?", FORGOTTEN, ctx.now, ctx.userId, productId);
+
+/** Everyday words that say nothing about what a message was about: sharing them is not repeating it. */
+const EVERYDAY_WORDS = new Set(
+  "about above after again against almost alone along already although always among another anyone anything around because before behind being below better between both bring could doing during early either enough every everyone everything first found going great having himself herself however instead itself later least little looks maybe might month months never next night nothing often other others ought perhaps please quite rather really right second seems shall should since small some someone something sometimes still their theirs there these thing things think those though thought three through times today together tomorrow tonight toward under until using usual very want wants weekly weeks where whether which while whole whose would years yesterday yours thank thanks today hello sorry noted since looked check wear wears wearing worn wore loose tight piece pieces colour color shirt shirts sock socks shoes trousers jacket coats which clean dirty washed order orders owner said says tell told asked please".split(
+    " ",
+  ),
+);
+
+/**
+ * The words a message brought into the conversation: index terms of its speech and of what it carried
+ * (attachments), at least five letters long, that no earlier message had and that are not words of the
+ * wardrobe's own records (names, makers, colours).
+ */
+async function introducedTerms(ctx: CommandContext, messageId: string, withData: boolean): Promise<{ terms: Set<string>; position: number; conversationId: string } | null> {
+  const row = await first<{ position: number; terms: string; data_terms: string; conversation_id: string }>(ctx.db, "SELECT position, terms, data_terms, conversation_id FROM conversation_index WHERE user_id = ? AND message_id = ?", ctx.userId, messageId);
+  if (!row) return null;
+  const mine = new Set(`${row.terms} ${withData ? row.data_terms : ""}`.split(" ").filter((t) => t.length >= 5 && !t.startsWith("topic:") && !EVERYDAY_WORDS.has(t)));
+  if (mine.size > 0) {
+    const earlier = await all<{ terms: string; data_terms: string }>(ctx.db, "SELECT terms, data_terms FROM conversation_index WHERE user_id = ? AND conversation_id = ? AND position < ? ORDER BY position DESC LIMIT 4000", ctx.userId, row.conversation_id, row.position);
+    for (const o of earlier) for (const t of `${o.terms} ${o.data_terms}`.split(" ")) mine.delete(t);
+    const records = await all<{ words: string }>(ctx.db, "SELECT lower(name || ' ' || coalesce(maker, '') || ' ' || coalesce(colour, '') || ' ' || coalesce(fabric, '') || ' ' || category) AS words FROM garments WHERE user_id = ?", ctx.userId);
+    for (const r of records) for (const t of r.words.split(/[^\p{L}\p{N}]+/u)) for (const m of [...mine]) if (m === t || (t.length > 4 && (m.startsWith(t) || t.startsWith(m)))) mine.delete(m);
   }
+  return { terms: mine, position: row.position, conversationId: row.conversation_id };
+}
+
+/** Whether a text repeats what a forgotten message introduced: it shares two of those words (or the only one, when that is distinctive). */
+function repeats(introduced: Set<string>, text: string | null | undefined): boolean {
+  if (!text || introduced.size === 0) return false;
+  const need = introduced.size === 1 ? 1 : 2;
+  if (need === 1 && [...introduced][0]!.length < 7) return false;
+  let shared = 0;
+  for (const t of termsOfText(text)) if (introduced.has(t) && ++shared >= need) return true;
+  return false;
+}
+
+/** Later assistant messages that repeat what a forgotten message first said, in their reply or (for a message the owner named) in their tool calls and results. */
+async function echoesOf(ctx: CommandContext, messageId: string, withData: boolean): Promise<string[]> {
+  const intro = await introducedTerms(ctx, messageId, withData);
+  if (!intro || intro.terms.size === 0) return [];
+  const later = await all<{ message_id: string; terms: string; data_terms: string }>(ctx.db, "SELECT message_id, terms, data_terms FROM conversation_index WHERE user_id = ? AND conversation_id = ? AND position > ? AND speaker = 'assistant' ORDER BY position DESC LIMIT 4000", ctx.userId, intro.conversationId, intro.position);
+  return later.filter((o) => repeats(intro.terms, withData ? `${o.terms} ${o.data_terms}` : o.terms)).map((o) => o.message_id);
+}
+
+interface Copies {
+  statements: Stmt[];
+  /** Commands of other turns whose request or receipt repeats the forgotten words. */
+  commandIds: string[];
+  /** Replies of the turns that reused the words: their tool calls hold them, so they go too. */
+  replyMessageIds: string[];
+  /** Requests waiting for the owner that repeated the words and are withdrawn. */
+  withdrawnRequests: number;
+  /** The assistant's own records (notes, candidates, jobs, reminders, conclusions) found by their text. */
+  records: number;
+}
+
+/**
+ * Every other place the words of a forgotten message went (third review, finding C): a later turn can
+ * write them into its own tool calls - a research note, a remembered candidate, a shopping candidate, a
+ * background job, a request for the owner, a question - without its reply repeating them. Found here by
+ * the same test as a repeating reply, over every turn's records, every conversation command and intent,
+ * and the assistant's own tables, whoever wrote the row.
+ */
+async function copiesOf(ctx: CommandContext, introduced: Set<string>, skipTurnIds: Set<string>): Promise<Copies> {
+  const out: Copies = { statements: [], commandIds: [], replyMessageIds: [], withdrawnRequests: 0, records: 0 };
+  if (introduced.size === 0) return out;
+  const hit = (text: string | null | undefined) => repeats(introduced, text);
+  const touched = new Set<string>();
+
+  const commands = await all<{ command_id: string; turn_id: string | null; payload_json: string; receipt_json: string }>(
+    ctx.db,
+    "SELECT command_id, json_extract(source_json, '$.parentId') AS turn_id, payload_json, receipt_json FROM commands WHERE user_id = ? AND scrubbed_at IS NULL AND json_extract(source_json, '$.parentKind') = 'turn' AND substr(type, 1, 10) != 'inference.'",
+    ctx.userId,
+  );
+  for (const c of commands) {
+    if (c.command_id === ctx.commandId || (c.turn_id && skipTurnIds.has(c.turn_id)) || !(hit(c.payload_json) || hit(c.receipt_json))) continue;
+    out.commandIds.push(c.command_id);
+    if (c.turn_id) touched.add(c.turn_id);
+  }
+  const intents = await all<{ action_id: string; parent_id: string; effect_json: string; targets_json: string }>(ctx.db, "SELECT action_id, parent_id, effect_json, targets_json FROM action_intents WHERE user_id = ? AND parent_kind = 'turn'", ctx.userId);
+  for (const i of intents) {
+    if (skipTurnIds.has(i.parent_id) || !(hit(i.effect_json) || hit(i.targets_json))) continue;
+    out.statements.push(stmt("UPDATE action_intents SET effect_json = ?, targets_json = '[]' WHERE user_id = ? AND action_id = ?", FORGOTTEN_JSON, ctx.userId, i.action_id));
+    touched.add(i.parent_id);
+  }
+
+  // The assistant's own records, by their text (a background job writes these outside any turn).
+  const creator = async (kind: string, id: string) => (await all<{ command_id: string }>(ctx.db, "SELECT command_id FROM command_entities WHERE user_id = ? AND kind = ? AND entity_id = ?", ctx.userId, kind, id)).map((r) => r.command_id);
+  for (const n of await all<{ note_id: string; command_id: string; text: string }>(ctx.db, "SELECT note_id, command_id, topic || ' ' || body || ' ' || claims_json AS text FROM research_notes WHERE user_id = ? AND status != 'forgotten'", ctx.userId)) {
+    if (!hit(n.text)) continue;
+    out.statements.push(stmt("UPDATE research_notes SET status = 'forgotten', topic = ?, body = ?, claims_json = '[]', version = version + 1, updated_at = ? WHERE user_id = ? AND note_id = ?", FORGOTTEN, FORGOTTEN, ctx.now, ctx.userId, n.note_id));
+    out.commandIds.push(n.command_id, ...(await creator("research_note", n.note_id)));
+    out.records++;
+  }
+  for (const m of await all<{ conclusion_id: string; command_id: string; status: string; text: string }>(ctx.db, "SELECT conclusion_id, command_id, status, text || ' ' || premises_json || ' ' || history_json AS text FROM memory_conclusions WHERE user_id = ? AND status != 'forgotten'", ctx.userId)) {
+    if (!hit(m.text)) continue;
+    out.statements.push(scrubMemory(ctx, m.conclusion_id));
+    out.commandIds.push(m.command_id, ...(await creator("memory_conclusion", m.conclusion_id)));
+    out.records++;
+  }
+  for (const p of await all<{ product_id: string; text: string }>(ctx.db, "SELECT product_id, name || ' ' || coalesce(maker, '') || ' ' || coalesce(note, '') || ' ' || coalesce(url, '') || ' ' || coalesce(product_code, '') AS text FROM products WHERE user_id = ? AND name != ?", ctx.userId, FORGOTTEN)) {
+    if (!hit(p.text)) continue;
+    out.statements.push(scrubProduct(ctx, p.product_id));
+    out.commandIds.push(...(await creator("product", p.product_id)));
+    out.records++;
+  }
+  for (const j of await all<{ job_id: string; text: string }>(ctx.db, "SELECT job_id, title || ' ' || params_json || ' ' || progress_json || ' ' || coalesce(unresolved_reason, '') AS text FROM assistant_jobs WHERE user_id = ? AND title != ?", ctx.userId, FORGOTTEN)) {
+    if (!hit(j.text)) continue;
+    // The job itself is scrubbed and cancelled through the command that created it (scrubAssistantRecords).
+    out.commandIds.push(...(await creator("job", j.job_id)));
+    out.records++;
+  }
+  for (const f of await all<{ command_id: string; text: string }>(ctx.db, "SELECT command_id, text || ' ' || coalesce(activity, '') || ' ' || coalesce(layer, '') || ' ' || coalesce(scope, '') AS text FROM comfort_feedback WHERE user_id = ? AND status != 'forgotten'", ctx.userId)) {
+    if (!hit(f.text)) continue;
+    out.commandIds.push(f.command_id);
+    out.records++;
+  }
+  for (const r of await all<{ command_id: string; text: string }>(ctx.db, "SELECT command_id, title || ' ' || coalesce(note, '') || ' ' || coalesce(url, '') AS text FROM reminders WHERE user_id = ? AND title != ?", ctx.userId, FORGOTTEN)) {
+    if (!hit(r.text)) continue;
+    out.commandIds.push(r.command_id);
+    out.records++;
+  }
+
+  // Each turn's own record: requests waiting for the owner, the question it asked, its receipts and result.
+  const turns = await all<{ turn_id: string; status: string; reply_message_id: string | null; receipts_json: string; refusals_json: string; proposals_json: string; clarification_json: string | null; result_json: string | null }>(
+    ctx.db,
+    "SELECT turn_id, status, reply_message_id, receipts_json, refusals_json, proposals_json, clarification_json, result_json FROM assistant_turns WHERE user_id = ?",
+    ctx.userId,
+  );
+  const scrubbing = new Set(out.commandIds);
+  for (const t of turns) {
+    if (skipTurnIds.has(t.turn_id)) continue;
+    const proposals = json<Record<string, unknown>[]>(t.proposals_json, []);
+    const keptProposals = proposals.filter((p) => !hit(JSON.stringify(p)));
+    const receipts = json<{ commandId: string; summary?: string }[]>(t.receipts_json, []);
+    const nextReceipts = receipts.map((r) => (scrubbing.has(r.commandId) || hit(r.summary) ? { ...r, summary: FORGOTTEN, undoAvailable: false } : r));
+    const receiptsChanged = nextReceipts.some((r, n) => r !== receipts[n]);
+    for (const r of nextReceipts) if (r.summary === FORGOTTEN && !scrubbing.has(r.commandId)) out.commandIds.push(r.commandId);
+    const refusals = json<Record<string, unknown>[]>(t.refusals_json, []);
+    const keptRefusals = refusals.filter((r) => !hit(JSON.stringify(r)));
+    const question = hit(t.clarification_json);
+    const result = hit(t.result_json);
+    const changed = keptProposals.length !== proposals.length || receiptsChanged || keptRefusals.length !== refusals.length || question || result;
+    if (!changed && !touched.has(t.turn_id)) continue;
+    out.withdrawnRequests += proposals.length - keptProposals.length;
+    if (changed) {
+      out.statements.push(
+        stmt(
+          "UPDATE assistant_turns SET proposals_json = ?, receipts_json = ?, refusals_json = ?, clarification_json = CASE WHEN ? THEN NULL ELSE clarification_json END, status = CASE WHEN ? AND status = 'needs_input' THEN 'completed' ELSE status END, result_json = CASE WHEN ? THEN NULL ELSE result_json END, updated_at = ? WHERE user_id = ? AND turn_id = ?",
+          JSON.stringify(keptProposals), JSON.stringify(nextReceipts), JSON.stringify(keptRefusals), question ? 1 : 0, question ? 1 : 0, result ? 1 : 0, ctx.now, ctx.userId, t.turn_id,
+        ),
+      );
+    }
+    // The turn's event stream replays the same receipts, requests and question; its reply holds the tool calls.
+    out.statements.push(stmt("DELETE FROM assistant_turn_events WHERE user_id = ? AND turn_id = ?", ctx.userId, t.turn_id));
+    if (t.reply_message_id) out.replyMessageIds.push(t.reply_message_id);
+  }
+  out.commandIds = [...new Set(out.commandIds)];
   return out;
 }
 
@@ -181,6 +326,9 @@ async function echoesOf(ctx: CommandContext, messageId: string): Promise<string[
  *   - what the assistant itself wrote from it: comfort notes, research notes, product candidates,
  *     reminders, remembered conclusions, background jobs and the result cards they delivered;
  *   - later assistant messages that repeated it, and the retrieval projection of all of these;
+ *   - every other place a later turn put its words without repeating them in its reply (copiesOf): that
+ *     turn's notes, candidates, jobs, questions and requests waiting for the owner, their ledger copies
+ *     and intents, and the reply whose tool calls hold them;
  *   - invalidation of summaries that covered any of them.
  * Records the owner CONFIRMED as records of their own (a profile amendment, a rule, a restriction, a
  * wardrobe record, an order, a return, a project) are kept: forgetting a message never undoes what the
@@ -207,6 +355,8 @@ export const conversationForgetSource = define({
     let assistantRecords = 0;
     const commandIds = new Set<string>();
     const echoes: string[] = [];
+    let withdrawnRequests = 0;
+    let reusedRecords = 0;
     /** The assistant's own records: applied after the ledger scrub, so a queued effect cancelled here stays cancelled and scrubbed. */
     const ownStatements: Stmt[] = [];
     const cancelledTargets: string[] = [];
@@ -245,7 +395,7 @@ export const conversationForgetSource = define({
           // Intents registered for the turn that never became a command still hold the proposed effect.
           statements.push(stmt("UPDATE action_intents SET effect_json = ?, targets_json = '[]' WHERE user_id = ? AND parent_kind = 'turn' AND parent_id = ?", FORGOTTEN_JSON, ctx.userId, t.turn_id));
         }
-        await enqueue(await echoesOf(ctx, id));
+        await enqueue(await echoesOf(ctx, id, named.has(id)));
         // Conclusions drawn from the forgotten message go with it; otherwise the fact would return through memory.
         const derived = await all<{ conclusion_id: string; command_id: string }>(ctx.db, "SELECT conclusion_id, command_id FROM memory_conclusions m WHERE user_id = ? AND status != 'forgotten' AND EXISTS (SELECT 1 FROM json_each(m.source_message_ids_json) WHERE value = ?)", ctx.userId, id);
         for (const d of derived) {
@@ -262,10 +412,28 @@ export const conversationForgetSource = define({
         statements.push(stmt("DELETE FROM conversation_judgements WHERE user_id = ? AND message_id = ?", ctx.userId, id));
         statements.push(stmt("DELETE FROM conversation_index WHERE user_id = ? AND message_id = ?", ctx.userId, id));
       };
+      const named = new Set(fresh);
       let next = 0;
       const drain = async () => {
         for (; next < queue.length; next++) await handle(queue[next]!);
       };
+      await drain();
+      // Where else the named messages' words went: other turns' tool calls, requests and questions, and the
+      // assistant's own records. The turns of messages already on the list are handled above.
+      const introduced = new Set<string>();
+      for (const id of named) for (const t of (await introducedTerms(ctx, id, true))?.terms ?? []) introduced.add(t);
+      const listed = [...seen];
+      const ownTurns = new Set<string>();
+      for (let n = 0; n < listed.length; n += 50) {
+        const part = listed.slice(n, n + 50);
+        for (const r of await all<{ turn_id: string }>(ctx.db, `SELECT turn_id FROM assistant_turns WHERE user_id = ? AND user_message_id IN (${part.map(() => "?").join(",")})`, ctx.userId, ...part)) ownTurns.add(r.turn_id);
+      }
+      const copies = await copiesOf(ctx, introduced, ownTurns);
+      statements.push(...copies.statements);
+      for (const c of copies.commandIds) if (c !== ctx.commandId) commandIds.add(c);
+      withdrawnRequests = copies.withdrawnRequests;
+      reusedRecords = copies.records;
+      await enqueue(copies.replyMessageIds);
       await drain();
       // The assistant's own records of the turn's commands; a job's result card joins the list and is handled like any other message.
       await enqueue((await scrubAssistantRecords(ctx, [...commandIds], queue)).cardMessageIds);
@@ -322,9 +490,11 @@ export const conversationForgetSource = define({
     const sentences = [
       `Forgotten: ${plural(named, p.sourceKind.replace(/_/g, " "))}${echoes.length > 0 ? ` and ${plural(echoes.length, "later reply or result card", "later replies or result cards")} that repeated ${named === 1 ? "it" : "them"}` : ""}`,
       `Removed now from ${removedNow.join(", ")}`,
+      ...(withdrawnRequests > 0 ? [`${plural(withdrawnRequests, "request")} waiting for your confirmation repeated ${named === 1 ? "it" : "them"} and ${withdrawnRequests === 1 ? "was" : "were"} withdrawn`] : []),
       `Still being removed from ${pending.join(", ").replace(/_/g, " ")}; hidden there meanwhile, and each is confirmed when it is done`,
       ...(kept.length > 0 ? [`Kept, because you confirmed them as records of your own: ${[...keptCounts].map(([label, n]) => plural(n, label)).join(", ")}. Remove them in the app if they should go too`] : []),
       ...(invalidatedSummaries ? [`${plural(invalidatedSummaries, "summary", "summaries")} will be rebuilt without ${named === 1 ? "it" : "them"}`] : []),
+      ...(p.sourceKind === "message" ? ["Later messages and records are found by the words they share with what was forgotten; anything that restates it in entirely different words is not found, and your own later messages are never removed unless you forget them too"] : []),
     ];
     return {
       summary: sentences.join(". "),
@@ -335,7 +505,7 @@ export const conversationForgetSource = define({
         ...(p.sourceKind === "message" ? fresh.map((id) => ({ topic: "conversation.erase", entityKind: "message", entityId: id, revision: 0 })) : []),
         ...(invalidatedSummaries > 0 ? [{ topic: "summary.regenerate", entityKind: "conversation", entityId: ctx.userId, revision: 0 }] : []),
       ],
-      result: { sourceKind: p.sourceKind, newlyForgotten: fresh, alsoForgotten: echoes, erasedStores: erased, pendingStores: pending, invalidatedSummaries, derivedMemories, assistantRecords, scrubbedCommands: scrub.counts.commands, pendingEffects: stillQueued.length, pendingOutbox: scrub.pendingOutbox, kept },
+      result: { sourceKind: p.sourceKind, newlyForgotten: fresh, alsoForgotten: echoes, erasedStores: erased, pendingStores: pending, invalidatedSummaries, derivedMemories, assistantRecords, reusedRecords, withdrawnRequests, scrubbedCommands: scrub.counts.commands, pendingEffects: stillQueued.length, pendingOutbox: scrub.pendingOutbox, kept },
       // Forgetting is deliberately irreversible: an undo would have to resurrect the removed text.
       undo: NO_UNDO("forgetting cannot be undone"),
     };
