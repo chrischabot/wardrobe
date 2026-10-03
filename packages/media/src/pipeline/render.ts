@@ -9,7 +9,7 @@ import { COMPOSITE_COLS, PREVIEW_INVALIDATED, staleCompositeItems, type Composit
 import { renderRaster } from "../compose/raster.ts";
 import { renderSvg } from "../compose/svg.ts";
 import { execSystem } from "../exec.ts";
-import { decodeImage, decodePng, encodePng, type Raster } from "../image/index.ts";
+import { decodeImage, decodePng, encodePng, withoutLocation, type Raster } from "../image/index.ts";
 import type { JobRow } from "../jobs.ts";
 import { assertOwnedKey, compositeKey } from "../keys.ts";
 import { limitsOf, type MediaRuntime } from "../runtime.ts";
@@ -54,7 +54,8 @@ export async function runRenderJob(rt: MediaRuntime, job: JobRow): Promise<void>
         images.set(r.rendition_id, (await decodeImage(bytes, { maxPixels: limitsOf(rt.deps).maxPixels })).raster);
       } catch {
         if (rt.deps.transcoder) {
-          const out = await rt.deps.transcoder.toPng({ bytes, contentType: r.content_type, maxEdge: 1200 });
+          const clean = withoutLocation(bytes);
+          const out = await rt.deps.transcoder.toPng({ bytes: clean.ok ? clean.bytes : bytes, contentType: r.content_type, maxEdge: 1200 });
           if (out.ok) images.set(r.rendition_id, await decodePng(out.png));
         }
       }
@@ -66,8 +67,10 @@ export async function runRenderJob(rt: MediaRuntime, job: JobRow): Promise<void>
   if (rt.deps.previewExporter) {
     // Optional browser/image-service export of the SVG scene; the built-in compositor is the fallback.
     const exported = await rt.deps.previewExporter.renderSvgToPng({ svg, width: manifest.canvas.width, height: manifest.canvas.height });
-    if (exported.ok) {
-      png = exported.png;
+    // A picture made outside this package is stored only without metadata; otherwise the built-in compositor draws it.
+    const clean = exported.ok ? withoutLocation(exported.png) : null;
+    if (clean?.ok && clean.contentType === "image/png") {
+      png = clean.bytes;
       renderer = rt.deps.previewExporter.name;
     } else png = await encodePng(renderRaster(manifest, images));
   } else png = await encodePng(renderRaster(manifest, images));

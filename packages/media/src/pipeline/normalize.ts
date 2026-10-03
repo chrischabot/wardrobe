@@ -8,7 +8,7 @@
 import { json, stableId, sha256Hex } from "@garderobe/domain";
 import type { TransformationStep } from "@garderobe/contracts/ext/media";
 import {
-  catalogueView, checkFidelity, correctLighting, cropUniformBorders, decodeImage, decodePng, encodeJpeg, encodePng, fitWithin, ImageDecodeError, probeImage, resizeRaster, uniformBackgroundCutout,
+  catalogueView, checkFidelity, correctLighting, cropUniformBorders, decodeImage, decodePng, encodeJpeg, encodePng, fitWithin, ImageDecodeError, probeImage, resizeRaster, uniformBackgroundCutout, withoutLocation,
   FIDELITY_ALGORITHM_VERSION, PREPARE_ALGORITHM_VERSION, type FidelityReport as PixelFidelity, type Raster,
 } from "../image/index.ts";
 import { EDIT_CONSTRAINTS } from "../adapters.ts";
@@ -66,7 +66,9 @@ export async function runNormalizeJob(rt: MediaRuntime, job: JobRow): Promise<vo
       source = (await decodeImage(originalBytes, { maxPixels: limits.maxPixels })).raster;
       steps.push({ step: "decode", tool: "garderobe-image", version: NORMALIZER_VERSION, generative: false, params: { format: probe.format, exifOrientationApplied: probe.exif.orientation ?? 1 } });
     } else if (rt.deps.transcoder) {
-      const out = await rt.deps.transcoder.toPng({ bytes: originalBytes, contentType: original.content_type, maxEdge: limits.workingEdge });
+      // The converter gets the photograph without its location data wherever that can be left out first (WebP); a HEIC file can only be converted as it is.
+      const clean = withoutLocation(originalBytes);
+      const out = await rt.deps.transcoder.toPng({ bytes: clean.ok ? clean.bytes : originalBytes, contentType: original.content_type, maxEdge: limits.workingEdge });
       if (!out.ok) {
         await done({ outcome: "kept_original", note: `The ${original.content_type} photo is stored, but could not be converted for a catalogue view: ${out.reason}` });
         return;

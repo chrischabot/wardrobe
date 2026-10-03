@@ -7,7 +7,7 @@ import { all, assertPrincipal, CommandError, first, requireScope, toInstant, typ
 import { MEDIA_THUMBNAIL_WIDTHS } from "@garderobe/contracts/ext/media";
 import type { MediaRenditionKind, SignedMediaUrl } from "@garderobe/contracts/ext/media";
 import { assertOwnedKey } from "./keys.ts";
-import { decodeImage, encodeJpeg, encodePng } from "./image/index.ts";
+import { decodeImage, encodeJpeg, encodePng, withoutLocation } from "./image/index.ts";
 import { limitsOf, type MediaRuntime } from "./runtime.ts";
 import { signClaims, verifyToken } from "./signing.ts";
 import { loadAsset, loadRenditions, pickDisplayRendition, type RenditionRow } from "./store.ts";
@@ -65,13 +65,38 @@ async function loadActiveRendition(rt: MediaRuntime, userId: string, renditionId
 
 /**
  * The original is the photograph exactly as supplied, with whatever metadata it carried (including a GPS
- * position). Only the owner, in their own app, ever receives those bytes. Any other principal (the
- * assistant, whatever scope its grant holds, and anything arriving on the `mcp` channel) gets derived,
- * metadata-free copies only: asking for the original by name finds nothing, and where the original is
- * the only picture there is yet, a copy re-encoded from its pixels is served instead.
+ * position). Those bytes are released to one caller only: the owner, in their own app, who asked for the
+ * photograph with its location data (`withLocation: true`, an explicit choice made for that one read or
+ * link). By default the owner too gets the same picture with the location data and all other metadata
+ * left out (`withoutLocation`: lossless, the image data is copied as it is).
+ *
+ * Any other principal (the assistant, whatever scope its grant holds, and anything arriving on the `mcp`
+ * channel) can never ask for the location: asking for the original by name finds nothing, and where the
+ * original is the only picture there is yet, a copy re-encoded from its pixels is served instead.
  */
 function originalsWithheld(principal: Principal): boolean {
   return principal.actor !== "owner" || principal.channel === "mcp";
+}
+
+/** Options of a read or link that can release the photograph as supplied. */
+export interface LocationRelease {
+  /**
+   * `true` only when the owner chose, for this read or link, to receive the photograph with its location
+   * data. It must be the owner's own explicit action in their app (the app says what the file contains
+   * before asking); it is never a default, a stored preference applied silently, or an assistant's request.
+   */
+  withLocation?: boolean;
+}
+
+/** Whether this read releases the photograph as supplied. Anything but the owner's explicit `true` does not. */
+function locationAsked(principal: Principal, opts: LocationRelease, width: ThumbnailWidth | null): boolean {
+  if (opts.withLocation === undefined || opts.withLocation === false) return false;
+  if (opts.withLocation !== true) throw new CommandError("invalid_command", "withLocation is either true or absent");
+  if (originalsWithheld(principal)) {
+    throw new CommandError("forbidden", "a photograph is released with its location data only when the owner asks for it in their own app", { reason: "owner_opt_in_required" });
+  }
+  if (width !== null) throw new CommandError("invalid_command", "a photograph with its location data is released as supplied only, not as a thumbnail");
+  return true;
 }
 
 /** A copy of a stored original written again from its decoded pixels: no EXIF, GPS or any other metadata. */
@@ -110,49 +135,82 @@ export const MEDIA_RESPONSE_HEADERS: Readonly<Record<string, string>> = {
   "cross-origin-resource-policy": "same-site",
 };
 
-async function readRendition(rt: MediaRuntime, userId: string, row: RenditionRow, width: ThumbnailWidth | null): Promise<OpenedImage> {
+const NO_LOCATION_FREE_COPY = "this photograph cannot be shown without its location data until it has been processed";
+
+/**
+ * Read one rendition. An original is read without its location data unless `asSupplied` (the owner's
+ * explicit choice, checked by the caller): a JPEG, PNG or WebP is rewritten without its metadata; a format
+ * that cannot be rewritten here (HEIC) is served only as a thumbnail made by the image service, and that
+ * thumbnail is itself rewritten without metadata before it is cached or returned. Derived renditions are
+ * written by this package from pixels and carry no metadata.
+ */
+async function readRendition(rt: MediaRuntime, userId: string, row: RenditionRow, width: ThumbnailWidth | null, asSupplied = false): Promise<OpenedImage> {
   assertOwnedKey(userId, row.object_key);
   // Whatever a record claims, only a fixed list of image types is ever served.
   if (!SERVABLE_IMAGE_TYPES.has(row.content_type)) throw new CommandError("not_found", "no such image");
+  const strip = row.kind === "original" && !asSupplied;
+  const stored = async (): Promise<{ data: Uint8Array | ReadableStream<Uint8Array>; size: number }> => {
+    const object = await rt.deps.bucket.get(row.object_key);
+    if (!object) throw new CommandError("not_found", "no such image");
+    return { data: strip ? new Uint8Array(await object.arrayBuffer()) : (object.body as ReadableStream<Uint8Array>), size: object.size };
+  };
+  const stream = (source: Uint8Array | ReadableStream<Uint8Array>): ReadableStream<Uint8Array> => (source instanceof Uint8Array ? (new Response(source).body as ReadableStream<Uint8Array>) : source);
   const images = rt.deps.images;
   if (width !== null && images && (row.width === null || row.width > width)) {
     // On-demand thumbnail through Cloudflare Images, cached at delivery. Nothing is precomputed in R2.
     const cache = (globalThis as { caches?: { default?: Cache } }).caches?.default;
     const cacheKey = thumbnailCacheUrl(userId, row.sha256, width);
+    const etag = `"${row.sha256.slice(0, 32)}-w${width}"`;
     const hit = cache ? await cache.match(cacheKey) : undefined;
-    if (hit?.body) return { body: hit.body, contentType: hit.headers.get("content-type") ?? "image/webp", etag: `"${row.sha256.slice(0, 32)}-w${width}"`, byteLength: null, delivery: "resized" };
-    const object = await rt.deps.bucket.get(row.object_key);
-    if (!object) throw new CommandError("not_found", "no such image");
-    const result = await images.input(object.body).transform({ width, fit: "scale-down" }).output({ format: "image/webp", quality: 82 });
+    if (hit?.body) return { body: hit.body, contentType: hit.headers.get("content-type") ?? "image/webp", etag, byteLength: null, delivery: "resized" };
+    let input = (await stored()).data;
+    if (input instanceof Uint8Array) {
+      const clean = withoutLocation(input);
+      if (clean.ok) input = clean.bytes;
+    }
+    const result = await images.input(stream(input)).transform({ width, fit: "scale-down" }).output({ format: "image/webp", quality: 82 });
     const response = result.response({ headers: { "cache-control": "private, max-age=86400" } });
+    if (strip) {
+      // A thumbnail of an original: whatever the image service carried over is left out before it goes anywhere.
+      const made = withoutLocation(new Uint8Array(await response.arrayBuffer()));
+      if (!made.ok) throw new CommandError("not_found", NO_LOCATION_FREE_COPY, { reason: "location_not_removable" });
+      if (cache) await cache.put(cacheKey, new Response(made.bytes, { headers: { "content-type": made.contentType, "cache-control": "max-age=86400" } }));
+      return { body: stream(made.bytes), contentType: made.contentType, etag, byteLength: made.bytes.length, delivery: "resized" };
+    }
     if (cache) {
       const [forCache, forCaller] = response.body!.tee();
       // The cache copy is keyed by content hash and width, and purged when the image is deleted.
       await cache.put(cacheKey, new Response(forCache, { headers: { "content-type": result.contentType(), "cache-control": "max-age=86400" } }));
-      return { body: forCaller, contentType: result.contentType(), etag: `"${row.sha256.slice(0, 32)}-w${width}"`, byteLength: null, delivery: "resized" };
+      return { body: forCaller, contentType: result.contentType(), etag, byteLength: null, delivery: "resized" };
     }
-    return { body: response.body!, contentType: result.contentType(), etag: `"${row.sha256.slice(0, 32)}-w${width}"`, byteLength: null, delivery: "resized" };
+    return { body: response.body!, contentType: result.contentType(), etag, byteLength: null, delivery: "resized" };
   }
-  const object = await rt.deps.bucket.get(row.object_key);
-  if (!object) throw new CommandError("not_found", "no such image");
-  return { body: object.body, contentType: row.content_type, etag: `"${row.sha256.slice(0, 32)}"`, byteLength: object.size, delivery: "stored" };
+  const source = await stored();
+  if (source.data instanceof Uint8Array) {
+    const clean = withoutLocation(source.data);
+    if (!clean.ok) throw new CommandError("not_found", NO_LOCATION_FREE_COPY, { reason: "location_not_removable" });
+    return { body: stream(clean.bytes), contentType: clean.contentType, etag: `"${row.sha256.slice(0, 32)}-noloc"`, byteLength: clean.bytes.length, delivery: "stored" };
+  }
+  return { body: source.data, contentType: row.content_type, etag: `"${row.sha256.slice(0, 32)}"`, byteLength: source.size, delivery: "stored" };
 }
 
-/** Authenticated read of one of the caller's own renditions. */
-export async function openRendition(rt: MediaRuntime, principal: Principal, renditionId: string, opts: { width?: number | null } = {}): Promise<OpenedImage> {
+/** Authenticated read of one of the caller's own renditions. An original comes without its location data unless the owner asked for it (`withLocation`). */
+export async function openRendition(rt: MediaRuntime, principal: Principal, renditionId: string, opts: { width?: number | null } & LocationRelease = {}): Promise<OpenedImage> {
   assertPrincipal(principal);
   requireScope(principal, "read");
   const width = checkWidth(opts.width);
+  const asSupplied = locationAsked(principal, opts, width);
   const row = await loadActiveRendition(rt, principal.userId, renditionId);
   if (row.kind === "original" && originalsWithheld(principal)) throw new CommandError("not_found", "no such image");
-  return readRendition(rt, principal.userId, row, width);
+  return readRendition(rt, principal.userId, row, width, asSupplied);
 }
 
-/** Authenticated read of an asset's image: its display rendition by default, or a named variant. */
-export async function openAssetImage(rt: MediaRuntime, principal: Principal, assetId: string, opts: { variant?: "display" | MediaRenditionKind; width?: number | null } = {}): Promise<OpenedImage> {
+/** Authenticated read of an asset's image: its display rendition by default, or a named variant. An original comes without its location data unless the owner asked for it (`withLocation`). */
+export async function openAssetImage(rt: MediaRuntime, principal: Principal, assetId: string, opts: { variant?: "display" | MediaRenditionKind; width?: number | null } & LocationRelease = {}): Promise<OpenedImage> {
   assertPrincipal(principal);
   requireScope(principal, "read");
   const width = checkWidth(opts.width);
+  const asSupplied = locationAsked(principal, opts, width);
   const asset = await loadAsset(rt.db, principal.userId, assetId);
   if (!asset || asset.status === "deleted" || asset.status === "rejected") throw new CommandError("not_found", "no such image");
   const renditions = await loadRenditions(rt.db, principal.userId, assetId);
@@ -162,18 +220,21 @@ export async function openAssetImage(rt: MediaRuntime, principal: Principal, ass
   const chosen = variant === "display" ? pickDisplayRendition(renditions) : pickDisplayRendition(renditions, [variant as MediaRenditionKind]);
   if (!chosen) throw new CommandError("not_found", variant === "original" ? "the full-resolution original is no longer kept" : "no such image");
   if (chosen.kind === "original" && withheld) return metadataFreeCopy(rt, principal.userId, chosen);
-  return readRendition(rt, principal.userId, chosen, width);
+  return readRendition(rt, principal.userId, chosen, width, asSupplied);
 }
 
 /**
  * Mint a short-lived URL for one of the caller's own renditions. `audience` narrows what is allowed:
  * a provider job gets the default lifetime at most, and a selfie is never signed for anything that is
- * embedded in shared or public text (Calendar, web board).
+ * embedded in shared or public text (Calendar, web board). A link to an original serves it without its
+ * location data unless the owner asked for the photograph as supplied (`withLocation`); the choice is
+ * written into the signed token, so a link cannot be turned into one that releases more.
  */
-export async function signRenditionUrl(rt: MediaRuntime, principal: Principal, renditionId: string, opts: { width?: number | null; ttlSeconds?: number; audience?: "app" | "provider" | "calendar" } = {}): Promise<SignedMediaUrl> {
+export async function signRenditionUrl(rt: MediaRuntime, principal: Principal, renditionId: string, opts: { width?: number | null; ttlSeconds?: number; audience?: "app" | "provider" | "calendar" } & LocationRelease = {}): Promise<SignedMediaUrl> {
   assertPrincipal(principal);
   requireScope(principal, "read");
   const width = checkWidth(opts.width);
+  const asSupplied = locationAsked(principal, opts, width);
   const limits = limitsOf(rt.deps);
   const row = await loadActiveRendition(rt, principal.userId, renditionId);
   if (row.kind === "original" && originalsWithheld(principal)) throw new CommandError("not_found", "no such image");
@@ -190,7 +251,7 @@ export async function signRenditionUrl(rt: MediaRuntime, principal: Principal, r
   const requested = opts.ttlSeconds ?? limits.defaultUrlTtlSeconds;
   const ttl = Math.max(30, Math.min(requested, audience === "app" ? limits.maxUrlTtlSeconds : limits.defaultUrlTtlSeconds));
   const exp = Math.floor(rt.clock() / 1000) + ttl;
-  const token = await signClaims(rt.deps.signingKey, { p: "rendition", u: principal.userId, r: row.rendition_id, w: width ?? 0, exp });
+  const token = await signClaims(rt.deps.signingKey, { p: "rendition", u: principal.userId, r: row.rendition_id, w: width ?? 0, ...(asSupplied && row.kind === "original" ? { l: 1 as const } : {}), exp });
   return { url: `/v1/media/signed/${token}`, renditionId: row.rendition_id, width, expiresAt: toInstant(exp * 1000) };
 }
 
@@ -206,6 +267,7 @@ export async function serveSignedMedia(rt: MediaRuntime, token: string, request?
   const verified = await verifyToken(rt.deps.signingKey, token, "rendition", nowMs);
   if (!verified.ok) return denied();
   const { u: userId, r: renditionId, w, exp } = verified.claims;
+  const releasesLocation = verified.claims.l === 1;
   const owner = await first<{ status: string }>(rt.db, "SELECT status FROM users WHERE user_id = ?", userId);
   if (!owner || owner.status !== "active") return denied();
   let image: OpenedImage;
@@ -213,9 +275,11 @@ export async function serveSignedMedia(rt: MediaRuntime, token: string, request?
   try {
     const row = await loadActiveRendition(rt, userId, renditionId);
     const width = checkWidth(w);
-    etag = `"${row.sha256.slice(0, 32)}${width ? `-w${width}` : ""}"`;
+    // Only a link the owner asked for with the location data, to the stored original itself, serves it as supplied.
+    const asSupplied = releasesLocation && row.kind === "original" && width === null;
+    etag = `"${row.sha256.slice(0, 32)}${width ? `-w${width}` : row.kind === "original" && !asSupplied ? "-noloc" : ""}"`;
     if (request?.headers.get("if-none-match") === etag) return new Response(null, { status: 304, headers: { etag, "cache-control": "private, no-transform" } });
-    image = await readRendition(rt, userId, row, width);
+    image = await readRendition(rt, userId, row, width, asSupplied);
   } catch {
     return denied();
   }

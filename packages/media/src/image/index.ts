@@ -4,6 +4,7 @@ export * from "./raster.ts";
 export * from "./sniff.ts";
 export * from "./png.ts";
 export * from "./jpeg.ts";
+export * from "./location.ts";
 export { decodeImage } from "./decode.ts";
 export * from "./colour.ts";
 export * from "./cutout.ts";

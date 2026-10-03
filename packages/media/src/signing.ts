@@ -26,6 +26,8 @@ export interface RenditionClaims {
   r: string;
   /** thumbnail width, or 0 for the stored rendition */
   w: number;
+  /** 1 only when the owner asked, in their own app, for the photograph as supplied (with its location data). Absent otherwise. */
+  l?: 1;
   exp: number;
 }
 

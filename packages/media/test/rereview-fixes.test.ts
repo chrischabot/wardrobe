@@ -190,16 +190,19 @@ describe("re-review N4: the photograph as supplied reaches the owner only", () =
       expect(probeImage(new Uint8Array(await served.arrayBuffer()))!.exif.hasGps).toBe(false);
     }
 
-    // The owner, in their own app, still has the photograph exactly as supplied.
-    expect(await bytesOf((await openAssetImage(h.rt, owner.principal(), assetId, { variant: "original" })).body)).toEqual(tagged);
+    // The owner, in their own app, still has the photograph exactly as supplied, when they ask for it with its location data.
+    expect(await bytesOf((await openAssetImage(h.rt, owner.principal(), assetId, { variant: "original", withLocation: true })).body)).toEqual(tagged);
 
     // A PNG that is the only picture yet is served to the assistant as a PNG written again from its pixels.
     const png = await h.upload(owner, { garmentId: "trouser-olive", raster: syntheticTrousers({ size: 128 }), demo: true });
     const copy = await openAssetImage(h.rt, assistants[2]!, png.asset!.assetId);
     expect(copy.contentType).toBe("image/png");
     expect(probeImage(await bytesOf(copy.body))).toMatchObject({ format: "png", width: 128, height: 128 });
-    const mine = await serveSignedMedia(h.rt, tokenOf((await signRenditionUrl(h.rt, owner.principal(), original)).url));
+    // A link the owner asked for with the location data serves the photograph as supplied; a plain link does not.
+    const mine = await serveSignedMedia(h.rt, tokenOf((await signRenditionUrl(h.rt, owner.principal(), original, { withLocation: true })).url));
     expect(new Uint8Array(await mine.arrayBuffer())).toEqual(tagged);
+    const plain = await serveSignedMedia(h.rt, tokenOf((await signRenditionUrl(h.rt, owner.principal(), original)).url));
+    expect(probeImage(new Uint8Array(await plain.arrayBuffer()))!.exif.hasGps).toBe(false);
     // ...but never for an audience outside the app.
     expect(await code(signRenditionUrl(h.rt, owner.principal(), original, { audience: "calendar" }))).toBe("forbidden");
   });

@@ -16,7 +16,7 @@ import { all, allIn, assertPrincipal, CommandError, define, first, requireScope,
 import { planAssetRemoval } from "./commands/assets.ts";
 import { MediaSource } from "@garderobe/contracts/ext/media";
 import { execAs } from "./exec.ts";
-import { probeImage } from "./image/index.ts";
+import { probeImage, withoutLocation } from "./image/index.ts";
 import { assertOwnedKey, ownerPrefix } from "./keys.ts";
 import { limitsOf, resolveDeps, type MediaDepsSource, type MediaRuntime } from "./runtime.ts";
 import { enqueueJob, loadRenditions, type AssetRow } from "./store.ts";
@@ -59,20 +59,57 @@ function toRelative(file: unknown): string | null {
 }
 
 /**
+ * How the supplied photographs (the `original` files) leave in a package.
+ *
+ *  - `location_removed` (the default): every original is written without its location data and other
+ *    metadata (lossless; the image data is copied as it is), and the package's checksums describe the files
+ *    as written. An original in a format that cannot be rewritten here (HEIC) is left out and listed.
+ *  - `as_supplied`: the originals exactly as stored, location data included. For two callers only: the
+ *    owner, who chose it for this one export after being told what the files contain, and the service's
+ *    own backups, which never leave the service. An assistant, or anything on the `mcp` channel, cannot ask.
+ */
+export type ExportOriginals = "location_removed" | "as_supplied";
+
+export interface MediaExportOptions {
+  originals?: ExportOriginals;
+}
+
+function originalsMode(principal: Principal, opts: MediaExportOptions): ExportOriginals {
+  const mode = opts.originals ?? "location_removed";
+  if (mode !== "location_removed" && mode !== "as_supplied") throw new CommandError("invalid_command", "originals is either 'location_removed' or 'as_supplied'");
+  if (mode === "as_supplied" && ((principal.actor !== "owner" && principal.actor !== "system") || principal.channel === "mcp")) {
+    throw new CommandError("forbidden", "photographs are exported with their location data only when the owner asks for it in their own app", { reason: "owner_opt_in_required" });
+  }
+  return mode;
+}
+
+/**
  * Read one exported file of the caller's OWN media by its package-relative path (as listed in
  * `exportMediaData().assets[].file`). Returns null when there is no such file. Used by the code that
  * builds export and backup packages; it never reads outside the caller's own images.
+ *
+ * Pass the same `originals` choice as to `exportMediaData`. By default an original is returned without
+ * its location data (the bytes the package's checksum describes), and one that cannot be rewritten is
+ * not returned at all.
  */
-export async function readExportFile(rt: MediaRuntime, principal: Principal, file: string): Promise<ArrayBuffer | null> {
+export async function readExportFile(rt: MediaRuntime, principal: Principal, file: string, opts: MediaExportOptions = {}): Promise<ArrayBuffer | null> {
   assertPrincipal(principal);
   requireScope(principal, "read");
+  const mode = originalsMode(principal, opts);
   if (/^u\//.test(file) && !file.startsWith(ownerPrefix(principal.userId))) return null; // another owner's key in the earlier form
   const rest = toRelative(file);
   if (!rest) return null;
   const key = `${ownerPrefix(principal.userId)}${rest}`;
   assertOwnedKey(principal.userId, key);
   const object = await rt.deps.bucket.get(key);
-  return object ? object.arrayBuffer() : null;
+  if (!object) return null;
+  if (mode === "as_supplied") return object.arrayBuffer();
+  // Derived files are written by this package from pixels. Anything else (an original, or a file no record describes) is rewritten.
+  const record = await first<{ kind: string }>(rt.db, "SELECT kind FROM media_renditions WHERE user_id = ? AND object_key = ?", principal.userId, key);
+  if (record && record.kind !== "original") return object.arrayBuffer();
+  const clean = withoutLocation(new Uint8Array(await object.arrayBuffer()));
+  if (!clean.ok) return null;
+  return clean.bytes.buffer.slice(clean.bytes.byteOffset, clean.bytes.byteOffset + clean.bytes.byteLength) as ArrayBuffer;
 }
 
 type Row = Record<string, unknown>;
@@ -87,11 +124,17 @@ export interface MediaExportFile {
   contentType: string;
   byteLength: number;
   sha256: string;
+  /** For an original: `removed` when the file is written without its location data, `as_supplied` when it is the stored photograph. */
+  location?: "removed" | "as_supplied";
 }
 
 export interface MediaExport {
   format: typeof MEDIA_EXPORT_FORMAT;
   exportedAt: string;
+  /** How the supplied photographs were written (see `ExportOriginals`). */
+  originals: ExportOriginals;
+  /** Originals left out because their location data could not be removed; their derived copies are included. */
+  withheldOriginals: { assetId: string; renditionId: string; reason: string }[];
   records: {
     assets: Row[];
     renditions: Row[];
@@ -114,9 +157,10 @@ function strip(rows: Row[]): Row[] {
   return rows.map(({ user_id: _owner, command_id: _command, ...rest }) => rest);
 }
 
-export async function exportMediaData(rt: MediaRuntime, principal: Principal): Promise<MediaExport> {
+export async function exportMediaData(rt: MediaRuntime, principal: Principal, opts: MediaExportOptions = {}): Promise<MediaExport> {
   assertPrincipal(principal);
   requireScope(principal, "read");
+  const mode = originalsMode(principal, opts);
   const u = principal.userId;
   const q = (sql: string) => all<Row>(rt.db, sql, u);
   const assets = await q("SELECT * FROM media_assets WHERE user_id = ? AND status NOT IN ('deleted', 'rejected') ORDER BY created_at, asset_id");
@@ -125,13 +169,39 @@ export async function exportMediaData(rt: MediaRuntime, principal: Principal): P
   const renditions = await q("SELECT r.* FROM media_renditions r JOIN media_assets a ON a.user_id = r.user_id AND a.asset_id = r.asset_id WHERE r.user_id = ? AND (r.status IN ('active', 'superseded') OR (r.status = 'deleted' AND r.kind = 'original')) AND a.status NOT IN ('deleted', 'rejected') ORDER BY r.created_at, r.rendition_id");
   const deleted = await all<{ asset_id: string; deleted_at: string | null }>(rt.db, "SELECT asset_id, deleted_at FROM media_assets WHERE user_id = ? AND status IN ('deleted', 'rejected') ORDER BY asset_id", u);
   const live = new Set(assets.map((a) => a.asset_id as string));
+  // By default the supplied photographs leave without their location data. The package's records and
+  // checksums describe each original as it is written, so an import verifies exactly those bytes.
+  const rewritten = new Map<string, { sha256: string; byteLength: number }>();
+  const withheld = new Map<string, string>();
+  if (mode === "location_removed") {
+    for (const r of renditions) {
+      if (r.kind !== "original" || r.status === "deleted") continue;
+      assertOwnedKey(u, r.object_key as string);
+      const object = await rt.deps.bucket.get(r.object_key as string);
+      if (!object) continue; // a missing file stays listed; the package builder reports it as missing
+      const clean = withoutLocation(new Uint8Array(await object.arrayBuffer()));
+      if (clean.ok) rewritten.set(r.rendition_id as string, { sha256: await sha256Hex(clean.bytes), byteLength: clean.bytes.length });
+      else withheld.set(r.rendition_id as string, clean.reason);
+    }
+  }
+  const withoutItsLocation = new Set(renditions.filter((r) => rewritten.has(r.rendition_id as string) || withheld.has(r.rendition_id as string)).map((r) => r.asset_id as string));
+  const asWritten = (r: Row): Row => {
+    const id = r.rendition_id as string;
+    // A withheld original is exported as a record without a file, as a purged selfie original is, so the copies derived from it keep their recorded source.
+    if (withheld.has(id)) return { ...r, status: "deleted" };
+    const written = rewritten.get(id);
+    return written ? { ...r, sha256: written.sha256, byte_length: written.byteLength } : r;
+  };
   return {
     format: MEDIA_EXPORT_FORMAT,
     exportedAt: toInstant(rt.clock()),
+    originals: mode,
+    withheldOriginals: renditions.filter((r) => withheld.has(r.rendition_id as string)).map((r) => ({ assetId: r.asset_id as string, renditionId: r.rendition_id as string, reason: withheld.get(r.rendition_id as string)! })),
     records: {
       // upload_id points at an upload authorization, which is not exported; the dangling reference is dropped.
-      assets: strip(assets).map(({ upload_id: _upload, ...a }) => a),
-      renditions: strip(renditions).map(({ object_key, ...r }) => ({ ...r, file: relativeFile(u, object_key as string) })),
+      // had_location_metadata describes the file in this package: 0 once the location data has been left out.
+      assets: strip(assets).map(({ upload_id: _upload, ...a }) => (withoutItsLocation.has(a.asset_id as string) ? { ...a, had_location_metadata: 0 } : a)),
+      renditions: strip(renditions).map(asWritten).map(({ object_key, ...r }) => ({ ...r, file: relativeFile(u, object_key as string) })),
       fidelityChecks: strip((await q("SELECT * FROM media_fidelity_checks WHERE user_id = ? ORDER BY created_at, check_id")).filter((f) => live.has(f.asset_id as string))),
       garmentMedia: strip(await q("SELECT * FROM garment_media WHERE user_id = ? ORDER BY garment_id")),
       discoveryAttempts: strip(await q("SELECT * FROM media_discovery_attempts WHERE user_id = ? ORDER BY created_at, attempt_id")),
@@ -143,10 +213,18 @@ export async function exportMediaData(rt: MediaRuntime, principal: Principal): P
       composites: strip(await q("SELECT manifest_hash, manifest_json, template_version, created_at, user_id FROM outfit_composites WHERE user_id = ? ORDER BY manifest_hash")),
       deletedAssets: deleted.map((d) => ({ assetId: d.asset_id, deletedAt: d.deleted_at })),
     },
-    assets: renditions.filter((r) => r.status !== "deleted").map((r) => {
-      return { assetId: r.asset_id as string, renditionId: r.rendition_id as string, kind: r.kind as string, file: relativeFile(u, r.object_key as string), contentType: r.content_type as string, byteLength: r.byte_length as number, sha256: r.sha256 as string };
+    assets: renditions.filter((r) => r.status !== "deleted" && !withheld.has(r.rendition_id as string)).map((r) => {
+      const written = rewritten.get(r.rendition_id as string);
+      return {
+        assetId: r.asset_id as string, renditionId: r.rendition_id as string, kind: r.kind as string, file: relativeFile(u, r.object_key as string), contentType: r.content_type as string,
+        byteLength: written?.byteLength ?? (r.byte_length as number), sha256: written?.sha256 ?? (r.sha256 as string),
+        ...(r.kind === "original" ? { location: mode === "as_supplied" ? ("as_supplied" as const) : ("removed" as const) } : {}),
+      };
     }),
     notes: [
+      mode === "as_supplied"
+        ? "The supplied photographs (kind 'original') are included exactly as stored, with whatever location data and other metadata they carry."
+        : "The supplied photographs (kind 'original') are written without their location data and other metadata; the picture itself is unchanged, and each checksum describes the file as written. An original whose location data could not be removed is left out and listed in withheldOriginals.",
       "Rows are the stored records with snake_case column names; *_json fields hold JSON text. `file` on a rendition and in the file list is its path inside this package, relative to the package's media folder.",
       "Each rendition names the rendition it was derived from (source_rendition_id) and lists its transformation steps (transformations_json); edited = 1 means a generative step contributed and the image is not evidence for fabric or fit.",
       "is_demo = 1 marks a labelled demo placeholder; kind 'generic_illustration' is an illustration, never a photograph of the garment.",
@@ -456,6 +534,14 @@ export async function importMediaData(
     if (!probe || !IMPORTABLE_TYPES.has(probe.contentType)) {
       rejected.push(name);
       continue;
+    }
+    // A derived file is written by this service from pixels and carries no metadata. One that does was not made here.
+    if (file.kind !== "original") {
+      const clean = withoutLocation(bytes);
+      if (clean.ok && clean.changed) {
+        rejected.push(name);
+        continue;
+      }
     }
     const key = `${ownerPrefix(u)}${rest}`;
     assertOwnedKey(u, key);

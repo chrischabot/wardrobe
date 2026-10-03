@@ -43,12 +43,22 @@ export function bindEnv(env: Env): void {
 
 export const mediaConfigured = (env: Env): boolean => Boolean(env.MEDIA_BUCKET && env.MEDIA_SIGNING_KEY && env.MEDIA_SIGNING_KEY.length >= 32);
 
-let mediaDeps: MediaDeps | null = null;
+// One set of media dependencies per set of bindings (as `appFor` keeps one application per set), so a
+// second set of bindings in the same isolate never gets the first one's bucket, key or daily service.
+const mediaDepsByEnv = new WeakMap<object, MediaDeps>();
 
 export function mediaDepsFor(env: Env): MediaDeps {
   if (!mediaConfigured(env)) throw new CommandError("precondition_failed", "image storage is not configured in this deployment");
-  mediaDeps ??= depsFromBindings({ DB: env.DB, MEDIA_BUCKET: env.MEDIA_BUCKET!, MEDIA_QUEUE: env.MEDIA_QUEUE as never, IMAGES: env.IMAGES as never, MEDIA_SIGNING_KEY: env.MEDIA_SIGNING_KEY! }, { validator: createStudioValidator(async () => (await import("../app.ts")).appFor(env).daily) });
-  return mediaDeps;
+  let deps = mediaDepsByEnv.get(env);
+  if (!deps) {
+    const forecastSource = async () => {
+      const app = (await import("../app.ts")).appFor(env);
+      return app.daily ? { weather: (principal: Principal, date: string | undefined) => app.daily!.weather(principal, date), now: () => app.now() } : null;
+    };
+    deps = depsFromBindings({ DB: env.DB, MEDIA_BUCKET: env.MEDIA_BUCKET!, MEDIA_QUEUE: env.MEDIA_QUEUE as never, IMAGES: env.IMAGES as never, MEDIA_SIGNING_KEY: env.MEDIA_SIGNING_KEY! }, { validator: createStudioValidator(forecastSource) });
+    mediaDepsByEnv.set(env, deps);
+  }
+  return deps;
 }
 
 /**

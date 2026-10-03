@@ -37,7 +37,7 @@ export type { BackgroundRemover, DiscoveryCandidatePage, DiscoveryGarment, Disco
 export { EDIT_CONSTRAINTS } from "./adapters.ts";
 export { authorizeUpload, finalizeUpload, getUploadStatus, importImageBytes, mintUploadAuthorization, receiveUploadContent } from "./uploads.ts";
 export { garmentImageRefs, getAsset, getBackfillEstimate, getGarmentMedia, listMediaReview, listPhotosNeeded } from "./reads.ts";
-export { MEDIA_RESPONSE_HEADERS, openAssetImage, openRendition, purgeOwnerMediaCache, SERVABLE_IMAGE_TYPES, serveSignedMedia, signRenditionUrl, type OpenedImage } from "./delivery.ts";
+export { MEDIA_RESPONSE_HEADERS, openAssetImage, openRendition, purgeOwnerMediaCache, SERVABLE_IMAGE_TYPES, serveSignedMedia, signRenditionUrl, type LocationRelease, type OpenedImage } from "./delivery.ts";
 export { dispatchMediaJobs, getMediaStorageStatus, handleMediaQueue, listMediaJobs, runMediaJob, runQueuedMediaJobs, type MediaStorageStatus } from "./jobs.ts";
 export { runMediaMaintenance, type MaintenanceResult } from "./maintenance.ts";
 export { composeOutfit, getComposition, getStudioSelectors, knownCombinationsForGarment, listStudioCombinations, listStudioDayPlans, openCompositePreview, requestCompositePreview, suggestStudioOutfits, validateStudioOutfit } from "./studio/reads.ts";
@@ -49,5 +49,6 @@ export { createCloudflareImagesTranscoder, createCloudflareImagesBackgroundRemov
 export { createPurchaseLinkProvider, extractProductPage, sameDocument } from "./pipeline/purchase-link.ts";
 export { createDohResolver, createSafeImageFetcher, isPrivateAddress, refuseUrl, safeFetch, type HostResolver } from "./pipeline/safe-fetch.ts";
 export { evaluateCandidate } from "./pipeline/evaluate.ts";
-export { exportMediaData, importMediaData, listMediaDeletions, readExportFile, replayMediaDeletions, MEDIA_DELETIONS_FORMAT, type MediaDeletionJournal, type MediaExport, type MediaExportFile } from "./portability.ts";
+export { exportMediaData, importMediaData, listMediaDeletions, readExportFile, replayMediaDeletions, MEDIA_DELETIONS_FORMAT, type ExportOriginals, type MediaDeletionJournal, type MediaExport, type MediaExportFile, type MediaExportOptions } from "./portability.ts";
+export { withoutLocation, type LocationFree } from "./image/location.ts";
 export { ownerPrefix } from "./keys.ts";
