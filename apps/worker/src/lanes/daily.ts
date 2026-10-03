@@ -52,6 +52,17 @@ export interface DailyPortOptions {
 /** How long after a resume its board is still prepared by the scheduled sweep when the first attempt did not finish. */
 const RESUME_FOLLOW_UP_MS = 3 * 3600_000;
 
+/**
+ * The day whose board a resume is to prepare, fixed by the moment of the resume: that day when the owner
+ * resumed before midday in their timezone, otherwise the day after (the daily service's rule for the next
+ * useful board). It never moves with the time at which the follow-up happens to run.
+ */
+export function resumeTargetDay(resumedAtMs: number, timezone: string): string {
+  const day = localDateOf(resumedAtMs, timezone);
+  const hour = Number(new Intl.DateTimeFormat("en-GB", { timeZone: timezone, hour: "2-digit", hourCycle: "h23" }).format(new Date(resumedAtMs)));
+  return hour < 12 ? day : addDays(day, 1);
+}
+
 export function createDailyPort(ctx: LaneContext, options: DailyPortOptions = {}): DailyPort {
   const { env, db } = ctx;
   const outbound = ((input: string, init?: RequestInit) => fetch(input, init)) as never;
@@ -87,38 +98,35 @@ export function createDailyPort(ctx: LaneContext, options: DailyPortOptions = {}
    * owner set goes through the daily service's own `resumeService` and is not handled here.
    *
    * The steps are those `resumeService` takes after the command: the weekly cleanliness baselines that
-   * elapsed during the pause, then the next useful board (today's before midday in the owner's timezone,
-   * otherwise tomorrow's), composed by the daily service's `prepareBoard`. A board that already exists for
+   * elapsed during the pause, then the next useful board, composed by the daily service's `prepareBoard`.
+   * The day is fixed by the moment of the resume (`resumeTargetDay`). A board that already exists for
    * that day (prepared before the pause, or made by the owner since) is the next useful board and is left
-   * as it is: the resume command restores its Calendar event, and the ordinary refresh and repair keep it
-   * current. Both steps run as the system for that owner and carry keys derived from the resume command,
-   * so running this again writes nothing twice. Until the day has a board the scheduled sweep tries again
-   * for a few hours, so a follow-up that was cut short is not lost and a resume made in conversation is
-   * covered too. Nothing from the paused days is prepared.
+   * as it is: the resume command restores its Calendar event, the ordinary refresh and repair keep it
+   * current, and the scheduled sweep applies due weekly baselines as always. Both steps run as the system
+   * for that owner and carry keys derived from the resume command, so running this again writes nothing
+   * twice. Until the day has a board the scheduled sweep tries again for a few hours, so a follow-up that
+   * was cut short is not lost and a resume made in conversation is covered too. Nothing from the paused
+   * days is prepared.
    */
   const followUpResumes = async (nowMs: number, userId?: string): Promise<void> => {
-    const ended = await all<{ user_id: string; command_id: string }>(
+    // Each owner's latest resume inside the window, when the owner is not paused again. Not truncated: the
+    // window bounds it, and a resume whose day already has a board costs one read.
+    const ended = await all<{ user_id: string; command_id: string; ended_at: string }>(
       db,
-      `SELECT p.user_id, p.ended_by_command_id AS command_id FROM service_pauses p
+      `SELECT p.user_id, p.ended_by_command_id AS command_id, p.ended_at FROM service_pauses p
          JOIN commands c ON c.user_id = p.user_id AND c.command_id = p.ended_by_command_id AND c.actor != 'system'
         WHERE p.status = 'ended' AND unixepoch(p.ended_at) > ? AND (? IS NULL OR p.user_id = ?)
           AND NOT EXISTS (SELECT 1 FROM service_pauses a WHERE a.user_id = p.user_id AND a.status = 'active')
-        ORDER BY unixepoch(p.ended_at) DESC LIMIT 50`,
+          AND NOT EXISTS (SELECT 1 FROM service_pauses l WHERE l.user_id = p.user_id AND l.status = 'ended' AND (unixepoch(l.ended_at) > unixepoch(p.ended_at) OR (unixepoch(l.ended_at) = unixepoch(p.ended_at) AND l.pause_id > p.pause_id)))`,
       Math.floor((nowMs - RESUME_FOLLOW_UP_MS) / 1000), userId ?? null, userId ?? null,
     );
-    const seen = new Set<string>();
     for (const pause of ended) {
-      // Only the latest resume of an owner matters: an earlier one was followed by another pause.
-      if (seen.has(pause.user_id)) continue;
-      seen.add(pause.user_id);
       try {
         const system = createPrincipal({ userId: pause.user_id, actor: "system", channel: "system", scopes: ["read", "write"], authRef: `daily:resume:${pause.command_id}` });
-        const timezone = (await getSettings(db, system)).settings.timezone;
-        const today = localDateOf(nowMs, timezone);
-        const hour = Number(new Intl.DateTimeFormat("en-GB", { timeZone: timezone, hour: "2-digit", hourCycle: "h23" }).format(new Date(nowMs)));
-        const localDate = hour < 12 ? today : addDays(today, 1);
-        await ctx.service.execute(system, { type: "laundry.apply_weekly_reset", payload: {}, idempotencyKey: `resume-weekly-reset:${pause.command_id}`, expectedVersions: {}, authorization: "standing_policy", source: { channel: "system" } });
+        const localDate = resumeTargetDay(Date.parse(pause.ended_at), (await getSettings(db, system)).settings.timezone);
+        // Followed up already: the day has its board (prepared before the pause, by this follow-up, or by the owner).
         if (await first(db, "SELECT 1 AS x FROM boards WHERE user_id = ? AND local_date = ? AND scope = 'home'", pause.user_id, localDate)) continue;
+        await ctx.service.execute(system, { type: "laundry.apply_weekly_reset", payload: {}, idempotencyKey: `resume-weekly-reset:${pause.command_id}`, expectedVersions: {}, authorization: "standing_policy", source: { channel: "system" } });
         await prepareBoard(deps, system, { localDate, reason: "compose", purpose: "resume", idempotencyKey: `resume-board:${pause.command_id}`, nowMs });
       } catch (error) {
         console.warn("the board after a resume was not prepared; the scheduled sweep tries again", String((error as Error)?.message ?? error));

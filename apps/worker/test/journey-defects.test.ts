@@ -1,4 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
+import { gatewayUsageLookup } from "../src/lanes/assistant.ts";
+import { resumeTargetDay } from "../src/lanes/daily.ts";
+import { MAX_VALUE_CHARS } from "../src/proposals/store.ts";
 import { connectMcp, enableFakeModel, ownerDay, provisionOwner, testApp, toolResult, type FakeModel, type TestOwner } from "../src/testing/index.ts";
 
 /*
@@ -123,8 +126,27 @@ describe("D10-1: resuming in the app prepares the next useful board", () => {
     expect(await boardsOf()).toBe(0);
     await app.daily!.scheduled(Date.now());
     expect(await boardsOf()).toBe(1);
+    // The board is for the day the moment of the resume fixes; later sweeps prepare nothing more in the resume's name.
+    const ended = (await app.db.prepare("SELECT ended_at FROM service_pauses WHERE user_id = ? AND status = 'ended'").bind(other.userId).first<{ ended_at: string }>())!.ended_at;
+    const target = resumeTargetDay(Date.parse(ended), "Europe/London");
+    const days = async () => (await app.db.prepare("SELECT local_date FROM boards WHERE user_id = ?").bind(other.userId).all<{ local_date: string }>()).results.map((r) => r.local_date);
+    expect(await days()).toEqual([target]);
+    const resumeBoards = async () => ((await app.db.prepare("SELECT COUNT(*) AS n FROM commands WHERE user_id = ? AND type = 'board.publish' AND substr(idempotency_key, 1, 13) = 'resume-board:'").bind(other.userId).first<{ n: number }>())!.n);
+    expect(await resumeBoards()).toBe(1);
     await app.daily!.scheduled(Date.now());
-    expect(await boardsOf()).toBe(1);
+    await app.daily!.afterCommit(other.systemPrincipal);
+    expect(await resumeBoards()).toBe(1);
+    expect(await days()).toContain(target);
+  });
+
+  it("fixes the day by the moment of the resume in the owner's timezone: that day before midday, the next day from midday on", () => {
+    expect(resumeTargetDay(Date.parse("2026-10-03T07:30:00Z"), "Europe/London")).toBe("2026-10-03"); // 08:30 in London
+    expect(resumeTargetDay(Date.parse("2026-10-03T10:59:00Z"), "Europe/London")).toBe("2026-10-03"); // 11:59
+    expect(resumeTargetDay(Date.parse("2026-10-03T11:00:00Z"), "Europe/London")).toBe("2026-10-04"); // midday
+    expect(resumeTargetDay(Date.parse("2026-10-03T22:59:00Z"), "Europe/London")).toBe("2026-10-04"); // 23:59
+    expect(resumeTargetDay(Date.parse("2026-10-03T23:30:00Z"), "Europe/London")).toBe("2026-10-04"); // 00:30 on the 4th
+    expect(resumeTargetDay(Date.parse("2026-10-03T23:30:00Z"), "America/New_York")).toBe("2026-10-04"); // 19:30 on the 3rd
+    expect(resumeTargetDay(Date.parse("2026-12-31T23:30:00Z"), "Europe/London")).toBe("2027-01-01");
   });
 });
 
@@ -164,5 +186,80 @@ describe("D14-1, D07-1: the request the owner confirms is in words", () => {
     expect(decided.receipt).toMatchObject({ type: "trip.update", outcome: "committed" });
     expect((await owner.api.json("GET", `/v1/trips/${tripId}`)).name).toBe("Synthetic trip to Lyon (test fixture)");
     await mcp.close();
+  });
+
+  it("lists a stored request that cannot be shown in full with a plain statement, never as raw fields, and lets the owner reject but not confirm it", async () => {
+    const owner = await provisionOwner();
+    const app = await testApp();
+    // TEST SETUP standing in for a request kept before the bounds existed: written straight into the test database.
+    const text = `Synthetic amendment kept earlier (test fixture). ${"z".repeat(MAX_VALUE_CHARS + 500)}`;
+    const payload = { documentId: "owner-profile", text, kind: "taste", source: { kind: "owner_statement" } };
+    const proposalId = `prp_${"0".repeat(31)}1`;
+    await app.db
+      .prepare("INSERT INTO submitted_proposals (user_id, proposal_id, origin, source_ref, grant_id, turn_id, idempotency_key, request_hash, command_type, payload_json, expected_versions_json, occurred_at, created_at) VALUES (?, ?, 'typed_command', 'grant-fixture', NULL, NULL, 'kept-earlier-0001', 'fixture', 'style.add_amendment', ?, '{}', NULL, ?)")
+      .bind(owner.userId, proposalId, JSON.stringify(payload), new Date().toISOString().replace(/\.\d{3}Z$/, "Z"))
+      .run();
+    const [shown] = (await owner.api.json("GET", "/v1/proposals")).proposals as any[];
+    expect(shown).toMatchObject({ proposalId, type: "style.add_amendment", state: "pending" });
+    expect(shown.summary).toBe("Add an amendment to My style. This request cannot be shown to you in full, so it cannot be confirmed. Reject it; if the change is still wanted, it can be asked for again in a shorter form.");
+    expect(shown.summary).not.toMatch(/[{}]|":|zzzz/);
+    const refused = await owner.api.post(`/v1/proposals/${proposalId}/decision`, { decision: "confirm" });
+    expect(refused.status).toBe(409);
+    expect(((await refused.json()) as any).error).toMatchObject({ code: "precondition_failed", details: { reason: "not_shown_in_full" } });
+    expect((await app.db.prepare("SELECT COUNT(*) AS n FROM commands WHERE user_id = ? AND type = 'style.add_amendment'").bind(owner.userId).first<{ n: number }>())!.n).toBe(0);
+    expect((await owner.api.post(`/v1/proposals/${proposalId}/decision`, { decision: "reject" })).status).toBe(200);
+    expect((await owner.api.json("GET", "/v1/proposals")).proposals).toEqual([]);
+  });
+});
+
+describe("D11-1 at scale: every waiting question is counted, and only those", () => {
+  it("counts all of many waiting runs and none of many answered ones, whatever the registry's stale copy says", async () => {
+    const owner = await provisionOwner();
+    const model = await enableFakeModel(owner);
+    const app = await testApp();
+    model.script({ toolCalls: [{ toolName: "ask_owner", input: { question: "Which blazer do you mean?", choices: [] } }] }, { text: "One moment." });
+    const accepted = await owner.api.json("POST", "/v1/conversation/turns", { clientTurnId: `turn-${crypto.randomUUID()}`, text: "What goes with the blazer?" });
+    for (let i = 0; i < 200 && (await recovery(owner)).pending.runsNeedingInput === 0; i++) await sleep(25);
+    // TEST SETUP: 120 further turns and their registry rows, copied from the real waiting one. Sixty still
+    // wait; sixty were answered (the assistant's record says completed) while the registry's copy was never
+    // refreshed and still says they wait.
+    const turn = (await app.db.prepare("SELECT * FROM assistant_turns WHERE user_id = ? AND turn_id = ?").bind(owner.userId, accepted.runId).first<Record<string, unknown>>())!;
+    const run = (await app.db.prepare("SELECT * FROM api_runs WHERE user_id = ? AND run_id = ?").bind(owner.userId, accepted.runId).first<Record<string, unknown>>())!;
+    const insert = (table: string, row: Record<string, unknown>) => app.db.prepare(`INSERT INTO ${table} (${Object.keys(row).join(", ")}) VALUES (${Object.keys(row).map(() => "?").join(", ")})`).bind(...Object.values(row));
+    const statements = Array.from({ length: 120 }, (_, i) => [
+      insert("assistant_turns", { ...turn, turn_id: `${turn.turn_id}-copy-${i}`, submission_id: `${turn.submission_id}-copy-${i}`, user_message_id: `${turn.user_message_id}-copy-${i}`, status: i < 60 ? "needs_input" : "completed" }),
+      insert("api_runs", { ...run, run_id: `${run.run_id}-copy-${i}`, client_request_id: `${run.client_request_id}-copy-${i}`, state: "needs_input" }),
+    ]).flat();
+    for (let i = 0; i < statements.length; i += 50) await app.db.batch(statements.slice(i, i + 50));
+    expect((await recovery(owner)).pending.runsNeedingInput).toBe(61);
+  });
+});
+
+describe("the Gateway-logs lookup for uncertain inference reservations", () => {
+  const call = { gatewayId: "garderobe-test", runId: "trn_fixture_run", attempt: 1, task: "conversation", reservedAt: "2026-10-03T10:00:00Z" };
+
+  it("is not built unless the account, the read-only token and the gateway are all configured", () => {
+    expect(gatewayUsageLookup({})).toBeNull();
+    expect(gatewayUsageLookup({ AI_GATEWAY_ID: "garderobe-test", AI_GATEWAY_ACCOUNT_ID: "acct-fixture" })).toBeNull();
+    expect(gatewayUsageLookup({ AI_GATEWAY_ID: "garderobe-test", AI_GATEWAY_LOGS_TOKEN: "token-fixture" })).toBeNull();
+    expect(gatewayUsageLookup({ AI_GATEWAY_ACCOUNT_ID: "acct-fixture", AI_GATEWAY_LOGS_TOKEN: "token-fixture" })).toBeNull();
+  });
+
+  it("reads this deployment's own gateway with the configured account and token, and no other gateway (FAKE logs endpoint)", async () => {
+    const requests: { url: string; authorization: string | null }[] = [];
+    const fakeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({ url: String(input), authorization: new Headers(init?.headers).get("Authorization") });
+      const entry = { id: "log-fixture-1", success: true, cached: false, model: "fixture-model", tokens_in: 120, tokens_out: 30, metadata: JSON.stringify({ garderobe_run: call.runId, garderobe_attempt: 1 }) };
+      return new Response(JSON.stringify({ success: true, result: [entry], result_info: { total_count: 1 } }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+    const lookup = gatewayUsageLookup({ AI_GATEWAY_ID: "garderobe-test", AI_GATEWAY_ACCOUNT_ID: "acct-fixture", AI_GATEWAY_LOGS_TOKEN: "token-fixture" }, fakeFetch)!;
+    expect(lookup).not.toBeNull();
+    expect(await lookup.find(call)).toMatchObject({ status: "charged", inputTokens: 120, outputTokens: 30 });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.url).toContain("/accounts/acct-fixture/ai-gateway/gateways/garderobe-test/logs");
+    expect(requests[0]!.authorization).toBe("Bearer token-fixture");
+    // A reservation that names another gateway is never looked up with this deployment's token.
+    await expect(lookup.find({ ...call, gatewayId: "someone-elses-gateway" })).rejects.toThrow();
+    expect(requests).toHaveLength(1);
   });
 });

@@ -246,17 +246,17 @@ export async function answerRunInput(app: App, principal: Principal, runId: stri
 }
 
 /**
- * How many of the owner's runs wait for an answer from them right now. The registry's stored state is
- * only a copy that is brought up to date when a run is read, so the runs it holds as unfinished are read
- * from the assistant (the authority) first: one that was answered, finished or cancelled since is no
- * longer counted, and one that began to wait while nobody was reading it is.
+ * How many of the owner's runs wait for an answer from them right now. For conversation runs this is
+ * counted from the assistant's own record of its turns (the authority), not from the registry's stored
+ * state, which is only a copy brought up to date when a run is read: a question that was answered,
+ * finished or cancelled is never counted, a question nobody has read yet is, and no run is left out
+ * however many there are. Runs of any other provider are counted from the registry, which is their only
+ * record.
  */
 export async function runsNeedingInput(app: App, principal: Principal): Promise<number> {
-  if (app.assistant) {
-    const open = await all<{ run_id: string }>(app.db, "SELECT run_id FROM api_runs WHERE user_id = ? AND provider = 'assistant' AND state IN ('queued', 'running', 'needs_input') ORDER BY created_at DESC LIMIT 50", principal.userId);
-    for (const { run_id } of open) await getRun(app, principal, run_id).catch(() => undefined);
-  }
-  return (await first<{ n: number }>(app.db, "SELECT COUNT(*) AS n FROM api_runs WHERE user_id = ? AND state = 'needs_input'", principal.userId))?.n ?? 0;
+  const count = async (sql: string) => (await first<{ n: number }>(app.db, sql, principal.userId))?.n ?? 0;
+  const others = await count("SELECT COUNT(*) AS n FROM api_runs WHERE user_id = ? AND provider != 'assistant' AND state = 'needs_input'");
+  return others + (await count("SELECT COUNT(*) AS n FROM assistant_turns WHERE user_id = ? AND status = 'needs_input'"));
 }
 
 /* ------------------------------------------------------------------ */

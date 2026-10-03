@@ -246,16 +246,6 @@ const LABELS: Record<string, string> = {
   "wear.amend": "Change a recorded wear",
 };
 
-/**
- * A value exactly as it would be stored, written as JSON: text in straight quotation marks with line
- * breaks and control characters as escapes, numbers, lists and nested records in full. Nothing is cut,
- * collapsed or trimmed. Characters that could make the line read differently from what is stored are
- * written as visible escapes too: invisible and direction-changing characters, and characters that look
- * like the closing quotation mark.
- */
-const MISLEADING = /[\u007f-\u009f\u02ba\u02dd\u02ee\u201c-\u201f\u2028\u2029\u2033\u2036\u3003\u301d-\u301f\uff02]|\p{Cf}/gu;
-const shown = (value: unknown): string => JSON.stringify(value).replace(MISLEADING, (c) => `\\u{${c.codePointAt(0)!.toString(16)}}`);
-
 /** The longest summary the owner is asked to read, and the longest single value in it. A request that needs more is refused, never shortened. */
 export const MAX_SUMMARY_CHARS = MAX_SUMMARY;
 export const MAX_VALUE_CHARS = MAX_SHOWN_VALUE;
@@ -288,51 +278,21 @@ export async function canBeShownInFull(db: Db, userId: string, type: string, pay
   }
 }
 
-/** Every garment identifier that appears anywhere in a payload. */
-export function garmentIdsIn(value: unknown, into: Set<string> = new Set()): Set<string> {
-  if (typeof value === "string") {
-    if (/^gmt_[A-Za-z0-9_-]+$/.test(value)) into.add(value);
-  } else if (Array.isArray(value)) {
-    for (const v of value) garmentIdsIn(v, into);
-  } else if (value && typeof value === "object") {
-    for (const v of Object.values(value)) garmentIdsIn(v, into);
-  }
-  return into;
-}
-
-/** What the ledger says about the things a payload refers to by identifier, for the owner's summary. */
-export interface ProposalReferences {
-  /** Name by garment identifier, for the owner's own garments. */
-  garments: Map<string, string>;
-  /** Type and date of the command a `command.undo` would undo. */
-  commands: Map<string, { type: string; recordedAt: string }>;
-}
-
 /**
- * The fallback summary, used only when `describeSubmittedChange` cannot describe a stored request (so a
- * request the owner must still be able to see and reject is never missing from the list): written here
- * from the command type and the exact payload that would
- * run, never taken from a model or from the requesting assistant. Text values are shown in quotation
- * marks so they read as content of the request, not as a statement by Garderobe. Every field of the
- * request is listed and every value is shown in full (see `shown`): the owner confirms exactly this
- * payload, so nothing of it may be left out or shortened. Because the summary is derived from the stored payload each time it is
- * read, it cannot differ from what would run. Identifiers are followed by what the ledger holds under
- * them, so the owner reads a name and not only an identifier; an identifier that names nothing of the
- * owner's is said to name nothing.
+ * What the owner reads for a stored request, and whether it may be confirmed. A request that cannot be
+ * described in full (it was kept before the bounds existed, or describing it failed) is still listed, so
+ * the owner can see that it is there and reject it, but with a plain statement instead of its content and
+ * marked as not confirmable: the owner never confirms what they were not shown, and never reads raw
+ * fields or identifiers in its place.
  */
-export function describeProposedChange(type: string, payload: Record<string, unknown>, refs?: ProposalReferences): string {
-  const fields = Object.entries(payload)
-    .filter(([, value]) => value !== undefined)
-    .map(([key, value]) => `${shown(key).slice(1, -1)}: ${shown(value)}`);
-  const notes: string[] = [];
-  if (refs) {
-    const ids = [...garmentIdsIn(payload)];
-    const named = ids.map((id) => (refs.garments.has(id) ? `${shown(refs.garments.get(id)!)} (${id})` : `${id} is not a garment in this wardrobe`));
-    if (named.length) notes.push(`Garments: ${named.join(", ")}.`);
-    if (type === "command.undo" && typeof payload.commandId === "string") {
-      const target = refs.commands.get(payload.commandId);
-      notes.push(target ? `The change to undo: ${target.type}, recorded ${target.recordedAt}.` : "The change to undo was not found.");
-    }
+export async function summaryForOwner(db: Db, userId: string, type: string, payload: Record<string, unknown>): Promise<{ summary: string; showable: boolean }> {
+  try {
+    return { summary: await describeSubmittedChange(db, userId, type, payload), showable: true };
+  } catch {
+    return { summary: notShownSummary(type), showable: false };
   }
-  return `${LABELS[type] ?? `Run the command ${type}`}${fields.length ? ` (${fields.join("; ")})` : ""}${notes.length ? `. ${notes.join(" ")}` : ""}`;
 }
+
+/** The statement shown in place of a request that cannot be put before the owner in full. */
+export const notShownSummary = (type: string): string =>
+  `${LABELS[type] ?? "A change to your records"}. This request cannot be shown to you in full, so it cannot be confirmed. Reject it; if the change is still wanted, it can be asked for again in a shorter form.`;
