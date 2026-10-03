@@ -54,8 +54,9 @@ function errorText(e: unknown): string {
  *      effect and outbox rows in ONE D1 batch. The first statements insert CHECK-constrained precondition
  *      rows, so any stale version or failed quantity predicate raises a real SQLite error and the whole
  *      batch rolls back: no orphan receipt, no partial mutation, no external effect;
- *   5. on a concurrent commit re-plans from fresh state. For owner observations stale client versions are
- *      rebased silently; for plan edits a stale client version is a clean `conflict`;
+ *   5. on a concurrent commit re-plans from fresh state. For wear, wash and laundry reports stale client
+ *      versions are rebased silently; for every other command a stale client version is a clean `conflict`
+ *      (see `CommandDefinition.staleVersions`);
  *   6. reads the stored receipt back and returns it.
  */
 export class CommandService {
@@ -111,7 +112,7 @@ export class CommandService {
         const fragment = await hook(ctx, plan, changes);
         if (fragment) fragments.push(fragment);
       }
-      const result = await this.commit(ctx, def.class, plan, fragments, requestHash);
+      const result = await this.commit(ctx, this.registry.staleVersionPolicy(def), plan, fragments, requestHash);
       if (result.kind !== "retry") return result.receipt;
       lastConflict = result.label;
       // result.kind === "retry": a concurrent commit changed something this plan read; re-plan from fresh state.
@@ -266,7 +267,7 @@ export class CommandService {
 
   private async commit(
     ctx: CommandContext,
-    cls: "observation" | "edit" | "system",
+    staleVersions: "rebase" | "conflict",
     plan: CommandPlan,
     fragments: PlanFragment[],
     requestHash: string,
@@ -276,8 +277,9 @@ export class CommandService {
     const bumpWardrobe = plan.bumpWardrobe ?? false;
     const bumpStyle = plan.bumpStyle ?? false;
 
-    // Owner observations are never rejected over a stale client version: they are rebased (section 5).
-    const clientPre = cls === "observation" ? [] : this.clientPreconditions(ctx);
+    // A wear or wash report is never rejected over a stale client version: it is rebased (section 5).
+    // Every other command checks the versions the client stated, inside the same batch as its writes.
+    const clientPre = staleVersions === "rebase" ? [] : this.clientPreconditions(ctx);
     const preconditions: Precondition[] = [
       { label: "owner active", sql: "(SELECT status FROM users WHERE user_id = ?) = 'active'", params: [userId], class: "state" },
       ...clientPre,

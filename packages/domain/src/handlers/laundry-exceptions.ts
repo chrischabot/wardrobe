@@ -62,7 +62,7 @@ export async function planExceptionSettlement(
 
   const open = await allIn<{ exception_id: string; garment_id: string; batch_id: string | null; quantity: number }>(
     ctx.db,
-    "SELECT exception_id, garment_id, batch_id, quantity FROM laundry_exceptions WHERE user_id = ? AND status = 'active' AND garment_id IN (:ids) ORDER BY occurred_at, exception_id",
+    "SELECT exception_id, garment_id, batch_id, quantity FROM laundry_exceptions WHERE user_id = ? AND status = 'active' AND garment_id IN (:ids) ORDER BY julianday(occurred_at), exception_id",
     [ctx.userId],
     garmentIds,
   );

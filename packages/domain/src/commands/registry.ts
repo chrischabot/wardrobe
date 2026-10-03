@@ -57,6 +57,11 @@ export class CommandRegistry {
     return def.allowedAuthorizations ?? DEFAULT_AUTHORIZATIONS[def.class];
   }
 
+  /** Whether a stale client expected version refuses this command (`conflict`) or is ignored (`rebase`). */
+  staleVersionPolicy(def: CommandDefinition<any>): "rebase" | "conflict" {
+    return def.staleVersions ?? (def.class === "observation" ? "rebase" : "conflict");
+  }
+
   /** Register how `expectedVersions["<kind>:<id>"]` (or `"<kind>"`) resolves to a current version. */
   registerVersionResolver(kind: string, resolver: VersionResolver): this {
     if (this.resolvers.has(kind)) throw new Error(`version resolver already registered: ${kind}`);

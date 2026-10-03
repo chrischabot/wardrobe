@@ -99,8 +99,8 @@ export async function getOwnerState(db: Db, principal: Principal): Promise<{ war
 export async function listRestrictions(db: Db, principal: Principal, opts: { status?: "active" | "resolved" } = {}): Promise<Restriction[]> {
   const userId = guard(principal);
   const rows = opts.status
-    ? await all(db, "SELECT * FROM restrictions WHERE user_id = ? AND status = ? ORDER BY starts_at", userId, opts.status)
-    : await all(db, "SELECT * FROM restrictions WHERE user_id = ? ORDER BY starts_at", userId);
+    ? await all(db, "SELECT * FROM restrictions WHERE user_id = ? AND status = ? ORDER BY julianday(starts_at), rowid", userId, opts.status)
+    : await all(db, "SELECT * FROM restrictions WHERE user_id = ? ORDER BY julianday(starts_at), rowid", userId);
   return rows.map(rowToRestriction);
 }
 
@@ -306,8 +306,8 @@ export async function getGarmentDetail(db: Db, principal: Principal, garmentId: 
   if (!r) throw new CommandError("not_found", `no garment '${garmentId}' in this wardrobe`);
   const garment = rowToGarment(userId, r);
   const [aliasRows, factRows, balanceRows, wearAgg, recent, restrictionRows, measurementRows] = await Promise.all([
-    all<any>(db, "SELECT alias_id, garment_id, phrase, kind FROM garment_aliases WHERE user_id = ? AND garment_id = ? AND removed_at IS NULL ORDER BY created_at, rowid", userId, garmentId),
-    all<any>(db, "SELECT * FROM garment_facts WHERE user_id = ? AND garment_id = ? ORDER BY recorded_at, rowid", userId, garmentId),
+    all<any>(db, "SELECT alias_id, garment_id, phrase, kind FROM garment_aliases WHERE user_id = ? AND garment_id = ? AND removed_at IS NULL ORDER BY julianday(created_at), rowid", userId, garmentId),
+    all<any>(db, "SELECT * FROM garment_facts WHERE user_id = ? AND garment_id = ? ORDER BY julianday(recorded_at), rowid", userId, garmentId),
     all<any>(db, "SELECT bucket, ref, quantity FROM stock_balances WHERE user_id = ? AND garment_id = ? ORDER BY bucket, ref", userId, garmentId),
     first<{ n: number; last: string | null }>(db, "SELECT COUNT(*) AS n, MAX(wearing_date) AS last FROM daily_wears WHERE user_id = ? AND garment_id = ? AND status = 'active'", userId, garmentId),
     all<any>(db, "SELECT garment_id, wearing_date, observation_count, status FROM daily_wears WHERE user_id = ? AND garment_id = ? ORDER BY wearing_date DESC LIMIT 60", userId, garmentId),
@@ -378,7 +378,7 @@ export async function getDailyRecord(db: Db, principal: Principal, wearingDate: 
     "SELECT w.garment_id, w.observation_count, g.name FROM daily_wears w JOIN garments g ON g.user_id = w.user_id AND g.garment_id = w.garment_id WHERE w.user_id = ? AND w.wearing_date = ? AND w.status = 'active' ORDER BY g.category, g.name",
     userId, wearingDate,
   );
-  const observations = (await all<any>(db, "SELECT * FROM wear_observations WHERE user_id = ? AND wearing_date = ? ORDER BY reported_at, rowid", userId, wearingDate)).map(rowToObservation);
+  const observations = (await all<any>(db, "SELECT * FROM wear_observations WHERE user_id = ? AND wearing_date = ? ORDER BY julianday(reported_at), rowid", userId, wearingDate)).map(rowToObservation);
   return {
     wearingDate,
     garments: counted.map((c) => ({
@@ -418,11 +418,11 @@ export async function getLaundryState(db: Db, principal: Principal): Promise<Lau
     "SELECT g.garment_id, g.name, g.care_channel, b.quantity FROM stock_balances b JOIN garments g ON g.user_id = b.user_id AND g.garment_id = b.garment_id WHERE b.user_id = ? AND b.bucket = 'dirty' AND b.quantity > 0 ORDER BY g.name",
     userId,
   );
-  const batches = await all<any>(db, "SELECT * FROM laundry_batches WHERE user_id = ? AND withdrawn_at IS NULL ORDER BY picked_up_at DESC LIMIT 12", userId);
+  const batches = await all<any>(db, "SELECT * FROM laundry_batches WHERE user_id = ? AND withdrawn_at IS NULL ORDER BY julianday(picked_up_at) DESC, rowid DESC LIMIT 12", userId);
   const items = batches.length
     ? await allIn<any>(db, "SELECT i.*, g.name FROM laundry_batch_items i JOIN garments g ON g.user_id = i.user_id AND g.garment_id = i.garment_id WHERE i.user_id = ? AND i.batch_id IN (:ids) ORDER BY g.name", [userId], batches.map((b) => b.batch_id))
     : [];
-  const exceptions = await all<any>(db, "SELECT * FROM laundry_exceptions WHERE user_id = ? AND status = 'active' ORDER BY occurred_at", userId);
+  const exceptions = await all<any>(db, "SELECT * FROM laundry_exceptions WHERE user_id = ? AND status = 'active' ORDER BY julianday(occurred_at), rowid", userId);
   const cycles = await all<any>(db, "SELECT channel, cycle_key, cutoff_at, baseline_at FROM laundry_cycles WHERE user_id = ? ORDER BY cycle_key DESC LIMIT 8", userId);
   const pool = (channel: string) => dirty.filter((d) => d.care_channel === channel).map((d) => ({ garmentId: d.garment_id, name: d.name, quantity: d.quantity }));
   return {
@@ -456,12 +456,12 @@ export async function getStyleContext(db: Db, principal: Principal, opts: { forD
   const doc = await first<any>(db, "SELECT * FROM style_documents WHERE user_id = ? AND document_id = ? AND status = 'active'", userId, documentId);
   if (!doc) throw new CommandError("not_found", "no active style document; import the owner's profile first");
   const [amendments, rules, directions, briefs, measurements, sizes, state, conflicts] = await Promise.all([
-    all<any>(db, "SELECT * FROM style_amendments WHERE user_id = ? AND document_id = ? AND status = 'active' ORDER BY created_at, rowid", userId, documentId),
+    all<any>(db, "SELECT * FROM style_amendments WHERE user_id = ? AND document_id = ? AND status = 'active' ORDER BY julianday(created_at), rowid", userId, documentId),
     all<any>(db, "SELECT * FROM style_rules WHERE user_id = ? AND is_current = 1 AND status != 'retired' ORDER BY key", userId),
-    all<any>(db, "SELECT * FROM standing_directions WHERE user_id = ? AND status = 'active' ORDER BY created_at, rowid", userId),
-    opts.forDate ? all<any>(db, "SELECT * FROM temporary_briefs WHERE user_id = ? AND status = 'active' AND local_date = ? ORDER BY created_at, rowid", userId, opts.forDate) : Promise.resolve([]),
+    all<any>(db, "SELECT * FROM standing_directions WHERE user_id = ? AND status = 'active' ORDER BY julianday(created_at), rowid", userId),
+    opts.forDate ? all<any>(db, "SELECT * FROM temporary_briefs WHERE user_id = ? AND status = 'active' AND local_date = ? ORDER BY julianday(created_at), rowid", userId, opts.forDate) : Promise.resolve([]),
     all<any>(db, "SELECT * FROM measurements WHERE user_id = ? AND superseded_by IS NULL ORDER BY subject, key", userId),
-    all<any>(db, "SELECT * FROM size_experiences WHERE user_id = ? AND retired_at IS NULL ORDER BY maker, created_at", userId),
+    all<any>(db, "SELECT * FROM size_experiences WHERE user_id = ? AND retired_at IS NULL ORDER BY maker, julianday(created_at), rowid", userId),
     first<{ style_revision: number }>(db, "SELECT style_revision FROM owner_state WHERE user_id = ?", userId),
     listStyleFactConflicts(db, principal, { documentId }),
   ]);

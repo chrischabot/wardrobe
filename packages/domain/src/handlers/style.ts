@@ -538,6 +538,7 @@ export const measurementRecord = define({
   type: "measurement.record",
   schema: C["measurement.record"],
   class: "observation",
+  staleVersions: "conflict",
   requiredScope: "write",
   allowedAuthorizations: ["owner_tap", "owner_statement", "data_import"],
   async plan(ctx, p) {
@@ -582,6 +583,7 @@ export const sizeExperienceRecord = define({
   type: "size_experience.record",
   schema: C["size_experience.record"],
   class: "observation",
+  staleVersions: "conflict",
   requiredScope: "write",
   allowedAuthorizations: ["owner_tap", "owner_statement", "data_import"],
   async plan(ctx, p) {

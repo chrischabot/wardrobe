@@ -19,7 +19,7 @@ Only data and requirements were migrated; no code from any earlier application i
 | Regenerate JSON Schema and Swift contracts | `npm run generate:contracts` |
 
 Node 22+, TypeScript 7.0.2, zod 4.6.5, vitest 4.1.11 with `@cloudflare/vitest-pool-workers` 0.22.0.
-`npm run test:foundation` currently runs 145 foundation tests (14 contracts, 131 domain). Domain tests run inside workerd
+`npm run test:foundation` currently runs 157 foundation tests (14 contracts, 143 domain). Domain tests run inside workerd
 against a real local D1 database; nothing mocks the ledger. The bundled
 workerd accepts compatibility dates up to 2026-08-22.
 
@@ -102,8 +102,19 @@ Receipt: `commandId`, `type`, `outcome` (`committed`, `merged`, `noop`), `summar
 `idempotency_key_reuse`, `precondition_failed`, `not_undoable`, `internal`.
 
 The same key with the same body returns the stored receipt (`replayed: true`); a different body is
-`idempotency_key_reuse`. Owner observations are never rejected for a stale version; plan edits return
-`conflict`. `source.channel` must match the principal's channel.
+`idempotency_key_reuse`. `source.channel` must match the principal's channel.
+
+Expected versions are checked in the same batch as the writes, and a stale one is `conflict` with nothing
+written, for every command except the reports of wearing, washing and laundry, which are rebased onto the
+current state and never refused (specification section 5): `wear.record`, `wear.amend`, `care.mark_dirty`,
+`care.washed`, `laundry.collect`, `laundry.return`, `laundry.report_exception`. A command that removes,
+moves, receives or rewrites a record is refused on a stale version even though it is an observation:
+`garment.receive`, `garment.correct`, `garment.bulk_correct`, `garment.move`, `garment.retire`,
+`stock.reconcile`, `stock.pack`, `stock.unpack`, `measurement.record`, `size_experience.record`. A client
+that sends no expected version for these is not checked, so the owner's own tap still always lands; a
+proposal that carries the versions it was built against is refused once the record has moved on. A lane's
+own command chooses with `staleVersions: "rebase" | "conflict"` on its definition (default: `rebase` for
+class `observation`, `conflict` otherwise).
 
 Foundation command types: `garment.create`, `garment.receive`, `garment.correct`, `garment.bulk_correct`,
 `garment.add_alias`,

@@ -544,7 +544,7 @@ export const laundryReturn = define({
   async plan(ctx, p): Promise<CommandPlan> {
     const batch = p.batchId
       ? await first<{ batch_id: string; status: string }>(ctx.db, "SELECT batch_id, status FROM laundry_batches WHERE user_id = ? AND batch_id = ? AND withdrawn_at IS NULL", ctx.userId, p.batchId)
-      : await first<{ batch_id: string; status: string }>(ctx.db, "SELECT batch_id, status FROM laundry_batches WHERE user_id = ? AND channel = 'service' AND status IN ('collected', 'partially_returned') AND withdrawn_at IS NULL ORDER BY picked_up_at ASC LIMIT 1", ctx.userId);
+      : await first<{ batch_id: string; status: string }>(ctx.db, "SELECT batch_id, status FROM laundry_batches WHERE user_id = ? AND channel = 'service' AND status IN ('collected', 'partially_returned') AND withdrawn_at IS NULL ORDER BY julianday(picked_up_at) ASC, batch_id LIMIT 1", ctx.userId);
     if (p.batchId && !batch) throw new CommandError("not_found", `no laundry batch '${p.batchId}'`);
     const planner = ctx.stock();
     const eventIds: string[] = [];

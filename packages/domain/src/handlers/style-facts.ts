@@ -66,7 +66,7 @@ export async function loadStyleFacts(db: Db, userId: string): Promise<StyleFactS
   const [rules, measurements, sizes, restrictions] = await Promise.all([
     all<RuleRow>(db, "SELECT rule_id, version, key, kind, status, params_json, interpretation, passages_json, origin FROM style_rules WHERE user_id = ? AND is_current = 1 AND status != 'retired' ORDER BY key", userId),
     all<MeasurementRow>(db, "SELECT measurement_id, subject, garment_id, key, value, unit, convention, qualifier, measured_on, passage_json FROM measurements WHERE user_id = ? AND superseded_by IS NULL ORDER BY subject, key, measurement_id", userId),
-    all<SizeRow>(db, "SELECT size_experience_id, maker, product_family, size_label, note, passage_json FROM size_experiences WHERE user_id = ? AND retired_at IS NULL ORDER BY maker, created_at, size_experience_id", userId),
+    all<SizeRow>(db, "SELECT size_experience_id, maker, product_family, size_label, note, passage_json FROM size_experiences WHERE user_id = ? AND retired_at IS NULL ORDER BY maker, julianday(created_at), size_experience_id", userId),
     all<{ restriction_id: string }>(db, "SELECT restriction_id FROM restrictions WHERE user_id = ? AND status = 'active'", userId),
   ]);
   const set: StyleFactSet = { facts: [], rules: new Map(), measurements: new Map(), sizes: new Map(), activeRestrictionIds: new Set(restrictions.map((r) => r.restriction_id)) };
@@ -439,7 +439,7 @@ export async function listStyleFactConflicts(db: Db, principal: Principal, opts:
   const status = opts.status ?? "open";
   const rows = await all<any>(
     db,
-    `SELECT * FROM style_fact_conflicts WHERE user_id = ? AND document_id = ?${status === "all" ? "" : " AND status = ?"} ORDER BY created_at, rowid`,
+    `SELECT * FROM style_fact_conflicts WHERE user_id = ? AND document_id = ?${status === "all" ? "" : " AND status = ?"} ORDER BY julianday(created_at), rowid`,
     ...[principal.userId, opts.documentId ?? "owner-profile", ...(status === "all" ? [] : [status])],
   );
   return rows.map(rowToConflict);

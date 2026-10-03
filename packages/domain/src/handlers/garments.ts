@@ -139,6 +139,7 @@ export const garmentReceive = define({
   type: "garment.receive",
   schema: C["garment.receive"],
   class: "observation",
+  staleVersions: "conflict",
   requiredScope: "write",
   async plan(ctx, p) {
     const g = await loadGarment(ctx, p.garmentId);
@@ -242,6 +243,7 @@ export const garmentCorrect = define({
   type: "garment.correct",
   schema: C["garment.correct"],
   class: "observation",
+  staleVersions: "conflict",
   requiredScope: "write",
   async plan(ctx, p) {
     const g = await loadGarment(ctx, p.garmentId);
@@ -305,6 +307,7 @@ export const garmentBulkCorrect = define({
   type: "garment.bulk_correct",
   schema: C["garment.bulk_correct"],
   class: "observation",
+  staleVersions: "conflict",
   requiredScope: "write",
   async plan(ctx, p) {
     const rows = await selectGarments(ctx.db, ctx.userId, p.selector);
@@ -477,6 +480,7 @@ export const garmentMove = define({
   type: "garment.move",
   schema: C["garment.move"],
   class: "observation",
+  staleVersions: "conflict",
   requiredScope: "write",
   async plan(ctx, p) {
     const g = await loadGarment(ctx, p.garmentId);
@@ -508,6 +512,7 @@ export const garmentRetire = define({
   type: "garment.retire",
   schema: C["garment.retire"],
   class: "observation",
+  staleVersions: "conflict",
   requiredScope: "write",
   async plan(ctx, p) {
     const g = await loadGarment(ctx, p.garmentId);
@@ -696,6 +701,7 @@ export const stockReconcile = define({
   type: "stock.reconcile",
   schema: C["stock.reconcile"],
   class: "observation",
+  staleVersions: "conflict",
   requiredScope: "write",
   async plan(ctx, p) {
     const g = await loadGarment(ctx, p.garmentId);
@@ -720,6 +726,7 @@ export const stockPack = define({
   type: "stock.pack",
   schema: C["stock.pack"],
   class: "observation",
+  staleVersions: "conflict",
   requiredScope: "write",
   async plan(ctx, p) {
     const planner = ctx.stock();
@@ -747,6 +754,7 @@ export const stockUnpack = define({
   type: "stock.unpack",
   schema: C["stock.unpack"],
   class: "observation",
+  staleVersions: "conflict",
   requiredScope: "write",
   async plan(ctx, p) {
     const planner = ctx.stock();
