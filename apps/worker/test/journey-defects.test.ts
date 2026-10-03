@@ -133,10 +133,36 @@ describe("D10-1: resuming in the app prepares the next useful board", () => {
     expect(await days()).toEqual([target]);
     const resumeBoards = async () => ((await app.db.prepare("SELECT COUNT(*) AS n FROM commands WHERE user_id = ? AND type = 'board.publish' AND substr(idempotency_key, 1, 13) = 'resume-board:'").bind(other.userId).first<{ n: number }>())!.n);
     expect(await resumeBoards()).toBe(1);
+    // The day was claimed once for this resume.
+    const claims = async () => (await app.db.prepare("SELECT local_date FROM resume_followups WHERE user_id = ?").bind(other.userId).all<{ local_date: string }>()).results.map((r) => r.local_date);
+    expect(await claims()).toEqual([target]);
     await app.daily!.scheduled(Date.now());
     await app.daily!.afterCommit(other.systemPrincipal);
     expect(await resumeBoards()).toBe(1);
     expect(await days()).toContain(target);
+    // The owner then moves to a timezone in which the moment of the resume falls on another day (in the TEST
+    // DATABASE's copy of the settings). The claimed day stands, so nothing is prepared for the other day.
+    const zone = resumeTargetDay(Date.parse(ended), "Pacific/Kiritimati") !== target ? "Pacific/Kiritimati" : "Pacific/Pago_Pago";
+    expect(resumeTargetDay(Date.parse(ended), zone)).not.toBe(target);
+    expect((await other.api.command("settings.update", { patch: { timezone: zone } })).status).toBe(200);
+    await app.daily!.afterCommit(other.systemPrincipal);
+    expect(await resumeBoards()).toBe(1);
+    expect(await claims()).toEqual([target]);
+  });
+
+  it("prepares one board for one day when two follow-ups of the same resume overlap", async () => {
+    const third = await provisionOwner({ real: true });
+    const app = await testApp();
+    const { createPrincipal } = await import("@garderobe/domain");
+    expect((await third.api.command("service.pause", { resumeOn: null })).status).toBe(200);
+    const ownerInApp = createPrincipal({ userId: third.userId, actor: "owner", channel: "ios", scopes: ["read", "write"], authRef: "test:overlapping-follow-ups" });
+    await app.service.execute(ownerInApp, { type: "service.resume", payload: {}, idempotencyKey: `resume-${crypto.randomUUID()}`, expectedVersions: {}, authorization: "owner_tap", source: { channel: "ios" } });
+    await Promise.all([app.daily!.afterCommit(third.systemPrincipal), app.daily!.afterCommit(third.systemPrincipal), app.daily!.scheduled(Date.now())]);
+    const boards = (await app.db.prepare("SELECT local_date FROM boards WHERE user_id = ?").bind(third.userId).all<{ local_date: string }>()).results;
+    const claimed = (await app.db.prepare("SELECT local_date FROM resume_followups WHERE user_id = ?").bind(third.userId).all<{ local_date: string }>()).results;
+    expect(claimed).toHaveLength(1);
+    expect(boards.map((b) => b.local_date)).toEqual([claimed[0]!.local_date]);
+    expect((await app.db.prepare("SELECT COUNT(*) AS n FROM commands WHERE user_id = ? AND type = 'board.publish' AND substr(idempotency_key, 1, 13) = 'resume-board:'").bind(third.userId).first<{ n: number }>())!.n).toBe(1);
   });
 
   it("fixes the day by the moment of the resume in the owner's timezone: that day before midday, the next day from midday on", () => {
@@ -232,6 +258,23 @@ describe("D11-1 at scale: every waiting question is counted, and only those", ()
     ]).flat();
     for (let i = 0; i < statements.length; i += 50) await app.db.batch(statements.slice(i, i + 50));
     expect((await recovery(owner)).pending.runsNeedingInput).toBe(61);
+  });
+});
+
+describe("a receipt read by its idempotency key", () => {
+  it("shows the command as it stands now, not as stored at commit: after the undo it no longer offers one", async () => {
+    const owner = await provisionOwner();
+    const created = (await (await owner.api.command("garment.create", { name: "Synthetic shirt (receipt test fixture, not real stock)", category: "shirt", roles: ["top"], careChannel: "service", acquisition: "owned", quantity: 2, isSynthetic: true, source: { kind: "system", note: "synthetic test garment" } })).json()) as any;
+    const garmentId = created.affected.find((a: any) => a.kind === "garment").id as string;
+    const key = `receipt-by-key-${crypto.randomUUID()}`;
+    const marked = (await (await owner.api.command("care.mark_dirty", { items: [{ garmentId, quantity: 1 }] }, { idempotencyKey: key })).json()) as any;
+    const byKey = async () => ((await owner.api.json("GET", `/v1/commands?idempotencyKey=${encodeURIComponent(key)}`)).receipts as any[])[0];
+    expect(await byKey()).toMatchObject({ commandId: marked.commandId, undo: { available: true } });
+    expect((await owner.api.command("command.undo", { commandId: marked.commandId })).status).toBe(200);
+    // The same read as the app makes after an offline replay: it agrees with the receipt read by identifier.
+    const byId = await owner.api.json("GET", `/v1/commands/${marked.commandId}`);
+    expect(byId.undo.available).toBe(false);
+    expect(await byKey()).toEqual(byId);
   });
 });
 

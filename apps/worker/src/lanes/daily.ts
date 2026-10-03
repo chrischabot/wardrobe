@@ -22,7 +22,7 @@ import {
   type DailyDeps,
 } from "@garderobe/daily";
 import { createCompositionModel, createGatewayModelService, listComfortFeedback } from "@garderobe/assistant";
-import { addDays, all, createPrincipal, first, getSettings, localDateOf, type Principal } from "@garderobe/domain";
+import { addDays, all, createPrincipal, first, getSettings, localDateOf, prepare, stmt, toInstant, type Principal } from "@garderobe/domain";
 import { googleAccessToken } from "../connections/service.ts";
 import { ApiException } from "../errors.ts";
 import type { DailyPort } from "../ports.ts";
@@ -99,7 +99,8 @@ export function createDailyPort(ctx: LaneContext, options: DailyPortOptions = {}
    *
    * The steps are those `resumeService` takes after the command: the weekly cleanliness baselines that
    * elapsed during the pause, then the next useful board, composed by the daily service's `prepareBoard`.
-   * The day is fixed by the moment of the resume (`resumeTargetDay`). A board that already exists for
+   * The day is fixed by the moment of the resume (`resumeTargetDay`) and claimed once per resume in
+   * `resume_followups` before anything is composed, so every run for that resume works on the same day. A board that already exists for
    * that day (prepared before the pause, or made by the owner since) is the next useful board and is left
    * as it is: the resume command restores its Calendar event, the ordinary refresh and repair keep it
    * current, and the scheduled sweep applies due weekly baselines as always. Both steps run as the system
@@ -123,11 +124,17 @@ export function createDailyPort(ctx: LaneContext, options: DailyPortOptions = {}
     for (const pause of ended) {
       try {
         const system = createPrincipal({ userId: pause.user_id, actor: "system", channel: "system", scopes: ["read", "write"], authRef: `daily:resume:${pause.command_id}` });
-        const localDate = resumeTargetDay(Date.parse(pause.ended_at), (await getSettings(db, system)).settings.timezone);
+        // The day is claimed once per resume, before anything is composed (migration 0305): the first run
+        // writes it and every other run, overlapping or later, reads the same day, whatever the time of the
+        // retry and whatever the owner's timezone has become since.
+        const computed = resumeTargetDay(Date.parse(pause.ended_at), (await getSettings(db, system)).settings.timezone);
+        await prepare(db, stmt("INSERT INTO resume_followups (user_id, resume_command_id, local_date, claimed_at) VALUES (?, ?, ?, ?) ON CONFLICT (user_id, resume_command_id) DO NOTHING", pause.user_id, pause.command_id, computed, toInstant(nowMs))).run();
+        const localDate = (await first<{ local_date: string }>(db, "SELECT local_date FROM resume_followups WHERE user_id = ? AND resume_command_id = ?", pause.user_id, pause.command_id))!.local_date;
         // Followed up already: the day has its board (prepared before the pause, by this follow-up, or by the owner).
         if (await first(db, "SELECT 1 AS x FROM boards WHERE user_id = ? AND local_date = ? AND scope = 'home'", pause.user_id, localDate)) continue;
         await ctx.service.execute(system, { type: "laundry.apply_weekly_reset", payload: {}, idempotencyKey: `resume-weekly-reset:${pause.command_id}`, expectedVersions: {}, authorization: "standing_policy", source: { channel: "system" } });
-        await prepareBoard(deps, system, { localDate, reason: "compose", purpose: "resume", idempotencyKey: `resume-board:${pause.command_id}`, nowMs });
+        // One key per resume and one day per resume: overlapping runs publish at most once.
+        await prepareBoard(deps, system, { localDate, reason: "compose", purpose: "resume", idempotencyKey: `resume-board:${pause.command_id}:${localDate}`, nowMs });
       } catch (error) {
         console.warn("the board after a resume was not prepared; the scheduled sweep tries again", String((error as Error)?.message ?? error));
       }

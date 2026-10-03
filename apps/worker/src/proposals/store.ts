@@ -6,7 +6,7 @@
  * use it.
  */
 import { describeChange, MAX_SHOWN_VALUE, MAX_SUMMARY } from "@garderobe/assistant";
-import { all, canonicalJson, first, isCommandError, json as parseJson, prepare, stmt, toInstant, type Db } from "@garderobe/domain";
+import { CommandError, all, canonicalJson, first, isCommandError, json as parseJson, prepare, stmt, toInstant, type Db } from "@garderobe/domain";
 import { sha256Hex } from "../crypto.ts";
 
 export type SubmittedOrigin = "typed_command" | "relayed_turn";
@@ -164,7 +164,8 @@ export const findSubmittedProposal = (db: Db, userId: string, proposalId: string
 export const submittedPayload = (row: SubmittedProposalRow): Record<string, unknown> => parseJson<Record<string, unknown>>(row.payload_json, {});
 export const submittedExpectedVersions = (row: SubmittedProposalRow): Record<string, number> => parseJson<Record<string, number>>(row.expected_versions_json, {});
 
-const LABELS: Record<string, string> = {
+/** The plain label of each command type a request can be kept for: how a change is named to the owner when it has no sentence of its own. */
+export const LABELS: Record<string, string> = {
   "garment.create": "Add a garment to the wardrobe",
   "garment.receive": "Mark an incoming garment as arrived and owned",
   "garment.retire": "Retire a garment from the wardrobe",
@@ -257,14 +258,24 @@ export const MAX_VALUE_CHARS = MAX_SHOWN_VALUE;
  * piece by its name, a trip by its name and dates, a board by its day, an option by its position) instead
  * of identifiers, every other field listed by name with its value in full, and nothing shortened. For a
  * command that has no sentence of its own there, the opening is this module's plain label for the type
- * instead of the command's machine name. It is derived from the stored payload each time it is read, so
+ * instead of the command's machine name, and the change an undo would reverse is named by its label
+ * rather than by its command name. It is derived from the stored payload each time it is read, so
  * it cannot differ from what would run. Throws `invalid_command` (`summary_too_long`) when the request
  * cannot be shown in full.
  */
 export async function describeSubmittedChange(db: Db, userId: string, type: string, payload: Record<string, unknown>): Promise<string> {
-  const summary = await describeChange(db, userId, type, payload);
+  let summary = await describeChange(db, userId, type, payload);
   const machineOpening = `Carry out \u201C${type}\u201D.`;
-  return LABELS[type] && summary.startsWith(machineOpening) ? `${LABELS[type]}.${summary.slice(machineOpening.length)}` : summary;
+  if (summary.startsWith(machineOpening)) summary = `${LABELS[type] ?? "Make a change to your records"}.${summary.slice(machineOpening.length)}`;
+  if (type === "command.undo" && typeof payload.commandId === "string") {
+    // The shared describer names the earlier change by its command name in brackets; the owner reads its label.
+    const target = await first<{ type: string }>(db, "SELECT type FROM commands WHERE user_id = ? AND command_id = ?", userId, payload.commandId);
+    const machineName = target ? ` (\u201C${target.type}\u201D)` : null;
+    if (target && machineName && summary.includes(machineName)) summary = summary.replace(machineName, LABELS[target.type] ? ` (${LABELS[target.type]!.charAt(0).toLowerCase()}${LABELS[target.type]!.slice(1)})` : "");
+  }
+  // The bound holds for the text the owner actually reads, after the rewording above.
+  if (summary.length > MAX_SUMMARY_CHARS) throw new CommandError("invalid_command", "This request is too long to be shown to the owner in full, and a request is never confirmed on a shortened summary", { reason: "summary_too_long" });
+  return summary;
 }
 
 /** Whether the whole request can be put before the owner: every field, every value in full, within the bounds. */

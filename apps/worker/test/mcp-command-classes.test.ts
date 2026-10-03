@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { connectedDispositionOfType, TYPED_DIRECT_BY_OWNER_DECISION } from "../src/mcp/policy.ts";
+import { LABELS } from "../src/proposals/store.ts";
 import { connectMcp, provisionOwner, testApp, toolResult, type McpConnection, type TestOwner } from "../src/testing/index.ts";
 import { CONSEQUENTIAL_COMMAND_TYPES } from "@garderobe/contracts/ext/api";
 
@@ -69,6 +70,8 @@ describe("the class of every command type", () => {
     // The contract's list of sensitive types is a floor: each of them waits for the owner or is not available at all.
     for (const type of CONSEQUENTIAL_COMMAND_TYPES) expect(["owner", "internal"], type).toContain(actual[type]);
     // The routine, undoable actions of the owner's decision of 2026-10-03, and nothing else, run from a typed command only.
+    // Every type that can wait for the owner has a plain label, so no request is ever named by its command name.
+    for (const [type, disposition] of Object.entries(actual)) if (disposition === "owner") expect(LABELS[type], `label for ${type}`).toBeTruthy();
     // (`laundry.return` joined them once a recorded return could be undone.)
     expect([...TYPED_DIRECT_BY_OWNER_DECISION].sort()).toEqual(["board.select", "laundry.collect", "laundry.return", "stock.pack", "stock.unpack"]);
   });
@@ -196,12 +199,13 @@ describe("a typed command from a connected assistant", () => {
     expect(correct).toMatchObject({ source: { channel: "mcp", assistantName: "Helpful assistant (test)" }, payload: { garmentId, changes: { name: "Renamed by a connected assistant" } } });
     expect(correct.summary).toContain(`Change the record of \u201C${GARMENT_NAME}\u201D: name \u201CRenamed by a connected assistant\u201D`);
     expect(correct.summary).not.toContain(garmentId);
-    expect(listed.find((p) => p.type === "command.undo")!.summary).toContain("Undo an earlier change (\u201Cgarment.correct\u201D) whose receipt read \u201C");
-    // No summary shows a record identifier of a record that exists, raw JSON or a command's machine name as its opening.
+    expect(listed.find((p) => p.type === "command.undo")!.summary).toContain("Undo an earlier change (correct a garment's details) whose receipt read \u201C");
+    // No summary shows a record identifier of a record that exists, raw JSON, or a command's machine name.
     for (const p of listed) {
       expect(p.summary, p.type).not.toContain(garmentId);
       expect(p.summary, p.type).not.toMatch(/[{}]|":/);
       expect(p.summary, p.type).not.toMatch(/^Carry out /);
+      expect(p.summary, p.type).not.toMatch(/\u201C[a-z_]+\.[a-z_]+\u201D/); // no quoted command name such as “garment.correct”
     }
 
     // The owner confirms the correction in the app: it runs once, as the owner's tap.

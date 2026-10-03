@@ -212,7 +212,8 @@ describe("sensitive typed commands wait for the owner", () => {
     expect(toolResult(await writer.client.callTool(undo(created.commandId))).error!.code).toBe("confirmation_required");
     expect((await owner.api.json("GET", "/v1/wardrobe")).items.some((i: any) => i.garment.garmentId === garmentId)).toBe(true);
     const undoProposal = (await pending()).find((p) => p.type === "command.undo" && p.payload.commandId === created.commandId);
-    expect(undoProposal.summary).toMatch(/^Undo an earlier change \(\u201Cgarment\.create\u201D\) whose receipt read \u201C.+\u201D/);
+    expect(undoProposal.summary).toMatch(/^Undo an earlier change \(add a garment to the wardrobe\) whose receipt read \u201C.+\u201D/);
+    expect(undoProposal.summary).not.toContain("garment.create");
     // A wear report on a garment the connection names is recorded at once, and so is its undo.
     const wore = toolResult(await writer.client.callTool({ name: "garderobe_command", arguments: { type: "wear.record", payload: { wearingDate: await ownerDay(owner), garmentIds: [garmentId] }, idempotencyKey: `wear-${crypto.randomUUID()}` } }));
     expect(wore.ok, JSON.stringify(wore.error)).toBe(true);
