@@ -4,7 +4,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { runScheduledBackups } from "../src/backup/service.ts";
 import { BACKUP_RETENTION_MS } from "../src/export/job.ts";
 import { sweepExpired } from "../src/maintenance.ts";
-import { APP_ORIGIN, enableFakeModel, provisionOwner, publishBoard, testApp, uploadImage, type TestOwner } from "../src/testing/index.ts";
+import { APP_ORIGIN, enableFakeModel, ownerDay, provisionOwner, publishBoard, testApp, uploadImage, type TestOwner } from "../src/testing/index.ts";
 
 /*
  * Scheduled backups, the restore manifest and a full restore, through the real Worker with the REAL
@@ -19,7 +19,8 @@ let zip: Uint8Array;
 let forgottenText: string;
 let keptAssetId: string;
 let doomedAssetId: string;
-const today = new Date().toISOString().slice(0, 10);
+/** Today as the owner counts it (the owner's timezone), not the UTC date. */
+let today: string;
 const connectionSecret = "tvly-BACKUP-TEST-SECRET-4d5e6f7a8b";
 const decoder = new TextDecoder();
 
@@ -41,6 +42,7 @@ async function scheduledBackupFor(target: TestOwner): Promise<any> {
 
 beforeAll(async () => {
   owner = await provisionOwner({ real: true });
+  today = await ownerDay(owner);
   const model = await enableFakeModel(owner);
   const wardrobe = await owner.api.json("GET", "/v1/wardrobe");
   const clean = (role: string) => wardrobe.items.find((i: any) => i.garment.acquisition === "owned" && i.garment.roles.includes(role) && i.balances.some((b: any) => b.bucket === "clean" && b.quantity > 0)).garment;

@@ -153,10 +153,10 @@ async function findHeld(app: App, userId: string, proposalId: string): Promise<H
   return found;
 }
 
-/** The state of one proposal by identifier, for the connection that submitted it (no content is returned). */
-export async function submittedProposalState(app: App, userId: string, proposalId: string): Promise<{ state: Proposal["state"]; commandId: string | null }> {
+/** The state of one proposal by identifier, for the connection that submitted it: its own request, with the summary the owner is shown. */
+export async function submittedProposalState(app: App, userId: string, proposalId: string): Promise<{ state: Proposal["state"]; commandId: string | null; summary: string; expiresAt: string }> {
   const { proposal } = await findHeld(app, userId, proposalId);
-  return { state: proposal.state, commandId: proposal.commandId };
+  return { state: proposal.state, commandId: proposal.commandId, summary: proposal.summary, expiresAt: proposal.expiresAt };
 }
 
 /** Only the signed-in owner, in the app or on the private web board, decides a proposal. */

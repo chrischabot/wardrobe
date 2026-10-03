@@ -34,7 +34,8 @@ import { recordSubmittedProposal } from "../proposals/store.ts";
 import { ApiException, normalizeError } from "../errors.ts";
 import type { ApiRun } from "../ports.ts";
 import { startResearch, submitTurn, toSubmission } from "../routes/conversation.ts";
-import { describeCommandTypes, executeCommand, isConsequential, listReceipts, readItem } from "../routes/core.ts";
+import { describeCommandTypes, executeCommand, listReceipts, readItem } from "../routes/core.ts";
+import { connectedDisposition } from "./policy.ts";
 import { readToday, runRecommendation } from "../routes/daily.ts";
 import { answerRunInput, cancelRun, getRun, registerAssistantRun, resumeRun } from "../runs.ts";
 
@@ -58,13 +59,17 @@ assistant; there is no owner or user parameter anywhere.
 - \`garderobe_inventory\`: read the wardrobe. Views: items (paged), snapshot (complete), item, availability,
   history, laundry, style, resolve (turn the owner's phrase into garment IDs), receipts, command_types,
   trips, returns, orders. Always check \`complete\` and \`nextCursor\` before saying how many things exist.
-- \`garderobe_command\`: make one typed change (needs the write permission). Use view \`command_types\` for
+- \`garderobe_command\`: one typed change (needs the write permission). Use view \`command_types\` for
   the types and payload schemas. Send a stable \`idempotencyKey\` per intended change; repeating it never
   repeats the change. The result is a verified receipt: report what the receipt says, nothing more.
-  A sensitive change (adding, retiring or merging a garment, the style profile, rules, measurements,
-  forgetting, deleting an image) is not executed: the answer is \`confirmation_required\` and the request
-  waits for the owner in the Garderobe app. You cannot confirm it. Tell the owner, and repeat the same
-  call with the same \`idempotencyKey\` later: it returns the receipt once the owner has confirmed.
+  Recorded at once: a wear report (\`wear.record\`), a wash or needs-a-wash report (\`care.washed\`,
+  \`care.mark_dirty\`), research records, and the undo of one of these. Every other change (marked
+  \`consequential\` in \`command_types\`: corrections, names, locations, counts, adding or retiring a
+  garment, the style profile, rules, measurements, restrictions, outfit choices, trips, laundry batches,
+  settings, pausing, forgetting, images) is not executed: the answer is \`confirmation_required\` and the
+  request waits for the owner in the Garderobe app. You cannot confirm it. Tell the owner, and repeat
+  the same call with the same \`idempotencyKey\` later: it returns the receipt once the owner has
+  confirmed. Lifting a restriction cannot be requested from here at all.
 - \`garderobe_ask\`: an open request to Garderobe's own assistant, which knows the owner's full style
   profile and history.
 - \`garderobe_research\`: investigate a product, a fit question or the owner's history.
@@ -102,17 +107,6 @@ function askOutput(run: ApiRun) {
 function annotations(name: McpToolName, title: string) {
   const c = MCP_TOOL_CONTRACTS[name];
   return { title, readOnlyHint: c.readOnly, destructiveHint: c.destructive, idempotentHint: c.idempotent, openWorldHint: c.openWorld };
-}
-
-/**
- * Whether a typed command from a connected assistant waits for the owner. Sensitive types always do, and
- * so does the undo of one: undoing is the same change in the other direction.
- */
-async function needsOwnerConfirmation(app: App, principal: Principal, type: string, payload: Record<string, unknown>): Promise<boolean> {
-  if (isConsequential(type)) return true;
-  if (type !== "command.undo" || typeof payload.commandId !== "string") return false;
-  const target = await first<{ type: string }>(app.db, "SELECT type FROM commands WHERE user_id = ? AND command_id = ?", principal.userId, payload.commandId);
-  return Boolean(target && isConsequential(target.type));
 }
 
 /**
@@ -246,7 +240,7 @@ export function buildMcpServer(app: App, caller: McpCaller): McpServer {
           }
           case "command_types": {
             const types = describeCommandTypes(app.registry);
-            return ok(envelope(types as unknown as Record<string, unknown>, { total: types.types.length }), `${types.types.length} command types. Owner-facing types have class observation or edit; system types cannot be used from this connection.`);
+            return ok(envelope(types as unknown as Record<string, unknown>, { total: types.types.length }), `${types.types.length} command types. A type marked consequential waits for the owner's confirmation in the Garderobe app when sent from this connection; system types cannot be used from this connection.`);
           }
           case "trips": {
             const trips = await requireDaily(app, "trips").trips(principal);
@@ -271,7 +265,7 @@ export function buildMcpServer(app: App, caller: McpCaller): McpServer {
   if (caller.canWrite) {
     server.registerTool(
       "garderobe_command",
-      { title: "Change the wardrobe", description: "Execute one typed, constrained change (see view command_types of garderobe_inventory). Returns the verified receipt. A sensitive change (marked consequential in command_types: what the owner owns, the profile, rules, measurements, forgetting) is not executed from here: it is kept as a proposal that only the owner can confirm in the Garderobe app. Repeat the same call later to learn the outcome.", inputSchema: MCP_TOOL_CONTRACTS.garderobe_command.input, outputSchema: McpCommandOutput, annotations: annotations("garderobe_command", "Change the wardrobe") },
+      { title: "Change the wardrobe", description: "One typed, constrained change (see view command_types of garderobe_inventory). Returns the verified receipt. Recorded at once: a wear report, a wash or needs-a-wash report, research records, and the undo of one of these. Every other change (marked consequential in command_types) is not executed from here: it is kept as a proposal that only the owner can confirm in the Garderobe app. Repeat the same call later to learn the outcome.", inputSchema: MCP_TOOL_CONTRACTS.garderobe_command.input, outputSchema: McpCommandOutput, annotations: annotations("garderobe_command", "Change the wardrobe") },
       async (args) => {
         try {
           const envelope = {
@@ -283,7 +277,9 @@ export function buildMcpServer(app: App, caller: McpCaller): McpServer {
             authorization: "owner_statement" as const,
             source: { channel: "mcp" as const, clientSubmissionId: args.idempotencyKey },
           };
-          if (await needsOwnerConfirmation(app, principal, args.type, args.payload)) {
+          const disposition = await connectedDisposition(app.registry, app.db, principal.userId, args.type, args.payload);
+          if (disposition === "internal") throw new ApiException("forbidden", `'${args.type}' is not available to a connected assistant; nothing was changed`, { reason: "not_available_to_connected_assistant" });
+          if (disposition === "owner") {
             // Validate first, so the owner is never asked to confirm something that cannot run.
             const parsed = app.registry.get(args.type).schema.safeParse(args.payload);
             if (!parsed.success) throw new ApiException("invalid_command", `invalid payload for '${args.type}'`, { issues: parsed.error.issues });
@@ -297,9 +293,9 @@ export function buildMcpServer(app: App, caller: McpCaller): McpServer {
             if (receipt) {
               return ok({ receipt: { ...receipt, replayed: true } }, `The owner confirmed this in the Garderobe app. ${receiptLine({ ...receipt, replayed: true })}`);
             }
-            if (decided.state === "rejected") throw new ApiException("forbidden", "the owner rejected this change in the Garderobe app; nothing was changed", { reason: "rejected_by_owner" });
-            if (decided.state === "expired") throw new ApiException("confirmation_required", "the owner did not confirm this change in time; nothing was changed. Send it again with a new idempotencyKey if it is still wanted.", { reason: "proposal_expired" });
-            throw new ApiException("confirmation_required", "nothing was changed: this is a sensitive change, so it is kept as a proposal that only the owner can confirm in the Garderobe app. Tell the owner it is waiting there; repeat this exact call later to learn the outcome.", { reason: "owner_confirmation_required", state: "pending" });
+            if (decided.state === "rejected") throw new ApiException("forbidden", "the owner rejected this change in the Garderobe app; nothing was changed", { reason: "rejected_by_owner", proposalId: stored.row.proposal_id });
+            if (decided.state === "expired") throw new ApiException("confirmation_required", "the owner did not confirm this change in time; nothing was changed. Send it again with a new idempotencyKey if it is still wanted.", { reason: "proposal_expired", proposalId: stored.row.proposal_id });
+            throw new ApiException("confirmation_required", "nothing was changed: a connected assistant records wear and wash reports and research notes directly; any other change is kept as a proposal that only the owner can confirm in the Garderobe app. Tell the owner it is waiting there; repeat this exact call later to learn the outcome.", { reason: "owner_confirmation_required", state: "pending", proposalId: stored.row.proposal_id, summary: decided.summary, expiresAt: decided.expiresAt });
           }
           const receipt = await executeCommand(app, principal, envelope, caller.exec);
           return ok({ receipt }, receiptLine(receipt));
