@@ -156,7 +156,7 @@ export async function pendingActionIntents(db: Db, principal: Principal, parentK
   assertPrincipal(principal);
   const rows = await all<{ action_id: string; operation: string; state: string; command_id: string | null; effect_json: string }>(
     db,
-    "SELECT action_id, operation, state, command_id, effect_json FROM action_intents WHERE user_id = ? AND parent_kind = ? AND parent_id = ? ORDER BY created_at",
+    "SELECT action_id, operation, state, command_id, effect_json FROM action_intents WHERE user_id = ? AND parent_kind = ? AND parent_id = ? ORDER BY julianday(created_at), rowid",
     principal.userId, parentKind, parentId,
   );
   return rows.map((r) => ({ actionId: r.action_id, operation: r.operation, state: r.state, commandId: r.command_id, effect: json(r.effect_json, {}) }));
@@ -192,8 +192,8 @@ export async function claimDueEffects(db: Db, opts: { nowMs: number; kinds?: str
   const rows = await all<any>(
     db,
     `SELECT e.* FROM effects e JOIN users u ON u.user_id = e.user_id
-      WHERE u.status = 'active' AND e.available_at <= ? AND (e.state = 'pending' OR (e.state = 'in_progress' AND e.claimed_until < ?)) ${kindFilter}
-      ORDER BY e.available_at, e.effect_id LIMIT ?`,
+      WHERE u.status = 'active' AND julianday(e.available_at) <= julianday(?) AND (e.state = 'pending' OR (e.state = 'in_progress' AND julianday(e.claimed_until) < julianday(?))) ${kindFilter}
+      ORDER BY julianday(e.available_at), e.effect_id LIMIT ?`,
     now, now, ...kinds, opts.limit ?? 20,
   );
   const claimed: EffectRecord[] = [];
@@ -201,7 +201,7 @@ export async function claimDueEffects(db: Db, opts: { nowMs: number; kinds?: str
     const res = await prepare(
       db,
       stmt(
-        "UPDATE effects SET state = 'in_progress', claimed_until = ?, attempts = attempts + 1, updated_at = ? WHERE user_id = ? AND effect_id = ? AND (state = 'pending' OR (state = 'in_progress' AND claimed_until < ?))",
+        "UPDATE effects SET state = 'in_progress', claimed_until = ?, attempts = attempts + 1, updated_at = ? WHERE user_id = ? AND effect_id = ? AND (state = 'pending' OR (state = 'in_progress' AND julianday(claimed_until) < julianday(?)))",
         lease, now, r.user_id, r.effect_id, now,
       ),
     ).run();

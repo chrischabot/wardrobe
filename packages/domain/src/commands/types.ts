@@ -129,11 +129,20 @@ export interface CommandDefinition<S extends z.ZodType = z.ZodType> {
   type: string;
   schema: S;
   /**
-   * `observation`: an authoritative owner observation. Client expected versions are rebased, never
-   *   surfaced as a conflict. `edit`: a plan/configuration edit; a stale expected version is a conflict.
-   * `system`: scheduled/administrative work.
+   * `observation`: an authoritative owner observation. `edit`: a plan/configuration edit.
+   * `system`: scheduled/administrative work. The class sets the default authorizations and the default
+   * for `staleVersions`.
    */
   class: "observation" | "edit" | "system";
+  /**
+   * What a stale client expected version does to this command. `rebase`: the versions are ignored and
+   * the command lands on the current state (specification section 5: a wear or wash report is never
+   * discarded because another client changed the record). `conflict`: the command is refused with
+   * `conflict` and writes nothing. Default: `rebase` for class `observation`, `conflict` otherwise.
+   * A command that removes, moves, receives or rewrites a record sets `conflict` even when it is an
+   * observation, so a change described against an old version is never applied to a newer record.
+   */
+  staleVersions?: "rebase" | "conflict";
   requiredScope: Scope;
   /** Authorization bases accepted for this command. Defaults by class (see registry). */
   allowedAuthorizations?: AuthorizationBasis[];

@@ -179,7 +179,7 @@ describe("sensitive changes are proposed, never committed, and take effect only 
     expect(turn.proposals[0]!.summary).toBe(`Change the record of \u201C${shirt.name}\u201D: condition \u201Cfrayed collar\u201D.`);
     // The owner changes the record in the app before looking at the request.
     await w.owner.exec("garment.correct", { garmentId: shirt.garmentId, changes: { condition: "mended" }, source: { kind: "owner_statement" } });
-    await expect(confirm(w, turn)).rejects.toMatchObject({ code: "precondition_failed" });
+    await expect(confirm(w, turn)).rejects.toMatchObject({ code: "conflict" });
     expect((await all<{ condition: string }>(w.h.db, "SELECT condition FROM garments WHERE user_id = ? AND garment_id = ?", w.owner.userId, shirt.garmentId))[0]!.condition).toBe("mended");
   });
 
