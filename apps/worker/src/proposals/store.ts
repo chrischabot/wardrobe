@@ -46,27 +46,89 @@ const COLUMNS = "proposal_id, origin, source_ref, grant_id, turn_id, idempotency
 export const requestHashOf = (input: Pick<SubmittedProposalInput, "type" | "payload" | "expectedVersions" | "occurredAt">): Promise<string> =>
   sha256Hex(canonicalJson({ type: input.type, payload: input.payload, expectedVersions: input.expectedVersions, occurredAt: input.occurredAt }));
 
+/** A proposal nobody decided is offered for this long; after that it can no longer be confirmed and no longer counts as waiting. */
+export const PROPOSAL_LIFETIME_MS = 14 * 86_400_000;
+
 /**
- * How many requests one connection (or one relayed turn) may have waiting for the owner at once, counted
- * over the last day. A request the owner has decided no longer counts: the limit protects the owner's
- * list, and only the owner can take something off it.
+ * How many requests connected assistants may have waiting for the owner at once. A request counts from
+ * the moment it is kept until the owner decides it or it expires, wherever it is kept: a typed command, a
+ * command refused on a relayed turn (both in `submitted_proposals`), and what the assistant recorded on a
+ * turn a connection started (`assistant_turns.proposals_json`). The limits protect the owner's list, and
+ * only the owner can take something off it, so opening a second connection or asking through
+ * `garderobe_ask` instead of a typed command gives no further room.
  */
-export const SUBMITTED_PER_DAY = { typed_command: 40, relayed_turn: 12 } as const;
+export const WAITING_LIMITS = { perConnection: 40, perOwner: 80, perRelayedTurn: 12 } as const;
+
+export interface WaitingRequests {
+  /** Everything connected assistants have waiting for this owner. */
+  total: number;
+  byGrant: Map<string, number>;
+  byTurn: Map<string, number>;
+}
+
+/** What connected assistants have waiting for the owner's decision right now, per connection (grant) and in all. */
+export async function waitingRequests(db: Db, userId: string, nowMs: number): Promise<WaitingRequests> {
+  const sinceSeconds = Math.floor((nowMs - PROPOSAL_LIFETIME_MS) / 1000);
+  const out: WaitingRequests = { total: 0, byGrant: new Map(), byTurn: new Map() };
+  const add = (grant: string | null, n: number) => {
+    if (n <= 0) return;
+    out.total += n;
+    if (grant) out.byGrant.set(grant, (out.byGrant.get(grant) ?? 0) + n);
+  };
+  const submitted = await all<{ grant: string | null; turn_id: string | null; n: number }>(
+    db,
+    `SELECT COALESCE(p.grant_id, CASE WHEN t.auth_ref LIKE 'mcp:%' THEN substr(t.auth_ref, 5) END) AS grant, p.turn_id AS turn_id, COUNT(*) AS n
+       FROM submitted_proposals p LEFT JOIN assistant_turns t ON t.user_id = p.user_id AND t.turn_id = p.turn_id
+      WHERE p.user_id = ? AND unixepoch(p.created_at) > ?
+        AND NOT EXISTS (SELECT 1 FROM proposal_decisions d WHERE d.user_id = p.user_id AND d.proposal_id = p.proposal_id)
+      GROUP BY 1, 2`,
+    userId, sinceSeconds,
+  );
+  for (const row of submitted) {
+    add(row.grant, row.n);
+    if (row.turn_id) out.byTurn.set(row.turn_id, (out.byTurn.get(row.turn_id) ?? 0) + row.n);
+  }
+  // What the assistant itself recorded on turns a connection started. A decision on one of them is stored
+  // under the turn; decisions on that turn's `submitted_proposals` rows were counted above and are left out.
+  const turns = await all<{ grant: string; proposed: number; decided: number }>(
+    db,
+    `SELECT substr(t.auth_ref, 5) AS grant, json_array_length(t.proposals_json) AS proposed,
+            (SELECT COUNT(*) FROM proposal_decisions d WHERE d.user_id = t.user_id AND d.turn_id = t.turn_id
+                AND NOT EXISTS (SELECT 1 FROM submitted_proposals s WHERE s.user_id = d.user_id AND s.proposal_id = d.proposal_id)) AS decided
+       FROM assistant_turns t
+      WHERE t.user_id = ? AND t.auth_ref LIKE 'mcp:%' AND t.proposals_json != '[]' AND unixepoch(t.created_at) > ?`,
+    userId, sinceSeconds,
+  );
+  for (const row of turns) add(row.grant, row.proposed - row.decided);
+  return out;
+}
+
+/** Whether a connection may leave one more request for the owner: neither it nor all connections together are at their limit. */
+export function hasRoomToWait(waiting: WaitingRequests, grantId: string | null): boolean {
+  if (waiting.total >= WAITING_LIMITS.perOwner) return false;
+  return !grantId || (waiting.byGrant.get(grantId) ?? 0) < WAITING_LIMITS.perConnection;
+}
 
 /**
  * Keep one request as a proposal. Repeating the same request (same origin, source and idempotency key)
  * returns the proposal already kept; the same key with a different request returns `conflict`, and
- * nothing is stored for it. A source that has already left its day's share of requests gets `limited`:
- * the owner's list is not something a connected assistant can fill up.
+ * nothing is stored for it. When the connection, all connections together or the relayed turn already
+ * have their share of requests waiting, the answer is `limited`: the owner's list is not something a
+ * connected assistant can fill up. A request whose summary could not be shown to the owner in full is
+ * `unshowable` and is not kept: the owner never confirms text they were not shown.
  */
-export async function recordSubmittedProposal(db: Db, input: SubmittedProposalInput): Promise<{ row: SubmittedProposalRow; created: boolean } | { conflict: true } | { limited: true }> {
+export async function recordSubmittedProposal(db: Db, input: SubmittedProposalInput): Promise<{ row: SubmittedProposalRow; created: boolean } | { conflict: true } | { limited: true } | { unshowable: true }> {
   const requestHash = await requestHashOf(input);
   const proposalId = `prp_${(await sha256Hex(`submitted\u0000${input.origin}\u0000${input.sourceRef}\u0000${input.idempotencyKey}\u0000${requestHash}`)).slice(0, 32)}`;
   const find = () => first<SubmittedProposalRow>(db, `SELECT ${COLUMNS} FROM submitted_proposals WHERE user_id = ? AND origin = ? AND source_ref = ? AND idempotency_key = ?`, input.userId, input.origin, input.sourceRef, input.idempotencyKey);
   const existing = await find();
   if (existing) return existing.request_hash === requestHash ? { row: existing, created: false } : { conflict: true };
-  const recent = await first<{ n: number }>(db, "SELECT COUNT(*) AS n FROM submitted_proposals p WHERE p.user_id = ? AND p.origin = ? AND p.source_ref = ? AND p.created_at > ? AND NOT EXISTS (SELECT 1 FROM proposal_decisions d WHERE d.user_id = p.user_id AND d.proposal_id = p.proposal_id)", input.userId, input.origin, input.sourceRef, toInstant(input.nowMs - 86_400_000));
-  if ((recent?.n ?? 0) >= SUBMITTED_PER_DAY[input.origin]) return { limited: true };
+  if (!summaryFitsInFull(input.type, input.payload)) return { unshowable: true };
+  // The connection a relayed turn belongs to is read from the turn; a typed command names its grant.
+  const grantId = input.grantId ?? (input.turnId ? grantOfAuthRef((await first<{ auth_ref: string }>(db, "SELECT auth_ref FROM assistant_turns WHERE user_id = ? AND turn_id = ?", input.userId, input.turnId))?.auth_ref) : null);
+  const waiting = await waitingRequests(db, input.userId, input.nowMs);
+  if (!hasRoomToWait(waiting, grantId)) return { limited: true };
+  if (input.origin === "relayed_turn" && (waiting.byTurn.get(input.sourceRef) ?? 0) >= WAITING_LIMITS.perRelayedTurn) return { limited: true };
   await prepare(
     db,
     stmt(
@@ -79,8 +141,24 @@ export async function recordSubmittedProposal(db: Db, input: SubmittedProposalIn
   return row.request_hash === requestHash ? { row, created: true } : { conflict: true };
 }
 
+/** The grant a turn was started under, when a connected assistant started it. */
+export const grantOfAuthRef = (authRef: string | null | undefined): string | null => (authRef?.startsWith("mcp:") ? authRef.slice(4) : null);
+
+/** The newest kept requests, decided or not: the history part of the owner's list. */
 export const listSubmittedProposals = (db: Db, userId: string, limit: number): Promise<SubmittedProposalRow[]> =>
-  all<SubmittedProposalRow>(db, `SELECT ${COLUMNS} FROM submitted_proposals WHERE user_id = ? ORDER BY created_at DESC, proposal_id LIMIT ?`, userId, limit);
+  all<SubmittedProposalRow>(db, `SELECT ${COLUMNS} FROM submitted_proposals WHERE user_id = ? ORDER BY unixepoch(created_at) DESC, proposal_id LIMIT ?`, userId, limit);
+
+/** Every kept request the owner has not decided and that has not expired. Not truncated: nothing waiting is left off the owner's list. */
+export const listWaitingSubmittedProposals = (db: Db, userId: string, nowMs: number): Promise<SubmittedProposalRow[]> =>
+  all<SubmittedProposalRow>(
+    db,
+    `SELECT ${COLUMNS} FROM submitted_proposals p WHERE p.user_id = ? AND unixepoch(p.created_at) > ?
+        AND NOT EXISTS (SELECT 1 FROM proposal_decisions d WHERE d.user_id = p.user_id AND d.proposal_id = p.proposal_id)`,
+    userId, Math.floor((nowMs - PROPOSAL_LIFETIME_MS) / 1000),
+  );
+
+export const findSubmittedProposal = (db: Db, userId: string, proposalId: string): Promise<SubmittedProposalRow | null> =>
+  first<SubmittedProposalRow>(db, `SELECT ${COLUMNS} FROM submitted_proposals WHERE user_id = ? AND proposal_id = ?`, userId, proposalId);
 
 export const submittedPayload = (row: SubmittedProposalRow): Record<string, unknown> => parseJson<Record<string, unknown>>(row.payload_json, {});
 export const submittedExpectedVersions = (row: SubmittedProposalRow): Record<string, number> => parseJson<Record<string, number>>(row.expected_versions_json, {});
@@ -167,8 +245,21 @@ const LABELS: Record<string, string> = {
   "wear.amend": "Change a recorded wear",
 };
 
-const clip = (text: string): string => (text.length > 120 ? `${text.slice(0, 120)}…` : text);
-const shown = (value: unknown): string => (typeof value === "string" ? JSON.stringify(clip(value.replace(/\s+/g, " ").trim())) : clip(JSON.stringify(value)));
+/**
+ * A value exactly as it would be stored, written as JSON: text in straight quotation marks with line
+ * breaks and control characters as escapes, numbers, lists and nested records in full. Nothing is cut,
+ * collapsed or trimmed. Characters that could make the line read differently from what is stored are
+ * written as visible escapes too: invisible and direction-changing characters, and characters that look
+ * like the closing quotation mark.
+ */
+const MISLEADING = /[\u007f-\u009f\u02ba\u02dd\u02ee\u201c-\u201f\u2028\u2029\u2033\u2036\u3003\u301d-\u301f\uff02]|\p{Cf}/gu;
+const shown = (value: unknown): string => JSON.stringify(value).replace(MISLEADING, (c) => `\\u{${c.codePointAt(0)!.toString(16)}}`);
+
+/** The longest summary the owner is asked to read. A request that needs more is refused, never shortened. */
+export const MAX_SUMMARY_CHARS = 6000;
+
+/** Whether the whole request can be put before the owner: every field, every value in full, within the bound. */
+export const summaryFitsInFull = (type: string, payload: Record<string, unknown>): boolean => describeProposedChange(type, payload).length <= MAX_SUMMARY_CHARS;
 
 /** Every garment identifier that appears anywhere in a payload. */
 export function garmentIdsIn(value: unknown, into: Set<string> = new Set()): Set<string> {
@@ -193,25 +284,27 @@ export interface ProposalReferences {
 /**
  * The summary the owner is shown: written here from the command type and the exact payload that would
  * run, never taken from a model or from the requesting assistant. Text values are shown in quotation
- * marks so they read as content of the request, not as a statement by Garderobe. Identifiers are
- * followed by what the ledger holds under them, so the owner reads a name and not only an identifier;
- * an identifier that names nothing of the owner's is said to name nothing.
+ * marks so they read as content of the request, not as a statement by Garderobe. Every field of the
+ * request is listed and every value is shown in full (see `shown`): the owner confirms exactly this
+ * payload, so nothing of it may be left out or shortened. A request too long to show this way is not kept
+ * at all (`summaryFitsInFull`). Because the summary is derived from the stored payload each time it is
+ * read, it cannot differ from what would run. Identifiers are followed by what the ledger holds under
+ * them, so the owner reads a name and not only an identifier; an identifier that names nothing of the
+ * owner's is said to name nothing.
  */
 export function describeProposedChange(type: string, payload: Record<string, unknown>, refs?: ProposalReferences): string {
   const fields = Object.entries(payload)
-    .filter(([key, value]) => key !== "source" && value !== null && value !== undefined && !(Array.isArray(value) && value.length === 0))
-    .slice(0, 8)
-    .map(([key, value]) => `${key}: ${shown(value)}`);
-  const more = Object.keys(payload).length > 9 ? "; further fields are in the full request" : "";
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${shown(key).slice(1, -1)}: ${shown(value)}`);
   const notes: string[] = [];
   if (refs) {
     const ids = [...garmentIdsIn(payload)];
-    const named = ids.slice(0, 6).map((id) => (refs.garments.has(id) ? `${JSON.stringify(clip(refs.garments.get(id)!))} (${id})` : `${id} is not a garment in this wardrobe`));
-    if (named.length) notes.push(`Garments: ${named.join(", ")}${ids.length > 6 ? ` and ${ids.length - 6} more` : ""}.`);
+    const named = ids.map((id) => (refs.garments.has(id) ? `${shown(refs.garments.get(id)!)} (${id})` : `${id} is not a garment in this wardrobe`));
+    if (named.length) notes.push(`Garments: ${named.join(", ")}.`);
     if (type === "command.undo" && typeof payload.commandId === "string") {
       const target = refs.commands.get(payload.commandId);
       notes.push(target ? `The change to undo: ${target.type}, recorded ${target.recordedAt}.` : "The change to undo was not found.");
     }
   }
-  return `${LABELS[type] ?? `Run the command ${type}`}${fields.length ? ` (${fields.join("; ")}${more})` : ""}${notes.length ? `. ${notes.join(" ")}` : ""}`;
+  return `${LABELS[type] ?? `Run the command ${type}`}${fields.length ? ` (${fields.join("; ")})` : ""}${notes.length ? `. ${notes.join(" ")}` : ""}`;
 }

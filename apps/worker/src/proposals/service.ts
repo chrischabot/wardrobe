@@ -28,14 +28,16 @@
  * refused by the command and nothing changes.
  */
 import type { CommandReceipt } from "@garderobe/contracts";
-import { all, first, json as parseJson, prepare, stmt, toInstant, type Principal } from "@garderobe/domain";
+import { all, canonicalJson, first, json as parseJson, prepare, stmt, toInstant, type Principal } from "@garderobe/domain";
 import type { App } from "../app.ts";
 import { sha256Hex } from "../crypto.ts";
 import { ApiException } from "../errors.ts";
-import { describeProposedChange, garmentIdsIn, listSubmittedProposals, submittedExpectedVersions, submittedPayload, type ProposalReferences } from "./store.ts";
+import { describeProposedChange, findSubmittedProposal, garmentIdsIn, grantOfAuthRef, listSubmittedProposals, listWaitingSubmittedProposals, PROPOSAL_LIFETIME_MS, submittedExpectedVersions, submittedPayload, type ProposalReferences, type SubmittedProposalRow } from "./store.ts";
 
-/** A proposal nobody decided is offered for this long; after that it can no longer be confirmed. */
-export const PROPOSAL_LIFETIME_MS = 14 * 86_400_000;
+export { PROPOSAL_LIFETIME_MS };
+
+/** How many decided or expired turns and kept requests the owner's history shows. What is still waiting is never cut. */
+const HISTORY_LIMIT = 200;
 
 export interface Proposal {
   proposalId: string;
@@ -68,7 +70,14 @@ interface DecisionRow {
   decided_at: string;
 }
 
-const proposalIdOf = async (turnId: string, type: string, payload: unknown): Promise<string> => `prp_${(await sha256Hex(`proposal\u0000${turnId}\u0000${type}\u0000${JSON.stringify(payload)}`)).slice(0, 32)}`;
+/**
+ * The identifier of a proposal the assistant recorded on a turn. It covers everything the owner is asked
+ * to confirm: the command and its exact payload, the summary that is shown for it and the versions it
+ * would run against. A stored proposal that differs in any of these is a different proposal, so a
+ * confirmation can only ever apply to the text the owner was shown.
+ */
+const proposalIdOf = async (turnId: string, type: string, payload: unknown, summary: string, expectedVersions: Record<string, number>): Promise<string> =>
+  `prp_${(await sha256Hex(`proposal\u0000${turnId}\u0000${type}\u0000${canonicalJson({ payload, summary, expectedVersions })}`)).slice(0, 32)}`;
 
 /** A proposal with what is needed to run it; only the `Proposal` part leaves this module. */
 interface Held {
@@ -79,15 +88,33 @@ interface Held {
   occurredAt: string | null;
 }
 
-async function held(app: App, userId: string, limit: number, nowMs: number): Promise<Held[]> {
-  const turns = await all<TurnRow>(app.db, "SELECT turn_id, channel, auth_ref, created_at, proposals_json FROM assistant_turns WHERE user_id = ? AND proposals_json != '[]' ORDER BY created_at DESC, turn_id LIMIT ?", userId, limit);
-  const submitted = await listSubmittedProposals(app.db, userId, limit);
+const TURN_COLUMNS = "t.turn_id, t.channel, t.auth_ref, t.created_at, t.proposals_json";
+/** A decision on one of the turn's own proposals (not on a request kept from it in `submitted_proposals`). */
+const TURN_DECISIONS = "(SELECT COUNT(*) FROM proposal_decisions d WHERE d.user_id = t.user_id AND d.turn_id = t.turn_id AND NOT EXISTS (SELECT 1 FROM submitted_proposals s WHERE s.user_id = d.user_id AND s.proposal_id = d.proposal_id))";
+
+/** Turns that still hold a proposal the owner has not decided and that has not expired. Not truncated. */
+const waitingTurns = (app: App, userId: string, nowMs: number): Promise<TurnRow[]> =>
+  all<TurnRow>(
+    app.db,
+    `SELECT ${TURN_COLUMNS} FROM assistant_turns t WHERE t.user_id = ? AND t.proposals_json != '[]' AND unixepoch(t.created_at) > ? AND json_array_length(t.proposals_json) > ${TURN_DECISIONS}`,
+    userId, Math.floor((nowMs - PROPOSAL_LIFETIME_MS) / 1000),
+  );
+
+/** The newest turns that hold proposals, decided or not, from `offset` on. */
+const recentTurns = (app: App, userId: string, limit: number, offset = 0): Promise<TurnRow[]> =>
+  all<TurnRow>(app.db, `SELECT ${TURN_COLUMNS} FROM assistant_turns t WHERE t.user_id = ? AND t.proposals_json != '[]' ORDER BY unixepoch(t.created_at) DESC, t.turn_id LIMIT ? OFFSET ?`, userId, limit, offset);
+
+const uniqueBy = <T>(rows: T[], key: (row: T) => string): T[] => [...new Map(rows.map((row) => [key(row), row])).values()];
+
+/** The proposals held on these turns and in these kept requests, newest first, each with its state. */
+async function build(app: App, userId: string, turns: TurnRow[], submitted: SubmittedProposalRow[], nowMs: number): Promise<Held[]> {
   if (turns.length === 0 && submitted.length === 0) return [];
   const decisions = new Map((await all<DecisionRow>(app.db, "SELECT proposal_id, decision, command_id, decided_at FROM proposal_decisions WHERE user_id = ?", userId)).map((d) => [d.proposal_id, d]));
   const grants = new Map((await all<{ grant_id: string; client_name: string }>(app.db, "SELECT grant_id, client_name FROM mcp_grants WHERE user_id = ?", userId)).map((g) => [g.grant_id, g.client_name]));
   const out: Held[] = [];
-  const add = (input: { proposalId: string; turnId: string; decisionRef: string; type: string; summary?: string; payload: Record<string, unknown>; proposedAt: string; channel: string; assistantName: string | null; expectedVersions: Record<string, number>; occurredAt: string | null }) => {
-    const decision = decisions.get(input.proposalId);
+  const add = (input: { proposalId: string; legacyId?: string; turnId: string; decisionRef: string; type: string; summary?: string; payload: Record<string, unknown>; proposedAt: string; channel: string; assistantName: string | null; expectedVersions: Record<string, number>; occurredAt: string | null }) => {
+    // A decision recorded before the identifier covered the summary and versions is still that proposal's decision.
+    const decision = decisions.get(input.proposalId) ?? (input.legacyId ? decisions.get(input.legacyId) : undefined);
     const expiresAtMs = Date.parse(input.proposedAt) + PROPOSAL_LIFETIME_MS;
     out.push({
       proposal: {
@@ -110,7 +137,7 @@ async function held(app: App, userId: string, limit: number, nowMs: number): Pro
       occurredAt: input.occurredAt,
     });
   };
-  const grantOfTurn = new Map(turns.map((t) => [t.turn_id, t.auth_ref.startsWith("mcp:") ? t.auth_ref.slice(4) : null]));
+  const grantOfTurn = new Map(turns.map((t) => [t.turn_id, grantOfAuthRef(t.auth_ref)]));
   for (const turn of turns) {
     const grantId = grantOfTurn.get(turn.turn_id) ?? null;
     for (const p of parseJson<{ type?: unknown; summary?: unknown; payload?: unknown; expectedVersions?: unknown }[]>(turn.proposals_json, [])) {
@@ -118,7 +145,9 @@ async function held(app: App, userId: string, limit: number, nowMs: number): Pro
       const payload = p.payload as Record<string, unknown>;
       // The versions the proposal was built against, when the assistant recorded them: passed to the command on confirm.
       const expectedVersions = p.expectedVersions && typeof p.expectedVersions === "object" ? Object.fromEntries(Object.entries(p.expectedVersions as Record<string, unknown>).filter((e): e is [string, number] => typeof e[1] === "number")) : {};
-      add({ proposalId: await proposalIdOf(turn.turn_id, p.type, payload), turnId: turn.turn_id, decisionRef: turn.turn_id, type: p.type, ...(typeof p.summary === "string" && p.summary ? { summary: p.summary } : {}), payload, proposedAt: turn.created_at, channel: turn.channel, assistantName: grantId ? (grants.get(grantId) ?? null) : null, expectedVersions, occurredAt: null });
+      // The summary the assistant workstream's trusted code composed is what the owner is shown, so it is part of the identifier.
+      const summary = typeof p.summary === "string" && p.summary ? p.summary : describeProposedChange(p.type, payload);
+      add({ proposalId: await proposalIdOf(turn.turn_id, p.type, payload, summary, expectedVersions), legacyId: `prp_${(await sha256Hex(`proposal\u0000${turn.turn_id}\u0000${p.type}\u0000${JSON.stringify(payload)}`)).slice(0, 32)}`, turnId: turn.turn_id, decisionRef: turn.turn_id, type: p.type, summary, payload, proposedAt: turn.created_at, channel: turn.channel, assistantName: grantId ? (grants.get(grantId) ?? null) : null, expectedVersions, occurredAt: null });
     }
   }
   // What the ledger holds under the identifiers these requests name, for the summaries written here.
@@ -133,24 +162,55 @@ async function held(app: App, userId: string, limit: number, nowMs: number): Pro
     let grantId = row.grant_id;
     if (!grantId && row.turn_id) {
       const authRef = grantOfTurn.has(row.turn_id) ? null : (await first<{ auth_ref: string }>(app.db, "SELECT auth_ref FROM assistant_turns WHERE user_id = ? AND turn_id = ?", userId, row.turn_id))?.auth_ref;
-      grantId = grantOfTurn.get(row.turn_id) ?? (authRef?.startsWith("mcp:") ? authRef.slice(4) : null);
+      grantId = grantOfTurn.get(row.turn_id) ?? grantOfAuthRef(authRef);
     }
     add({ proposalId: row.proposal_id, turnId: row.turn_id ?? "", decisionRef: row.turn_id ?? row.source_ref, type: row.command_type, summary: describeProposedChange(row.command_type, payloads[i]!, refs), payload: payloads[i]!, proposedAt: row.created_at, channel: "mcp", assistantName: grantId ? (grants.get(grantId) ?? null) : null, expectedVersions: submittedExpectedVersions(row), occurredAt: row.occurred_at });
   }
-  return out.sort((a, b) => (a.proposal.proposedAt < b.proposal.proposedAt ? 1 : a.proposal.proposedAt > b.proposal.proposedAt ? -1 : a.proposal.proposalId < b.proposal.proposalId ? -1 : 1));
+  return out.sort((a, b) => Date.parse(b.proposal.proposedAt) - Date.parse(a.proposal.proposedAt) || (a.proposal.proposalId < b.proposal.proposalId ? -1 : 1));
 }
 
-/** The owner's proposals, newest first. `pending` (the default) is what still waits for a decision. */
+/**
+ * The owner's proposals, newest first. `pending` (the default) is everything that still waits for a
+ * decision: it is read by state, not as the newest so-many turns, so a request cannot drop off the list
+ * because newer ones arrived. `all` adds the recent history of decided and expired ones.
+ */
 export async function listProposals(app: App, principal: Principal, opts: { state?: "pending" | "all" } = {}): Promise<Proposal[]> {
-  const proposals = (await held(app, principal.userId, 200, app.now())).map((h) => h.proposal);
+  const userId = principal.userId;
+  const nowMs = app.now();
+  let turns = await waitingTurns(app, userId, nowMs);
+  let submitted = await listWaitingSubmittedProposals(app.db, userId, nowMs);
+  if (opts.state === "all") {
+    turns = uniqueBy([...turns, ...(await recentTurns(app, userId, HISTORY_LIMIT))], (t) => t.turn_id);
+    submitted = uniqueBy([...submitted, ...(await listSubmittedProposals(app.db, userId, HISTORY_LIMIT))], (s) => s.proposal_id);
+  }
+  const proposals = (await build(app, userId, turns, submitted, nowMs)).map((h) => h.proposal);
   return opts.state === "all" ? proposals : proposals.filter((p) => p.state === "pending");
 }
 
+/** One proposal by identifier, however old it is and however many came after it. */
 async function findHeld(app: App, userId: string, proposalId: string): Promise<Held> {
-  // The identifier does not name its origin, so the owner's proposals are searched (bounded).
-  const found = (await held(app, userId, 500, app.now())).find((h) => h.proposal.proposalId === proposalId);
-  if (!found) throw new ApiException("not_found", "that proposal was not found");
-  return found;
+  const nowMs = app.now();
+  const pick = (list: Held[]) => list.find((h) => h.proposal.proposalId === proposalId);
+  const kept = await findSubmittedProposal(app.db, userId, proposalId);
+  if (kept) {
+    const found = pick(await build(app, userId, [], [kept], nowMs));
+    if (found) return found;
+  }
+  // A turn's proposal is identified by a digest of its content, so its turn is found through the decision
+  // already taken on it, or by going through the owner's turns that hold proposals, a page at a time.
+  const decided = await first<{ turn_id: string }>(app.db, "SELECT turn_id FROM proposal_decisions WHERE user_id = ? AND proposal_id = ?", userId, proposalId);
+  if (decided) {
+    const found = pick(await build(app, userId, await all<TurnRow>(app.db, `SELECT ${TURN_COLUMNS} FROM assistant_turns t WHERE t.user_id = ? AND t.turn_id = ?`, userId, decided.turn_id), [], nowMs));
+    if (found) return found;
+  }
+  const page = 200;
+  for (let offset = 0; ; offset += page) {
+    const turns = await recentTurns(app, userId, page, offset);
+    const found = pick(await build(app, userId, turns, [], nowMs));
+    if (found) return found;
+    if (turns.length < page) break;
+  }
+  throw new ApiException("not_found", "that proposal was not found");
 }
 
 /** The state of one proposal by identifier, for the connection that submitted it: its own request, with the summary the owner is shown. */
