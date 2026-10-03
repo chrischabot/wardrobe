@@ -15,7 +15,7 @@ struct OptionCard: View {
             OutfitComposition(garments: option.visibleGarments, label: option.accessibilityLabel)
             VStack(alignment: .leading, spacing: Metrics.unit * 2) {
                 if isHighlighted {
-                    Label("Opened from your link", systemImage: "link").font(.footnote).foregroundStyle(.secondary)
+                    Label("Opened from your link", systemImage: "link").font(.footnote).foregroundStyle(Color.supporting)
                 }
                 Text(option.option.name).font(.title2.weight(.semibold)).accessibilityAddTraits(.isHeader)
                 Text(option.option.reason).font(.body)
@@ -24,7 +24,7 @@ struct OptionCard: View {
                 ForEach(option.visibleGarments) { line in Text(line.name).font(.title3) }
             }
             if let qualification = option.option.qualification {
-                Label(qualification, systemImage: "info.circle").font(.subheadline).foregroundStyle(.secondary)
+                Label(qualification, systemImage: "info.circle").font(.subheadline).foregroundStyle(Color.supporting)
             }
             if !option.footwearChoices.isEmpty { footwear }
             if let flourish = option.option.flourish { flourishControl(flourish) }
@@ -46,7 +46,7 @@ struct OptionCard: View {
     /// Picking a shoe changes the visible outfit, so the wear action records exactly one pair.
     private var footwear: some View {
         VStack(alignment: .leading, spacing: Metrics.unit) {
-            Text("Shoes").font(.subheadline).foregroundStyle(.secondary)
+            Text("Shoes").font(.subheadline).foregroundStyle(Color.supporting)
             ForEach(option.footwearChoices) { choice in
                 let selected = choice.garmentId == option.selectedFootwearId
                 Button {
@@ -66,7 +66,7 @@ struct OptionCard: View {
     /// The optional scarf or tie. It is recorded as worn only when the owner says so.
     private func flourishControl(_ flourish: BoardGarmentLine) -> some View {
         VStack(alignment: .leading, spacing: Metrics.unit) {
-            Text("Optional: \(flourish.name)").font(.subheadline).foregroundStyle(.secondary)
+            Text("Optional: \(flourish.name)").font(.subheadline).foregroundStyle(Color.supporting)
             Toggle("Wearing the \(flourish.name) too", isOn: Binding(
                 get: { option.flourishWorn },
                 set: { app.today.setFlourishWorn($0, optionId: option.id) }))
@@ -158,9 +158,9 @@ struct OptionCard: View {
                 if let flourish = option.option.flourish {
                     DetailRow(label: "Optional", value: flourish.name)
                 }
-                Text("Option \(option.option.number) on this board.").font(.footnote).foregroundStyle(.secondary)
+                Text("Option \(option.option.number) on this board.").font(.footnote).foregroundStyle(Color.supporting)
                 if option.option.changedInRevision {
-                    Text("Changed in the latest update to this board.").font(.footnote).foregroundStyle(.secondary)
+                    Text("Changed in the latest update to this board.").font(.footnote).foregroundStyle(Color.supporting)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

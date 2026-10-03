@@ -69,7 +69,7 @@ struct TranscriptView: View {
         case .date(let date):
             Text(dateTitle(date))
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.supporting)
                 .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.vertical, Metrics.unit)
                 .accessibilityAddTraits(.isHeader)
@@ -88,7 +88,7 @@ struct TranscriptView: View {
     private var hint: some View {
         Text("Write a message below, attach a photo, or paste a product link.")
             .font(.subheadline)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Color.supporting)
             .frame(maxWidth: .infinity, alignment: .center)
             .multilineTextAlignment(.center)
             .padding(.vertical, Metrics.inset * 2)

@@ -60,7 +60,7 @@ struct LaundrySheet: View {
         }
         Section {
             if batches.isEmpty {
-                Text("No collected batch is recorded as away.").foregroundStyle(.secondary)
+                Text("No collected batch is recorded as away.").foregroundStyle(Color.supporting)
                 returnButtons(batchId: nil, isFirst: true)
             }
             Menu {

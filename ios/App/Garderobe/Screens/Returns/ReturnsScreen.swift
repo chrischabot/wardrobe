@@ -22,7 +22,7 @@ struct ReturnsScreen: View {
             // Only say there are none once the list has actually been read (live or from the cache).
             if returns.openCases.isEmpty, returns.returns.value != nil {
                 Section {
-                    Text("No open returns or exchanges.").foregroundStyle(.secondary)
+                    Text("No open returns or exchanges.").foregroundStyle(Color.supporting)
                 } footer: {
                     Text("A return or exchange can be started in Conversation.")
                 }
@@ -45,7 +45,7 @@ struct ReturnsScreen: View {
             Label(returns.deadlineLine(item), systemImage: established ? "calendar" : "questionmark.circle")
                 .font(.headline)
             if let terms = returns.termsLine(item) {
-                Text(terms).font(.subheadline).foregroundStyle(.secondary)
+                Text(terms).font(.subheadline).foregroundStyle(Color.supporting)
             }
             if let next = item.nextAction { LabeledContent("Next", value: next) }
             LabeledContent("State", value: Self.name(item.state))
@@ -56,7 +56,7 @@ struct ReturnsScreen: View {
                 if let received = item.retailerReceivedOn { LabeledContent("Reached the retailer", value: Phrases.dayMonth(received)) }
                 if let refund = returns.refundLine(item) { Text(refund) }
             }
-            Text(returns.stockLine(item)).font(.subheadline).foregroundStyle(.secondary)
+            Text(returns.stockLine(item)).font(.subheadline).foregroundStyle(Color.supporting)
             if let garmentId = item.garmentId {
                 NavigationLink(value: AppRoute.item(garmentId: garmentId)) { Label("Open the item", systemImage: "hanger") }
             }

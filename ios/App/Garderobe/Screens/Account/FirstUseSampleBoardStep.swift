@@ -24,11 +24,11 @@ struct FirstUseSampleBoardStep: View {
                         .font(.headline)
                     Text(presentation.option.reason)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.supporting)
                     if let qualification = presentation.option.qualification {
                         Text(qualification)
                             .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.supporting)
                     }
                 }
                 .accessibilityElement(children: .combine)
@@ -40,7 +40,7 @@ struct FirstUseSampleBoardStep: View {
         Section {
             Label("Photos of your garments are being found in the background. A missing photo never blocks a recommendation; the few that research cannot find collect under Photos needed in Settings.", systemImage: "photo.on.rectangle.angled")
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.supporting)
         } footer: {
             Text("Finish opens Today, where you can choose, swap and record what you wore.")
         }

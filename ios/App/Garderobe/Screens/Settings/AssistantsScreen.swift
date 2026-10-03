@@ -23,12 +23,12 @@ struct AssistantsScreen: View {
                         if let domain = grant.clientDomain {
                             Text(domain)
                                 .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.supporting)
                         }
                         Text(settings.grantLine(grant))
                         Text("Connected \(SettingsInstant(app: app).relative(grant.grantedAt)).")
                             .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.supporting)
                     }
                     .accessibilityElement(children: .combine)
                     Button("Disconnect", role: .destructive) { pendingDisconnect = grant }
@@ -41,7 +41,7 @@ struct AssistantsScreen: View {
             Section {
                 Text("To connect an assistant, or to reconnect one, start from the assistant's own app. It opens a page in the browser where you approve what it may do; this works entirely on the phone.")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
             }
         }
         .navigationTitle("Connected assistants")

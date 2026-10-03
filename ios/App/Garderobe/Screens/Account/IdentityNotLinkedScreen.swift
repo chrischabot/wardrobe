@@ -21,7 +21,7 @@ struct IdentityNotLinkedScreen: View {
                         Text("You are signed in, but this sign-in is not linked to a wardrobe yet.")
                         Text("An email address that matches, or knowing what is in the wardrobe, does not prove ownership. Use one of the three routes below.")
                             .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.supporting)
                     }
                     if account.message != nil {
                         Section { SettingsMessageLine(message: account.message) }

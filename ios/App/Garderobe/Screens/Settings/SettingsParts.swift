@@ -28,7 +28,7 @@ struct SettingsMessageLine: View {
                 Image(systemName: "exclamationmark.triangle")
             }
             .font(.footnote)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Color.supporting)
             .accessibilityElement(children: .combine)
         }
     }

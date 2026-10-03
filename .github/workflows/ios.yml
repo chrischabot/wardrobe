@@ -118,7 +118,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO > test.log 2>&1 || status=$?
           # Verdicts first (short), then each failure's detail. A test that fails and then passes on its one retry shows both lines.
           { grep -E "Test Case .* (passed|failed)|Executed [0-9]+ tests|TEST (SUCCEEDED|FAILED|EXECUTE)" test.log | sed -E "s/Test Case '-\[GarderobeUITests\.GarderobeUITests ([A-Za-z0-9_]+)\]'/\1/" | awk '!seen[$0]++'
-            grep -E "error:" test.log | sed "s#$PWD/##g; s#ios/App/GarderobeUITests/##; s#-\[GarderobeUITests\.GarderobeUITests ##" | awk '!seen[$0]++'; } > test-summary.txt || true
+            grep -E "error:|AUDIT-EXCLUDED|AUDIT-UNATTRIBUTED" test.log | sed "s#$PWD/##g; s#ios/App/GarderobeUITests/##; s#-\[GarderobeUITests\.GarderobeUITests ##" | awk '!seen[$0]++'; } > test-summary.txt || true
           if ! grep -qE "(passed|failed) \(" test-summary.txt; then { echo "---- end of test.log ----"; tail -60 test.log | sed "s#$PWD/##g"; } >> test-summary.txt; fi
           echo "xcodebuild test-without-building exit $status" >> test-summary.txt
           tail -5 test.log

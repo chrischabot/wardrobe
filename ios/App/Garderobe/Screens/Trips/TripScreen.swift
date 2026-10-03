@@ -32,7 +32,7 @@ struct TripScreen: View {
                     }
                 }
             } else if trips.trips.value != nil {
-                Section { Text("This trip is not in your list of trips.").foregroundStyle(.secondary) }
+                Section { Text("This trip is not in your list of trips.").foregroundStyle(Color.supporting) }
             }
         }
         .navigationTitle(trip?.name ?? "Trip")

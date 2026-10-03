@@ -19,13 +19,13 @@ struct ItemHistorySection: View {
             SectionHeading(title: "Returns and exchanges")
             let cases = app.returns.cases(forGarment: model.garmentId)
             if cases.isEmpty {
-                Text("None for this item.").font(.subheadline).foregroundStyle(.secondary)
+                Text("None for this item.").font(.subheadline).foregroundStyle(Color.supporting)
             }
             ForEach(cases) { c in
                 VStack(alignment: .leading, spacing: Metrics.unit) {
                     Text(c.kind == .exchange ? "Exchange" : "Return").font(.subheadline.weight(.medium))
                     Text(app.returns.deadlineLine(c)).font(.footnote)
-                    Text(app.returns.stockLine(c)).font(.footnote).foregroundStyle(.secondary)
+                    Text(app.returns.stockLine(c)).font(.footnote).foregroundStyle(Color.supporting)
                 }
             }
             if let garment = model.garment, garment.acquisition != .disposed {
@@ -37,7 +37,7 @@ struct ItemHistorySection: View {
                         .frame(minHeight: Metrics.touch)
                 }
                 Text("Starting a return does not remove the item. It leaves your wardrobe only when it physically goes.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(Color.supporting)
                 OutcomeLine(outcome: app.returns.lastOutcome)
             }
         }
@@ -50,10 +50,10 @@ struct ItemHistorySection: View {
             SectionHeading(title: "History")
             if model.historyFailure != nil {
                 Label("Earlier history could not be loaded, so this list may be incomplete.", systemImage: "clock.badge.exclamationmark")
-                    .font(.footnote).foregroundStyle(.secondary)
+                    .font(.footnote).foregroundStyle(Color.supporting)
             }
             if model.history.isEmpty {
-                Text("Nothing recorded for this item yet.").font(.subheadline).foregroundStyle(.secondary)
+                Text("Nothing recorded for this item yet.").font(.subheadline).foregroundStyle(Color.supporting)
             }
             ForEach(model.history) { record in ReceiptCard(record: record) }
         }

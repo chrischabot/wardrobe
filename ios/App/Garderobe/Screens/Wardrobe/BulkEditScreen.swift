@@ -67,7 +67,7 @@ private struct BulkEditForm: View {
                         .accessibilityIdentifier(AXID.bulkEditCheck)
                 }
                 if let message = model.message {
-                    Text(message).font(.footnote).foregroundStyle(.secondary)
+                    Text(message).font(.footnote).foregroundStyle(Color.supporting)
                 }
             } header: {
                 Text("Which items")
@@ -109,7 +109,7 @@ private struct BulkEditForm: View {
                                 .foregroundStyle(model.isSelected(item) ? Color.accentColor : Color.secondary)
                             VStack(alignment: .leading, spacing: Metrics.unit) {
                                 Text(item.garment.name).foregroundStyle(.primary)
-                                Text(app.wardrobe.subtitle(for: item)).font(.footnote).foregroundStyle(.secondary)
+                                Text(app.wardrobe.subtitle(for: item)).font(.footnote).foregroundStyle(Color.supporting)
                             }
                         }
                         .frame(maxWidth: .infinity, minHeight: Metrics.touch, alignment: .leading)

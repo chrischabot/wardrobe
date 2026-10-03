@@ -22,7 +22,7 @@ struct InferenceScreen: View {
             if settings.inference != nil {
                 Section {
                     if settings.routingLines.isEmpty {
-                        Text("No task routing was reported.").foregroundStyle(.secondary)
+                        Text("No task routing was reported.").foregroundStyle(Color.supporting)
                     }
                     ForEach(Array(settings.routingLines.enumerated()), id: \.offset) { _, entry in
                         row(title: entry.task, detail: entry.line)
@@ -35,7 +35,7 @@ struct InferenceScreen: View {
                 Section {
                     let inference = budgets.filter { $0.name != searchName }
                     if inference.isEmpty {
-                        Text("No model budgets were reported.").foregroundStyle(.secondary)
+                        Text("No model budgets were reported.").foregroundStyle(Color.supporting)
                     }
                     ForEach(Array(inference.enumerated()), id: \.offset) { _, entry in
                         row(title: entry.name, detail: entry.line)
@@ -46,7 +46,7 @@ struct InferenceScreen: View {
                 Section {
                     let search = budgets.filter { $0.name == searchName }
                     if search.isEmpty {
-                        Text("No search-service budget was reported.").foregroundStyle(.secondary)
+                        Text("No search-service budget was reported.").foregroundStyle(Color.supporting)
                     }
                     ForEach(Array(search.enumerated()), id: \.offset) { _, entry in
                         row(title: entry.name, detail: entry.line)
@@ -68,7 +68,7 @@ struct InferenceScreen: View {
             Text(title)
             Text(detail)
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.supporting)
         }
         .accessibilityElement(children: .combine)
     }

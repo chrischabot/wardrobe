@@ -884,8 +884,11 @@ def run(report: Report) -> None:
                 "webcredentials:$(GARDEROBE_ASSOCIATED_DOMAIN)",
             ]
         }
+        # Notifications: the app asks Apple for a device token. Xcode's signing replaces the
+        # value with "production" when it exports a distribution build.
+        push = {"aps-environment": "development"}
         problems = []
-        for name, expected in ((APP, {**groups, **domains}), (SHARE, groups)):
+        for name, expected in ((APP, {**groups, **domains, **push}), (SHARE, groups)):
             plist = plist_of(name, "CODE_SIGN_ENTITLEMENTS")
             if plist != expected:
                 problems.append(f"{name} entitlements are {plist!r}")
@@ -893,7 +896,7 @@ def run(report: Report) -> None:
 
     report.guarded(f"{APP} Info.plist has the required keys and no UIBackgroundModes", app_info_plist)
     report.guarded(f"{SHARE} Info.plist declares the share extension and its configuration keys", share_info_plist)
-    report.guarded("entitlements declare the app group, keychain group and (app only) associated domains", entitlements)
+    report.guarded("entitlements declare the app group, keychain group and (app only) associated domains and notifications", entitlements)
 
     privacy = IOS_DIR / "App" / APP / "PrivacyInfo.xcprivacy"
 

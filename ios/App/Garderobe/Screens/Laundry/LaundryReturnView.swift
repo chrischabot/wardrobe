@@ -26,7 +26,7 @@ struct LaundryReturnView: View {
                 if focusOnExceptions { confirmation(draft) }
             } else {
                 Section {
-                    Text("There is no collected batch waiting to be returned.").foregroundStyle(.secondary)
+                    Text("There is no collected batch waiting to be returned.").foregroundStyle(Color.supporting)
                     if attempted { OutcomeLine(outcome: laundry.lastOutcome) }
                 }
             }
@@ -40,7 +40,7 @@ struct LaundryReturnView: View {
             Text(line.name)
             Text("\(line.outstanding) out")
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.supporting)
             Stepper(value: Binding(
                 get: { line.stillAway },
                 set: { app.laundry.setStillAway(garmentId: line.garmentId, quantity: $0) }), in: 0...line.outstanding) {

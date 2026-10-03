@@ -202,6 +202,15 @@ public final class APIClient: Sendable {
     /// "Find something that works with this": the backend fills the unlocked slots.
     public func suggestStudio(_ request: StudioOutfitRequest) async throws -> StudioSuggestResponse { try await post("/v1/studio/suggest", body: request) }
     public func composeStudio(_ request: StudioComposeRequest) async throws -> Composition { try await post("/v1/studio/compose", body: request) }
+    /// Asks for a rendered preview of a combination. Rendering is a background job: the answer
+    /// is a receipt and the manifest hash to read the result by, never the picture itself.
+    public func requestStudioPreview(_ request: StudioPreviewRequest) async throws -> StudioPreviewResponse { try await post("/v1/studio/previews", body: request) }
+    /// A composition by manifest hash, with the state of its preview.
+    public func composition(manifestHash: String) async throws -> Composition { try await get("/v1/studio/compositions/\(APIClient.segment(manifestHash))") }
+    /// The rendered preview (PNG). Fails with `not_found` until the backend has rendered it.
+    public func compositionPreview(manifestHash: String) async throws -> Data {
+        try await image("/v1/studio/compositions/\(APIClient.segment(manifestHash))/preview", query: [])
+    }
 
     // MARK: Commands
 
@@ -301,6 +310,18 @@ public final class APIClient: Sendable {
     public func asset(id: String, variant: AssetImageQuery.Variant? = nil, width: Int? = nil) async throws -> Data {
         try await image("/v1/media/assets/\(APIClient.segment(id))", query: APIClient.item("variant", variant?.rawValue) + APIClient.width(width))
     }
+    /// A short-lived URL for one of the owner's own renditions. The URL carries its own token
+    /// bound to the owner, the rendition and the width.
+    public func signRendition(id: String, _ request: SignRenditionRequest = SignRenditionRequest()) async throws -> SignedMediaUrl {
+        try await post("/v1/media/renditions/\(APIClient.segment(id))/sign", body: request)
+    }
+    /// The bytes behind a signed URL. The token in the URL is the whole authority, so the
+    /// sign-in is not attached. Every failure (expired, deleted, tampered) is the same 404.
+    public func signedMedia(_ signed: SignedMediaUrl) async throws -> Data {
+        let response = try await exchange(HTTPRequest(method: "GET", path: signed.url, headers: ["Accept": "image/*"]))
+        guard (200..<300).contains(response.status) else { throw APIClient.failure(from: response) }
+        return response.body
+    }
     public func photosNeeded() async throws -> PhotosNeededList { try await get("/v1/media/photos-needed") }
     public func mediaReview() async throws -> MediaReview { try await get("/v1/media/review") }
 
@@ -324,6 +345,14 @@ public final class APIClient: Sendable {
     public func settings() async throws -> SettingsResponse { try await get("/v1/settings") }
     public func assistants() async throws -> AssistantGrantList { try await get("/v1/assistants") }
     public func disconnectAssistant(grantId: String) async throws -> AssistantGrant { try await post("/v1/assistants/\(APIClient.segment(grantId))/disconnect") }
+
+    // MARK: Notifications
+
+    /// Devices registered for notifications, and whether the backend can deliver at all.
+    public func devices() async throws -> DeviceList { try await get("/v1/devices") }
+    /// Registers or refreshes this installation's notification token. The token is never returned.
+    public func registerDevice(_ request: DeviceRegistration) async throws -> Device { try await post("/v1/devices", body: request) }
+    public func removeDevice(id: String) async throws -> DeviceRemoved { try await post("/v1/devices/\(APIClient.segment(id))/remove") }
 
     // MARK: Portable export
 

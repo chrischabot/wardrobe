@@ -81,7 +81,7 @@ struct NeedsInputCard: View {
                 ForEach(input.choices, id: \.id) { choice in
                     Text(choice.label)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.supporting)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

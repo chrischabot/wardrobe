@@ -24,7 +24,7 @@ struct SignInScreen: View {
                         .accessibilityAddTraits(.isHeader)
                     Text("Signing in opens your wardrobe, today's board and your conversation on this phone, and sends what you record here to your account.")
                         .font(.body)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.supporting)
                 }
                 signInBlock
                 demoBlock
@@ -44,7 +44,7 @@ struct SignInScreen: View {
                     ForEach(configuration.missing, id: \.self) { item in
                         Text("\u{2022} \(item)")
                             .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.supporting)
                     }
                 }
                 .accessibilityElement(children: .combine)
@@ -71,7 +71,7 @@ struct SignInScreen: View {
             if app.unsentCount > 0 {
                 Label("\(Phrases.count(app.unsentCount, "action")) saved on this phone will be sent after you sign in.", systemImage: "tray.and.arrow.up")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -86,7 +86,7 @@ struct SignInScreen: View {
                 .accessibilityIdentifier(AXID.demoButton)
             Text("The demo shows data recorded from a real run. Nothing you do in it is saved.")
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.supporting)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

@@ -38,7 +38,7 @@ struct RecoveryStatusScreen: View {
             Section {
                 if recovery.issues.isEmpty {
                     Text(recovery.status.value == nil ? "Connection issues have not been checked yet." : "No connection issues.")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.supporting)
                 }
                 ForEach(Array(recovery.issues.enumerated()), id: \.offset) { _, issue in
                     RecoveryIssueRow(issue: issue, retry: { await retry() })
@@ -52,7 +52,7 @@ struct RecoveryStatusScreen: View {
             Section {
                 DisclosureGroup("Diagnostics", isExpanded: $showsDiagnostics) {
                     if recovery.diagnostics.isEmpty {
-                        Text("No diagnostic details were reported.").foregroundStyle(.secondary)
+                        Text("No diagnostic details were reported.").foregroundStyle(Color.supporting)
                     }
                     ForEach(recovery.diagnostics, id: \.key) { entry in
                         DetailRow(label: entry.key, value: entry.value)

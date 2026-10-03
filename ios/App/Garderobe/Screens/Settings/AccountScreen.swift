@@ -15,7 +15,7 @@ struct AccountScreen: View {
                 Section {
                     SettingsMessageLine(message: account.message)
                     if account.me == nil {
-                        Text("Account details are not available right now.").foregroundStyle(.secondary)
+                        Text("Account details are not available right now.").foregroundStyle(Color.supporting)
                     }
                 }
             }

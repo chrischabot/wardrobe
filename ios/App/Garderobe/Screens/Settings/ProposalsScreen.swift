@@ -12,20 +12,22 @@ struct ProposalsScreen: View {
             Section {
                 Text("A connected assistant cannot make these changes itself. Nothing happens until you confirm.")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
                 SettingsFreshnessLabel(freshness: model.proposals.freshness, subject: "requests")
                 SettingsMessageLine(message: model.message)
             }
             if model.pending.isEmpty, model.proposals.value != nil {
-                Section { Text("Nothing is waiting for your decision.").foregroundStyle(.secondary) }
+                Section { Text("Nothing is waiting for your decision.").foregroundStyle(Color.supporting) }
             }
             ForEach(model.pending, id: \.proposalId) { proposal in
                 Section {
                     ProposalDetail(proposal: proposal)
-                    Button("Confirm") { Task { await model.confirm(proposal) } }
-                        .disabled(model.isWorking)
-                        .accessibilityHint("Makes this change now, as your own action.")
-                        .accessibilityIdentifier(AXID.proposalConfirm(proposal.proposalId))
+                    if model.canConfirm(proposal) {
+                        Button("Confirm") { Task { await model.confirm(proposal) } }
+                            .disabled(model.isWorking)
+                            .accessibilityHint("Makes this change now, as your own action.")
+                            .accessibilityIdentifier(AXID.proposalConfirm(proposal.proposalId))
+                    }
                     Button("Reject", role: .destructive) { Task { await model.reject(proposal) } }
                         .disabled(model.isWorking)
                         .accessibilityHint("Discards the request. Nothing is changed.")
@@ -39,8 +41,8 @@ struct ProposalsScreen: View {
                     ForEach(model.decided, id: \.proposalId) { proposal in
                         VStack(alignment: .leading, spacing: Metrics.unit * 2) {
                             Text(proposal.summary)
-                            Text(model.stateLine(proposal)).font(.footnote).foregroundStyle(.secondary)
-                            Text(model.sourceLine(proposal)).font(.footnote).foregroundStyle(.secondary)
+                            Text(model.stateLine(proposal)).font(.footnote).foregroundStyle(Color.supporting)
+                            Text(model.sourceLine(proposal)).font(.footnote).foregroundStyle(Color.supporting)
                             if let receipt = model.confirmedReceipts[proposal.proposalId],
                                let record = app.environment.center.receipts.first(where: { $0.id == receipt.commandId }) {
                                 ReceiptCard(record: record)
@@ -68,10 +70,10 @@ private struct ProposalDetail: View {
 
     var body: some View {
         let model = app.proposals
-        Text(model.sourceLine(proposal)).font(.footnote).foregroundStyle(.secondary)
+        Text(model.sourceLine(proposal)).font(.footnote).foregroundStyle(Color.supporting)
         ForEach(model.effect(proposal)) { line in
             LabeledContent(line.label, value: line.value)
         }
-        Text(model.stateLine(proposal)).font(.footnote).foregroundStyle(.secondary)
+        Text(model.stateLine(proposal)).font(.footnote).foregroundStyle(Color.supporting)
     }
 }

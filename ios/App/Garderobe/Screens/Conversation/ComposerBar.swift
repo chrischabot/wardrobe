@@ -25,7 +25,7 @@ struct ComposerBar: View {
                                  reply: { await composer.answer(text: $0) })
             }
             chips(composer)
-            AttachmentStrip(uploads: composer.uploads, picked: $picked) { data, contentType in
+            AttachmentStrip(uploads: composer.uploads, picked: $picked, offersRole: true) { data, contentType in
                 await composer.uploads.add(data: data, contentType: contentType, intent: .attachment)
             }
             HStack(alignment: .bottom, spacing: Metrics.unit * 2) {
@@ -49,7 +49,7 @@ struct ComposerBar: View {
             if let reason = composer.blockedReason, !reason.isEmpty {
                 Text(reason)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
             }
         }
         .padding(.horizontal, Metrics.inset)
@@ -68,12 +68,22 @@ struct ComposerBar: View {
         if let notice = composer.notice {
             Label(notice, systemImage: "info.circle")
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.supporting)
+        }
+        if let waiting = composer.confirmationLine {
+            VStack(alignment: .leading, spacing: Metrics.unit) {
+                Label(waiting, systemImage: "checkmark.shield")
+                    .font(.footnote)
+                Button("Review requests") { app.push(.proposals) }
+                    .buttonStyle(.borderless)
+                    .touchTarget()
+                    .accessibilityHint("Shows each request with exactly what it would change, to confirm or reject.")
+            }
         }
         if let activity = composer.activity {
             Text(activity)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.supporting)
         }
     }
 

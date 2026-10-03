@@ -13,11 +13,14 @@ struct OwnerProposalsJourney {
         let j = try Journey("owner-proposals")
         let model = ProposalsModel(environment: j.environment)
         await model.open()
-        #expect(model.pendingCount == 2)
+        #expect(model.pendingCount == 3)
         #expect(model.decided.isEmpty)
 
         let add = try #require(model.pending.first { $0.type == "garment.create" })
         let retire = try #require(model.pending.first { $0.type == "garment.retire" })
+        // Sent as a typed command, so there is no conversation turn behind it; shown like the others.
+        let stale = try #require(model.pending.first { $0.type == "style.add_direction" })
+        #expect(stale.turnId.isEmpty)
         #expect(model.sourceLine(add).hasPrefix("Asked through Connected assistant (fixture), "))
         #expect(model.stateLine(add) == "Waiting for your decision. Nothing has been changed.")
         // The exact command and its fields, as the backend holds them.
@@ -33,7 +36,7 @@ struct OwnerProposalsJourney {
         #expect(receipt.actor == .owner)
         #expect(model.confirmedReceipts[add.proposalId]?.commandId == receipt.commandId)
         #expect(j.environment.center.receipts.first?.id == receipt.commandId)       // it joins the receipt history
-        #expect(model.pending.map(\.proposalId) == [retire.proposalId])
+        #expect(Set(model.pending.map(\.proposalId)) == [retire.proposalId, stale.proposalId])
         let confirmed = try #require(model.decided.first { $0.proposalId == add.proposalId })
         #expect(confirmed.state == .confirmed && confirmed.commandId == receipt.commandId)
         #expect(!model.canConfirm(confirmed) && !model.canReject(confirmed))
@@ -43,9 +46,32 @@ struct OwnerProposalsJourney {
         let rejected = await model.reject(retire)
         #expect(rejected)
         #expect(j.environment.center.receipts.count == receiptsBefore)
-        #expect(model.pendingCount == 0)
+        #expect(model.pendingCount == 1)
         #expect(model.decided.first { $0.proposalId == retire.proposalId }?.state == .rejected)
         #expect(model.stateLine(try #require(model.decided.first { $0.proposalId == retire.proposalId })) == "Rejected by you. Nothing was changed.")
+
+        // The third request was made against a style revision that has since changed.
+        #expect(model.pending.map(\.proposalId) == [stale.proposalId])
+        #expect(model.sourceLine(stale).hasPrefix("Asked through Connected assistant (fixture), "))
+        #expect(model.canConfirm(stale))
+        let receiptsBeforeStale = j.environment.center.receipts.count
+        let refused = await model.confirm(stale)
+        #expect(refused == nil)                                          // the backend answered 409: nothing was applied
+        #expect(j.environment.center.receipts.count == receiptsBeforeStale)
+        #expect(model.message == "That request no longer applies: what it would change has changed since it was asked for. Nothing was changed.")
+        #expect(model.pendingCount == 1 && model.isStale(stale))         // still open on the backend
+        #expect(!model.canConfirm(stale) && model.canReject(stale))
+        #expect(model.stateLine(stale) == "No longer applies: what it would change has changed since it was asked for. Nothing was changed. You can reject it.")
+        // Confirm is not sent a second time, and a relaunch still knows the request is out of date.
+        let decisionsSent = j.backend.log.filter { $0.path.hasSuffix("/decision") }.count
+        let again = await model.confirm(stale)
+        #expect(again == nil && j.backend.log.filter { $0.path.hasSuffix("/decision") }.count == decisionsSent)
+        let relaunched = ProposalsModel(environment: j.relaunch())
+        await relaunched.open()
+        #expect(relaunched.isStale(try #require(relaunched.pending.first)))
+        let dropped = await relaunched.reject(stale)
+        #expect(dropped && relaunched.pendingCount == 0 && relaunched.staleIds.isEmpty)
+        #expect(relaunched.decided.first { $0.proposalId == stale.proposalId }?.state == .rejected)
 
         #expect(j.backend.log.allSatisfy { $0.path != "/v1/commands" })              // the phone never sends the proposed command itself
         #expect(j.backend.isAtEnd)

@@ -30,7 +30,7 @@ struct ConnectionSection: View {
                             Text(capability.label)
                             Text(capabilityNote(capability))
                                 .font(.footnote)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.supporting)
                         }
                     }
                     .disabled(settings.isWorking)

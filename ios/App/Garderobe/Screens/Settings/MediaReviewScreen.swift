@@ -12,14 +12,14 @@ struct MediaReviewScreen: View {
             Section {
                 SettingsFreshnessLabel(freshness: settings.photosNeededList.freshness, subject: "photos needed")
                 if settings.photosNeeded.isEmpty && settings.photosNeededList.value != nil {
-                    Text("No photos are needed.").foregroundStyle(.secondary)
+                    Text("No photos are needed.").foregroundStyle(Color.supporting)
                 }
                 ForEach(settings.photosNeeded, id: \.garmentId) { item in
                     VStack(alignment: .leading, spacing: Metrics.unit) {
                         Text(item.name)
                         Text(item.request)
                             .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.supporting)
                     }
                     .accessibilityElement(children: .combine)
                 }
@@ -37,7 +37,7 @@ struct MediaReviewScreen: View {
             Section {
                 SettingsFreshnessLabel(freshness: settings.review.freshness, subject: "images to review")
                 if settings.reviewItems.isEmpty && settings.review.value != nil {
-                    Text("No images are waiting for a decision.").foregroundStyle(.secondary)
+                    Text("No images are waiting for a decision.").foregroundStyle(Color.supporting)
                 }
                 ForEach(settings.reviewItems, id: \.candidateId) { item in
                     reviewRow(item)

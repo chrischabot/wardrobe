@@ -62,7 +62,7 @@ struct CaptureSheet: View {
                                 .font(.headline)
                             Text(intent.explanation)
                                 .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.supporting)
                                 .multilineTextAlignment(.leading)
                         }
                         Spacer(minLength: 0)

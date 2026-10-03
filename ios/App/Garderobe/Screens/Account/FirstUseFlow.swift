@@ -32,7 +32,7 @@ struct FirstUseFlow: View {
                 Section {
                     Text("Step \(position) of \(all.count)")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.supporting)
                         .listRowBackground(Color.clear)
                 }
                 switch firstUse.step {

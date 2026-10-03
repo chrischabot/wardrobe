@@ -52,7 +52,7 @@ struct OutfitBoardCard: View {
             LazyVGrid(columns: columns, alignment: .leading, spacing: Metrics.unit * 2) {
                 ForEach(option.garments, id: \.garmentId) { garment in
                     // Decorative: the garment names follow as text.
-                    GarmentImageView(garmentId: garment.garmentId, name: garment.name, decorative: true)
+                    GarmentImageView(garmentId: garment.garmentId, name: garment.name, decorative: true, missing: .note)
                 }
             }
             Text(names)
@@ -60,20 +60,20 @@ struct OutfitBoardCard: View {
             if !option.footwearAlternatives.isEmpty {
                 Text("Other footwear: \(Phrases.list(option.footwearAlternatives.map(\.name)))")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
             }
             if let flourish = option.flourish {
                 Text("Optional: \(flourish.name)")
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
             }
             Text(option.reason)
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.supporting)
             if let qualification = option.qualification {
                 Text(qualification)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
             }
             Button {
                 app.composer.attach(AttachedRef(kind: .boardOption, id: option.optionId, boardId: boardId, revision: revision), label: option.name)
@@ -112,7 +112,7 @@ struct ReceiptRefCard: View {
                 }
                 Text("Outcome: \(ref.outcome.replacingOccurrences(of: "_", with: " "))")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.supporting)
                 switch center.undoState(for: ref) {
                 case .available:
                     Button {
@@ -128,9 +128,9 @@ struct ReceiptRefCard: View {
                     .disabled(isUndoing)
                     .accessibilityHint("Undoes: \(ref.summary)")
                 case .waiting:
-                    Text("Undo is saved on this phone and will be sent when you are back online.").font(.caption).foregroundStyle(.secondary)
+                    Text("Undo is saved on this phone and will be sent when you are back online.").font(.caption).foregroundStyle(Color.supporting)
                 case .undone:
-                    Text("Undone.").font(.caption).foregroundStyle(.secondary)
+                    Text("Undone.").font(.caption).foregroundStyle(Color.supporting)
                 case .unavailable:
                     EmptyView()
                 }

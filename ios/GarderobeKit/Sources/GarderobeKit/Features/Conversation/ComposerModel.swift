@@ -16,6 +16,9 @@ public struct PendingTurn: Codable, Sendable, Equatable, Identifiable {
     public var clientTurnId: String
     public var text: String
     public var attachmentIds: [String]
+    /// What each attached photograph is, by asset ID, where the owner said. Absent in turns
+    /// saved by an earlier version of the app.
+    public var imageRoles: [String: PhotoRole]?
     public var attachedRefs: [AttachedRef]
     public var intent: TurnIntent
     public var sharedUrl: String?
@@ -25,9 +28,18 @@ public struct PendingTurn: Codable, Sendable, Equatable, Identifiable {
     public var runId: String?
     public var id: String { clientTurnId }
 
-    var request: TurnRequest {
-        TurnRequest(clientTurnId: clientTurnId, text: text, attachmentIds: attachmentIds.isEmpty ? nil : attachmentIds,
-                    attachedRefs: attachedRefs.isEmpty ? nil : attachedRefs, intent: intent, sharedUrl: sharedUrl)
+    public init(clientTurnId: String, text: String, attachmentIds: [String], imageRoles: [String: PhotoRole]? = nil, attachedRefs: [AttachedRef], intent: TurnIntent,
+                sharedUrl: String?, createdAt: Date, state: State, turnId: String?, runId: String?) {
+        self.clientTurnId = clientTurnId; self.text = text; self.attachmentIds = attachmentIds; self.imageRoles = imageRoles; self.attachedRefs = attachedRefs
+        self.intent = intent; self.sharedUrl = sharedUrl; self.createdAt = createdAt; self.state = state; self.turnId = turnId; self.runId = runId
+    }
+
+    public var request: TurnRequest {
+        // Only roles of photographs that are actually attached are sent.
+        let roles = (imageRoles ?? [:]).filter { attachmentIds.contains($0.key) && $0.value != .unknown }
+        return TurnRequest(clientTurnId: clientTurnId, text: text, attachmentIds: attachmentIds.isEmpty ? nil : attachmentIds,
+                           imageRoles: roles.isEmpty ? nil : roles,
+                           attachedRefs: attachedRefs.isEmpty ? nil : attachedRefs, intent: intent, sharedUrl: sharedUrl)
     }
     var localEntryId: String { "local:\(clientTurnId)" }
 }
@@ -67,6 +79,16 @@ public final class ComposerModel {
     public var isStreaming: Bool { follower?.isActive ?? false }
     public var pendingInput: PendingInput? { if case .needsInput(let input)? = follower?.phase { return input }; return nil }
     public var activity: String? { isStreaming ? follower?.activity : nil }
+    /// What the last answer asked for and did not do: each waits for the owner in Requests to
+    /// confirm. Shown so a reply is never mistaken for a change that was made.
+    public var awaitingConfirmation: [String] { (follower?.phase.isTerminal ?? false) ? (follower?.proposals ?? []).map(\.summary) : [] }
+    /// One sentence for those requests, or nil when there are none.
+    public var confirmationLine: String? {
+        let waiting = awaitingConfirmation
+        guard !waiting.isEmpty else { return nil }
+        let lead = waiting.count == 1 ? "Not done yet. This waits for your confirmation" : "Not done yet. These wait for your confirmation"
+        return "\(lead): \(waiting.joined(separator: "; "))."
+    }
 
     /// Why Send is disabled, or nil when it is enabled.
     public var blockedReason: String? {
@@ -114,7 +136,7 @@ public final class ComposerModel {
     public func send(intent: TurnIntent = .chat, sharedUrl: String? = nil) async {
         guard canSend else { return }
         let turn = PendingTurn(clientTurnId: environment.ids.next("turn"), text: draft.trimmingCharacters(in: .whitespacesAndNewlines), attachmentIds: uploads.readyAssetIds,
-                               attachedRefs: attachedRefs, intent: intent, sharedUrl: sharedUrl, createdAt: environment.time.now(),
+                               imageRoles: uploads.readyImageRoles, attachedRefs: attachedRefs, intent: intent, sharedUrl: sharedUrl, createdAt: environment.time.now(),
                                state: isStreaming ? .waitingForTurn : .waitingToSend, turnId: nil, runId: nil)
         pending.append(turn)
         showLocally(turn)

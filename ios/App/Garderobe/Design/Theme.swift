@@ -13,6 +13,17 @@ enum Metrics {
     static let settle: Double = 0.2
 }
 
+extension Color {
+    /// Supporting text (captions, explanations, freshness). The system's secondary label colour
+    /// is about 3.5:1 on a white surface, below the 4.5:1 that small text needs, so the app uses
+    /// this instead: about 7:1 in light mode and 9:1 in dark mode, more with Increase Contrast.
+    static let supporting = Color(UIColor { traits in
+        let high = traits.accessibilityContrast == .high
+        if traits.userInterfaceStyle == .dark { return UIColor(white: high ? 0.88 : 0.74, alpha: 1) }
+        return UIColor(white: high ? 0.2 : 0.33, alpha: 1)
+    })
+}
+
 extension Animation {
     /// The settle used after a user-initiated swap. Callers pass `reduceMotion` so positional
     /// motion is removed when the system asks for less.
@@ -132,7 +143,7 @@ struct OutcomeLine: View {
                 Image(systemName: symbol(outcome))
             }
             .font(.footnote)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(Color.supporting)
             .accessibilityElement(children: .combine)
         }
     }
@@ -183,6 +194,6 @@ struct DetailRow: View {
         .accessibilityElement(children: .combine)
     }
 
-    private var labelText: some View { Text(label).foregroundStyle(.secondary) }
+    private var labelText: some View { Text(label).foregroundStyle(Color.supporting) }
     private var valueText: some View { Text(value) }
 }

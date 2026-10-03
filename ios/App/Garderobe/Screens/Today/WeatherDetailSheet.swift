@@ -19,7 +19,7 @@ struct WeatherDetailSheet: View {
                         Label(limitation, systemImage: "exclamationmark.triangle").font(.subheadline)
                     }
                     if let source = today.weatherSourceLine {
-                        Text(source).font(.footnote).foregroundStyle(.secondary)
+                        Text(source).font(.footnote).foregroundStyle(Color.supporting)
                     }
                     FreshnessLabel(text: today.weather.freshness.statement(subject: "forecast", now: app.environment.time.now(), timeZone: app.environment.timeZone),
                                    freshness: today.weather.freshness)
@@ -29,7 +29,7 @@ struct WeatherDetailSheet: View {
                     conditions(snapshot.conditions)
                     Section("Hour by hour") {
                         if snapshot.hours.isEmpty {
-                            Text("The forecast has no hourly figures.").foregroundStyle(.secondary)
+                            Text("The forecast has no hourly figures.").foregroundStyle(Color.supporting)
                         }
                         ForEach(snapshot.hours) { hour in hourRow(hour) }
                     }
@@ -52,7 +52,7 @@ struct WeatherDetailSheet: View {
                         Label(alert.title, systemImage: "exclamationmark.triangle")
                         Text([alert.severity, period(alert), alert.source].compactMap { $0 }.joined(separator: " · "))
                             .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.supporting)
                     }
                     .accessibilityElement(children: .combine)
                 }
@@ -106,14 +106,14 @@ struct WeatherDetailSheet: View {
                 VStack(alignment: .leading, spacing: Metrics.unit) {
                     Text(hour.localTime).font(.headline)
                     Text(temperature)
-                    if !detail.isEmpty { Text(detail).foregroundStyle(.secondary) }
+                    if !detail.isEmpty { Text(detail).foregroundStyle(Color.supporting) }
                 }
             } else {
                 HStack(alignment: .firstTextBaseline, spacing: Metrics.unit * 3) {
-                    Text(hour.localTime).font(.body.monospacedDigit()).foregroundStyle(.secondary)
+                    Text(hour.localTime).font(.body.monospacedDigit()).foregroundStyle(Color.supporting)
                     Text(temperature).font(.body.monospacedDigit())
                     Spacer(minLength: Metrics.unit * 2)
-                    Text(detail).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+                    Text(detail).font(.subheadline).foregroundStyle(Color.supporting).multilineTextAlignment(.trailing)
                 }
             }
         }

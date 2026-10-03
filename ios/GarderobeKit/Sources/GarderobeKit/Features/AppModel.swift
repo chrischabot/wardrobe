@@ -33,6 +33,8 @@ public enum AppRoute: Codable, Sendable, Hashable {
     case bulkEdit
     case temperaturePreview
     case projects
+    /// Requests waiting for the owner's confirmation.
+    case proposals
 }
 
 /// Sheets presented over any destination.
@@ -60,6 +62,7 @@ public final class AppModel {
     public let returns: ReturnsModel
     public let projects: ProjectsModel
     public let proposals: ProposalsModel
+    public let notifications: NotificationsModel
     public let settings: SettingsModel
     public let recovery: RecoveryStatusModel
     public let export: ExportModel
@@ -92,6 +95,7 @@ public final class AppModel {
         returns = ReturnsModel(environment: environment)
         projects = ProjectsModel(environment: environment)
         proposals = ProposalsModel(environment: environment)
+        notifications = NotificationsModel(environment: environment)
         let settings = SettingsModel(environment: environment)
         self.settings = settings
         recovery = RecoveryStatusModel(environment: environment)
@@ -174,6 +178,7 @@ public final class AppModel {
             if !accepted.isEmpty { await transcript.refreshLatest() }
         }
         await composer.retryPending()
+        await notifications.retryPending()
         await today.refresh()
         await settings.refreshSettings()
         if environment.center.needsSignIn, case .signedIn = account.state { await account.restore() }
@@ -324,6 +329,32 @@ public final class GarmentImageLoader {
         let api = environment.api
         return await load(key) { try await api.asset(id: assetId, width: width) }
     }
+
+    /// A full-size image for close inspection, through signed delivery: the backend issues a
+    /// short-lived address for this one rendition and the bytes are read from it without the
+    /// sign-in. The address is never stored and never leaves the app. If it cannot be issued
+    /// or has lapsed, the ordinary authenticated read is used instead.
+    public func inspectionData(for ref: GarmentImageRef, width: Int = 1280) async -> Data? {
+        guard ref.hasRealImage, let renditionId = ref.renditionId else { return nil }
+        return await signedData(renditionId: renditionId, width: width)
+    }
+
+    /// One of the owner's renditions, read through a signed address (see `inspectionData`).
+    public func signedData(renditionId: String, width: Int = 1280) async -> Data? {
+        let key = "rendition:\(renditionId):\(width)"
+        if let cached = environment.media.data(for: key) { return cached }
+        let api = environment.api
+        return await load(key) {
+            do {
+                let signed = try await api.signRendition(id: renditionId, SignRenditionRequest(width: width, ttlSeconds: GarmentImageLoader.signedLifetime))
+                return try await api.signedMedia(signed)
+            } catch let failure as APIFailure where !failure.isTransport {
+                return try await api.rendition(id: renditionId, width: width)
+            }
+        }
+    }
+    /// Seconds a signed address is asked to live: long enough for one read.
+    public static let signedLifetime = 60
 
     private func load(_ key: String, _ fetch: @escaping @Sendable () async throws -> Data) async -> Data? {
         if let task = inFlight[key] { return await task.value }

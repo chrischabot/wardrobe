@@ -19,7 +19,7 @@ struct StudioSelectorRow: View {
         VStack(alignment: .leading, spacing: Metrics.unit * 2) {
             header
             if selector.items.isEmpty {
-                Text("Nothing to choose from for this role.").font(.footnote).foregroundStyle(.secondary)
+                Text("Nothing to choose from for this role.").font(.footnote).foregroundStyle(Color.supporting)
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(alignment: .top, spacing: Metrics.unit * 3) {
@@ -75,14 +75,14 @@ struct StudioSelectorRow: View {
             VStack(alignment: .leading, spacing: Metrics.unit) {
                 ZStack(alignment: .topTrailing) {
                     if let garmentId = item.garmentId {
-                        GarmentImageView(garmentId: garmentId, name: item.name, image: item.image, decorative: true)
+                        GarmentImageView(garmentId: garmentId, name: item.name, image: item.image, decorative: true, missing: .note)
                     } else {
                         Text(item.name)
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.black)
                             .multilineTextAlignment(.center)
-                            .frame(maxWidth: .infinity)
-                            .aspectRatio(3.0 / 4.0, contentMode: .fit)
+                            .padding(Metrics.unit * 2)
+                            .frame(maxWidth: .infinity, minHeight: 104 * 4.0 / 3.0)
                             .catalogueCanvas()
                     }
                     if isSelected {
@@ -95,8 +95,8 @@ struct StudioSelectorRow: View {
                 .overlay {
                     if isSelected { RoundedRectangle(cornerRadius: Metrics.innerRadius(padding: Metrics.unit * 2), style: .continuous).strokeBorder(Color.accentColor, lineWidth: 2) }
                 }
-                Text(item.name).font(.caption).foregroundStyle(.primary).multilineTextAlignment(.leading).lineLimit(3)
-                if let marker { Text(marker).font(.caption2.weight(.medium)).foregroundStyle(.secondary) }
+                Text(item.name).font(.caption).foregroundStyle(.primary).multilineTextAlignment(.leading)
+                if let marker { Text(marker).font(.caption2.weight(.medium)).foregroundStyle(Color.supporting) }
             }
             .frame(width: typeSize.isAccessibilitySize ? 150 : 104, alignment: .leading)
         }

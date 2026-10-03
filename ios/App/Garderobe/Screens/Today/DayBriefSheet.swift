@@ -27,7 +27,7 @@ struct DayBriefSheet: View {
                         Button("Clear today's brief", role: .destructive) { Task { await clear() } }
                             .disabled(app.today.isSubmitting)
                         if let note = app.today.briefNote {
-                            Text(note).font(.footnote).foregroundStyle(.secondary)
+                            Text(note).font(.footnote).foregroundStyle(Color.supporting)
                         }
                     } footer: {
                         Text("Removes the brief for today. Your standing style is not changed.")

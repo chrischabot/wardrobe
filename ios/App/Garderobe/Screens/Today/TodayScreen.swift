@@ -50,7 +50,7 @@ struct TodayScreen: View {
                 Button { showsWeather = true } label: {
                     HStack(alignment: .firstTextBaseline, spacing: Metrics.unit * 2) {
                         Text(weather).font(.title3).multilineTextAlignment(.leading)
-                        Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(.secondary)
+                        Image(systemName: "chevron.right").font(.footnote.weight(.semibold)).foregroundStyle(Color.supporting)
                     }
                     .frame(maxWidth: .infinity, minHeight: Metrics.touch, alignment: .leading)
                     .contentShape(Rectangle())
@@ -62,7 +62,7 @@ struct TodayScreen: View {
             if let board = today.board {
                 Text(board.dayLine).font(.body)
                 if let suitability = board.suitabilityLine {
-                    Text(suitability).font(.subheadline).foregroundStyle(.secondary)
+                    Text(suitability).font(.subheadline).foregroundStyle(Color.supporting)
                 }
             }
             FreshnessLabel(text: today.freshnessLine, freshness: today.today.freshness, identifier: AXID.todayFreshness)
@@ -81,7 +81,7 @@ struct TodayScreen: View {
             }
             OutcomeLine(outcome: today.lastOutcome)
             ForEach(today.queuedHere) { command in
-                Label("Waiting to send: \(command.label)", systemImage: "tray.and.arrow.up").font(.footnote).foregroundStyle(.secondary)
+                Label("Waiting to send: \(command.label)", systemImage: "tray.and.arrow.up").font(.footnote).foregroundStyle(Color.supporting)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -97,7 +97,7 @@ struct TodayScreen: View {
             // The backend's own reason: paused, being prepared, no board, or no complete outfit.
             VStack(alignment: .leading, spacing: Metrics.unit * 3) {
                 Text(statement).font(.title3)
-                Text("Pull down to check again.").font(.subheadline).foregroundStyle(.secondary)
+                Text("Pull down to check again.").font(.subheadline).foregroundStyle(Color.supporting)
                 if today.canAskForOutfits {
                     Button { Task { await today.askForOutfits() } } label: { Label("Ask for outfits now", systemImage: "sparkles") }
                         .secondaryAction()

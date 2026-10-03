@@ -3,6 +3,7 @@ import GarderobeKit
 
 @main
 struct GarderobeApp: App {
+    @UIApplicationDelegateAdaptor(PushRegistrar.self) private var pushRegistrar
     @State private var app: AppModel = AppBootstrap.make()
     @Environment(\.scenePhase) private var scenePhase
     private let network = NetworkMonitor()
@@ -14,12 +15,16 @@ struct GarderobeApp: App {
                 .environment(app)
                 .task(id: ObjectIdentifier(app)) {
                     await app.launch()
+                    PushRegistrar.refresh(app.notifications, isDemo: app.environment.isDemo)
                     let model = app
                     network.start { Task { @MainActor in await model.becameActive() } }
                 }
                 .onChange(of: scenePhase) { _, phase in
                     // No background timer composes anything: the app refreshes when it is opened.
-                    if phase == .active { Task { await app.becameActive() } }
+                    if phase == .active {
+                        Task { await app.becameActive() }
+                        PushRegistrar.refresh(app.notifications, isDemo: app.environment.isDemo)
+                    }
                 }
                 .onOpenURL { url in _ = app.open(url: url) }
                 .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
@@ -111,6 +116,7 @@ struct MainTabs: View {
                         case .bulkEdit: BulkEditScreen()
                         case .temperaturePreview: TemperaturePreviewScreen()
                         case .projects: ProjectsScreen()
+                        case .proposals: ProposalsScreen()
                         }
                     }
                     .modifier(BannerInsets())

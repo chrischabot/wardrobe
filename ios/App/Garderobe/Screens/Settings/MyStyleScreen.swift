@@ -16,7 +16,7 @@ struct MyStyleScreen: View {
                 if let line = settings.profileLine {
                     Text(line)
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.supporting)
                         .textSelection(.enabled)
                 }
                 SettingsFreshnessLabel(freshness: settings.style.freshness, subject: "style profile")

@@ -24,11 +24,11 @@ struct StudioActionsBar: View {
             .accessibilityHint("Changes only the pieces that are not locked")
             .accessibilityIdentifier(AXID.studioFind)
 
-            if let note = app.studio.suggestionNote { Text(note).font(.footnote).foregroundStyle(.secondary) }
+            if let note = app.studio.suggestionNote { Text(note).font(.footnote).foregroundStyle(Color.supporting) }
             ForEach(Array(app.studio.suggestions.enumerated()), id: \.offset) { _, suggestion in
                 VStack(alignment: .leading, spacing: Metrics.unit) {
                     Text(suggestion.reason).font(.subheadline)
-                    Text(suggestion.validation.valid ? "Checked: works" : "Checked: has problems").font(.caption).foregroundStyle(.secondary)
+                    Text(suggestion.validation.valid ? "Checked: works" : "Checked: has problems").font(.caption).foregroundStyle(Color.supporting)
                     Button("Show this on the canvas") { app.studio.apply(suggestion) }.touchTarget()
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -63,11 +63,11 @@ struct StudioActionsBar: View {
 
             if !app.studio.slots.isEmpty && !app.studio.canWearThis {
                 Text("Wear this is available only when every piece is one you own and have.")
-                    .font(.footnote).foregroundStyle(.secondary)
+                    .font(.footnote).foregroundStyle(Color.supporting)
             }
             OutcomeLine(outcome: app.studio.lastOutcome)
             Text("Browsing in Studio changes nothing. Only these three actions do, and each does something different.")
-                .font(.footnote).foregroundStyle(.secondary)
+                .font(.footnote).foregroundStyle(Color.supporting)
         }
         .alert("Save combination", isPresented: $naming) {
             TextField("Name (optional)", text: $name)
@@ -81,7 +81,7 @@ struct StudioActionsBar: View {
             NavigationStack {
                 Form {
                     DatePicker("Day", selection: $planDate, in: Date()..., displayedComponents: .date)
-                    Text("Planning records an intention for that day. It does not record a wear.").font(.footnote).foregroundStyle(.secondary)
+                    Text("Planning records an intention for that day. It does not record a wear.").font(.footnote).foregroundStyle(Color.supporting)
                 }
                 .navigationTitle("Plan for a day")
                 .navigationBarTitleDisplayMode(.inline)
@@ -113,7 +113,7 @@ struct StudioSavedSection: View {
                     VStack(alignment: .leading, spacing: Metrics.unit) {
                         Text(combination.name ?? "Saved combination").font(.subheadline.weight(.medium))
                         Text("\(Phrases.count(combination.slots.count, "piece")) · \(combination.validation.valid ? "worked when checked" : "had problems when checked")")
-                            .font(.footnote).foregroundStyle(.secondary)
+                            .font(.footnote).foregroundStyle(Color.supporting)
                         HStack(spacing: Metrics.unit * 4) {
                             Button("Show on canvas") { app.studio.show(combination) }.touchTarget()
                             Button("Remove", role: .destructive) { Task { await app.studio.removeCombination(combination.combinationId) } }.touchTarget()
@@ -128,7 +128,7 @@ struct StudioSavedSection: View {
                 ForEach(app.studio.dayPlans) { plan in
                     VStack(alignment: .leading, spacing: Metrics.unit) {
                         Text(Phrases.weekdayDayMonth(plan.localDate)).font(.subheadline.weight(.medium))
-                        Text(Phrases.count(plan.slots.count, "piece")).font(.footnote).foregroundStyle(.secondary)
+                        Text(Phrases.count(plan.slots.count, "piece")).font(.footnote).foregroundStyle(Color.supporting)
                         if plan.needsRevalidation {
                             Label(plan.revalidationReason ?? "Something in this plan changed. Check it again.", systemImage: "exclamationmark.triangle").font(.footnote)
                         }

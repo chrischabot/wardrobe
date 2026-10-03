@@ -46,7 +46,7 @@ struct ExportScreen: View {
                     ForEach(job.components, id: \.name) { component in
                         Text(export.componentLine(component))
                             .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.supporting)
                     }
                 }
                 Button("Refresh") {
