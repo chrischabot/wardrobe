@@ -25,7 +25,15 @@ interface WearAddition {
 
 /** When a wear on `wearingDate` happened, for event ordering: explicit time, now (today), or local noon (past date). */
 function wearOccurredAt(ctx: CommandContext, wearingDate: string, timezone: string): string {
-  if (ctx.occurredAtExplicit) return ctx.occurredAt;
+  if (ctx.occurredAtExplicit) {
+    // A stated time must not contradict the wearing date it comes with: a wear cannot have happened more
+    // than a day before its own day began, and ordering it there would let an older wash "clean" it
+    // (adversarial defect L04-1). A time after the day is fine: that is a report made late.
+    if (ctx.occurredAtMs < zonedToUtcMs(wearingDate, "00:00", timezone) - 24 * 3_600_000) {
+      throw new CommandError("invalid_command", "the time given for this wear is before its wearing date; leave the time out or give one on that day", { reason: "occurred_before_wearing_date", wearingDate, occurredAt: ctx.occurredAt });
+    }
+    return ctx.occurredAt;
+  }
   const today = localDateOf(ctx.nowMs, timezone);
   if (wearingDate === today) return ctx.now;
   return toInstant(zonedToUtcMs(wearingDate, "12:00", timezone));
@@ -295,6 +303,12 @@ export const wearAmend = define({
   async plan(ctx, p): Promise<CommandPlan> {
     if (p.remove.length === 0 && p.add.length === 0) throw new CommandError("invalid_command", "an amendment needs something to remove or add");
     const timezone = ctx.settings.timezone;
+    // A wear is something that happened: none is added for a day that has not come yet, by this path any
+    // more than by `wear.record` (adversarial defect L04-6). Removing one is always allowed.
+    const today = localDateOf(ctx.nowMs, timezone);
+    if (p.add.length > 0 && p.wearingDate > today) {
+      throw new CommandError("invalid_command", "a wear cannot be recorded for a future date; choose an outfit instead", { wearingDate: p.wearingDate, today });
+    }
     const loaded = await loadGarments(ctx, [...p.remove, ...p.add]);
     const planner = ctx.stock();
     const removeRows = [...new Map(p.remove.map((id) => [loaded.get(id)!.garment_id, loaded.get(id)!])).values()];
@@ -399,22 +413,29 @@ export const careWashed = define({
       }
     }
     if (asked.length === 0) return { outcome: "noop", summary: "Nothing was awaiting a wash", undo: { unavailableReason: "nothing changed" } };
+    // `ctx.stock()` hands out a fresh planner on every call, so a second plan below starts from the ledger
+    // again and carries nothing over from the first.
     const planWashes = async (items: typeof asked) => {
       const planner = ctx.stock();
       const events = items.map((a) => ({ ...a, eventId: planner.add(a.garmentId, "wash", a.payload, "observed", ctx.occurredAt) }));
       return { events, build: await planner.build() };
     };
     let { events, build } = await planWashes(asked);
-    // "Washed" without a count does not speak for a unit reported lost. When that is all there is of the
-    // garment, nothing was marked clean: the receipt says so instead of listing it as washed, and no wash
-    // is written for it, so withdrawing the lost report later cannot make this statement wash the unit.
-    const leftLost = events.filter(({ garmentId, eventId, uncounted }) => {
-      if (!uncounted) return false;
-      const g = build.garments.get(garmentId);
-      const movedAny = (g?.after.movements ?? []).some((m) => m.eventId === eventId);
-      const lostHeld = [...(g?.after.state.service.values() ?? [])].some((h) => h.lost && h.quantity > 0);
-      const atHome = (g?.after.state.clean ?? 0) + (g?.after.state.dirty.length ?? 0);
-      return !movedAny && lostHeld && atHome === 0;
+    // "Washed" without a count does not speak for a unit reported lost. When such a report moved nothing of
+    // a garment that has a unit recorded as lost - whether that is its only unit or another one is clean at
+    // home - nothing was marked clean: the receipt says so instead of listing it as washed, and no wash is
+    // written for it, so withdrawing the lost report later cannot make this statement wash the unit.
+    const leftLost = events.flatMap(({ garmentId, name, eventId, uncounted }) => {
+      if (!uncounted) return [];
+      const state = build.garments.get(garmentId)?.after;
+      if (!state) return [];
+      const movedAny = state.movements.some((m) => m.eventId === eventId);
+      const holdings = [...state.state.service.values()].filter((h) => h.quantity > 0);
+      if (movedAny || !holdings.some((h) => h.lost)) return [];
+      const s = state.state;
+      const elsewhere = s.clean + s.dirty.length + s.storage + s.tailor + [...s.trip.values()].reduce((n, t) => n + t.clean + t.dirty, 0) + holdings.filter((h) => !h.lost).reduce((n, h) => n + h.quantity, 0);
+      // The lost unit is the whole reason only when nothing else of the garment is anywhere.
+      return [{ garmentId, name, onlyLost: elsewhere === 0 }];
     });
     const lostIds = new Set(leftLost.map((x) => x.garmentId));
     const lostSummary = leftLost.length > 0 ? `; still recorded as lost: ${nameList(leftLost.map((x) => x.name))}` : "";
@@ -427,7 +448,11 @@ export const careWashed = define({
     }
     const eventIds = events.map((e) => e.eventId);
     const parts = stockParts(build);
-    const lostNotes = leftLost.map((x) => `${x.name}: it is recorded as lost, so nothing was marked clean; if it has turned up, say how many were washed`);
+    const lostNotes = leftLost.map((x) =>
+      x.onlyLost
+        ? `${x.name}: it is recorded as lost, so nothing was marked clean; if it has turned up, say how many were washed`
+        : `${x.name}: nothing of it was awaiting a wash, and the one recorded as lost stays lost; if it has turned up, say how many were washed`,
+    );
     // An exception is settled only by what actually moved: resolved when the units it held are no longer
     // away, reduced when only some came back, untouched when nothing held under it moved.
     const settle = await planExceptionSettlement(ctx, build, "returned");
@@ -560,8 +585,8 @@ export const laundryReturn = define({
   class: "observation",
   requiredScope: "write",
   async plan(ctx, p): Promise<CommandPlan> {
-    const batchCols = "batch_id, status, returned_at, return_basis";
-    type BatchRow = { batch_id: string; status: string; returned_at: string | null; return_basis: string | null };
+    const batchCols = "batch_id, status, returned_at, return_basis, picked_up_at";
+    type BatchRow = { batch_id: string; status: string; returned_at: string | null; return_basis: string | null; picked_up_at: string };
     const batch = p.batchId
       ? await first<BatchRow>(ctx.db, `SELECT ${batchCols} FROM laundry_batches WHERE user_id = ? AND batch_id = ? AND withdrawn_at IS NULL`, ctx.userId, p.batchId)
       : await first<BatchRow>(ctx.db, `SELECT ${batchCols} FROM laundry_batches WHERE user_id = ? AND channel = 'service' AND status IN ('collected', 'partially_returned') AND withdrawn_at IS NULL ORDER BY julianday(picked_up_at) ASC, batch_id LIMIT 1`, ctx.userId);
@@ -573,6 +598,19 @@ export const laundryReturn = define({
     if (!batch) {
       const missed = await planMissedCycleReturn(ctx, p.stillAway);
       if (missed) return missed;
+      // The same return said a second time (another device, a connected assistant) is not a second return:
+      // when this week's bag is on record as collected and already back, what has gone into the hamper
+      // since was never in it and stays there (adversarial defect L03-3). "This week's" is a pickup within
+      // the five days before the report; an older bag belongs to an earlier cycle and the branch below
+      // still takes the owner's word for a cycle whose pickup was never recorded.
+      const already = await first<{ batch_id: string }>(
+        ctx.db,
+        "SELECT batch_id FROM laundry_batches WHERE user_id = ? AND channel = 'service' AND status = 'returned' AND withdrawn_at IS NULL AND julianday(picked_up_at) <= julianday(?) AND julianday(picked_up_at) > julianday(?) - 5 ORDER BY julianday(picked_up_at) DESC LIMIT 1",
+        ctx.userId, ctx.occurredAt, ctx.occurredAt,
+      );
+      if (already) {
+        return { outcome: "noop", summary: "That laundry is already recorded as back; anything put in the hamper since the pickup is still awaiting the service", undo: { unavailableReason: "nothing changed" } };
+      }
       // No pickup was ever observed, but the owner says the laundry is back: that is the physical fact.
       // Everything that was awaiting the service (except what is being worn today) is clean.
       const localDate = localDateOf(ctx.occurredAtMs, ctx.settings.timezone);
@@ -586,17 +624,30 @@ export const laundryReturn = define({
         eventIds.push(planner.add(r.garment_id, "wash", { quantity: q, via: "service_return_without_recorded_pickup" }, "observed", ctx.occurredAt));
       }
       if (units === 0) return { outcome: "noop", summary: "No laundry was recorded as away or awaiting the service", undo: { unavailableReason: "nothing changed" } };
-      const parts = stockParts(await planner.build());
+      const build = await planner.build();
+      // The receipt counts what the replay actually made clean, not what was asked for: a report dated
+      // before a piece went into the hamper does not wash it (adversarial defect L04-3).
+      const washedEvents = new Set(eventIds);
+      const moved = [...build.garments.values()].reduce((n, g) => n + g.after.movements.filter((m) => washedEvents.has(m.eventId) && m.to === "clean").reduce((k, m) => k + m.quantity, 0), 0);
+      if (moved === 0) {
+        return { outcome: "noop", summary: "Nothing came back clean: at the time given for this return nothing was awaiting the service", undo: { unavailableReason: "nothing changed" } };
+      }
+      const parts = stockParts(build);
       return {
-        summary: `Laundry returned: ${units} item${units === 1 ? "" : "s"} clean (no pickup had been recorded; your report stands)`,
+        summary: `Laundry returned: ${moved} item${moved === 1 ? "" : "s"} clean (no pickup had been recorded; your report stands)`,
         ...parts,
-        result: { batchId: null, returned: units },
+        result: { batchId: null, returned: moved },
         changes: { availabilityChanged: parts.availabilityChanged },
         bumpWardrobe: true,
         undo: { data: { stockEventIds: eventIds } },
       };
     }
     if (batch.status === "returned") return { outcome: "noop", summary: "That batch was already returned", undo: { unavailableReason: "nothing changed" } };
+    // A bag cannot come back before it was collected: replayed at such a time the return would move
+    // nothing and still close the batch, leaving its pieces recorded at the laundry (adversarial defect L04-2).
+    if (ctx.occurredAtMs < Date.parse(batch.picked_up_at)) {
+      throw new CommandError("invalid_command", "the time given for this return is before the bag was collected; leave the time out or give one after the pickup", { reason: "return_before_pickup", batchId: batch.batch_id, pickedUpAt: batch.picked_up_at, occurredAt: ctx.occurredAt });
+    }
 
     const items = await all<{ garment_id: string; quantity: number; returned_quantity: number; still_away: number; name: string }>(
       ctx.db,

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { buildContractsDocument, collectSchemas, commandTypeName, generate, PACKAGE_ROOT, renderSwift, SCHEMA_JSON_PATH, SWIFT_PATH } from "../scripts/generate.ts";
-import { API_VERSION, CommandEnvelope, CONTRACT_VERSION, FOUNDATION_COMMANDS } from "../src/index.ts";
+import { API_VERSION, CommandEnvelope, CONTRACT_VERSION, FOUNDATION_COMMANDS, IanaTimezone, LocalTime } from "../src/index.ts";
 
 const foundationTypes = Object.keys(FOUNDATION_COMMANDS).sort();
 const foundationPayloads = foundationTypes.map(commandTypeName);
@@ -45,6 +45,18 @@ describe("CommandEnvelope", () => {
     const result = CommandEnvelope.safeParse(envelope);
     expect(result.success).toBe(false);
     expect(result.error?.issues.map((issue) => issue.path.join("."))).toEqual([path]);
+  });
+});
+
+describe("times and time zones (adversarial defects L04-4 and L04-5)", () => {
+  it("a time zone is an IANA zone name, never a bare UTC offset", () => {
+    for (const zone of ["Europe/London", "America/New_York", "UTC", "Etc/GMT+5"]) expect(IanaTimezone.safeParse(zone).success, zone).toBe(true);
+    for (const zone of ["+05:00", "-11:00", "+14:00", "+0530", "Mars/Olympus_Mons", "UTC+25", ""]) expect(IanaTimezone.safeParse(zone).success, zone).toBe(false);
+  });
+
+  it("a local time is a real time of day", () => {
+    for (const time of ["00:00", "07:10", "23:59"]) expect(LocalTime.safeParse(time).success, time).toBe(true);
+    for (const time of ["24:00", "25:99", "99:99", "12:60", "7:10", "07:10:00"]) expect(LocalTime.safeParse(time).success, time).toBe(false);
   });
 });
 

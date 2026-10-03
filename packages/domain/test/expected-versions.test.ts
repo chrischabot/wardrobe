@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { all, first } from "../src/index.ts";
+import { all, createFoundationRegistry, first } from "../src/index.ts";
 import { createHarness, type Harness, type TestOwner } from "../src/testing/index.ts";
 import { balances, wearOn } from "./helpers.ts";
 
 /**
- * Expected versions a client states are honoured by every command except wear, wash and laundry reports.
+ * Expected versions a client states are honoured by every foundation command except wear, wash and laundry
+ * reports (a lane's own observation command is rebased unless its definition says `staleVersions: "conflict"`).
  * Reported by the iOS thread at garderobe-rebuild 9231220e: `garment.retire` with a wrong or an old garment
  * version was committed, so a proposal made against an old record could be confirmed and applied.
  * Synthetic owner and garments throughout.
@@ -40,7 +41,6 @@ describe("expected versions on commands that remove, move, receive or rewrite a 
     expect(await current(h, owner, key)).toBe(now);
     expect(await balances(h, owner, "scarf-synthetic")).toMatchObject({ clean: 1, gone: 0 });
     expect(await commandCount(h, owner, "garment.retire")).toBe(0);
-    expect((await first<{ n: number }>(h.db, "SELECT COUNT(*) AS n FROM command_preconditions"))!.n).toBe(0);
 
     const retired = await owner.exec("garment.retire", { garmentId: "scarf-synthetic", disposition: "sold" }, { expectedVersions: { [key]: now } });
     expect(retired.outcome).toBe("committed");
@@ -55,6 +55,15 @@ describe("expected versions on commands that remove, move, receive or rewrite a 
     { type: "garment.receive", payload: { garmentId: "shirt-ordered" }, key: "garment:shirt-ordered", bump: bumpGarment("shirt-ordered") },
     { type: "stock.reconcile", payload: { garmentId: "sock-grey", counts: { clean: 1 } }, key: "garment:sock-grey", bump: bumpGarment("sock-grey") },
     { type: "stock.pack", payload: { tripId: "trip-synthetic", items: [{ garmentId: "shirt-slate" }] }, key: "garment:shirt-slate", bump: bumpGarment("shirt-slate") },
+    { type: "garment.bulk_correct", payload: { selector: { garmentIds: ["shirt-red-stripe"] }, changes: { condition: "missing button (synthetic)" }, source: STATEMENT }, key: "garment:shirt-red-stripe", bump: bumpGarment("shirt-red-stripe") },
+    // Packing is the unrelated change here: it moves the garment's version on and gives the unpacking something to bring home.
+    { type: "stock.unpack", payload: { tripId: "trip-synthetic" }, key: "garment:shirt-blue-stripe-a", bump: (owner) => owner.exec("stock.pack", { tripId: "trip-synthetic", items: [{ garmentId: "shirt-blue-stripe-a" }] }) },
+    {
+      type: "size_experience.record",
+      payload: { maker: "Synthetic maker", productFamily: "jackets", sizeLabel: "46" },
+      key: "style",
+      bump: (owner) => owner.exec("style.add_direction", { text: "Synthetic direction for a version test.", source: STATEMENT }),
+    },
     { type: "garment.retire", payload: { garmentId: "trouser-beige", disposition: "sold" }, key: "wardrobe", bump: (owner) => owner.exec("wear.record", { wearingDate: "2026-09-15", garmentIds: ["shirt-moss"] }) },
     {
       type: "measurement.record",
@@ -92,5 +101,14 @@ describe("expected versions on commands that remove, move, receive or rewrite a 
     expect(await balances(h, owner, "sock-navy")).toMatchObject({ dirty: 0 });
     expect((await owner.exec("laundry.collect", {}, stale)).outcome).toBe("committed");
     expect(await balances(h, owner, "shirt-moss")).toMatchObject({ dirty: 0, service: 1 });
+  });
+
+  it("every foundation observation command is classified: seven reports are rebased, the rest are refused on a stale version", () => {
+    // A new observation command defaults to `rebase`; this list makes its author decide (review of pull request 23).
+    const registry = createFoundationRegistry();
+    const observations = registry.types().filter((type) => registry.get(type).class === "observation");
+    const policy = (wanted: string) => observations.filter((type) => registry.staleVersionPolicy(registry.get(type)) === wanted);
+    expect(policy("rebase")).toEqual(["care.mark_dirty", "care.washed", "laundry.collect", "laundry.report_exception", "laundry.return", "wear.amend", "wear.record"]);
+    expect(policy("conflict")).toEqual(["garment.bulk_correct", "garment.correct", "garment.move", "garment.receive", "garment.retire", "measurement.record", "size_experience.record", "stock.pack", "stock.reconcile", "stock.unpack"]);
   });
 });

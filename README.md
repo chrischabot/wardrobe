@@ -19,7 +19,7 @@ Only data and requirements were migrated; no code from any earlier application i
 | Regenerate JSON Schema and Swift contracts | `npm run generate:contracts` |
 
 Node 22+, TypeScript 7.0.2, zod 4.6.5, vitest 4.1.11 with `@cloudflare/vitest-pool-workers` 0.22.0.
-`npm run test:foundation` currently runs 180 foundation tests (14 contracts, 166 domain). Domain tests run inside workerd
+`npm run test:foundation` currently runs 198 foundation tests (16 contracts, 182 domain). Domain tests run inside workerd
 against a real local D1 database; nothing mocks the ledger. The bundled
 workerd accepts compatibility dates up to 2026-08-22.
 
@@ -63,7 +63,11 @@ Each workstream edits only its own directories. Nobody edits another workstream'
   statements, preconditions, effects and outbox entries; the service commits them in one D1 batch with
   the receipt. Use `registry.registerVersionResolver(kind, fn)` for your `expectedVersions` keys,
   `registry.registerEntityNamer(kind, fn)` to say how one of your records is named in the owner's words
-  (a trip by its name: a foundation receipt that mentions it then shows that name, never the identifier) and
+  (a trip by its name: a foundation receipt that mentions it then shows that name, never the identifier),
+  `registry.registerEntityCheck(kind, fn)` to say whether one of your records may be the target of a
+  foundation command (`fn(db, userId, id)` resolves to `{ ok: true }` or `{ ok: false, reason }` in the
+  owner's words; `stock.pack` asks the check registered for `trip` and refuses with `precondition_failed`
+  when it says no or throws; with none registered any trip identifier is accepted, as before) and
   `registry.addCommitHook(name, hook)` to add writes to other commands' batches (for example repairing
   open boards inside the commit that recorded a wear). `apps/worker` composes the lanes:
   `const registry = createFoundationRegistry(); registerDaily(registry); ...`.
@@ -158,8 +162,19 @@ Ledger rules the other lanes rely on (regression-tested in `packages/domain/test
   (`evidence_reference_required` / `evidence_reference_not_verified`). With no verifier registered, only
   the owner lifts. `command.undo` of a `restriction.add` is `forbidden` (`restriction_not_lifted_by_undo`)
   for an imported restriction whoever asks, and for anyone but the owner in the app otherwise; an undo is
-  never itself undoable. `style.upsert_rule` cannot retire or rewrite the rule that carries an active
-  restriction (`rule_carries_active_restriction`).
+  never itself undoable. The rule that carries an active restriction stays exactly as it is: its status,
+  its kind (hard or soft) and every parameter. `style.upsert_rule`, a `replace` or `retire` decision in
+  `style.save_document`, and `command.undo` of the command that recorded the rule are all `forbidden`
+  (`rule_carries_active_restriction`) while the restriction is active.
+- **A covered garment stays covered.** A restriction's scope selects on a garment's own facts (category,
+  footwear kind, model). `garment.correct`, `garment.bulk_correct` and the undo of either are `forbidden`
+  (`correction_would_release_restriction`, with the `restrictionId`) when the change would take a garment
+  out of the scope of an active restriction; nothing is written, also for the other garments of a bulk
+  edit. Corrections that leave it covered are ordinary. This is refused for every caller for now; the
+  owner's confirmed path in the app (an acknowledgement naming the restriction) is not built yet.
+- **Quoted passages.** A `passage` on `measurement.record` or `size_experience.record` must name the
+  active style document by its hash and quote it verbatim, as a profile-derived rule must; otherwise
+  `precondition_failed` (`passage_not_in_document`). A fact recorded without a passage is not checked.
 - **Saving My style.** `style.save_document` must carry the version it was edited from
   (`expectedVersions` key `style_document:<documentId>` or `style`); without one it is `invalid_command`
   (`expected_version_required`), with a stale one `conflict`. A proposal for a profile save must carry it too.
@@ -175,7 +190,13 @@ Ledger rules the other lanes rely on (regression-tested in `packages/domain/test
     bring back units reported still away; never units reported lost (a stated quantity is what brings a
     lost unit back), and
     never a missed cycle's units (those return with `laundry.return`, or one at a time when the garment
-    has nothing at home at all).
+    has nothing at home at all). When an uncounted "washed" moves nothing of a garment that has a unit
+    reported lost (its only unit, or one of several with nothing awaiting a wash), it
+    records nothing for it: no wash event is written (so withdrawing the lost report later cannot wash the
+    unit retroactively), the receipt says it is still recorded as lost (`result.leftAsLost`), and when
+    nothing else was washed the command is a `noop` with no undo. This is deliberate and follows the
+    owner's rule that a wash record matches what he actually reported: "washed" with no count is not a
+    statement that a lost piece has turned up.
   - `laundry.return` of a recorded batch counts what the replay actually moved back, not the batch's
     rows: a unit reported lost, or one a wear amendment showed was never in the bag, is not counted and
     its batch item keeps `returned_quantity` as it was (the receipt's `repairs` say which and why). A unit
@@ -192,7 +213,16 @@ Ledger rules the other lanes rely on (regression-tested in `packages/domain/test
     NULL` as "this pickup was withdrawn; not an open batch".
 - **Wear.** `additionalUnits` is the total of further units used for that garment and day: a repeated
   report consumes nothing further. A wear resolves only the option sets that offered one of the reported
-  garments, and undo reopens them. A packed garment worn again on its trip stays in the suitcase.
+  garments, and undo reopens them. A packed garment worn again on its trip stays in the suitcase, and
+  packing it again for the same trip leaves it as it is (worn stays worn). A wear is never added for a
+  future date, by `wear.record` or `wear.amend`, and a stated `occurredAt` more than a day before the
+  wearing date begins is `invalid_command` (`occurred_before_wearing_date`).
+- **A return and its time.** `laundry.return` of a recorded batch dated before that batch's pickup is
+  `invalid_command` (`return_before_pickup`). With no bag out: if a bag collected in the five days before
+  the report is already recorded as back, the report is a `noop` (the same return said twice does not
+  launder what has gone into the hamper since); otherwise it is the owner's word for a cycle whose pickup
+  was never recorded, and the receipt counts only what the replay actually made clean (`noop` when that
+  is nothing).
 - **Opening stock.** The stock a garment is created with as already owned (`garment.create`, including
   the import) is journaled as `receive` with `opening: true` and precedes every other event of that
   garment in the replay, however early the event is dated: "I wore it yesterday", said the day after the
@@ -209,7 +239,8 @@ Ledger rules the other lanes rely on (regression-tested in `packages/domain/test
   (`available: false` once the command has been undone). `commands.receipt_json` itself is never
   rewritten; a lane that reads that column directly sees the commit-time text.
 - **Time.** Instants and local dates must be real (no 13th month, no 31 February), timezones must be
-  IANA zones the runtime knows, and a weekly baseline cannot be applied for a future `asOf`.
+  IANA zone names the runtime knows (a bare UTC offset such as `+05:00` is refused), a local time is
+  00:00 to 23:59, and a weekly baseline cannot be applied for a future `asOf`.
 - **Concurrency.** A retry with the same idempotency key always gets the stored receipt, also when it
   races the first send. An effect with an operation key already on record is not enqueued again and is
   not listed in the second receipt.

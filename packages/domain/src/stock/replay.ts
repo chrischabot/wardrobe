@@ -184,9 +184,10 @@ export function replayGarment(careChannel: CareChannel, events: StockEvent[]): R
       }
       return taken;
     };
-    const takeFromTrip = (n: number): { clean: number; dirty: number } => {
+    const takeFromTrip = (n: number, exceptTrip?: string): { clean: number; dirty: number } => {
       const out = { clean: 0, dirty: 0 };
       for (const [ref, t] of [...s.trip.entries()]) {
+        if (ref === exceptTrip) continue;
         const c = Math.min(t.clean, n - out.clean - out.dirty);
         t.clean -= c;
         out.clean += c;
@@ -201,11 +202,11 @@ export function replayGarment(careChannel: CareChannel, events: StockEvent[]): R
      * An owner observation needs one unit the ledger does not show at home: take it from wherever
      * the ledger believed it was. Returns the bucket it came from, or null when no unit is on record.
      */
-    const pullOneFromElsewhere = (): Bucket | null => {
+    const pullOneFromElsewhere = (exceptTrip?: string): Bucket | null => {
       if (takeFromService(1, { allowHeld: true }) === 1) return "service";
       if (s.tailor > 0) return (s.tailor -= 1), "tailor";
       if (s.storage > 0) return (s.storage -= 1), "storage";
-      const t = takeFromTrip(1);
+      const t = takeFromTrip(1, exceptTrip);
       if (t.clean + t.dirty === 1) return "trip";
       if (s.incoming > 0) return (s.incoming -= 1), "incoming";
       return null;
@@ -528,7 +529,9 @@ export function replayGarment(careChannel: CareChannel, events: StockEvent[]): R
           repair("packed a unit the ledger shows as awaiting care; it travels as not clean");
         }
         for (let i = c + d; i < want; i++) {
-          const from = pullOneFromElsewhere();
+          // Never from the suitcase being packed: a piece already in it, worn or not, stays as it is, so
+          // saying "packed" again does not turn a worn unit clean (adversarial defect L13-2).
+          const from = pullOneFromElsewhere(tripId);
           if (!from) break;
           t.clean += 1;
           move(from, "trip", 1, "owner statement: packed");

@@ -19,6 +19,9 @@ function isRealInstant(value: string): boolean {
 }
 
 function isRealTimezone(value: string): boolean {
+  // The runtime also accepts a bare UTC offset ("+05:00") as a time zone; that is not a zone name and has
+  // no daylight-saving rule, so the owner's days would be counted at a fixed offset all year.
+  if (/^[+-]/.test(value)) return false;
   try {
     new Intl.DateTimeFormat("en-GB", { timeZone: value });
     return true;

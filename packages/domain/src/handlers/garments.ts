@@ -4,6 +4,7 @@ import { all, first, json, stmt, type Stmt } from "../db.ts";
 import { CommandError } from "../errors.ts";
 import { normalizePhrase } from "../util.ts";
 import { explainGarmentStock, type GarmentRow } from "../stock/planner.ts";
+import { restrictionCovers } from "../availability/estimator.ts";
 import { ownedUnits } from "../stock/replay.ts";
 import type { CommandDefinition, CommandPlan } from "../commands/types.ts";
 import { bumpGarment, loadGarment, nameList, quoted, simpleStockUndo, stockParts } from "./common.ts";
@@ -243,6 +244,36 @@ function factUndoStatements(ctx: CommandContext, factIds: string[] | undefined, 
   return out;
 }
 
+/**
+ * A garment an active restriction covers leaves it only when the restriction itself is resolved. The
+ * restriction's scope selects on the garment's own facts (its category, footwear kind, model), so changing
+ * those facts would release the garment while the restriction still reads active and nothing records it
+ * (adversarial defects P07-1 and P07-2). Such a change is refused; `rows` are the garments as they are,
+ * `after` gives each one's attributes as the change would leave them.
+ */
+async function assertStaysRestricted(ctx: CommandContext, rows: Record<string, any>[], after: (row: Record<string, any>) => Record<string, unknown>): Promise<void> {
+  if (rows.length === 0) return;
+  const restrictions = await all<{ restriction_id: string; scope_json: string }>(ctx.db, "SELECT restriction_id, scope_json FROM restrictions WHERE user_id = ? AND status = 'active'", ctx.userId);
+  for (const r of restrictions) {
+    const scope = json<any>(r.scope_json, {});
+    for (const row of rows) {
+      const g = { garmentId: row.garment_id as string, category: row.category as string };
+      if (restrictionCovers(scope, { ...g, attributes: json<Record<string, unknown>>(row.attributes_json, {}) }) && !restrictionCovers(scope, { ...g, attributes: after(row) })) {
+        throw new CommandError(
+          "forbidden",
+          `${row.name} is covered by an active restriction, and this change would take it out of it. A restriction ends only when the owner says its condition has ended; nothing was written`,
+          { reason: "correction_would_release_restriction", restrictionId: r.restriction_id, garmentId: row.garment_id },
+        );
+      }
+    }
+  }
+}
+
+const mergedAttributes = (row: Record<string, any>, changes: Record<string, unknown>): Record<string, unknown> => ({ ...json<Record<string, unknown>>(row.attributes_json, {}), ...((changes.attributes as object | undefined) ?? {}) });
+/** The attributes a stored `previous` column set restores (undo of a correction). */
+const restoredAttributes = (row: Record<string, any>, previous: Record<string, unknown>): Record<string, unknown> =>
+  "attributes_json" in previous ? json<Record<string, unknown>>(previous.attributes_json as string, {}) : json<Record<string, unknown>>(row.attributes_json, {});
+
 export const garmentCorrect = define({
   type: "garment.correct",
   schema: C["garment.correct"],
@@ -252,6 +283,7 @@ export const garmentCorrect = define({
   async plan(ctx, p) {
     const g = await loadGarment(ctx, p.garmentId);
     const full = (await first<Record<string, any>>(ctx.db, "SELECT * FROM garments WHERE user_id = ? AND garment_id = ?", ctx.userId, g.garment_id))!;
+    await assertStaysRestricted(ctx, [full], (row) => mergedAttributes(row, p.changes));
     const { statements, previous, changed, factIds } = planCorrection(ctx, full, p.changes, p.source);
     if (changed.length === 0) return { outcome: "noop", summary: `${g.name}: already as stated`, undo: { unavailableReason: "nothing changed" } };
     const planner = ctx.stock();
@@ -278,6 +310,9 @@ export const garmentCorrect = define({
   },
   async planUndo(ctx, _original, data) {
     const g = await loadGarment(ctx, data.garmentId, { followMerges: false });
+    // Undo is held to the same check as the correction: it does not release a covered garment either.
+    const current = await first<Record<string, any>>(ctx.db, "SELECT * FROM garments WHERE user_id = ? AND garment_id = ?", ctx.userId, g.garment_id);
+    await assertStaysRestricted(ctx, current ? [current] : [], (row) => restoredAttributes(row, data.previous as Record<string, unknown>));
     const cols = Object.keys(data.previous as Record<string, unknown>);
     const planner = ctx.stock();
     if ("care_channel" in data.previous) planner.setCareChannel(g.garment_id, data.previous.care_channel);
@@ -326,6 +361,7 @@ export const garmentBulkCorrect = define({
     const planner = ctx.stock();
     const statements: Stmt[] = [];
     const undo: { garmentId: string; previous: Record<string, unknown>; factIds: string[] }[] = [];
+    await assertStaysRestricted(ctx, rows, (row) => mergedAttributes(row, p.changes));
     const changedNames: string[] = [];
     const changedKeys = new Set<string>();
     for (const full of rows) {
@@ -358,6 +394,10 @@ export const garmentBulkCorrect = define({
   },
   async planUndo(ctx, _original, data) {
     const garments = data.garments as { garmentId: string; previous: Record<string, unknown>; versionAfter: number }[];
+    for (const g of garments) {
+      const current = await first<Record<string, any>>(ctx.db, "SELECT * FROM garments WHERE user_id = ? AND garment_id = ?", ctx.userId, g.garmentId);
+      await assertStaysRestricted(ctx, current ? [current] : [], (row) => restoredAttributes(row, g.previous));
+    }
     const planner = ctx.stock();
     const statements: Stmt[] = [];
     for (const g of garments) {
@@ -733,6 +773,10 @@ export const stockPack = define({
   staleVersions: "conflict",
   requiredScope: "write",
   async plan(ctx, p) {
+    // The trip belongs to another workstream: when it has registered a check, only a trip it vouches for
+    // (this owner's, still planned) is packed for (adversarial defect L13-1).
+    const tripCheck = await ctx.checkEntity("trip", p.tripId);
+    if (!tripCheck.ok) throw new CommandError("precondition_failed", `nothing was packed: ${tripCheck.reason}`, { reason: "trip_not_packable", tripId: p.tripId });
     const planner = ctx.stock();
     const eventIds: string[] = [];
     const names: string[] = [];

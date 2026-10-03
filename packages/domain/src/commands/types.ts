@@ -126,10 +126,21 @@ export interface CommandContext {
    * unknown, in which case the summary speaks of the record without naming it. Never an identifier.
    */
   entityName(kind: string, id: string): Promise<string | null>;
+  /**
+   * Whether a record of another workstream (for example a trip) may be the target of this command, as the
+   * workstream that owns it says. With no check registered for the kind the answer is `{ ok: true }`: the
+   * domain cannot see the record and behaves as it did before. A check that throws answers `ok: false`.
+   */
+  checkEntity(kind: string, id: string): Promise<EntityCheckResult>;
 }
 
 /** Looks up the owner's name for a record (registered per kind by the workstream that owns the records). */
 export type EntityNamer = (db: Db, userId: string, id: string) => Promise<string | null>;
+
+/** Whether a record of another workstream may be the target of a command; `reason` is in the owner's words. */
+export type EntityCheckResult = { ok: true } | { ok: false; reason: string };
+/** Answers for one owner's record (registered per kind by the workstream that owns the records). */
+export type EntityCheck = (db: Db, userId: string, id: string) => Promise<EntityCheckResult>;
 
 /** Checks an evidence reference against the record of what the owner said (registered by the conversation's owner). */
 export type OwnerStatementVerifier = (ctx: CommandContext, ref: string) => Promise<boolean>;

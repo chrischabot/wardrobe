@@ -4,7 +4,7 @@
  * Real command service, local D1, labelled synthetic owners only.
  * September 2026: Mon 14 ... Fri 18 (collection), Sat 19 (return), Sun 20 (baseline).
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { all, claimDueEffects, define, first, getAvailability, getLaundryState, settleEffect } from "../src/index.ts";
 import { createHarness, type Harness, type TestOwner } from "../src/testing/index.ts";
@@ -268,6 +268,7 @@ describe("'washed' without a count is not about a unit reported lost", () => {
     const nothing = await owner.exec("care.washed", { items: [{ garmentId: "shirt-gold" }] });
     // The receipt does not claim a wash that moved nothing, and no wash is written (change review of a5e6c8fa).
     expect(nothing.outcome).toBe("noop");
+    expect(nothing.undo.available).toBe(false);
     expect(nothing.summary).toBe("Nothing was marked clean; still recorded as lost: gold lightweight oxford. If it has turned up, say how many were washed");
     // Said together with a shirt that was awaiting a wash: that one is washed, the lost one is named as left.
     await owner.exec("care.mark_dirty", { items: [{ garmentId: "shirt-moss" }] });
@@ -281,6 +282,31 @@ describe("'washed' without a count is not about a unit reported lost", () => {
     expect(await openExceptions(h, owner)).toEqual([["lost", "shirt-gold", 1]]);
     await owner.exec("care.washed", { items: [{ garmentId: "shirt-gold", quantity: 1 }] });
     expect(await balances(h, owner, "shirt-gold")).toMatchObject({ clean: 1, service: 0 });
+    expect(await openExceptions(h, owner)).toEqual([]);
+  });
+
+  it("one pair lost and the other clean at home: nothing is written, and withdrawing the lost report does not wash the pair", async () => {
+    // Third change review of 2124ae89: the guard used to apply only when the lost unit was all there was.
+    const { h, owner } = await start();
+    await wearOn(h, owner, "2026-09-14", ["trouser-navy"]);
+    h.clock.set("2026-09-18T08:30:00Z");
+    await owner.exec("laundry.collect", {});
+    h.clock.set("2026-09-19T17:00:00Z");
+    const lost = await owner.exec("laundry.report_exception", { kind: "lost", garmentId: "trouser-navy", quantity: 1 });
+    expect(await balances(h, owner, "trouser-navy")).toMatchObject({ clean: 1, service: 1 });
+    const nothing = await owner.exec("care.washed", { items: [{ garmentId: "trouser-navy" }] });
+    expect(nothing.outcome).toBe("noop");
+    expect(nothing.undo.available).toBe(false);
+    expect(nothing.summary).toBe("Nothing was marked clean; still recorded as lost: navy chinos. If it has turned up, say how many were washed");
+    expect(await all(h.db, "SELECT 1 FROM stock_events WHERE user_id = ? AND garment_id = 'trouser-navy' AND kind = 'wash'", owner.userId)).toEqual([]);
+    // With something else washed, the note gives the true reason: nothing of the chinos was awaiting a wash.
+    await owner.exec("care.mark_dirty", { items: [{ garmentId: "shirt-moss" }] });
+    const mixed = await owner.exec("care.washed", { items: [{ garmentId: "trouser-navy" }, { garmentId: "shirt-moss" }] });
+    expect(mixed.result).toMatchObject({ washed: ["shirt-moss"], leftAsLost: ["trouser-navy"] });
+    expect(mixed.repairs.join(" ")).toMatch(/navy chinos: nothing of it was awaiting a wash, and the one recorded as lost stays lost/);
+    // The lost report is withdrawn: the pair is at the laundry again, not clean.
+    await owner.exec("command.undo", { commandId: lost.commandId });
+    expect(await balances(h, owner, "trouser-navy")).toMatchObject({ clean: 1, service: 1 });
     expect(await openExceptions(h, owner)).toEqual([]);
   });
 });
@@ -364,8 +390,12 @@ describe("change review of the return and its undo (review of 486b1311 to a5e6c8
     h.registry.registerEntityNamer("trip", async () => {
       throw new Error("synthetic lookup failure");
     });
+    const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
     const packed = await owner.exec("stock.pack", { tripId: "trp_0123456789abcdef0123", items: [{ garmentId: "shirt-moss" }] });
     expect(packed.summary).toBe("Packed for the trip: moss lightweight oxford");
+    // The failure is not silent: it is logged with the kind of thing that could not be named.
+    expect(warned.mock.calls.map((c) => String(c[0])).filter((m) => m.includes("entity namer for 'trip' failed")).length).toBeGreaterThan(0);
+    warned.mockRestore();
   });
 
   it("a receipt whose effect failed reads as not delivered, with the effect's own state shown, and its used undo is not offered on a repeat", async () => {

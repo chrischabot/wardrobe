@@ -3,7 +3,13 @@ import { IanaTimezone } from "./primitives.ts";
 
 /** Weekday numbers follow ISO-8601: 1 = Monday ... 7 = Sunday. */
 export const IsoWeekday = z.number().int().min(1).max(7);
-export const LocalTime = z.string().regex(/^\d{2}:\d{2}$/, "expected HH:MM");
+const LOCAL_TIME_PATTERN = /^\d{2}:\d{2}$/;
+/** A time of day on the owner's clock, 00:00 to 23:59. */
+export const LocalTime = z
+  .string()
+  .regex(LOCAL_TIME_PATTERN, "expected HH:MM")
+  // A value of the wrong shape is reported once, by the pattern; the range check is for well-formed values.
+  .refine((v) => !LOCAL_TIME_PATTERN.test(v) || (Number(v.slice(0, 2)) < 24 && Number(v.slice(3)) < 60), "not a real time of day");
 
 export const ServiceLaundrySettings = z.object({
   /** Standing owner authorization for the inferred weekly cleanliness reset. */

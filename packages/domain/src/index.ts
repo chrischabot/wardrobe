@@ -7,7 +7,7 @@
 export { CommandService, type CommandServiceOptions } from "./commands/service.ts";
 export { CommandRegistry } from "./commands/registry.ts";
 export { createFoundationRegistry } from "./foundation.ts";
-export type { CommandContext, CommandDefinition, CommandPlan, CommitHook, DomainChanges, EntityNamer, OwnerStatementVerifier, PlanFragment, PlannedEffect, PlannedOutbox, Precondition, StoredCommand, VersionResolver } from "./commands/types.ts";
+export type { CommandContext, CommandDefinition, CommandPlan, CommitHook, DomainChanges, EntityCheck, EntityCheckResult, EntityNamer, OwnerStatementVerifier, PlanFragment, PlannedEffect, PlannedOutbox, Precondition, StoredCommand, VersionResolver } from "./commands/types.ts";
 export { noChanges } from "./commands/types.ts";
 export { CommandError, isCommandError } from "./errors.ts";
 export { createPrincipal, assertPrincipal, requireScope, type Principal } from "./principal.ts";

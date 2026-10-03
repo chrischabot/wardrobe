@@ -1,7 +1,7 @@
 import { DEFAULT_OWNER_SETTINGS, FOUNDATION_COMMANDS as C, OwnerSettings, type Channel } from "@garderobe/contracts";
 import { all, allIn, first, json, stmt, type Stmt } from "../db.ts";
 import { CommandError } from "../errors.ts";
-import { deepMerge, sha256Hex } from "../util.ts";
+import { canonicalJson, deepMerge, sha256Hex } from "../util.ts";
 import type { CommandPlan } from "../commands/types.ts";
 import { restrictionCovers } from "../availability/estimator.ts";
 import { attrs, GARMENT_COLS, loadGarments, quoted } from "./common.ts";
@@ -372,11 +372,14 @@ export const styleUpsertRule = define({
   requiredScope: "write",
   allowedAuthorizations: ["owner_tap", "owner_statement", "data_import"],
   async plan(ctx, p) {
-    const current = await first<{ rule_id: string; version: number; status: string; params_json: string }>(ctx.db, "SELECT rule_id, version, status, params_json FROM style_rules WHERE user_id = ? AND key = ? AND is_current = 1", ctx.userId, p.key);
+    const current = await first<{ rule_id: string; version: number; kind: string; status: string; params_json: string }>(ctx.db, "SELECT rule_id, version, kind, status, params_json FROM style_rules WHERE user_id = ? AND key = ? AND is_current = 1", ctx.userId, p.key);
     // The rule that carries an active restriction stays as it is until the restriction itself is resolved:
-    // rewriting or retiring the rule is not a way to lift it.
-    const carried = current ? json<Record<string, unknown>>(current.params_json, {}).restrictionId : undefined;
-    if (current && typeof carried === "string" && (p.status !== current.status || p.params.restrictionId !== carried)) {
+    // rewriting or retiring the rule is not a way to lift it. That covers everything the rule enforces with:
+    // its status, whether it is hard or soft, and every parameter (adversarial defect P07-4: widening the
+    // allowed footwear or turning the rule soft left the restriction row active and the rule toothless).
+    const currentParams = current ? json<Record<string, unknown>>(current.params_json, {}) : {};
+    const carried = currentParams.restrictionId;
+    if (current && typeof carried === "string" && (p.status !== current.status || p.kind !== current.kind || canonicalJson(p.params) !== canonicalJson(currentParams))) {
       const active = await first(ctx.db, "SELECT 1 AS x FROM restrictions WHERE user_id = ? AND restriction_id = ? AND status = 'active'", ctx.userId, carried);
       if (active) {
         throw new CommandError("forbidden", "this rule carries an active restriction; only the owner's explicit statement resolves it (restriction.resolve), not a change to the rule", { reason: "rule_carries_active_restriction", restrictionId: carried });
@@ -422,6 +425,21 @@ export const styleUpsertRule = define({
     };
   },
   async planUndo(ctx, _o, data) {
+    // Undo is held to the same check as the change itself (adversarial defect P07-5): the version of a rule
+    // that carries an active restriction is not retired by undoing the command that recorded it, unless the
+    // version it gives way to enforces exactly the same thing.
+    type RuleVersion = { kind: string; status: string; params_json: string };
+    const versionOf = (version: unknown) => first<RuleVersion>(ctx.db, "SELECT kind, status, params_json FROM style_rules WHERE user_id = ? AND rule_id = ? AND version = ?", ctx.userId, data.ruleId, version);
+    const undone = await versionOf(data.version);
+    const undoneParams = undone ? json<Record<string, unknown>>(undone.params_json, {}) : {};
+    if (undone && typeof undoneParams.restrictionId === "string") {
+      const active = await first(ctx.db, "SELECT 1 AS x FROM restrictions WHERE user_id = ? AND restriction_id = ? AND status = 'active'", ctx.userId, undoneParams.restrictionId);
+      const previous = active && data.previousVersion !== null ? await versionOf(data.previousVersion) : null;
+      const same = previous && previous.kind === undone.kind && previous.status === undone.status && canonicalJson(json<Record<string, unknown>>(previous.params_json, {})) === canonicalJson(undoneParams);
+      if (active && !same) {
+        throw new CommandError("forbidden", "this rule carries an active restriction; only the owner's explicit statement resolves it (restriction.resolve), not the undo of the rule", { reason: "rule_carries_active_restriction", restrictionId: undoneParams.restrictionId });
+      }
+    }
     const statements: Stmt[] = [stmt("UPDATE style_rules SET is_current = 0, status = 'retired' WHERE user_id = ? AND rule_id = ? AND version = ?", ctx.userId, data.ruleId, data.version)];
     if (data.previousVersion !== null) statements.push(stmt("UPDATE style_rules SET is_current = 1 WHERE user_id = ? AND rule_id = ? AND version = ?", ctx.userId, data.ruleId, data.previousVersion));
     return {
@@ -550,6 +568,20 @@ export const styleRetireBrief = define({
   },
 });
 
+/**
+ * A fact that cites the owner's style document must quote it: the passage names the active document by its
+ * hash and its quotation occurs there verbatim (the contract of `PassageRef`). Nothing is checked for a
+ * fact recorded without a passage (adversarial defect P07-6: an invented quotation was stored against the
+ * hash of the owner's own document).
+ */
+async function assertPassageQuoted(ctx: { db: Parameters<typeof first>[0]; userId: string }, passage: { documentSha256: string; quote: string } | null | undefined): Promise<void> {
+  if (!passage) return;
+  const doc = await first<{ content: string; content_sha256: string }>(ctx.db, "SELECT content, content_sha256 FROM style_documents WHERE user_id = ? AND status = 'active' ORDER BY version DESC LIMIT 1", ctx.userId);
+  if (!doc || doc.content_sha256 !== passage.documentSha256 || !doc.content.includes(passage.quote)) {
+    throw new CommandError("precondition_failed", "a quoted passage does not occur verbatim in the active style document", { reason: "passage_not_in_document", quote: passage.quote.slice(0, 80) });
+  }
+}
+
 export const measurementRecord = define({
   type: "measurement.record",
   schema: C["measurement.record"],
@@ -565,6 +597,7 @@ export const measurementRecord = define({
       if (!p.garmentId) throw new CommandError("invalid_command", "a garment measurement needs its garment");
       await loadGarments(ctx, [p.garmentId]);
     }
+    await assertPassageQuoted(ctx, p.passage);
     const measurementId = ctx.newId("msr");
     return {
       summary: `Recorded ${p.subject} measurement ${quoted(p.key, 60)}: ${p.qualifier ? `${quoted(p.qualifier, 60)} ` : ""}${p.value} ${p.unit}${p.measuredOn ? ` (${p.measuredOn})` : ""}`,
@@ -603,6 +636,7 @@ export const sizeExperienceRecord = define({
   requiredScope: "write",
   allowedAuthorizations: ["owner_tap", "owner_statement", "data_import"],
   async plan(ctx, p) {
+    await assertPassageQuoted(ctx, p.passage);
     const id = ctx.newId("szx");
     return {
       summary: `Size experience recorded: maker ${quoted(p.maker, 80)}${p.productFamily ? `, product ${quoted(p.productFamily, 80)}` : ""}, size ${quoted(p.sizeLabel, 40)}`,

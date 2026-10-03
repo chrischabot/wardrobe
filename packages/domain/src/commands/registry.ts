@@ -1,6 +1,6 @@
 import type { AuthorizationBasis } from "@garderobe/contracts";
 import { CommandError } from "../errors.ts";
-import type { CommandDefinition, CommitHook, EntityNamer, OwnerStatementVerifier, VersionResolver } from "./types.ts";
+import type { CommandDefinition, CommitHook, EntityCheck, EntityNamer, OwnerStatementVerifier, VersionResolver } from "./types.ts";
 
 const DEFAULT_AUTHORIZATIONS: Record<CommandDefinition["class"], AuthorizationBasis[]> = {
   observation: ["owner_tap", "owner_statement"],
@@ -17,6 +17,7 @@ export class CommandRegistry {
   private readonly definitions = new Map<string, CommandDefinition<any>>();
   private readonly resolvers = new Map<string, VersionResolver>();
   private readonly namers = new Map<string, EntityNamer>();
+  private readonly checks = new Map<string, EntityCheck>();
   private readonly hooks: { name: string; hook: CommitHook }[] = [];
   private statementVerifier: OwnerStatementVerifier | null = null;
 
@@ -86,6 +87,21 @@ export class CommandRegistry {
 
   entityNamer(kind: string): EntityNamer | undefined {
     return this.namers.get(kind);
+  }
+
+  /**
+   * Register whether a record of this kind may be the target of a foundation command (for example whether
+   * a trip is this owner's and still planned, for `stock.pack`). The workstream that owns the records
+   * registers it; without one the foundation command accepts the identifier as it always did.
+   */
+  registerEntityCheck(kind: string, check: EntityCheck): this {
+    if (this.checks.has(kind)) throw new Error(`entity check already registered: ${kind}`);
+    this.checks.set(kind, check);
+    return this;
+  }
+
+  entityCheck(kind: string): EntityCheck | undefined {
+    return this.checks.get(kind);
   }
 
   /**

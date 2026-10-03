@@ -177,9 +177,12 @@ export class CommandService {
     return receipts.map((receipt, i) => {
       const out: CommandReceipt = { ...receipt };
       if ((receipt.effects?.length ?? 0) > 0) {
-        // An effect row holding a state this build does not know keeps the state the receipt was stored with.
+        // An effect row holding a state this build does not know keeps the state the receipt was stored with,
+        // and says so in the log: a receipt must not read as waiting for ever without a trace of why.
         out.effects = receipt.effects.map((e) => {
-          const now = EffectState.safeParse(states.get(e.effectId));
+          const stored = states.get(e.effectId);
+          const now = EffectState.safeParse(stored);
+          if (stored !== undefined && !now.success) console.warn(`effect ${e.effectId} of command ${receipt.commandId} holds an unknown state; the receipt shows the state it was stored with`);
           return { ...e, state: now.success ? now.data : e.state };
         });
         // A failed effect has not been delivered: it still counts as outstanding, and its own state says "failed".
@@ -299,8 +302,20 @@ export class CommandService {
           const name = namer ? await namer(db, userId, id) : null;
           return typeof name === "string" && name.trim() !== "" ? name : null;
         } catch (error) {
-          console.warn(`entity namer for '${kind}' failed; the receipt uses the generic wording`, error);
+          console.warn(`entity namer for '${kind}' failed for ${id} in command ${commandId}; the receipt uses the generic wording: ${error instanceof Error ? error.message : "unknown error"}`);
           return null;
+        }
+      },
+      checkEntity: async (kind: string, id: string) => {
+        const check = this.registry.entityCheck(kind);
+        if (!check) return { ok: true as const };
+        // Unlike a name, this decides whether the command may write: a check that cannot answer refuses.
+        try {
+          const answer = await check(db, userId, id);
+          return answer.ok === true ? { ok: true as const } : { ok: false as const, reason: typeof answer.reason === "string" && answer.reason.trim() !== "" ? answer.reason : "it could not be confirmed" };
+        } catch (error) {
+          console.warn(`entity check for '${kind}' failed for ${id} in command ${commandId}; the command is refused: ${error instanceof Error ? error.message : "unknown error"}`);
+          return { ok: false as const, reason: "it could not be checked just now" };
         }
       },
     };

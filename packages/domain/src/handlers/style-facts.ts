@@ -13,7 +13,7 @@ import { FOUNDATION_COMMANDS as C } from "@garderobe/contracts";
 import { all, first, json, stmt, type Db, type Stmt } from "../db.ts";
 import { CommandError } from "../errors.ts";
 import { assertPrincipal, requireScope, type Principal } from "../principal.ts";
-import { localDateOf, sha256Hex } from "../util.ts";
+import { canonicalJson, localDateOf, sha256Hex } from "../util.ts";
 import type { CommandContext, CommandPlan, Precondition } from "../commands/types.ts";
 import { deriveFactDiff, locateQuote, type AffectedFact, type AnchoredFact } from "../style/fact-diff.ts";
 import { define } from "./garments.ts";
@@ -178,10 +178,11 @@ function planResolution(ctx: CommandContext, set: StyleFactSet, ref: StyleFactRe
       params: res.rule?.params ?? params,
       interpretation: res.rule?.interpretation ?? row.interpretation,
     };
-    // Editing prose never lifts a restriction: while it is active, the rule that carries it stays as it is.
+    // Editing prose never lifts a restriction: while it is active, the rule that carries it stays as it is,
+    // in status, in kind and in every parameter (adversarial defect P07-3).
     const restrictionId = typeof params.restrictionId === "string" ? params.restrictionId : null;
-    if (restrictionId && set.activeRestrictionIds.has(restrictionId) && (next.status !== row.status || next.params.restrictionId !== restrictionId)) {
-      throw new CommandError("forbidden", "this rule carries an active restriction; only the owner's explicit statement resolves it (restriction.resolve), not an edit of the profile text", { fact: ref, restrictionId });
+    if (restrictionId && set.activeRestrictionIds.has(restrictionId) && (next.status !== row.status || next.kind !== row.kind || canonicalJson(next.params) !== canonicalJson(params))) {
+      throw new CommandError("forbidden", "this rule carries an active restriction; only the owner's explicit statement resolves it (restriction.resolve), not an edit of the profile text", { reason: "rule_carries_active_restriction", fact: ref, restrictionId });
     }
     const kept = json<PassageRef[]>(row.passages_json, [])
       .map((p) => locateQuote(text.content, text.sha256, p.quote, p.section))
