@@ -60,7 +60,7 @@ SWIFT_BIN=/path/to/swift/usr/bin bash ios/Tools/check.sh
 
 `SWIFT_BIN` is only needed when `swift` is not on `PATH`; `GARDEROBE_SWIFT_SCRATCH` moves the build
 directory. The toolchain used here was Swift 6.4 (swift-6.4-RELEASE, Linux x86_64 from swift.org) and Node
-22.23.1. The results below are from a clean copy of `garderobe-rebuild` at commit `74434534` (`npm ci`)
+22.23.1. The results below are from a clean copy of `garderobe-rebuild` at commit `cadc3aeb` (`npm ci`)
 with this directory as committed.
 
 | Step | What it does | Last result here |
@@ -242,5 +242,6 @@ Notifications capability registered, a push (APNs) key configured on the backend
   authenticated image routes, which the app can call directly.
 - The stale-request recording is a typed `garment.retire` from a connected assistant, made against a
   garment version the owner then changed; the backend refuses the confirmation with 409 and applies
-  nothing. A retire, move or receive request made in conversation carries no garment version, so the
-  backend does not refuse it as stale (the assistant thread's side).
+  nothing. Since the assistant's change of 2026-10-03, a conversation request that rewrites, moves, receives
+  or removes a piece carries that piece's record version too; that path has the assistant thread's own
+  tests and is not in an iOS recording.
