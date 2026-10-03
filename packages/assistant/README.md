@@ -83,6 +83,20 @@ Control, zero-width, bidirectional and private-use characters are removed from s
 quotation-mark look-alike becomes an apostrophe, so a value cannot appear to end early. The Worker binds
 the stored summary into the proposal identifier.
 
+The summary is in words, not codes (journey finding D11-2). A field that refers to a record names it:
+a piece, shopping candidate, order, project, reminder, restriction, remembered conclusion or return by
+its name, and a message of the conversation by when it was sent ("your message of 2026-09-15 at 08:00
+UTC"). A code word (`mid_layer`) is shown with spaces; a new garment says what it is worn as and how it
+is cared for. An identifier in an identifier field that names no record on file, which is the identifier
+a new record will get, reads "a record that is not on file yet"; such a value has no spaces and cannot
+carry prose. Any other value that names no record is shown as it is, in full.
+
+The source of a change is recorded as what it was (`ownerSource` in `src/tools/runtime.ts`): "your own
+statement" only when the owner wrote words of their own in that message. A message that was only a
+photograph or an attachment is recorded and shown as the assistant's reading of it, and a rule, a
+profile amendment or a measurement is not offered from such a message at all (`no_owner_words`),
+because the ledger records those only from the owner's statement.
+
 A proposal is confirmed against the record it described (`expectedVersionsFor` in
 `src/policy/describe.ts`). Every proposal that corrects, renames, moves, receives or retires a piece,
 including a project event that moves or retires its pieces, carries the count of changes to that piece's

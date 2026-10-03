@@ -20,6 +20,7 @@ import type { CommandReceipt } from "@garderobe/contracts";
 import { CommandError, all, isCommandError, registerActionIntent, type CommandService, type Db, type Principal } from "@garderobe/domain";
 import { classifyChange } from "../policy/classes.ts";
 import { describeChange, expectedVersionsFor } from "../policy/describe.ts";
+import { ownerAuthoredText } from "../policy/voice.ts";
 import { attachedGarmentIds, coverOf, resolveOwnerReports, type OwnerReport, type ReportKind } from "../policy/report.ts";
 import type { CanonicalMessage } from "../recall/index.ts";
 import type { SearchIndexPort } from "../recall/ai-search.ts";
@@ -62,6 +63,8 @@ export interface TurnRuntime {
   /** Owner text of this turn first, then the most recent earlier owner messages. */
   ownerTexts: string[];
   attachedRefs: string[];
+  /** True when the owner attached a photograph to this turn's message. */
+  hasImages?: boolean;
   /** Garments under an active restriction at the start of the turn (from the mandatory context). */
   restrictedGarmentIds?: string[];
   /** What was asked in this turn, in the asker's own words (the owner's own voice, or a research request's topic). Bounds what a web search may carry out. */
@@ -113,6 +116,9 @@ export type CommitResult =
 
 /** No turn may leave more than this many requests for the owner to go through. */
 export const MAX_PROPOSALS_PER_TURN = 8;
+
+/** Changes the ledger records only from the owner's own statement (packages/domain refuses a photograph or a model inference as their source). */
+const NEEDS_OWNER_WORDS = new Set(["style.add_amendment", "style.add_direction", "measurement.record"]);
 
 const PROPOSED_NOTE = "NOT DONE. This was recorded as a request for the owner to confirm in the Garderobe app (Settings, Requests to confirm). Nothing has changed. Tell the owner exactly that; never say it was done.";
 
@@ -176,6 +182,15 @@ async function propose(rt: TurnRuntime, req: CommitRequest): Promise<CommitResul
       await rt.onRefusal(refusal);
       return { status: "refused", code: refusal.code, message: `Nothing was changed. ${refusal.message}` };
     }
+  }
+  // What the ledger accepts only on the owner's own statement is not offered from a message in which the
+  // owner said nothing: the confirmation could never be carried out, and a photograph or an attachment is
+  // not a statement.
+  const sourceKind = (req.payload["source"] as { kind?: unknown } | undefined)?.kind;
+  if (NEEDS_OWNER_WORDS.has(req.type) && (sourceKind === "photograph" || sourceKind === "model_inference")) {
+    const refusal = { tool: req.tool, code: "no_owner_words", message: "the owner wrote nothing in their own words in this message; a rule, a profile amendment or a measurement is recorded only from what the owner says. Tell the owner what you found and let them say it" };
+    await rt.onRefusal(refusal);
+    return { status: "refused", code: refusal.code, message: `Nothing was changed. ${refusal.message}` };
   }
   const referenced = [...new Set([...garmentsOf(req.type, req.payload), ...(typeof req.payload["garmentId"] === "string" ? [req.payload["garmentId"] as string] : [])])];
   if (referenced.length > 0) {
@@ -271,8 +286,21 @@ export function forModel(result: CommitResult): Record<string, unknown> {
   return result;
 }
 
-export function ownerSource(rt: TurnRuntime): { kind: "owner_statement"; ref: string } {
-  return { kind: "owner_statement", ref: `message:${rt.userMessageId}` };
+/** Whether the owner wrote anything in their own words in this turn (attachments, photographs and relayed passages are not their words). */
+export function ownerSpoke(rt: Pick<TurnRuntime, "ownerTexts">): boolean {
+  return rt.ownerTexts.some((text) => ownerAuthoredText(text).trim().length > 0);
+}
+
+/**
+ * The source trusted code records for a change asked for in this turn. It says "owner statement" only
+ * when the owner wrote words of their own; a message that was only a photograph or an attachment is
+ * recorded as what it was, so the summary the owner confirms never credits them with a statement they
+ * did not make.
+ */
+export function ownerSource(rt: TurnRuntime): { kind: "owner_statement" | "photograph" | "model_inference"; ref: string } {
+  const ref = `message:${rt.userMessageId}`;
+  if (ownerSpoke(rt)) return { kind: "owner_statement", ref };
+  return { kind: rt.hasImages ? "photograph" : "model_inference", ref };
 }
 
 /** An address normalized for comparison: scheme, host, path and query; no fragment, no trailing slash. Null when it is not a valid https address. */

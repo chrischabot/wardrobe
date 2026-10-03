@@ -381,7 +381,8 @@ describe("journey 11: one continuous conversation, reports, requests and photo c
     expect(foreign.status).toBeGreaterThanOrEqual(400);
   });
 
-  defect("D11-2", "the request the owner is asked to confirm for a new garment is in plain words, without role codes or message identifiers", () => {
+  // Was KNOWN DEFECT D11-2; fixed in packages/assistant/src/policy/describe.ts (converted by the assistant thread with its fix, so the default run stays green).
+  it("the request the owner is asked to confirm for a new garment is in plain words, without role codes or message identifiers", () => {
     // Owner decision of 2026-10-01: a sensitive change is confirmed on "a system-generated summary of
     // the exact proposed mutation", and owner-facing text carries no internal codes. Since the summaries
     // list every written field, the one for adding a garment reads: roles 1 "mid_layer"; care channel

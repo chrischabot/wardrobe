@@ -161,7 +161,7 @@ describe("a genuine statement, the proposal, and the owner's decision", () => {
     expect(run.receipts).toEqual([]);
     const [proposal] = await pending(owner);
     expect(proposal).toMatchObject({ type: "garment.correct", state: "pending", turnId: run.runId });
-    expect(proposal!.summary.startsWith(`Change the record of \u201C${shirt.name}\u201D: condition \u201Cfrayed collar (test fixture)\u201D. Its source is recorded as owner statement, \u201Cmessage:`)).toBe(true);
+    expect(proposal!.summary.startsWith(`Change the record of \u201C${shirt.name}\u201D: condition \u201Cfrayed collar (test fixture)\u201D. Its source is recorded as your own statement, your message of `)).toBe(true);
     expect(await condition()).toBe(original);
 
     // 2. A connected assistant, even with write permission, can neither list nor decide it, on either hostname, and has no tool for it.

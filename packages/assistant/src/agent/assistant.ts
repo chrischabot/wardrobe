@@ -433,6 +433,7 @@ export abstract class GarderobeAssistantBase extends Think<any> {
       localDate: context.localDate,
       ownerTexts: await this.ownerTexts(message),
       attachedRefs,
+      hasImages: (meta.images ?? []).length > 0,
       restrictedGarmentIds: context.restrictedGarmentIds,
       requestText: row.kind === "research" ? ((message.parts as { type: string; text?: string }[]).find((x) => x.type === "text")?.text ?? "") : (await this.ownerTexts(message)).map((t) => ownerAuthoredText(t)).join("\n"),
       conversationId: userId,
