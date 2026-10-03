@@ -1,5 +1,5 @@
 import { CommandError, first, json, type CommandRegistry } from "@garderobe/domain";
-import { EVERYDAY_DIRECT_TYPES, OBSERVATION_TYPES, RECORD_CHANGING_TYPES, mayCommitFromConversation } from "../policy/classes.ts";
+import { EVERYDAY_DIRECT_TYPES, GARMENT_RECORD_VERSION_SQL, OBSERVATION_TYPES, mayCommitFromConversation } from "../policy/classes.ts";
 import { bindRegistry, compositeHandlers } from "./composite.ts";
 import { purchaseHandlers } from "./purchases.ts";
 import { researchHandlers } from "./research.ts";
@@ -49,10 +49,7 @@ export function registerAssistant(registry: CommandRegistry, options: { typedDir
   // How many times a piece's RECORD was changed: the version a waiting request about that piece is held to.
   // The piece's own `version` also moves with every wear, wash and laundry cycle, which would make a
   // request stale although nothing the owner was shown has changed (third review, point G).
-  registry.registerVersionResolver("garment_record", (userId, id) => ({
-    sql: `SELECT COUNT(*) FROM command_entities e JOIN commands c ON c.user_id = e.user_id AND c.command_id = e.command_id WHERE e.user_id = ? AND e.kind = 'garment' AND e.entity_id = ? AND (substr(c.type, 1, 8) = 'garment.' OR c.type IN (${RECORD_CHANGING_TYPES.map((t) => `'${t}'`).join(", ")}))`,
-    params: [userId, id],
-  }));
+  registry.registerVersionResolver("garment_record", (userId, id) => ({ sql: GARMENT_RECORD_VERSION_SQL, params: [userId, id] }));
   // The domain refuses an assistant-issued restriction lift unless its evidence reference checks out. A
   // reference is `message:<id>` and holds only when that message is the owner's own message of the turn
   // that issued the command: an invented ID, another turn's message or another owner's message fails.

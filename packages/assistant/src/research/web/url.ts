@@ -25,7 +25,7 @@ export class UrlPolicyError extends Error {
 const BLOCKED_HOST_NAMES = new Set(["localhost"]);
 const BLOCKED_HOST_SUFFIXES = [".local", ".internal", ".localhost"];
 
-function parseDottedIpv4(host: string): [number, number, number, number] | null {
+export function parseDottedIpv4(host: string): [number, number, number, number] | null {
   const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
   if (!match) return null;
   const octets = [match[1], match[2], match[3], match[4]].map((part) => Number(part));
@@ -50,7 +50,7 @@ export function isNonPublicIpv4(octets: readonly [number, number, number, number
 }
 
 /** Parses the inside of a bracketed IPv6 literal into eight 16-bit groups. */
-function parseIpv6(literal: string): number[] | null {
+export function parseIpv6(literal: string): number[] | null {
   let text = literal;
   const zone = text.indexOf("%");
   if (zone >= 0) text = text.slice(0, zone);

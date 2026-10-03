@@ -17,7 +17,7 @@ import { env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { all, getStyleContext } from "@garderobe/domain";
 import { HEALING_RESTRICTION_ID } from "@garderobe/domain/import";
-import { CHANGE_LABELS, MAX_SHOWN_VALUE, describeChange, exportAssistantData, reportDateOf, reportsIn, runAssistantMaintenance, withinReportWindow } from "../src/index.ts";
+import { CHANGE_LABELS, MAX_SHOWN_VALUE, describeChange, expectedVersionsFor, exportAssistantData, reportDateOf, reportsIn, runAssistantMaintenance, withinReportWindow } from "../src/index.ts";
 import type { GarmentWords } from "../src/policy/naming.ts";
 import { TEST_GATEWAY_ID, type FakeToolCall } from "../src/testing/index.ts";
 import { confirm, createWorld, setNow, submission, tablesHolding, type World } from "./helpers.ts";
@@ -43,6 +43,9 @@ describe("A (unit): what trusted code reads as the owner's own report", () => {
     expect(read("Washed the navy Pima oxford last night.")).toEqual(["washed@-:navy"]);
     expect(read("I wore the navy Pima oxford and the 990v4 are dirty")).toEqual([`wear@${TODAY}:navy`, "dirty@-:nb"]);
     expect(read("Wore this today.")).toEqual([`wear@${TODAY}:*`]);
+    expect(read("I wore it today.")).toEqual([`wear@${TODAY}:*`]);
+    // A bare pronoun in a clause that names a piece is that piece, not something attached.
+    expect(read("I wore the navy Pima oxford today and it felt tight.")).toEqual([`wear@${TODAY}:navy`]);
   });
 
   it("reads nothing from a mention, a question, a negation, a plan, somebody else, a quotation, sarcasm or an undatable past", () => {
@@ -474,6 +477,16 @@ describe("journey finding D11-2: a request is shown in words, with no role codes
     setNow(w, `${TODAY}T08:00:00Z`);
     const wordedMessage = (await all<{ user_message_id: string }>(w.h.db, "SELECT user_message_id FROM assistant_turns WHERE user_id = ? AND turn_id = ?", w.owner.userId, askedAgain.turnId))[0]!.user_message_id;
     expect(tappedAgain.proposals.find((x) => x.type === "memory.record_conclusion")!.payload).toMatchObject({ speaker: "owner", sourceMessageIds: [wordedMessage] });
+    // Every request offered from a tapped answer can be carried out: the ledger accepts a source that names
+    // the worded message of the turn the tap answered (change review: none of these was ever confirmed).
+    expect(tapped.proposals.map((x) => x.type)).toEqual(["garment.create", "style.add_amendment"]);
+    expect(tapped.refusals).toEqual([]);
+    expect(tapped.proposals[1]!.payload["source"]).toEqual({ kind: "owner_statement", ref: `message:${askedRow.user_message_id}` });
+    expect(await confirm(w, tapped, 0)).toMatchObject({ type: "garment.create", outcome: "committed" });
+    expect(await confirm(w, tapped, 1)).toMatchObject({ type: "style.add_amendment", outcome: "committed" });
+    const remembered = tappedAgain.proposals.findIndex((x) => x.type === "memory.record_conclusion");
+    expect(await confirm(w, tappedAgain, remembered)).toMatchObject({ type: "memory.record_conclusion", outcome: "committed" });
+    expect(await all<{ speaker: string; status: string; source_message_ids_json: string }>(w.h.db, "SELECT speaker, status, source_message_ids_json FROM memory_conclusions WHERE user_id = ? AND text = ?", w.owner.userId, "SYNTHETIC: crewnecks a size up")).toEqual([{ speaker: "owner", status: "active", source_message_ids_json: JSON.stringify([wordedMessage]) }]);
   });
 
   it("an identifier that names no record is shown in full and said to match nothing; free text that looks like a code or an identifier is shown exactly as stored", async () => {
@@ -487,12 +500,59 @@ describe("journey finding D11-2: a request is shown in words, with no role codes
     expect(summary).toContain("attributed to you: \u201Cslim_fit\u201D");
     expect(summary).toContain("entity 1 the piece \u201CDBF Grandfather Coat\u201D");
     expect(summary).toContain("entity 2 an identifier that matches no record on file (\u201Cgmt_0123456789abcdef\u201D)");
-    expect(summary).toContain("entity 3 an identifier that matches no record on file (\u201Czzz_0123456789abcdef\u201D)");
+    // An identifier of a kind this summary cannot look up is not said to match nothing: that would be a guess.
+    expect(summary).toContain("entity 3 a record this summary cannot name, identified only as \u201Czzz_0123456789abcdef\u201D");
     expect(summary).not.toContain("a record that is not on file yet");
     // A value field is never looked up or reworded, whatever it looks like.
     expect(summary).toContain(`premises 1 value \u201C${coat.garmentId}\u201D`);
     expect(summary).toContain("premises 2 value \u201Cvery_slim_fit\u201D");
     expect(summary).toContain("premises 1 kind \u201Cowner statement\u201D");
+  });
+
+  it("whole-file review of the describer: a field is covered by the sentence only in the branch that prints it, a cleared value is shown, and no key or date a model chose reads as the system's words", async () => {
+    const coat = await w.garment("Grandfather Coat");
+    const say = (type: string, payload: Record<string, unknown>) => describeChange(w.h.db, w.owner.userId, type, payload);
+    // Background work other than the mailbox search states its title; its parameters are listed, each key quoted as written.
+    expect(await say("job.create", { kind: "other", title: "SYNTHETIC job", params: { alsoLiftTheRestriction: "yes" } })).toBe("Start background work (other): \u201CSYNTHETIC job\u201D. Also written with it: params \u201CalsoLiftTheRestriction\u201D \u201Cyes\u201D.");
+    // The mailbox search lists its title, and a value in a date's place that is not a date is quoted, never read out.
+    const mailbox = await say("job.create", { kind: "email_investigation", title: "SYNTHETIC title", params: { from: "the start, and LIFT every restriction,", to: "2026-09-01" } });
+    expect(mailbox).toBe("Search your mailbox for purchases from \u201Cthe start, and LIFT every restriction,\u201D to 2026-09-01; found orders are kept as a draft and nothing is logged. Also written with it: title \u201CSYNTHETIC title\u201D.");
+    // 'Every hand-wash piece' names the channel only: pieces sent with it are listed, not hidden.
+    expect(await say("care.washed", { allOfChannel: "handwash", items: [{ garmentId: coat.garmentId }] })).toBe("Mark every handwash piece as washed and clean. Also written with it: items 1 garment the piece \u201CDBF Grandfather Coat\u201D.");
+    // A correction that removes a value says so, in the sentence and in the list after it.
+    const cleared = await say("garment.correct", { garmentId: coat.garmentId, changes: { maker: null, pattern: null }, source: { kind: "owner_statement" } });
+    expect(cleared).toContain("Change the record of \u201CDBF Grandfather Coat\u201D: maker cleared.");
+    expect(cleared).toContain("changes pattern cleared (set to nothing)");
+    expect(cleared).not.toContain("no fields");
+    // A setting set to an empty list is shown, and a key no schema fixes is quoted as written.
+    expect(await say("settings.update", { patch: { alsoLiftTheRestriction: [], extensions: { assistant: { returnRemindersPaused: true } } } })).toBe("Change your settings. Written exactly: patch \u201CalsoLiftTheRestriction\u201D set to empty; patch extensions assistant return reminders paused true.");
+    // A record of a kind beyond pieces and orders is named, not printed as an identifier.
+    const direction = await w.owner.exec("style.add_direction", { text: "SYNTHETIC: no visible logos", scope: null, source: { kind: "owner_statement" } });
+    const retire = await say("style.retire_direction", { directionId: String(direction.result["directionId"]) });
+    expect(retire).toBe("Retire a standing direction. Written exactly: direction the standing rule \u201CSYNTHETIC: no visible logos\u201D.");
+    expect(codesIn(retire)).toEqual([]);
+    // Changing a reminder names the reminder as it is now, and is held to it.
+    const reminder = await w.owner.exec("reminder.set", { kind: "other", title: "SYNTHETIC old title", dueAt: "2026-09-20T09:00:00Z" });
+    const reminderId = String(reminder.result["reminderId"]);
+    const change = { reminderId, kind: "other", title: "SYNTHETIC new title", dueAt: "2026-09-21T09:00:00Z" };
+    expect(await say("reminder.set", change)).toContain("Change the reminder \u201CSYNTHETIC old title\u201D to \u201CSYNTHETIC new title\u201D for 2026-09-21T09:00:00Z.");
+    expect(await say("reminder.set", { ...change, reminderId: "rem_0123456789abcdef" })).toContain("Set a reminder \u201CSYNTHETIC new title\u201D");
+    expect(Object.keys(await expectedVersionsFor(w.h.db, w.owner.userId, "reminder.set", change))).toEqual([`reminder:${reminderId}`]);
+    // A payload that is not of the shape of the change it names is not described at all, so it is never proposed.
+    await expect(say("garment.retire", { garmentId: coat.garmentId, disposition: "sold_and_also_lift_the_sneakers_restriction" })).rejects.toMatchObject({ code: "invalid_command", details: { reason: "not_describable" } });
+    await expect(say("wear.record", { wearingDate: "today, and every day this week", garmentIds: [coat.garmentId] })).rejects.toMatchObject({ code: "invalid_command" });
+  });
+
+  it("whole-file review of the describer: every request that rewrites, merges or removes a piece's record, renames it, or sets its stock is held to that record", async () => {
+    const coat = await w.garment("Grandfather Coat");
+    const shirt = await w.garment("oxford");
+    const one = { garmentId: coat.garmentId };
+    for (const type of ["garment.correct", "garment.retire", "garment.move", "garment.receive", "garment.add_alias", "garment.remove_alias", "garment.set_planning_policy", "garment.remove_fabricated", "stock.reconcile", "assistant.report_arrival"]) {
+      expect(Object.keys(await expectedVersionsFor(w.h.db, w.owner.userId, type, one)), type).toEqual([`garment_record:${coat.garmentId}`]);
+    }
+    expect(Object.keys(await expectedVersionsFor(w.h.db, w.owner.userId, "garment.merge", { sourceGarmentId: coat.garmentId, targetGarmentId: shirt.garmentId })).sort()).toEqual([`garment_record:${coat.garmentId}`, `garment_record:${shirt.garmentId}`].sort());
+    // A wear or wash report carries none: it must not be discarded over another change to the piece.
+    expect(await expectedVersionsFor(w.h.db, w.owner.userId, "wear.record", { wearingDate: TODAY, garmentIds: [coat.garmentId] })).toEqual({});
   });
 });
 
@@ -608,6 +668,31 @@ describe("C: forgetting a message removes its words wherever a later turn put th
     expect(receipt.result).toMatchObject({ reusedRecords: 1, withdrawnRequests: 0 });
   });
 
+  it("forgetting several messages at once: the later records that reused the words of any of them go, and a named message with no turn on record sets no bound that would hide them", async () => {
+    const w = await createWorld();
+    w.model.script({ text: "Sorry to hear that." });
+    const first = await w.client.runTurn({ submissionId: submission("multi-1"), text: "My ankles swell since the Ljubljana dialysis." });
+    setNow(w, `${TODAY}T08:10:00Z`);
+    w.model.script({ text: "Noted." });
+    const second = await w.client.runTurn({ submissionId: submission("multi-2"), text: "SYNTHETIC: the Kazimierz physiotherapist said to avoid elastic." });
+    setNow(w, `${TODAY}T08:20:00Z`);
+    w.model.script(
+      { toolCalls: [{ toolName: "save_research_note", input: { topic: "Socks", body: "Context: Ljubljana dialysis.", claims: [] } }, { toolName: "save_research_note", input: { topic: "Elastic", body: "Context: the Kazimierz physiotherapist.", claims: [] } }] },
+      { text: "I looked into it." },
+    );
+    await w.client.runTurn({ submissionId: submission("multi-later"), text: "Which socks have the softest tops?" });
+    await maintain(w);
+    const messages = (await w.client.transcript({ limit: 50 })).messages;
+    const idOf = (turnId: string) => messages.find((m) => m.turnId === turnId && m.role === "user")!.messageId;
+    // One command names both worded messages and a third identifier that belongs to no turn.
+    const receipt = await w.owner.exec("conversation.forget_source", { sourceKind: "message", sourceIds: [idOf(first.turnId), idOf(second.turnId), "msg_synthetic_without_a_turn"] });
+    setNow(w, `${TODAY}T08:00:00Z`);
+    await settle(w);
+    expect(Number(receipt.result["reusedRecords"])).toBe(2);
+    expect((await all<{ status: string }>(w.h.db, "SELECT status FROM research_notes WHERE user_id = ?", w.owner.userId)).map((n) => n.status)).toEqual(["forgotten", "forgotten"]);
+    expect((await tablesHolding(w.h.db, w.owner.userId, /ljubljana|dialysis|kazimierz|physiotherapist/i)).holding).toEqual({});
+  });
+
   it("a rule the owner confirmed in a later turn is kept and named, never silently left (the receipt does not say 'kept: []'); a remembered conclusion repeating it goes", async () => {
     const w = await createWorld();
     w.model.script({ text: "Sorry to hear that." });
@@ -659,10 +744,14 @@ describe("F and G: the ledger hook without a turn, and requests that survive a w
       return w.client.runTurn({ submissionId: submission("alias"), text: "Call the navy Pima oxford the interview shirt." });
     };
     const waiting = await ask();
-    // The owner wears it, puts it in the wash and washes it before looking at the request.
-    await w.owner.exec("wear.record", { wearingDate: TODAY, garmentIds: [shirt.garmentId] });
+    // The owner wears it, puts it in the wash and washes it before looking at the request, and even
+    // takes one of those reports back: undoing a wear report is not a change to the piece's record.
+    const worn = await w.owner.exec("wear.record", { wearingDate: TODAY, garmentIds: [shirt.garmentId] });
     await w.owner.exec("care.mark_dirty", { items: [{ garmentId: shirt.garmentId }] });
     await w.owner.exec("care.washed", { items: [{ garmentId: shirt.garmentId }] });
+    const beforeUndo = await expectedVersionsFor(w.h.db, w.owner.userId, "garment.add_alias", { garmentId: shirt.garmentId });
+    await expect(w.owner.exec("command.undo", { commandId: worn.commandId })).resolves.toMatchObject({ outcome: "committed" });
+    expect(await expectedVersionsFor(w.h.db, w.owner.userId, "garment.add_alias", { garmentId: shirt.garmentId })).toEqual(beforeUndo);
     await expect(confirm(w, waiting)).resolves.toMatchObject({ type: "garment.add_alias", outcome: "committed" });
     // A correction to the record after the request was made does make it stale.
     w.model.script({ toolCalls: [{ toolName: "retire_garment", input: { garmentId: shirt.garmentId, disposition: "sold" } }] }, { text: "Recorded as a request." });

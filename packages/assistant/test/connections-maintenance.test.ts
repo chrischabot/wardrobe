@@ -27,6 +27,49 @@ function fakeMcp() {
 }
 
 describe("outbound connections (real connection registry in D1; FAKE MCP server behind a fake fetch)", () => {
+  it("with a resolver, a service whose name leads to a private or local address is never contacted and its credential is never read (FAKE DNS answers)", async () => {
+    const mcp = fakeMcp();
+    let credentialReads = 0;
+    const clientWith = (answers: string[] | Error) =>
+      new McpHttpClient({
+        endpoint: "https://tools.shop-nine.org/mcp",
+        fetch: mcp.fetcher,
+        protocolVersion: "2026-07-28",
+        headers: async () => (credentialReads++, { "x-test-credential": "labelled-test-value" }),
+        resolver: async () => {
+          if (answers instanceof Error) throw answers;
+          return answers;
+        },
+      });
+    // Private, loopback, link-local and metadata addresses, IPv6 forms that carry one, a mix of public and
+    // private, no answer at all, and a lookup that failed: each is a refusal before anything is sent.
+    const refused: (string[] | Error)[] = [["10.0.0.5"], ["93.184.216.34", "192.168.0.10"], ["127.0.0.1"], ["169.254.169.254"], ["100.64.0.1"], ["fd00::1"], ["fe80::1"], ["::1"], ["::ffff:7f00:1"], ["64:ff9b::a00:1"], ["2002:a00:1::1"], ["2001:db8::1"], ["not an address"], [], new Error("DNS lookup failed (HTTP 503)")];
+    for (const answers of refused) await expect(clientWith(answers).listTools(), JSON.stringify(answers)).rejects.toMatchObject({ code: "endpoint_not_allowed" });
+    expect(mcp.calls).toEqual([]);
+    expect(credentialReads).toBe(0);
+    // A name that leads only to public addresses is contacted as before.
+    expect(await clientWith(["93.184.216.34", "2606:4700::1"]).listTools()).toHaveLength(TOOLS.length);
+    expect(mcp.calls.map((c) => c.method)).toEqual(["tools/list"]);
+    expect(credentialReads).toBe(1);
+
+    // The DNS-over-HTTPS resolver (FAKE fetch in the resolver's JSON form): both record types are asked for, aliases are not addresses.
+    const asked: string[] = [];
+    const doh = research.createDohResolver((async (url: unknown, init?: RequestInit) => {
+      asked.push(String(url));
+      expect(new Headers(init?.headers).get("accept")).toBe("application/dns-json");
+      return Response.json(new URL(String(url)).searchParams.get("type") === "A" ? { Status: 0, Answer: [{ type: 5, data: "alias.example.net." }, { type: 1, data: "10.0.0.5" }] } : { Status: 0, Answer: [{ type: 28, data: "2606:4700::1" }] });
+    }) as unknown as typeof fetch);
+    expect(await doh("tools.shop-nine.org")).toEqual(["10.0.0.5", "2606:4700::1"]);
+    expect(asked).toEqual(["https://cloudflare-dns.com/dns-query?name=tools.shop-nine.org&type=A", "https://cloudflare-dns.com/dns-query?name=tools.shop-nine.org&type=AAAA"]);
+    expect(await research.createDohResolver((async () => Response.json({ Status: 3 })) as unknown as typeof fetch)("nx.shop-nine.org")).toEqual([]);
+    await expect(research.createDohResolver((async () => new Response("busy", { status: 503 })) as unknown as typeof fetch)("x.shop-nine.org")).rejects.toThrow(/HTTP 503/);
+    await expect(research.createDohResolver((async () => Response.json({ Status: 2 })) as unknown as typeof fetch)("x.shop-nine.org")).rejects.toThrow(/status 2/);
+    // Wired together: the resolver's answer stops the request.
+    const wired = new McpHttpClient({ endpoint: "https://tools.shop-nine.org/mcp", fetch: mcp.fetcher, protocolVersion: "2026-07-28", resolver: doh });
+    await expect(wired.listTools()).rejects.toMatchObject({ code: "endpoint_not_allowed", message: expect.stringContaining("private or local address") });
+    expect(mcp.calls.map((c) => c.method)).toEqual(["tools/list"]);
+  });
+
   it("uses only discovered tools and schema-declared arguments, keeps credentials out of arguments and results, and stops at revocation", async () => {
     const w = await createWorld({ real: false });
     const mcp = fakeMcp();

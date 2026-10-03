@@ -7,8 +7,10 @@
  * name, a rule, a reason, a note) is shown inside quotation marks as the value it is, on one line and
  * with control characters removed, so it can never read as the system speaking.
  */
+import { ASSISTANT_COMMANDS } from "@garderobe/contracts/ext/assistant";
+import { FOUNDATION_COMMANDS } from "@garderobe/contracts";
 import { CommandError, all, first, type Db } from "@garderobe/domain";
-import { RECORD_CHANGING_TYPES } from "./classes.ts";
+import { GARMENT_RECORD_VERSION_SQL } from "./classes.ts";
 
 /** The longest single stored value a summary shows. A longer one is not clipped: the request is refused. */
 export const MAX_SHOWN_VALUE = 2000;
@@ -55,16 +57,44 @@ async function garmentNames(db: Db, userId: string, ids: unknown[]): Promise<str
   return out;
 }
 
-function fields(payload: Record<string, unknown>, keys: string[]): string {
-  const parts = keys.filter((k) => payload[k] !== undefined && payload[k] !== null && payload[k] !== "").map((k) => `${words(k)} ${typeof payload[k] === "string" ? quoted(payload[k]) : quoted(JSON.stringify(payload[k]))}`);
+/**
+ * Named fields of a payload as they read in a sentence. With `clearing`, a field that is present but
+ * empty is said to be cleared (a correction that removes a value writes something too); without it an
+ * empty field is not a statement and is left out.
+ */
+function fields(payload: Record<string, unknown>, keys: string[], clearing = false): string {
+  const empty = (v: unknown) => v === null || v === "";
+  const parts = keys
+    .filter((k) => payload[k] !== undefined && (clearing || !empty(payload[k])))
+    .map((k) => (empty(payload[k]) ? `${words(k)} cleared` : `${words(k)} ${typeof payload[k] === "string" ? quoted(payload[k]) : quoted(JSON.stringify(payload[k]))}`));
   return parts.join(", ");
 }
 
-/** Every leaf of a payload as `[path, value]`, with `*` for a list position; empty values are not leaves. */
-function leaves(value: unknown, path: string[] = [], out: { path: string[]; value: string | number | boolean }[] = []): { path: string[]; value: string | number | boolean }[] {
-  if (value === null || value === undefined || value === "") return out;
-  if (Array.isArray(value)) value.forEach((v, n) => leaves(v, [...path, String(n)], out));
-  else if (typeof value === "object") for (const [k, v] of Object.entries(value as Record<string, unknown>)) leaves(v, [...path, k], out);
+interface Leaf {
+  path: string[];
+  value: string | number | boolean;
+  /** Set for a field that is written as nothing: a cleared value, or an empty list or object. */
+  empty?: "cleared" | "empty";
+}
+
+/**
+ * Parts of a payload that say what a record becomes. Inside them an empty value is itself the change
+ * (a maker cleared, a setting set to an empty list), so it is a leaf and is shown. Elsewhere an empty
+ * field is an option left unset and writes nothing.
+ */
+const UPDATE_CONTAINERS = new Set(["changes", "patch", "counts"]);
+
+/** Every leaf of a payload as `[path, value]`, with `*` for a list position. */
+function leaves(value: unknown, path: string[] = [], out: Leaf[] = [], updating = false): Leaf[] {
+  if (value === undefined) return out;
+  const emptyList = Array.isArray(value) && value.length === 0;
+  const emptyObject = typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length === 0;
+  if (value === null || value === "" || emptyList || emptyObject) {
+    if (updating) out.push({ path, value: "", empty: value === null || value === "" ? "cleared" : "empty" });
+    return out;
+  }
+  if (Array.isArray(value)) value.forEach((v, n) => leaves(v, [...path, String(n)], out, updating));
+  else if (typeof value === "object") for (const [k, v] of Object.entries(value as Record<string, unknown>)) leaves(v, [...path, k], out, updating || UPDATE_CONTAINERS.has(k));
   else out.push({ path, value: value as string | number | boolean });
   return out;
 }
@@ -73,6 +103,7 @@ function leaves(value: unknown, path: string[] = [], out: { path: string[]; valu
  * The payload fields each sentence below states itself, in full (a list position is `*`). EVERY other
  * field of the payload is listed after the sentence, by name and in full, whatever the command type: the
  * owner confirms the whole change, never a part of it. A type that is not listed states nothing itself.
+ * Where a sentence has branches that state different fields, `statedFor` below chooses per branch.
  */
 const STATED: Record<string, string[]> = {
   "wear.record": ["wearingDate", "garmentIds.*"],
@@ -102,13 +133,42 @@ const STATED: Record<string, string[]> = {
   "lifecycle.record_event": ["projectId", "kind", "nextAction"],
   "lifecycle.authorize_action": ["projectId", "action", "scope"],
   "job.create": ["kind", "title", "params.from", "params.to", "params.merchants.*"],
-  "reminder.set": ["reminderId", "title", "dueAt", "note", "url"],
+  "reminder.set": ["title", "dueAt", "note", "url"],
   "reminder.cancel": ["reminderId"],
   "memory.record_conclusion": ["status", "kind", "speaker", "text"],
   "memory.set_status": ["conclusionId", "status", "correctedText"],
   "conversation.forget_source": ["sourceKind"],
   "command.undo": ["commandId"],
 };
+
+/**
+ * The fields the sentence for THIS payload states. A field counts as stated only in the branch of the
+ * sentence that actually prints it; in any other branch it is listed after the sentence like every
+ * other field, so nothing is ever covered by a sentence that does not say it.
+ */
+function statedFor(type: string, p: Record<string, unknown>): Set<string> {
+  // The mailbox search states its dates and shops and not its title; other background work states its title and none of its parameters.
+  if (type === "job.create") return new Set(p["kind"] === "email_investigation" ? ["kind", "params.from", "params.to", "params.merchants.*"] : ["kind", "title"]);
+  // "Every hand-wash piece" names the channel only; pieces sent with it are listed after the sentence.
+  if (type === "care.washed") return new Set(p["allOfChannel"] ? ["allOfChannel"] : ["items.*.garmentId"]);
+  return new Set(own(STATED, type) ?? []);
+}
+
+/**
+ * Parts of a payload whose KEYS are not fixed by the command's schema (a settings patch, a job's
+ * parameters, free attributes). A key there may have been chosen by a model, so it is shown inside
+ * quotation marks exactly as written unless it is one trusted code itself uses.
+ */
+const RECORD_CONTAINERS = new Set(["patch", "params", "attributes", "conditions", "progress"]);
+const TRUSTED_KEYS = new Set(["extensions", "assistant", "returnRemindersPaused", "from", "to", "merchants", "importAuthorizedBy"]);
+
+/** The contract of a command that has a sentence of its own: its payload must have that shape to be described. */
+function contractOf(type: string): { safeParse(value: unknown): { success: boolean } } | undefined {
+  return own(ASSISTANT_COMMANDS as Record<string, { safeParse(value: unknown): { success: boolean } }>, type) ?? own(FOUNDATION_COMMANDS as Record<string, { safeParse(value: unknown): { success: boolean } }>, type);
+}
+
+/** A calendar day exactly as the contracts write one; anything else in a date's place is shown as the quoted value it is. */
+const day = (value: unknown): string => (typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : quoted(value));
 
 /** A machine code word (`mid_layer`, `owner_statement`): shown with spaces, but only in a field that holds codes. */
 const CODE_WORD = /^[a-z]+(?:_[a-z]+)+$/;
@@ -135,6 +195,16 @@ const RECORDS: Record<string, { sql: string; say: (row: Record<string, unknown>)
   lb: { sql: "SELECT channel, picked_up_at FROM laundry_batches WHERE user_id = ? AND batch_id = ?", say: (r) => `the ${r["channel"] === "handwash" ? "hand-wash" : "laundry service"} bag picked up on ${String(r["picked_up_at"]).slice(0, 10)}` },
   cmd: { sql: "SELECT type, receipt_json FROM commands WHERE user_id = ? AND command_id = ?", say: (r) => `the earlier change whose receipt read ${quoted(receiptSummary(r["receipt_json"]))}` },
   job: { sql: "SELECT title FROM assistant_jobs WHERE user_id = ? AND job_id = ?", say: (r) => `the background work ${quoted(r["title"])}` },
+  dir: { sql: "SELECT text FROM standing_directions WHERE user_id = ? AND direction_id = ?", say: (r) => `the standing rule ${quoted(r["text"])}` },
+  amd: { sql: "SELECT text FROM style_amendments WHERE user_id = ? AND amendment_id = ?", say: (r) => `the profile amendment ${quoted(r["text"])}` },
+  rul: { sql: "SELECT interpretation FROM style_rules WHERE user_id = ? AND rule_id = ? ORDER BY is_current DESC, version DESC LIMIT 1", say: (r) => `the style rule ${quoted(r["interpretation"])}` },
+  oln: { sql: "SELECT product_name FROM order_lines WHERE user_id = ? AND line_id = ?", say: (r) => `the order line ${quoted(r["product_name"])}` },
+  cfb: { sql: "SELECT text FROM comfort_feedback WHERE user_id = ? AND feedback_id = ?", say: (r) => `the comfort note ${quoted(r["text"])}` },
+  con: { sql: "SELECT label FROM connections WHERE user_id = ? AND connection_id = ?", say: (r) => `the connection ${quoted(r["label"])}` },
+  cmb: { sql: "SELECT name FROM studio_combinations WHERE user_id = ? AND combination_id = ?", say: (r) => (r["name"] ? `the saved combination ${quoted(r["name"])}` : "a saved combination without a name") },
+  als: { sql: "SELECT phrase FROM garment_aliases WHERE user_id = ? AND alias_id = ?", say: (r) => `the name ${quoted(r["phrase"])}` },
+  msr: { sql: "SELECT key, value, unit FROM measurements WHERE user_id = ? AND measurement_id = ?", say: (r) => `the measurement ${quoted(r["key"])} (${quoted(`${String(r["value"])} ${String(r["unit"])}`)})` },
+  szx: { sql: "SELECT maker, size_label FROM size_experiences WHERE user_id = ? AND size_experience_id = ?", say: (r) => `the size note ${quoted(r["maker"])} ${quoted(r["size_label"])}` },
   ret: { sql: "SELECT c.kind, g.name FROM return_cases c LEFT JOIN garments g ON g.user_id = c.user_id AND g.garment_id = c.garment_id WHERE c.user_id = ? AND c.case_id = ?", say: (r) => `the ${words(r["kind"])}${r["name"] ? ` of ${quoted(r["name"])}` : ""}` },
 };
 
@@ -169,19 +239,24 @@ async function referenceInWords(db: Db, userId: string, value: string): Promise<
 /** The shape of a record identifier: a short prefix and an opaque tail without spaces. It cannot carry prose. */
 const IDENTIFIER = /^[a-z]{2,5}_[A-Za-z0-9_]{6,}$/;
 
+/** Whether an identifier is of a kind this file can look up (so "not found" really means it is not on file). */
+const knownKind = (value: string): boolean => value.startsWith("msg_") || (value.indexOf("_") > 0 && own(RECORDS, value.slice(0, value.indexOf("_"))) !== undefined);
+
 /**
  * One stored value as the owner reads it. What is done depends on the FIELD, never on what the value
  * happens to look like: a reference field is named by the record it refers to; a code field is shown in
- * words; every other value is quoted exactly as it would be stored. A reference that names no record on
- * file is never hidden: it is shown in full and said to match nothing (the one exception, an identifier
- * trusted code minted in this turn for the record being created, is handled by the caller).
+ * words; every other value is quoted exactly as it would be stored. A reference that cannot be named is
+ * never hidden and never described falsely: it is shown in full, and said to match no record only when
+ * its kind is one this file looks up; a reference of another kind is said to be one the summary cannot
+ * name (the one exception, an identifier trusted code minted in this turn for the record being created,
+ * is handled by the caller).
  */
 async function shown(db: Db, userId: string, value: string | number | boolean, field = ""): Promise<string> {
   if (typeof value !== "string") return String(value);
   if (REFERENCE_FIELD.test(field)) {
     const reference = await referenceInWords(db, userId, value);
     if (reference) return reference;
-    if (IDENTIFIER.test(value)) return `an identifier that matches no record on file (${quoted(value)})`;
+    if (IDENTIFIER.test(value)) return knownKind(value) ? `an identifier that matches no record on file (${quoted(value)})` : `a record this summary cannot name, identified only as ${quoted(value)}`;
     return quoted(value);
   }
   return quoted(CODE_FIELDS.has(field) && CODE_WORD.test(value) ? words(value) : value);
@@ -196,24 +271,37 @@ const SOURCE_KINDS: Record<string, string> = {
 
 /** The fields of the payload the sentence did not state, each by name and in full, in words. */
 async function unstated(db: Db, userId: string, type: string, payload: Record<string, unknown>, minted: ReadonlySet<string>): Promise<string> {
-  const stated = new Set(own(STATED, type) ?? []);
+  const stated = statedFor(type, payload);
   let rest = leaves(payload).filter((leaf) => !stated.has(leaf.path.map((s) => (/^\d+$/.test(s) ? "*" : s)).join(".")));
   // The provenance trusted code attaches to a change reads as one phrase rather than two fields.
   let provenance = "";
   const source = payload["source"] as { kind?: unknown; ref?: unknown } | null | undefined;
   if (source && typeof source === "object" && typeof source.kind === "string" && typeof source.ref === "string" && Object.keys(source).every((k) => k === "kind" || k === "ref")) {
-    provenance = ` Its source is recorded as ${own(SOURCE_KINDS, source.kind) ?? words(source.kind)}, ${(await referenceInWords(db, userId, source.ref)) ?? quoted(source.ref)}.`;
+    provenance = ` Its source is recorded as ${own(SOURCE_KINDS, source.kind) ?? quoted(source.kind)}, ${(await referenceInWords(db, userId, source.ref)) ?? quoted(source.ref)}.`;
     rest = rest.filter((leaf) => leaf.path[0] !== "source");
   }
   if (rest.length === 0) return provenance;
-  // A field holding a record's identifier is named by the record ("garment id" reads "garment").
-  const label = (path: string[]) => path.map((s) => (/^\d+$/.test(s) ? `${Number(s) + 1}` : words(s.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase()))).join(" ").replace(/ ids?\b/g, "").replace(/ refs?\b/g, " reference");
+  // A field holding a record's identifier is named by the record ("garment id" reads "garment"). A key
+  // that no schema fixes (inside a patch, a job's parameters, free attributes) is quoted as written.
+  const spoken = (s: string) => words(s.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase());
+  const label = (path: string[]) => {
+    let free = false;
+    const said = path.map((s) => {
+      if (/^\d+$/.test(s)) return `${Number(s) + 1}`;
+      const word = free && !TRUSTED_KEYS.has(s) ? quoted(s) : spoken(s);
+      if (RECORD_CONTAINERS.has(s)) free = true;
+      return word;
+    });
+    return said.join(" ").replace(/ ids?\b/g, "").replace(/ refs?\b/g, " reference");
+  };
   const parts: string[] = [];
   for (const leaf of rest) {
     const field = leaf.path.filter((s) => !/^\d+$/.test(s)).at(-1) ?? "";
+    // A field written as nothing is a change too: it is said to be cleared, never left out.
+    if (leaf.empty) parts.push(`${label(leaf.path)} ${leaf.empty === "cleared" ? "cleared (set to nothing)" : "set to empty"}`);
     // The identifier trusted code made up in this turn for the record this very request creates names
     // nothing the owner knows yet, and no model chose it: it is said to be new rather than printed.
-    if (typeof leaf.value === "string" && minted.has(leaf.value) && REFERENCE_FIELD.test(field)) parts.push(`a new ${label(leaf.path)} record is created`);
+    else if (typeof leaf.value === "string" && minted.has(leaf.value) && REFERENCE_FIELD.test(field)) parts.push(`a new ${label(leaf.path)} record is created`);
     else parts.push(`${label(leaf.path)} ${await shown(db, userId, leaf.value, field)}`);
   }
   return ` ${own(STATED, type) ? "Also written with it" : "Written exactly"}: ${parts.join("; ")}.${provenance}`;
@@ -328,6 +416,12 @@ const STOCK_MOVING_EVENTS = new Set(["sent_to_tailor", "returned_from_tailor", "
  * proposes nothing.
  */
 export async function describeChange(db: Db, userId: string, type: string, p: P, opts: { minted?: readonly string[] } = {}): Promise<string> {
+  // A sentence of its own prints codes, dates and numbers of the payload as the system's words. That is
+  // only sound for a payload of the command's own shape (its codes are from fixed vocabularies, its dates
+  // are dates), whoever the caller is: anything else is not described, and so not proposed.
+  if (own(STATED, type) && contractOf(type)?.safeParse(p).success === false) {
+    throw new CommandError("invalid_command", "This request does not have the shape of the change it names, so it cannot be shown to the owner and is not made", { reason: "not_describable" });
+  }
   const summary = `${await sentenceFor(db, userId, type, p)}${await unstated(db, userId, type, p, new Set(opts.minted ?? []))}`;
   if (summary.length > MAX_SUMMARY) throw tooLong("This request");
   return summary;
@@ -357,7 +451,7 @@ async function sentenceFor(db: Db, userId: string, type: string, p: P): Promise<
     case "garment.receive":
       return `Record that ${await g([p.garmentId])} has arrived and is now owned and wearable.`;
     case "garment.correct":
-      return `Change the record of ${await g([p.garmentId])}: ${fields(p.changes ?? {}, ["name", "colour", "fabric", "maker", "size", "condition"]) || "no fields"}.`;
+      return `Change the record of ${await g([p.garmentId])}: ${fields(p.changes ?? {}, ["name", "colour", "fabric", "maker", "size", "condition"], true) || "none of its name, colour, fabric, maker, size or condition"}.`;
     case "garment.add_alias":
       return `Let ${await g([p.garmentId])} also answer to the name ${quoted(p.phrase)}.`;
     case "garment.move":
@@ -369,7 +463,13 @@ async function sentenceFor(db: Db, userId: string, type: string, p: P): Promise<
     case "assistant.lift_restriction": {
       const r = await first<{ kind: string; reason: string; scope_json: string }>(db, "SELECT kind, reason, scope_json FROM restrictions WHERE user_id = ? AND restriction_id = ?", userId, p.restrictionId);
       if (!r) return `Lift a restriction that is not on record (${quoted(p.restrictionId)}).`;
-      const scoped = ((JSON.parse(r.scope_json || "{}") as { garmentIds?: string[] }).garmentIds ?? []) as string[];
+      let scoped: string[] = [];
+      try {
+        const parsed = (JSON.parse(r.scope_json || "{}") as { garmentIds?: unknown }).garmentIds;
+        scoped = Array.isArray(parsed) ? parsed.map(String) : [];
+      } catch {
+        throw new CommandError("invalid_command", "The restriction's stored scope cannot be read, so lifting it cannot be shown to the owner and is not proposed", { reason: "not_describable" });
+      }
       const released = scoped.length > 0 ? ` The pieces it holds back become available again: ${await g(scoped)}.` : " Every piece it holds back becomes available again.";
       return `LIFT the restriction (${words(r.kind)}) whose reason is ${quoted(r.reason)}, and note in your profile that it has ended.${released} Confirm only if its condition really has ended.`;
     }
@@ -380,7 +480,7 @@ async function sentenceFor(db: Db, userId: string, type: string, p: P): Promise<
     case "style.add_amendment":
       return `Amend your profile (${words(p.kind)}) with the dated statement ${quoted(p.text)}.`;
     case "measurement.record":
-      return `Record a ${words(p.subject ?? "body")} measurement: ${quoted(p.key)} = ${p.value} ${p.unit}, measured on ${p.measuredOn}.`;
+      return `Record a ${words(p.subject ?? "body")} measurement: ${quoted(p.key)} = ${p.value} ${words(p.unit)}${p.measuredOn ? `, measured on ${day(p.measuredOn)}` : ""}.`;
     case "purchase.import_order": {
       const lines = (p.lines ?? []).map((l: P) => `${quoted(l.productName)}${l.size ? ` size ${quoted(l.size)}` : ""}${l.quantity && l.quantity !== 1 ? ` x${l.quantity}` : ""}${minor(l.priceMinor, l.currency ?? p.currency) ? ` at ${minor(l.priceMinor, l.currency ?? p.currency)}` : ""}`);
       const incoming = (p.incoming ?? []).length;
@@ -424,10 +524,14 @@ async function sentenceFor(db: Db, userId: string, type: string, p: P): Promise<
       return `AUTHORIZE the assistant to ${words(p.action)} for the project ${project ? quoted(project.title) : quoted(p.projectId)}, within the scope ${quoted(p.scope)}. It will not ask again for this project.`;
     }
     case "job.create":
-      if (p.kind === "email_investigation") return `Search your mailbox for purchases from ${p.params?.from} to ${p.params?.to}${(p.params?.merchants ?? []).length > 0 ? ` at ${list((p.params.merchants as string[]).map((m) => quoted(m)))}` : ""}${p.params?.importAuthorizedBy ? " and LOG the orders it finds (as ordered, not arrived)" : "; found orders are kept as a draft and nothing is logged"}.`;
+      if (p.kind === "email_investigation") return `Search your mailbox for purchases from ${day(p.params?.from)} to ${day(p.params?.to)}${Array.isArray(p.params?.merchants) && p.params.merchants.length > 0 ? ` at ${list((p.params.merchants as unknown[]).map((m) => quoted(m)))}` : ""}${p.params?.importAuthorizedBy ? " and LOG the orders it finds (as ordered, not arrived)" : "; found orders are kept as a draft and nothing is logged"}.`;
       return `Start background work (${words(p.kind)}): ${quoted(p.title)}.`;
-    case "reminder.set":
-      return `${p.reminderId ? "Change the reminder to" : "Set a reminder"} ${quoted(p.title)} for ${p.dueAt}${p.note ? `, note ${quoted(p.note)}` : ""}${p.url ? `, link ${quoted(p.url)}` : ""}.`;
+    case "reminder.set": {
+      // An existing reminder is named by what it says now; an identifier that names none changes nothing
+      // that exists, and is listed after the sentence as the unmatched identifier it is.
+      const existing = p.reminderId ? await first<{ title: string }>(db, "SELECT title FROM reminders WHERE user_id = ? AND reminder_id = ?", userId, p.reminderId) : null;
+      return `${existing ? `Change the reminder ${quoted(existing.title)} to` : "Set a reminder"} ${quoted(p.title)} for ${p.dueAt}${p.note ? `, note ${quoted(p.note)}` : ""}${p.url ? `, link ${quoted(p.url)}` : ""}.`;
+    }
     case "reminder.cancel": {
       const r = await first<{ title: string }>(db, "SELECT title FROM reminders WHERE user_id = ? AND reminder_id = ?", userId, p.reminderId);
       return `Remove the reminder ${r ? quoted(r.title) : quoted(p.reminderId)}.`;
@@ -445,12 +549,7 @@ async function sentenceFor(db: Db, userId: string, type: string, p: P): Promise<
       return `FORGET ${p.sourceIds?.length ?? 0} ${words(p.sourceKind)}${(p.sourceIds?.length ?? 0) === 1 ? "" : "s"} for good: the text is removed from the conversation, recall, memory and the records of what was done with it. This cannot be undone. Rules, profile amendments and wardrobe records it led to are kept and listed on the receipt.`;
     case "command.undo": {
       const c = await first<{ type: string; receipt_json: string }>(db, "SELECT type, receipt_json FROM commands WHERE user_id = ? AND command_id = ?", userId, p.commandId);
-      let was = "";
-      try {
-        was = c ? String((JSON.parse(c.receipt_json) as { summary?: string }).summary ?? "") : "";
-      } catch {
-        was = "";
-      }
+      const was = c ? receiptSummary(c.receipt_json) : "";
       // The earlier change is named by its plain label, never by its command name.
       const label = c ? own(CHANGE_LABELS, c.type) : undefined;
       const named = label ? ` (${label.charAt(0).toLowerCase()}${label.slice(1)})` : "";
@@ -467,7 +566,8 @@ async function sentenceFor(db: Db, userId: string, type: string, p: P): Promise<
  * The versions a proposal was built against, as the command's expected versions: a proposal about a
  * record that has changed since is refused as stale when the owner confirms it.
  *
- * Every proposal that rewrites, moves, receives or removes a wardrobe piece carries that piece's version
+ * Every proposal that rewrites, moves, receives, merges or removes a wardrobe piece, renames it, changes
+ * whether it is offered or sets its counted stock carries that piece's version
  * as read when the proposal was made. The commands check a piece's state themselves, but state is not
  * version: a piece corrected, renamed, moved, received or retired after the owner was shown the summary is
  * no longer the piece the summary described, and the command service refuses the confirmation with
@@ -482,12 +582,8 @@ export async function expectedVersionsFor(db: Db, userId: string, type: string, 
   const out: Record<string, number> = {};
   const garment = async (id: unknown) => {
     if (typeof id !== "string") return;
-    const row = await first<{ changes: number }>(
-      db,
-      `SELECT COUNT(*) AS changes FROM command_entities e JOIN commands c ON c.user_id = e.user_id AND c.command_id = e.command_id WHERE e.user_id = ? AND e.kind = 'garment' AND e.entity_id = ? AND (substr(c.type, 1, 8) = 'garment.' OR c.type IN (${RECORD_CHANGING_TYPES.map((t) => `'${t}'`).join(", ")}))`,
-      userId, id,
-    );
-    if (await first(db, "SELECT 1 AS x FROM garments WHERE user_id = ? AND garment_id = ?", userId, id)) out[`garment_record:${id}`] = row?.changes ?? 0;
+    const row = await first<{ version: number }>(db, GARMENT_RECORD_VERSION_SQL, userId, id);
+    if (await first(db, "SELECT 1 AS x FROM garments WHERE user_id = ? AND garment_id = ?", userId, id)) out[`garment_record:${id}`] = Number(row?.version ?? 0);
   };
   const versioned = async (kind: string, table: string, column: string, id: unknown) => {
     if (typeof id !== "string") return;
@@ -500,8 +596,23 @@ export async function expectedVersionsFor(db: Db, userId: string, type: string, 
     case "garment.move":
     case "garment.receive":
     case "garment.add_alias":
+    case "garment.remove_alias":
+    case "garment.set_planning_policy":
+    case "garment.remove_fabricated":
+    case "stock.reconcile":
     case "assistant.report_arrival":
       await garment(p.garmentId);
+      break;
+    case "garment.merge":
+      // Both records are rewritten: the one that goes and the one that stays.
+      await garment(p.sourceGarmentId);
+      await garment(p.targetGarmentId);
+      break;
+    // `garment.bulk_correct` names no pieces (it selects them when it runs); its own `expectedCount`
+    // guard refuses it when the set it would change is no longer the set that was counted.
+    case "reminder.set":
+      // Changing an existing reminder is held to the reminder the summary named.
+      await versioned("reminder", "reminders", "reminder_id", p.reminderId);
       break;
     case "return.update_case":
     case "return.link_exchange":

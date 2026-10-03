@@ -13,7 +13,9 @@
  * carrying exactly this call's `garderobe_run` and `garderobe_attempt` (the values gateway.ts sends).
  * Anything else is "not found", which leaves the reservation uncertain. All pages of the search are read,
  * and a reservation is released only when every entry of the call explicitly shows no upstream usage
- * (`findingFrom` below): missing, null, textual or fractional token fields are never read as zero. The log's own `cost` is not used:
+ * (`findingFrom` below): missing, null, textual or fractional token fields are never read as zero, and a
+ * failed call with no tokens counts as "nothing was charged" only when the log records that the provider
+ * REFUSED it (see `refusedUpstream`). The log's own `cost` is not used:
  * its unit is not stated, and settlement uses the registry's price for the recorded tokens, as every other
  * settlement does.
  *
@@ -72,13 +74,25 @@ const MAX_PAGES = 20;
 const PER_PAGE = 50;
 
 /**
+ * Whether a failed call's recorded status says the provider refused the request without working on it: a
+ * client-error answer (bad request, not authorized, not found, too large, rate limited and the like).
+ * Not evidence of that, and so never a reason to release a reservation: a missing or non-numeric status;
+ * 408 and 499 (the request timed out or the caller went away, which is how a dropped stream or an owner's
+ * stop is recorded while the provider may have billed what it had already processed); and every 5xx (the
+ * provider or the Gateway failed part-way, or the Gateway timed out waiting: work may have been done).
+ */
+export function refusedUpstream(status: unknown): boolean {
+  return typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 499 && status !== 408 && status !== 499;
+}
+
+/**
  * What the complete set of this call's log entries says. Evidence rules (third review):
  *   - an entry whose token counts are not both whole numbers says nothing reliable, and neither does a
- *     successful, uncached entry with no tokens at all: the finding is `not_found` and the reservation
- *     stays uncertain;
+ *     successful, uncached entry with no tokens at all, nor a failed entry with no tokens whose status is
+ *     not a provider refusal: the finding is `not_found` and the reservation stays uncertain;
  *   - `charged` when any entry used tokens upstream (not served from cache);
  *   - `not_charged` only when EVERY entry explicitly shows no upstream usage: served from cache, or failed
- *     (`success: false`) with both token counts exactly 0.
+ *     (`success: false`) with both token counts exactly 0 AND a status that is a provider refusal.
  */
 export function findingFrom(entries: GatewayLogEntry[]): ProviderUsageFinding {
   if (entries.length === 0) return { status: "not_found" };
@@ -98,8 +112,9 @@ export function findingFrom(entries: GatewayLogEntry[]): ProviderUsageFinding {
       model ??= typeof e.model === "string" ? e.model : null;
       continue;
     }
-    // No tokens at all: evidence of no charge only for a call the log itself records as failed.
-    if (e.success) return { status: "not_found" };
+    // No tokens at all: evidence of no charge only for a call the log itself records as failed because the
+    // provider refused it. A timeout, a dropped stream, a stop or a server-side failure may have been billed.
+    if (e.success || !refusedUpstream(e.status_code)) return { status: "not_found" };
   }
   if (inputTokens + outputTokens > 0) return { status: "charged", inputTokens, outputTokens, resolvedModel: model, ref };
   return { status: "not_charged", ref };

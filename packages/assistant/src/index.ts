@@ -18,14 +18,14 @@ export { exportAssistantData, importAssistantData, type AssistantExport } from "
 export { ModelService, BudgetExceededError, NoSelectableProfileError, InferenceFailedError, classifyError, BREAKER_THRESHOLD, type ModelServiceDeps, type RunScope, type ModelCallMeta } from "./inference/service.ts";
 export { PROFILE_SPECS, TASK_SPECS, DEFAULT_DAILY_BUDGETS, profileSpec, selectability, type ProfileSpec, type TaskSpec } from "./inference/registry.ts";
 export { createGatewayModel, createGatewayModelService, assertGatewayId, gatewayMetadata, ALLOWED_GATEWAY_IDS, GatewayConfigError } from "./inference/gateway.ts";
-export { reconcileInferenceReservations, ABANDONED_AFTER_MS, LOOKUP_NOT_BEFORE_MS, LOOKUP_WINDOW_MS, SWEEP_SLOT_MS, type ProviderUsageLookup, type ProviderUsageFinding, type DispatchedCall, type ReconcileDeps, type ReconcileResult } from "./inference/reconcile.ts";
-export { createGatewayLogsLookup, findingFrom, type GatewayLogsOptions, type GatewayLogEntry } from "./inference/gateway-usage.ts";
+export { reconcileInferenceReservations, ABANDONED_AFTER_MS, LOOKUP_NOT_BEFORE_MS, LOOKUP_WINDOW_MS, DEFAULT_LOOKUPS_PER_SWEEP, type ProviderUsageLookup, type ProviderUsageFinding, type DispatchedCall, type ReconcileDeps, type ReconcileResult } from "./inference/reconcile.ts";
+export { createGatewayLogsLookup, findingFrom, refusedUpstream, type GatewayLogsOptions, type GatewayLogEntry } from "./inference/gateway-usage.ts";
 export { createCompositionModel, parseCandidates, type CompositionRequest, type CompositionCandidate } from "./inference/composition.ts";
 
 export { assembleMandatoryContext, ASSISTANT_POLICY, ASSISTANT_PROMPT_VERSION, estimateTokens, type MandatoryContext } from "./context/mandatory.ts";
 export { ownerAuthoredText, isDirectReport } from "./policy/voice.ts";
 export { classifyChange, mayCommitFromConversation, OBSERVATION_TYPES, type ChangeClass } from "./policy/classes.ts";
-export { CHANGE_LABELS, changeLabel, describeChange, MAX_SHOWN_VALUE, MAX_SUMMARY } from "./policy/describe.ts";
+export { CHANGE_LABELS, changeLabel, describeChange, expectedVersionsFor, MAX_SHOWN_VALUE, MAX_SUMMARY } from "./policy/describe.ts";
 export { REPORT_WINDOW_DAYS, withinReportWindow, reportsIn, reportDateOf, type OwnerReport } from "./policy/report.ts";
 export { redactSecrets, redactDeep, SECRET_PLACEHOLDER } from "./policy/secrets.ts";
 export { recall, indexMessages, indexWatermark, extractJudgements, type CanonicalMessage, type RecallInput } from "./recall/index.ts";

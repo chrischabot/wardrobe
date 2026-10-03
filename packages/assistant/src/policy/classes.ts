@@ -62,6 +62,19 @@ export function mayCommitFromConversation(type: string, payload: Record<string, 
 /** Commands other than `garment.*` that change a piece's record or whether it is in the wardrobe at all (see the `garment_record` version in commands/index.ts). */
 export const RECORD_CHANGING_TYPES = ["assistant.report_arrival", "lifecycle.record_event", "stock.reconcile", "purchase.mark_delivered", "command.undo"];
 
+const recordChange = (alias: string): string =>
+  `(substr(${alias}.type, 1, 8) = 'garment.' OR ${alias}.type IN (${RECORD_CHANGING_TYPES.filter((t) => t !== "command.undo").map((t) => `'${t}'`).join(", ")}))`;
+
+/**
+ * How many times a piece's RECORD was changed (parameters: user ID, garment ID): the version a waiting
+ * request about that piece is held to. The one statement serves both the proposal (policy/describe.ts)
+ * and the ledger's check when it is confirmed (commands/index.ts), so the two cannot drift apart. An undo
+ * counts only when the change it undid was itself a change to the record: undoing a wear or wash report
+ * leaves the record as the owner was shown it, and must not discard a waiting request (change review,
+ * 2026-10-03).
+ */
+export const GARMENT_RECORD_VERSION_SQL = `SELECT COUNT(*) AS version FROM command_entities e JOIN commands c ON c.user_id = e.user_id AND c.command_id = e.command_id WHERE e.user_id = ? AND e.kind = 'garment' AND e.entity_id = ? AND (${recordChange("c")} OR (c.type = 'command.undo' AND EXISTS (SELECT 1 FROM commands u WHERE u.user_id = c.user_id AND u.command_id = c.undoes_command_id AND ${recordChange("u")})))`;
+
 /**
  * Everyday, undoable actions the owner decided (2026-10-03) a connected assistant may carry out directly
  * through the product's own typed surface, each with a receipt and undo: choosing from the published

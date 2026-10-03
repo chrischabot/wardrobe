@@ -17,7 +17,7 @@
  */
 import { first, json, type Db } from "@garderobe/domain";
 import { redactDeep } from "../policy/secrets.ts";
-import { ToolCatalog, assertPublicHttpsUrl, canExecute, namespacedToolName, redactSecretsInUrl, type DiscoveredTool, type SearchProvider, type TavilyExtractBackend } from "../research/index.ts";
+import { ToolCatalog, assertPublicHttpsUrl, canExecute, namespacedToolName, redactSecretsInUrl, refusalForHost, type DiscoveredTool, type HostResolver, type SearchProvider, type TavilyExtractBackend } from "../research/index.ts";
 
 export type ConnectionErrorCode =
   | "not_executable" | "tool_refused" | "transport" | "protocol" | "too_large" | "tool_error"
@@ -32,6 +32,8 @@ export class ConnectionError extends Error {
 
 export const MAX_MCP_RESPONSE_BYTES = 2_000_000;
 export const DEFAULT_MCP_TIMEOUT_MS = 30_000;
+/** How long one successful address check of the endpoint's host is relied on by a client. */
+export const ENDPOINT_CHECK_TTL_MS = 60_000;
 
 export interface McpClientOptions {
   endpoint: string;
@@ -44,6 +46,15 @@ export interface McpClientOptions {
   timeoutMs?: number;
   /** Upper bound on requests through this client (one turn or one job): a runaway loop cannot exhaust the service's quota. */
   maxCalls?: number;
+  /**
+   * When given, the endpoint's host name is resolved with it before a request is sent, and the request
+   * (with the connection's credential) is refused unless every address it resolves to is public; no
+   * answer or a failed lookup is a refusal. Absent: the client does not look the name up, and the
+   * transport it was given MUST do so itself. The Worker's transport does (its `guardedFetch` resolves
+   * every host before each request), which is why the Worker passes none: a second lookup through that
+   * transport would only repeat the first.
+   */
+  resolver?: HostResolver | null;
 }
 
 export interface McpToolResult {
@@ -93,12 +104,25 @@ export class McpHttpClient {
     return this.calls;
   }
 
+  private endpointCheckedAt: number | null = null;
+  /** Refuse an endpoint whose name leads to a private or local address, before anything is sent to it. */
+  private async admitEndpoint(): Promise<void> {
+    const resolver = this.options.resolver;
+    if (!resolver) return;
+    if (this.endpointCheckedAt !== null && Date.now() - this.endpointCheckedAt < ENDPOINT_CHECK_TTL_MS) return;
+    const refusal = await refusalForHost(new URL(this.endpoint).hostname, resolver);
+    if (refusal) throw new ConnectionError("endpoint_not_allowed", `the service was not contacted: ${refusal}`);
+    this.endpointCheckedAt = Date.now();
+  }
+
   private async rpc(method: string, params: Record<string, unknown>, notification = false): Promise<any> {
     if (this.options.maxCalls !== undefined && this.calls >= this.options.maxCalls) throw new ConnectionError("call_limit", "the call limit for this connection was reached in this run");
     this.calls++;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.options.timeoutMs ?? DEFAULT_MCP_TIMEOUT_MS);
     try {
+      // Before the credential is even resolved: where does this name lead?
+      await this.admitEndpoint();
       const secret = (await this.options.headers?.()) ?? {};
       const response = await this.options.fetch(this.endpoint, {
         method: "POST",

@@ -93,8 +93,14 @@ const WASHED_FORMS: RegExp[] = [
 
 const FORMS: [ReportKind, RegExp[]][] = [["wear", WEAR_FORMS], ["dirty", DIRTY_FORMS], ["washed", WASHED_FORMS]];
 
-/** A word pointing at something shown rather than named. "This morning" points at nothing. */
-const POINTER = /\b(?:(?:this|these|those)(?!\s+(?:morning|afternoon|evening|week|weekend|time|once)\b)|it|them|both)\b/;
+/**
+ * A word pointing at something shown rather than named. "This morning" points at nothing. A demonstrative
+ * ("this", "these", "those") points at what was attached. A bare pronoun ("it", "them", "both") does so
+ * only in a clause that names no piece itself: in "I wore the oxford today and it felt tight" the "it" is
+ * the oxford, and an unrelated attached piece is not covered by it (change review, 2026-10-03).
+ */
+const DEMONSTRATIVE = /\b(?:this|these|those)(?!\s+(?:morning|afternoon|evening|week|weekend|time|once)\b)/;
+const PRONOUN = /\b(?:it|them|both)\b/;
 
 const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 const NUMBER_WORDS: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, a: 1 };
@@ -167,7 +173,9 @@ export function reportsIn(wardrobe: GarmentWords[], ownerTexts: string[], localD
         if (kinds.length !== 1) continue;
         const kind = kinds[0]!;
         if (kind === "wear" && date === null) continue;
-        out.push({ kind, clause, date: kind === "wear" ? date : null, garments: namedInText(wardrobe, clause), pointsAtAttachment: POINTER.test(normalizeText(clause)) });
+        const garments = namedInText(wardrobe, clause);
+        const said = normalizeText(clause);
+        out.push({ kind, clause, date: kind === "wear" ? date : null, garments, pointsAtAttachment: DEMONSTRATIVE.test(said) || (garments.size === 0 && PRONOUN.test(said)) });
       }
     }
   }

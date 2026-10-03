@@ -50,8 +50,8 @@ export const LOOKUP_NOT_BEFORE_MS = 2 * 60_000;
 /** Reservations older than this are no longer looked up: they stay uncertain for good and remain reported as such. */
 export const LOOKUP_WINDOW_MS = 30 * 86_400_000;
 
-/** Successive sweeps this far apart start at successive positions among the uncertain reservations. */
-export const SWEEP_SLOT_MS = 60_000;
+/** How many uncertain reservations one sweep looks up in the provider's record unless the caller says otherwise. */
+export const DEFAULT_LOOKUPS_PER_SWEEP = 25;
 
 export interface ReconcileDeps {
   db: Db;
@@ -59,6 +59,11 @@ export interface ReconcileDeps {
   nowMs: number;
   /** Absent: abandoned reservations are still marked uncertain, and nothing uncertain is closed. */
   usageLookup?: ProviderUsageLookup | null;
+  /**
+   * Chooses where among the uncertain reservations a sweep starts (a number in [0, 1)); `Math.random`
+   * when absent. Tests pass a fixed sequence.
+   */
+  random?: () => number;
 }
 
 export interface ReconcileResult {
@@ -95,7 +100,7 @@ const COLUMNS = "user_id, reservation_id, run_id, task, profile_id, attempt, gat
 
 export async function reconcileInferenceReservations(deps: ReconcileDeps, opts: { limit?: number; maxAbandoned?: number } = {}): Promise<ReconcileResult> {
   const result: ReconcileResult = { markedUncertain: 0, settled: 0, released: 0, stillUncertain: 0, lookupFailures: 0, notLookedUp: 0 };
-  const limit = Math.max(1, opts.limit ?? 25);
+  const limit = Math.max(1, opts.limit ?? DEFAULT_LOOKUPS_PER_SWEEP);
   const principals = new Map<string, Awaited<ReturnType<typeof systemPrincipalFor>> | null>();
   const principalFor = async (userId: string) => {
     if (!principals.has(userId)) {
@@ -134,8 +139,12 @@ export async function reconcileInferenceReservations(deps: ReconcileDeps, opts: 
   }
 
   // 2. Uncertain reservations, against the provider's record. Each sweep looks up at most `limit` of them,
-  // oldest first, and successive sweeps start at successive positions, so a reservation is never passed
-  // over for good because newer or older ones stay unresolved (third review: the newest 25 starved the rest).
+  // a run of consecutive ones in (time, ID) order starting at a slice chosen AT RANDOM, so no reservation
+  // is passed over for good because newer or older ones stay unresolved (third review: the newest 25
+  // starved the rest). The start is not derived from the clock: sweeps run on a fixed period, and a
+  // period sharing a factor with the number of slices would pick the same slices every time and never
+  // reach the others (change review, 2026-10-03). No cursor is stored, so nothing is written per sweep;
+  // with S slices a given reservation is reached once in S sweeps on average.
   const window = [toInstant(deps.nowMs - LOOKUP_NOT_BEFORE_MS), toInstant(deps.nowMs - LOOKUP_WINDOW_MS)] as const;
   const WHERE = "state = 'uncertain' AND julianday(created_at) < julianday(?) AND julianday(created_at) > julianday(?)";
   const total = (await all<{ n: number }>(deps.db, `SELECT COUNT(*) AS n FROM inference_reservations WHERE ${WHERE}`, ...window))[0]?.n ?? 0;
@@ -144,7 +153,9 @@ export async function reconcileInferenceReservations(deps: ReconcileDeps, opts: 
     return result;
   }
   const slices = Math.max(1, Math.ceil(total / limit));
-  const offset = total > limit ? (Math.floor(deps.nowMs / SWEEP_SLOT_MS) % slices) * limit : 0;
+  const pick = (deps.random ?? Math.random)();
+  const slice = Number.isFinite(pick) ? Math.min(slices - 1, Math.max(0, Math.floor(pick * slices))) : 0;
+  const offset = total > limit ? slice * limit : 0;
   const uncertain = await all<OpenRow>(deps.db, `SELECT ${COLUMNS} FROM inference_reservations WHERE ${WHERE} ORDER BY julianday(created_at), reservation_id LIMIT ? OFFSET ?`, ...window, limit, offset);
   result.notLookedUp = Math.max(0, total - uncertain.length);
   for (const row of uncertain) {

@@ -55,7 +55,9 @@ what was read:
 - **Garments.** Each garment of the command must be named in that clause (its alias, or enough words of
   its record to single it out within one noun phrase; "the pink socks" does not name the pink shirt), or
   be attached to the message while the clause points at it ("wore this today"; the Worker's
-  `garment:<id>` reference or a bare ID). A category ("my shirts", "all my socks", every hand-wash piece)
+  `garment:<id>` reference or a bare ID). "This", "these" and "those" point at what was attached; a bare
+  "it", "them" or "both" does so only in a clause that names no piece itself (in "I wore the oxford today
+  and it felt tight" the "it" is the oxford). A category ("my shirts", "all my socks", every hand-wash piece)
   names no garment.
 - A comfort note stores the owner's own words of the message; its reach is never the model's to set (the
   tool has no scope argument), and it is always a request.
@@ -99,6 +101,34 @@ name is never shown either: a kind of change with no sentence of its own opens w
 `CHANGE_LABELS` ("Add a trip."), an unlabelled kind reads "Make a change to your records.", and an undo
 names the earlier change by its label and its receipt. `CHANGE_LABELS` and `changeLabel` are exported for
 the Worker, which shows a connected assistant's requests with the same describer.
+
+Rules the describer keeps (whole-file review, 2026-10-03), each with a test in `test/review-round3.test.ts`:
+
+- A field counts as said by the sentence only in the branch of the sentence that prints it (`statedFor`):
+  the mailbox search lists its title, other background work lists its parameters, and "every hand-wash
+  piece" lists any pieces sent with it.
+- A value written as nothing is a change and is shown: "maker cleared", "set to empty". This applies
+  inside the parts of a payload that say what a record becomes (`changes`, `patch`, `counts`); elsewhere
+  an empty field is an option left unset.
+- A command with a sentence of its own is described only when its payload has the shape of that command's
+  contract, whoever the caller is, because the sentence prints the payload's codes, dates and numbers as
+  the system's words. Anything else is refused (`not_describable`) and nothing is proposed.
+- A key that no schema fixes (inside a settings patch, a job's parameters, free attributes) is quoted as
+  written unless trusted code itself uses it; a value in a date's place that is not a date is quoted.
+- More records are named (standing rules, profile amendments, style rules, order lines, comfort notes,
+  connections, saved combinations, names, measurements, size notes). An identifier of a kind this file
+  cannot look up is shown in full as one "this summary cannot name", never as "matches no record".
+- Changing a reminder names the reminder as it is now and is held to its version. Every request that
+  rewrites, merges or removes a piece's record, renames it, changes whether it is offered or sets its
+  stock carries that record's version; `garment.bulk_correct` names no pieces and relies on its own
+  `expectedCount`. The version statement is one constant (`GARMENT_RECORD_VERSION_SQL`) used by the
+  proposal and by the ledger's check, and an undo counts only when what it undid changed the record.
+
+Not done from that review, by decision or for lack of time: single quotation marks doubled to look like a
+double one are not normalised; a value cleaned for display (control characters, line breaks) is not
+flagged as cleaned; an undo of a change whose receipt is longer than 2,000 characters cannot be proposed;
+requests that quote a restriction, an order or a trip carry no version of it; two pieces with the same
+name read alike; an amount is always printed with two decimals; some field labels are split machine names.
 
 The source of a change is recorded as what it was (`ownerSource` in `src/tools/runtime.ts`): "your own
 statement" only when the owner wrote words of their own in that message. A tapped answer to the
@@ -208,13 +238,19 @@ open reservations only on evidence:
   thirty days after it was taken. Recorded usage settles it at the registry price of that usage; a
   record showing no usage releases it; no record, an unreadable record or no configured lookup leaves it
   uncertain. Each closure is an `inference.settle` command whose source names the provider record.
-- Every abandoned reservation is marked in one sweep. Lookups are limited per sweep (25 by default),
-  oldest first, and successive sweeps start at successive positions, so no reservation is passed over
-  for good; the result reports how many were not reached (`notLookedUp`). `settled` and `released` count
-  only reservations the sweep itself closed.
+- Every abandoned reservation is marked in one sweep. Lookups are limited per sweep (25 by default): a
+  run of consecutive reservations starting at a slice chosen at random, so no reservation is passed over
+  for good. The start is not taken from the clock: sweeps run on a fixed period, and a period sharing a
+  factor with the number of slices would reach the same slices every time. The result reports how many
+  were not reached (`notLookedUp`). `settled` and `released` count only reservations the sweep itself
+  closed.
 
 "No usage" needs explicit evidence (`findingFrom`): every log entry of the call must be either served
-from the Gateway's cache, or recorded as failed with both token counts exactly 0. A token field that is
+from the Gateway's cache, or recorded as failed with both token counts exactly 0 and a status showing the
+provider refused the request (a 4xx other than 408 and 499, `refusedUpstream`). A timeout, a dropped
+stream, a stop by the owner or a server-side failure is also logged as a failure with no tokens, and the
+provider may have billed what it had processed: those, and a failure with no readable status, leave the
+reservation uncertain. A token field that is
 absent, null, text, fractional or negative, a successful uncached call with no tokens, or a missing
 `success` or `cached` flag is no evidence, and the reservation stays uncertain. An entry belongs to the
 call only when its metadata names exactly the run and exactly the attempt (the number, or that number in
@@ -243,6 +279,13 @@ Why:
   connection (the Exa endpoint rejected `2026-07-28`).
 - This client refuses redirects, bounds response size and the number of calls per run, and sends only the
   arguments a discovered schema declares.
+- Where a name leads: the address as written is checked when the client is built. Given a `resolver`
+  (`research.createDohResolver`, DNS over HTTPS), the client also resolves the endpoint's host before a
+  request and refuses it, before the credential is read, unless every address is public; no answer or a
+  failed lookup is a refusal. Without a `resolver` the client does not look the name up and the transport
+  must. The Worker passes none because its transport (`guardedFetch`) resolves every host itself; that is
+  where the adversarial suite's finding (a tool service resolving to 10.0.0.5 was contacted with its key)
+  is closed. A name whose answer changes between the lookup and the request is not ruled out.
 
 This acceptance does not certify any live integration. The client and adapters are tested against a fake
 MCP server and a labelled fake Google API only; the real Exa, Tavily, Google and owner-added endpoints have

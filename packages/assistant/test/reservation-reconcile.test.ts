@@ -9,7 +9,7 @@
 import { env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { all } from "@garderobe/domain";
-import { ABANDONED_AFTER_MS, LOOKUP_NOT_BEFORE_MS, SWEEP_SLOT_MS, createGatewayLogsLookup, getInferenceOverview, profileSpec, reconcileInferenceReservations, runAssistantMaintenance, type DispatchedCall, type ProviderUsageFinding } from "../src/index.ts";
+import { ABANDONED_AFTER_MS, LOOKUP_NOT_BEFORE_MS, createGatewayLogsLookup, getInferenceOverview, profileSpec, reconcileInferenceReservations, refusedUpstream, runAssistantMaintenance, type DispatchedCall, type ProviderUsageFinding } from "../src/index.ts";
 import { TEST_GATEWAY_ID } from "../src/testing/index.ts";
 import { START, createWorld, setNow, submission, type World } from "./helpers.ts";
 
@@ -139,7 +139,7 @@ describe("third review, pull request 25: the sweep reaches every reservation and
     w = await createWorld({ real: false });
   });
 
-  it("reservations older than the newest 25 are looked up too: successive sweeps start further on until every one was asked about", async () => {
+  it("reservations older than the newest 25 are looked up too, also when sweeps run on a fixed period that shares a factor with the number of slices", async () => {
     // 60 abandoned calls, one a minute. The oldest three were not charged; the rest have no record.
     for (let n = 0; n < 60; n++) {
       setNow(w, at(n));
@@ -153,17 +153,22 @@ describe("third review, pull request 25: the sweep reaches every reservation and
         return ["run_rsv_00", "run_rsv_01", "run_rsv_02"].includes(call.runId) ? { status: "not_charged", ref: `gateway-log:${call.runId}` } : { status: "not_found" };
       },
     };
-    const first = await reconcileInferenceReservations({ db: w.h.db, service: w.h.service, nowMs: w.h.clock.now(), usageLookup: record });
+    const first = await reconcileInferenceReservations({ db: w.h.db, service: w.h.service, nowMs: w.h.clock.now(), usageLookup: record, random: () => 0 });
     // Every abandoned call is marked, not just 25 of them.
     // (One local database serves this whole file, so another describe's open reservation may be swept too.)
     expect(first.markedUncertain).toBeGreaterThanOrEqual(60);
     expect((await rows(w)).filter((r) => r.state === "reserved")).toEqual([]);
     expect(first.notLookedUp).toBeGreaterThanOrEqual(35);
     expect(asked.size).toBeLessThanOrEqual(25);
-    // Later sweeps move on through the rest; none is passed over for good.
+    // Later sweeps reach the rest; none is passed over for good. They run every THREE minutes, and three
+    // slices are left (57 reservations, 25 a sweep): a start derived from the clock would pick the same
+    // slice every time and never ask about the others. The start is chosen by `random` (here a fixed
+    // sequence), not by the time.
+    const picks = [0.99, 0.5, 0, 0.7, 0.34];
+    let turn = 0;
     let released = first.released;
-    for (let sweep = 1; sweep <= 6 && asked.size < 60; sweep++) {
-      const r = await reconcileInferenceReservations({ db: w.h.db, service: w.h.service, nowMs: w.h.clock.now() + sweep * SWEEP_SLOT_MS, usageLookup: record });
+    for (let sweep = 1; sweep <= 10 && asked.size < 60; sweep++) {
+      const r = await reconcileInferenceReservations({ db: w.h.db, service: w.h.service, nowMs: w.h.clock.now() + sweep * 3 * 60_000, usageLookup: record, random: () => picks[turn++ % picks.length]! });
       released += r.released;
     }
     expect(asked.size).toBe(60);
@@ -226,15 +231,24 @@ describe("the AI Gateway logs adapter (FAKE fetch in the documented shape of 'Li
     expect((init.headers as Record<string, string>)["Authorization"]).toBe("Bearer TEST-TOKEN-not-a-real-credential");
   });
 
-  it("a call is 'not charged' only on explicit evidence: a failed call with both token counts exactly 0, or an answer served from cache; no matching entry is 'not found'", async () => {
-    expect(await lookupWith(() => list([entry({ id: "log-failed", success: false, status_code: 502, tokens_in: 0, tokens_out: 0 })])).lookup.find(call)).toEqual({ status: "not_charged", ref: "gateway-log:log-failed" });
+  it("a call is 'not charged' only on explicit evidence: an answer served from cache, or a failed call with both token counts exactly 0 that the provider REFUSED; no matching entry is 'not found'", async () => {
+    const failed = (status_code: unknown) => lookupWith(() => list([entry({ id: "log-failed", success: false, status_code, tokens_in: 0, tokens_out: 0 })])).lookup.find(call);
+    for (const refusal of [400, 401, 403, 404, 413, 422, 429]) expect(await failed(refusal), String(refusal)).toEqual({ status: "not_charged", ref: "gateway-log:log-failed" });
+    // Change review, 2026-10-03: a timeout, a dropped stream, a stop by the owner or a server-side failure is
+    // logged as a failure with no tokens too, and the provider may have billed what it had processed. None of
+    // these releases the reservation; neither does a status that is missing or not a number.
+    for (const unknown of [408, 499, 500, 502, 503, 504, 524, 529, 200, 302, undefined, null, "429", 429.5]) expect(await failed(unknown), String(unknown)).toEqual({ status: "not_found" });
+    expect([429, 499, 502, "429"].map(refusedUpstream)).toEqual([true, false, false, false]);
+    // One such entry among the call's entries leaves the whole call uncertain, whatever the others say.
+    expect(await lookupWith(() => list([entry({ id: "log-refused", success: false, status_code: 429, tokens_in: 0, tokens_out: 0 }), entry({ id: "log-dropped", success: false, status_code: 499, tokens_in: 0, tokens_out: 0 })])).lookup.find(call)).toEqual({ status: "not_found" });
+    expect(await lookupWith(() => list([entry({ id: "log-dropped", success: false, status_code: 502, tokens_in: 0, tokens_out: 0 }), entry({ id: "log-paid" })])).lookup.find(call)).toEqual({ status: "not_found" });
     expect(await lookupWith(() => list([entry({ id: "log-cached", cached: true })])).lookup.find(call)).toEqual({ status: "not_charged", ref: "gateway-log:log-cached" });
     expect(await lookupWith(() => list([])).lookup.find(call)).toEqual({ status: "not_found" });
     expect(await lookupWith(() => list([entry({ metadata: undefined })])).lookup.find(call)).toEqual({ status: "not_found" });
   });
 
   it("third review: token fields that are absent, null, text, fractional or negative are never read as 'no charge', and neither is a successful call with no tokens", async () => {
-    const failed = { success: false, status_code: 502 };
+    const failed = { success: false, status_code: 429 };
     const unreadable: Record<string, unknown>[] = [
       { ...failed, tokens_in: undefined, tokens_out: undefined },
       { ...failed, tokens_in: null, tokens_out: null },
@@ -267,7 +281,7 @@ describe("the AI Gateway logs adapter (FAKE fetch in the documented shape of 'Li
   it("third review: every page is read; a charged entry beyond the first fifty is found, and a search that does not end gives no finding", async () => {
     // 120 entries match the search text: this call's failed entry is on page 1, its charged retry on page 3.
     const other = (n: number) => entry({ id: `log-other-${n}`, metadata: JSON.stringify({ garderobe_run: "run_abc123", garderobe_attempt: 1 }) });
-    const all120 = [entry({ id: "log-failed", success: false, status_code: 502, tokens_in: 0, tokens_out: 0 }), ...Array.from({ length: 118 }, (_, n) => other(n)), entry({ id: "log-paid-late", tokens_in: 700, tokens_out: 30 })];
+    const all120 = [entry({ id: "log-failed", success: false, status_code: 429, tokens_in: 0, tokens_out: 0 }), ...Array.from({ length: 118 }, (_, n) => other(n)), entry({ id: "log-paid-late", tokens_in: 700, tokens_out: 30 })];
     const paged = lookupWith((url) => {
       const page = Number(url.searchParams.get("page"));
       const slice = all120.slice((page - 1) * 50, page * 50);
