@@ -62,6 +62,11 @@ public final class ComposerModel {
     public private(set) var pending: [PendingTurn] { didSet { environment.restoration.save("conversation.pendingTurns", pending) } }
     public private(set) var follower: RunFollower?
     public private(set) var notice: String?
+    /// The backend's turn behind the reply now shown, which its requests to confirm are listed under.
+    private var followedTurnId: String?
+    /// Set by the app: whether the owner has since decided a request a reply left (by the turn
+    /// that asked, the command and the backend's summary). Without it every request counts as waiting.
+    public var isSettled: (@MainActor (_ turnId: String, _ type: String, _ summary: String) -> Bool)?
 
     public init(environment: AppEnvironment, transcript: TranscriptModel, sleep: (@Sendable (TimeInterval) async -> Void)? = nil) {
         self.environment = environment
@@ -80,8 +85,15 @@ public final class ComposerModel {
     public var pendingInput: PendingInput? { if case .needsInput(let input)? = follower?.phase { return input }; return nil }
     public var activity: String? { isStreaming ? follower?.activity : nil }
     /// What the last answer asked for and did not do: each waits for the owner in Requests to
-    /// confirm. Shown so a reply is never mistaken for a change that was made.
-    public var awaitingConfirmation: [String] { (follower?.phase.isTerminal ?? false) ? (follower?.proposals ?? []).map(\.summary) : [] }
+    /// confirm. Shown so a reply is never mistaken for a change that was made, and no longer
+    /// shown for a request the owner has since confirmed or rejected.
+    public var awaitingConfirmation: [String] {
+        guard let follower, follower.phase.isTerminal else { return [] }
+        return follower.proposals.filter { item in
+            guard let turn = followedTurnId, let isSettled else { return true }
+            return !isSettled(turn, item.type, item.summary)
+        }.map(\.summary)
+    }
     /// One sentence for those requests, or nil when there are none.
     public var confirmationLine: String? {
         let waiting = awaitingConfirmation
@@ -186,6 +198,7 @@ public final class ComposerModel {
     private func followRun(_ runId: String, turn id: String) async {
         let run = sleep.map { RunFollower(environment: environment, runId: runId, transcript: transcript, sleep: $0) } ?? RunFollower(environment: environment, runId: runId, transcript: transcript)
         follower = run
+        followedTurnId = pending.first(where: { $0.id == id })?.turnId
         await run.follow()
         switch run.phase {
         case .completed, .cancelled, .failed:

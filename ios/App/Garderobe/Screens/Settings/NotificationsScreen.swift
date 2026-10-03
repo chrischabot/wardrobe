@@ -11,7 +11,7 @@ struct NotificationsScreen: View {
         List {
             Section {
                 Toggle("Notifications on this phone", isOn: Binding(
-                    get: { model.wanted },
+                    get: { model.isOn },
                     set: { on in
                         if on { PushRegistrar.turnOn(model) } else { Task { await model.turnOff() } }
                     }))
@@ -20,6 +20,10 @@ struct NotificationsScreen: View {
                     .font(.footnote)
                     .foregroundStyle(Color.supporting)
                 SettingsMessageLine(message: model.message)
+                if model.hasStoppedRetrying {
+                    Button("Try again") { Task { await model.retryNow() } }
+                        .disabled(model.isWorking)
+                }
                 if app.environment.isDemo {
                     Text("Demo data: notifications cannot be turned on here.")
                         .font(.footnote)
@@ -32,7 +36,7 @@ struct NotificationsScreen: View {
                 Section("Other devices") {
                     ForEach(model.otherDevices, id: \.deviceId) { device in
                         VStack(alignment: .leading, spacing: Metrics.unit) {
-                            Text(device.status == .active ? "Registered" : "Stopped")
+                            Text(model.statusWord(device))
                             Text("Last updated \(SettingsInstant(app: app).relative(device.updatedAt)).")
                                 .font(.footnote)
                                 .foregroundStyle(Color.supporting)

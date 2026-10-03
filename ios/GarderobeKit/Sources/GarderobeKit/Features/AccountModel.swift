@@ -135,9 +135,14 @@ public final class AccountModel {
 
     public func signInCancelled() { attempt = nil }
 
+    /// Set by the app: work that needs the session and must happen before it is dropped (this
+    /// phone's notification registration is removed).
+    public var beforeSignOut: (@MainActor () async -> Void)?
+
     /// Signs out on this phone. Cached wardrobe data is removed; commands still waiting to be
     /// sent are kept so an observation made offline is not lost.
     public func signOut() async {
+        await beforeSignOut?()
         await session?.signOut()
         environment.cache.removeAll()
         visibleKit = nil; recoveryResult = nil; recoveryTransaction = nil; linkTicket = nil

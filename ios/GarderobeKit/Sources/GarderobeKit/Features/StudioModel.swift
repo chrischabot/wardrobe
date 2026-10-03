@@ -33,6 +33,12 @@ public final class StudioModel {
     public private(set) var composition: Composition?
     /// The backend-rendered picture of the current combination, when the owner asked for one.
     public private(set) var preview: PreviewState = .none
+    /// The identifier of a picture request the backend has not answered yet, with the selection
+    /// it was drawn for. Asking again for the same pieces after a lost answer repeats the same
+    /// request instead of starting a second one.
+    private var unansweredPreviewRequest: (generation: Int, id: String)?
+    /// The manifest the backend said the picture asked for will be stored under.
+    private var previewHash: String?
     private let sleep: @Sendable (TimeInterval) async -> Void
 
     /// A rendered preview is background work on the backend: asked for, then read when ready.
@@ -160,6 +166,8 @@ public final class StudioModel {
         validation = selection.isEmpty ? .none : .unchecked("Not checked yet.")
         composition = nil
         preview = .none
+        previewHash = nil
+        unansweredPreviewRequest = nil
     }
 
     // MARK: The combination
@@ -289,12 +297,23 @@ public final class StudioModel {
     /// "queued" and `checkPreview` looks again; nothing is shown as ready before it is.
     public func requestPreview() async {
         guard !selection.isEmpty, preview != .requesting else { return }
+        // Already asked for and still being made: look for it, never ask a second time.
+        if preview == .queued { await checkPreview(); return }
         let mine = validationGeneration
+        let requestId: String
+        if let kept = unansweredPreviewRequest, kept.generation == mine {
+            requestId = kept.id
+        } else {
+            requestId = environment.ids.next("preview")
+            unansweredPreviewRequest = (mine, requestId)
+        }
         preview = .requesting
         do {
-            let response = try await environment.api.requestStudioPreview(StudioPreviewRequest(clientRequestId: environment.ids.next("preview"), slots: slotInputs()))
+            let response = try await environment.api.requestStudioPreview(StudioPreviewRequest(clientRequestId: requestId, slots: slotInputs()))
             environment.center.noteRead(failure: nil)
             guard mine == validationGeneration else { return }
+            unansweredPreviewRequest = nil
+            previewHash = response.manifestHash
             preview = .queued
             for attempt in 0..<StudioModel.previewChecks {
                 if attempt > 0 { await sleep(StudioModel.previewInterval) }
@@ -304,6 +323,9 @@ public final class StudioModel {
         } catch let failure as APIFailure {
             environment.center.noteRead(failure: failure)
             guard mine == validationGeneration else { return }
+            // A refusal is an answer: the next request is a new one. Without an answer (no
+            // connection, a server fault) the identifier is kept for the retry.
+            if !failure.isRetryable { unansweredPreviewRequest = nil }
             preview = .failed(failure.isTransport ? "Offline. A picture needs a connection." : failure.ownerMessage)
         } catch {
             guard mine == validationGeneration else { return }
@@ -313,7 +335,7 @@ public final class StudioModel {
 
     /// Looks once more for a preview that was still being rendered.
     public func checkPreview() async {
-        guard preview == .queued, let hash = composition?.manifestHash else { return }
+        guard preview == .queued, let hash = previewHash ?? composition?.manifestHash else { return }
         _ = await readPreview(manifestHash: hash, generation: validationGeneration)
     }
 
