@@ -50,6 +50,9 @@ export const LOOKUP_NOT_BEFORE_MS = 2 * 60_000;
 /** Reservations older than this are no longer looked up: they stay uncertain for good and remain reported as such. */
 export const LOOKUP_WINDOW_MS = 30 * 86_400_000;
 
+/** Successive sweeps this far apart start at successive positions among the uncertain reservations. */
+export const SWEEP_SLOT_MS = 60_000;
+
 export interface ReconcileDeps {
   db: Db;
   service: CommandService;
@@ -69,6 +72,8 @@ export interface ReconcileResult {
   stillUncertain: number;
   /** Lookups that failed (the provider's record could not be read); those reservations are left as they are. */
   lookupFailures: number;
+  /** Uncertain reservations inside the lookup window that this sweep did not reach; a later sweep starts further on. */
+  notLookedUp: number;
 }
 
 interface OpenRow {
@@ -86,9 +91,11 @@ interface OpenRow {
 
 const SYSTEM = { authorization: "system_schedule" as const, source: { channel: "system" as const } };
 
-export async function reconcileInferenceReservations(deps: ReconcileDeps, opts: { limit?: number } = {}): Promise<ReconcileResult> {
-  const result: ReconcileResult = { markedUncertain: 0, settled: 0, released: 0, stillUncertain: 0, lookupFailures: 0 };
-  const limit = opts.limit ?? 25;
+const COLUMNS = "user_id, reservation_id, run_id, task, profile_id, attempt, gateway_id, state, error_class, created_at";
+
+export async function reconcileInferenceReservations(deps: ReconcileDeps, opts: { limit?: number; maxAbandoned?: number } = {}): Promise<ReconcileResult> {
+  const result: ReconcileResult = { markedUncertain: 0, settled: 0, released: 0, stillUncertain: 0, lookupFailures: 0, notLookedUp: 0 };
+  const limit = Math.max(1, opts.limit ?? 25);
   const principals = new Map<string, Awaited<ReturnType<typeof systemPrincipalFor>> | null>();
   const principalFor = async (userId: string) => {
     if (!principals.has(userId)) {
@@ -97,41 +104,55 @@ export async function reconcileInferenceReservations(deps: ReconcileDeps, opts: 
     }
     return principals.get(userId) ?? null;
   };
+  /** Whether the settling command itself changed the reservation (a no-op or a replay changed nothing). */
+  const changed = (receipt: { outcome: string; replayed?: boolean }) => receipt.outcome !== "noop" && !receipt.replayed;
 
-  // 1. Calls that can no longer be running. Compared as instants, newest first.
-  const abandoned = await all<OpenRow>(
-    deps.db,
-    "SELECT user_id, reservation_id, run_id, task, profile_id, attempt, gateway_id, state, error_class, created_at FROM inference_reservations WHERE state = 'reserved' AND julianday(created_at) < julianday(?) ORDER BY julianday(created_at) DESC LIMIT ?",
-    toInstant(deps.nowMs - ABANDONED_AFTER_MS),
-    limit,
-  );
-  for (const row of abandoned) {
-    const principal = await principalFor(row.user_id);
-    if (!principal) continue;
-    try {
-      const receipt = await deps.service.execute(principal, { type: "inference.settle", payload: { reservationId: row.reservation_id, outcome: "uncertain", errorClass: "abandoned" }, idempotencyKey: `inference-reconcile:${row.reservation_id}:abandoned`, ...SYSTEM });
-      // A call that settled itself in the meantime is left as it settled (the command is then a no-op).
-      if (receipt.outcome !== "noop" && !receipt.replayed) result.markedUncertain++;
-    } catch (e) {
-      if (!isCommandError(e)) throw e;
+  // 1. Calls that can no longer be running, oldest first, ALL of them (marking is a local write): pages
+  // are read by position in (time, ID) order, so a row that could not be marked is passed, not re-read.
+  const cutoff = toInstant(deps.nowMs - ABANDONED_AFTER_MS);
+  let after: { at: string; id: string } | null = null;
+  for (let seen = 0; seen < (opts.maxAbandoned ?? 2000); ) {
+    const page: OpenRow[] = await all<OpenRow>(
+      deps.db,
+      `SELECT ${COLUMNS} FROM inference_reservations WHERE state = 'reserved' AND julianday(created_at) < julianday(?) AND (? IS NULL OR julianday(created_at) > julianday(?) OR (julianday(created_at) = julianday(?) AND reservation_id > ?)) ORDER BY julianday(created_at), reservation_id LIMIT 100`,
+      cutoff, after?.at ?? null, after?.at ?? null, after?.at ?? null, after?.id ?? "",
+    );
+    if (page.length === 0) break;
+    for (const row of page) {
+      seen++;
+      after = { at: row.created_at, id: row.reservation_id };
+      const principal = await principalFor(row.user_id);
+      if (!principal) continue;
+      try {
+        const receipt = await deps.service.execute(principal, { type: "inference.settle", payload: { reservationId: row.reservation_id, outcome: "uncertain", errorClass: "abandoned" }, idempotencyKey: `inference-reconcile:${row.reservation_id}:abandoned`, ...SYSTEM });
+        // A call that settled itself in the meantime is left as it settled (the command is then a no-op).
+        if (changed(receipt)) result.markedUncertain++;
+      } catch (e) {
+        if (!isCommandError(e)) throw e;
+      }
     }
   }
 
-  // 2. Uncertain reservations, against the provider's record.
-  const uncertain = await all<OpenRow>(
-    deps.db,
-    "SELECT user_id, reservation_id, run_id, task, profile_id, attempt, gateway_id, state, error_class, created_at FROM inference_reservations WHERE state = 'uncertain' AND julianday(created_at) < julianday(?) AND julianday(created_at) > julianday(?) ORDER BY julianday(created_at) DESC LIMIT ?",
-    toInstant(deps.nowMs - LOOKUP_NOT_BEFORE_MS),
-    toInstant(deps.nowMs - LOOKUP_WINDOW_MS),
-    limit,
-  );
+  // 2. Uncertain reservations, against the provider's record. Each sweep looks up at most `limit` of them,
+  // oldest first, and successive sweeps start at successive positions, so a reservation is never passed
+  // over for good because newer or older ones stay unresolved (third review: the newest 25 starved the rest).
+  const window = [toInstant(deps.nowMs - LOOKUP_NOT_BEFORE_MS), toInstant(deps.nowMs - LOOKUP_WINDOW_MS)] as const;
+  const WHERE = "state = 'uncertain' AND julianday(created_at) < julianday(?) AND julianday(created_at) > julianday(?)";
+  const total = (await all<{ n: number }>(deps.db, `SELECT COUNT(*) AS n FROM inference_reservations WHERE ${WHERE}`, ...window))[0]?.n ?? 0;
+  if (!deps.usageLookup) {
+    result.stillUncertain = total;
+    return result;
+  }
+  const slices = Math.max(1, Math.ceil(total / limit));
+  const offset = total > limit ? (Math.floor(deps.nowMs / SWEEP_SLOT_MS) % slices) * limit : 0;
+  const uncertain = await all<OpenRow>(deps.db, `SELECT ${COLUMNS} FROM inference_reservations WHERE ${WHERE} ORDER BY julianday(created_at), reservation_id LIMIT ? OFFSET ?`, ...window, limit, offset);
+  result.notLookedUp = Math.max(0, total - uncertain.length);
   for (const row of uncertain) {
-    if (!deps.usageLookup) {
+    const principal = await principalFor(row.user_id);
+    if (!principal) {
       result.stillUncertain++;
       continue;
     }
-    const principal = await principalFor(row.user_id);
-    if (!principal) continue;
     let finding: ProviderUsageFinding;
     try {
       finding = await deps.usageLookup.find({ gatewayId: row.gateway_id, runId: row.run_id, attempt: row.attempt, task: row.task, reservedAt: row.created_at });
@@ -147,8 +168,9 @@ export async function reconcileInferenceReservations(deps: ReconcileDeps, opts: 
     const source = { channel: "system" as const, parentKind: "job" as const, parentId: `provider-record:${finding.ref}`.slice(0, 128) };
     try {
       if (finding.status === "not_charged") {
-        await deps.service.execute(principal, { type: "inference.settle", payload: { reservationId: row.reservation_id, outcome: "released", errorClass: row.error_class }, idempotencyKey: `inference-reconcile:${row.reservation_id}:released`, authorization: "system_schedule", source });
-        result.released++;
+        const receipt = await deps.service.execute(principal, { type: "inference.settle", payload: { reservationId: row.reservation_id, outcome: "released", errorClass: row.error_class }, idempotencyKey: `inference-reconcile:${row.reservation_id}:released`, authorization: "system_schedule", source });
+        // Counted only when this command released it; a reservation that closed some other way meanwhile is not.
+        if (changed(receipt)) result.released++;
         continue;
       }
       const spec = profileSpec(row.profile_id);
@@ -157,14 +179,14 @@ export async function reconcileInferenceReservations(deps: ReconcileDeps, opts: 
         result.stillUncertain++;
         continue;
       }
-      await deps.service.execute(principal, {
+      const receipt = await deps.service.execute(principal, {
         type: "inference.settle",
         payload: { reservationId: row.reservation_id, outcome: "settled", actualMicroUsd: actualCostMicroUsd(spec, finding.inputTokens, finding.outputTokens), inputTokens: finding.inputTokens, outputTokens: finding.outputTokens, resolvedModel: finding.resolvedModel ?? spec.apiModelId ?? null, errorClass: row.error_class },
         idempotencyKey: `inference-reconcile:${row.reservation_id}:settled`,
         authorization: "system_schedule",
         source,
       });
-      result.settled++;
+      if (changed(receipt)) result.settled++;
     } catch (e) {
       if (!isCommandError(e)) throw e;
       result.stillUncertain++;

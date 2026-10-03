@@ -34,7 +34,7 @@ export interface MaintenanceResult {
 }
 
 export async function runAssistantMaintenance(deps: MaintenanceDeps, opts: { limit?: number } = {}): Promise<MaintenanceResult> {
-  const result: MaintenanceResult = { delivered: 0, erasuresReconciled: 0, searchUploaded: 0, searchRemoved: 0, skippedOwners: [], reservations: { markedUncertain: 0, settled: 0, released: 0, stillUncertain: 0, lookupFailures: 0 } };
+  const result: MaintenanceResult = { delivered: 0, erasuresReconciled: 0, searchUploaded: 0, searchRemoved: 0, skippedOwners: [], reservations: { markedUncertain: 0, settled: 0, released: 0, stillUncertain: 0, lookupFailures: 0, notLookedUp: 0 } };
   const pending = await readOutbox(deps.db, { topics: ["conversation.deliver", "conversation.erase", "summary.regenerate", "search.index", "search.delete", "garment"], limit: opts.limit ?? 200 });
   const owners = [...new Set(pending.map((e) => e.userId))];
   for (const userId of owners) {

@@ -48,7 +48,7 @@ describe("review findings 6 to 13 and the carried items (real owner; FAKE MODEL)
       const outside = proposal.summary.replace(/\u201C[^\u201D]*\u201D/g, "\u201C\u201D");
       expect(outside, proposal.type).not.toMatch(/restriction(s)? (has been |have been )?lifted|healed|welted|loud logos|SYSTEM/i);
     }
-    expect(turn.proposals.find((x) => x.type === "style.add_direction")!.summary).toBe("Add a standing rule for all future suggestions: \u201CSuggest loud logos\u201D.");
+    expect(turn.proposals.find((x) => x.type === "style.add_direction")!.summary).toMatch(/^Add a standing rule for all future suggestions: \u201CSuggest loud logos\u201D\. Its source is recorded as owner statement, \u201Cmessage:msg_trn_[0-9a-f]+\u201D\.$/);
   });
 
   it("finding 7: the assistant retrieves only addresses the owner wrote in their own words or a search of the same turn returned; an attachment's addresses are not retrieved, and a search query cannot carry private values", async () => {

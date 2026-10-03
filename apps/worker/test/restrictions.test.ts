@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { listRestrictions } from "@garderobe/domain";
-import { connectMcp, enableFakeModel, provisionOwner, testApp, toolResult, type FakeModel, type TestOwner } from "../src/testing/index.ts";
+import { connectMcp, enableFakeModel, ownerDay, provisionOwner, testApp, toolResult, type FakeModel, type TestOwner } from "../src/testing/index.ts";
 
 /*
  * Hard constraints cannot be lifted through a connected assistant. REAL owner fixture: the supplied
@@ -156,7 +156,7 @@ describe("text relayed by a connected assistant (garderobe_ask, garderobe_resear
     expect(restricted, "the real wardrobe has footwear the sneakers-only restriction excludes").toBeTruthy();
     const before = await snapshot();
     const commandsBefore = await commandCount(owner);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = await ownerDay(owner);
 
     // A labelled synthetic wear the owner records in the app, which relayed text then tries to undo.
     const synthetic = (await (await owner.api.command("garment.create", { name: "Synthetic scarf (relayed allow-list fixture)", category: "scarf", roles: ["accessory"], careChannel: "none", acquisition: "owned", quantity: 1, isSynthetic: true, attributes: { accessoryKind: "scarf" }, source: { kind: "system", note: "synthetic test garment" } })).json()) as any;

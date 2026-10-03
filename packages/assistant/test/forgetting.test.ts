@@ -72,8 +72,9 @@ describe("forgetting a message removes its text from every store, and says truth
       { text: "I am sorry to hear the collar gives you a rash since your Zanzibar chemotherapy. I noted it." },
     );
     const told = await w.client.runTurn({ submissionId: submission("told"), text: `${SAID} Remind me to see the tailor.` });
-    expect(told.receipts.map((r) => r.type).sort()).toEqual(["feedback.record", "job.create", "memory.record_conclusion", "product.record", "research.save_note"]);
+    expect(told.receipts.map((r) => r.type).sort()).toEqual(["job.create", "memory.record_conclusion", "product.record", "research.save_note"]);
     expect(told.proposals).toHaveLength(8);
+    expect(told.refusals.map((r) => r.code)).toEqual(["too_many_requests"]);
 
     // A later turn in which the assistant repeats it (and a recall tool result carries it).
     w.model.script({ toolCalls: [{ toolName: "recall_conversation", input: { text: "collar rash" } }] }, { text: "You told me the oxford collar gives you a rash since your Zanzibar chemotherapy." });
@@ -82,7 +83,7 @@ describe("forgetting a message removes its text from every store, and says truth
 
     // Before: the text is in many tables and in everything served.
     const before = await tablesHolding(w.h.db, w.owner.userId, MARK);
-    expect(Object.keys(before.holding)).toEqual(expect.arrayContaining(["action_intents", "assistant_jobs", "assistant_turn_events", "assistant_turns", "comfort_feedback", "commands", "conversation_index", "memory_conclusions", "products", "research_notes"]));
+    expect(Object.keys(before.holding)).toEqual(expect.arrayContaining(["action_intents", "assistant_jobs", "assistant_turn_events", "assistant_turns", "commands", "conversation_index", "memory_conclusions", "products", "research_notes"]));
     expect((await servedCopies(w, [told.turnId, repeated.turnId])).length).toBeGreaterThan(5);
 
     // The owner asks to forget it. That is itself a request the owner confirms; nothing is forgotten before.
@@ -114,7 +115,7 @@ describe("forgetting a message removes its text from every store, and says truth
     expect(receipt.summary).not.toContain("Kept");
     expect(receipt.result["kept"]).toEqual([]);
     expect(receipt.result["erasedStores"]).toEqual(["retrieval_index", "ledger"]);
-    expect(Number(receipt.result["scrubbedCommands"])).toBeGreaterThanOrEqual(5);
+    expect(Number(receipt.result["scrubbedCommands"])).toBeGreaterThanOrEqual(4);
     // The later repetition was found and forgotten with it.
     expect((receipt.result["alsoForgotten"] as string[]).length).toBeGreaterThanOrEqual(2);
     // Per store: the transcript is erased once the actor confirmed it; AI Search stays pending (no index is bound here), and says so.
@@ -124,7 +125,7 @@ describe("forgetting a message removes its text from every store, and says truth
     expect(state.state).toBe("suppressed");
     // What the turn did is still known as facts without text: the comfort note's command exists, scrubbed.
     const scrubbed = await all<{ type: string; payload_json: string }>(w.h.db, "SELECT type, payload_json FROM commands WHERE user_id = ? AND scrubbed_at IS NOT NULL", w.owner.userId);
-    expect(scrubbed.map((c) => c.type)).toEqual(expect.arrayContaining(["feedback.record", "research.save_note", "product.record", "memory.record_conclusion", "job.create"]));
+    expect(scrubbed.map((c) => c.type)).toEqual(expect.arrayContaining(["research.save_note", "product.record", "memory.record_conclusion", "job.create"]));
     expect(scrubbed.every((c) => c.payload_json === '{"forgotten":true}')).toBe(true);
     // The unconfirmed requests are gone: there is nothing left to confirm from that turn.
     expect((await w.client.getTurn(told.turnId))!.proposals).toEqual([]);

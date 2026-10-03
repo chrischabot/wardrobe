@@ -3,7 +3,8 @@ import { all, getAvailability, getGarmentDetail, isCommandError, listInventory }
 import { getOrder, listComfortFeedback, listConnections, listForgetStates, listJobs, listLifecycleProjects, listMemoryConclusions, listOrders, listProducts, listResearchNotes, listReturnCases } from "../src/index.ts";
 import { createWorld, setNow, type World } from "./helpers.ts";
 
-const STATEMENT = { actor: "assistant" as const, channel: "ios" as const, authorization: "owner_statement" as const };
+/** The signed-in owner in the app: these tests exercise the handlers, not the conversation gate (an assistant principal cannot run them on its own say-so; see review-round3.test.ts). */
+const STATEMENT = { actor: "owner" as const, channel: "ios" as const, authorization: "owner_tap" as const };
 
 async function rejects(p: Promise<unknown>, code: string): Promise<void> {
   try {

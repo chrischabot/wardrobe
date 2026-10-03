@@ -276,7 +276,7 @@ describe("purchase investigation as a durable job (REAL Gmail adapter over the F
     // Reading the owner's mailbox starts only on the owner's confirmation.
     const asked = await runAndConfirm(w, { submissionId: submission(), text: "what have I bought since August?" });
     expect(asked.proposals.map((x) => x.type)).toEqual(["job.create"]);
-    expect(asked.proposals[0]!.summary).toBe("Search your mailbox for purchases from 2026-08-01 to 2026-09-01; found orders are kept as a draft and nothing is logged.");
+    expect(asked.proposals[0]!.summary).toMatch(/^Search your mailbox for purchases from 2026-08-01 to 2026-09-01; found orders are kept as a draft and nothing is logged\. Also written with it: job id \u201Cjob_mail_[^\u201D]+\u201D\.$/);
     expect(asked.receipts.map((r) => r.type)).toEqual(["job.create"]);
     const jobId = (await listJobs(w.h.db, w.owner.principal())).find((j) => j.kind === "email_investigation")!.jobId;
 
@@ -320,7 +320,7 @@ describe("purchase investigation as a durable job (REAL Gmail adapter over the F
     // Asking again reads only what is new.
     google.state.mail.push({ id: "m_new", threadId: "t9", sentAt: "2026-08-20T10:00:00Z", from: "Shop <a@b.example>", subject: "Order shipped", text: "A newsletter that mentions an order." });
     google.state.opened.length = 0;
-    const again = await w.owner.exec("job.create", { kind: "email_investigation", title: "Purchases again", params: { from: "2026-08-01", to: "2026-09-01" } }, { actor: "assistant", authorization: "owner_statement" });
+    const again = await w.owner.exec("job.create", { kind: "email_investigation", title: "Purchases again", params: { from: "2026-08-01", to: "2026-09-01" } }, { actor: "owner", authorization: "owner_tap" });
     await runAssistantJob(deps, w.owner.userId, String(again.result["jobId"]));
     expect(google.state.opened).toEqual(["m_new"]);
 
@@ -354,7 +354,7 @@ describe("purchase investigation as a durable job (REAL Gmail adapter over the F
       return { text: '{"isOrderEmail": true, "kind": "confirmation"}' };
     });
     fallback.otherwise({ text: '{"isOrderEmail": "maybe"}' });
-    const created = await w.owner.exec("job.create", { kind: "email_investigation", title: "Purchases with a bad model", params: { from: "2026-08-01", to: "2026-09-01" } }, { actor: "assistant", authorization: "owner_statement" });
+    const created = await w.owner.exec("job.create", { kind: "email_investigation", title: "Purchases with a bad model", params: { from: "2026-08-01", to: "2026-09-01" } }, { actor: "owner", authorization: "owner_tap" });
     const jobId = String(created.result["jobId"]);
     const outcome = await runAssistantJob(deps, w.owner.userId, jobId);
     expect(outcome).toMatchObject({ handled: true, state: "completed" });
@@ -376,7 +376,7 @@ describe("purchase investigation as a durable job (REAL Gmail adapter over the F
     await w.h.db.prepare("DELETE FROM mail_seen WHERE user_id = ?").bind(w.owner.userId).run();
     extractor().reset();
     extractor().otherwise(answer);
-    const created = await w.owner.exec("job.create", { kind: "email_investigation", title: "Purchases via the queue", params: { from: "2026-08-01", to: "2026-09-01" } }, { actor: "assistant", authorization: "owner_statement" });
+    const created = await w.owner.exec("job.create", { kind: "email_investigation", title: "Purchases via the queue", params: { from: "2026-08-01", to: "2026-09-01" } }, { actor: "owner", authorization: "owner_tap" });
     const jobId = String(created.result["jobId"]);
     const acks: string[] = [];
     const message = (body: unknown) => ({ body: body as never, ack: () => void acks.push("ack"), retry: () => void acks.push("retry") });
@@ -392,11 +392,11 @@ describe("purchase investigation as a durable job (REAL Gmail adapter over the F
     expect(extractor().requests.filter(isExtraction)).toHaveLength(1);
 
     // No mailbox in this environment: the job fails with a reason and nothing is invented.
-    const orphan = await w.owner.exec("job.create", { kind: "email_investigation", title: "No mailbox", params: { from: "2026-08-01", to: "2026-09-01" } }, { actor: "assistant", authorization: "owner_statement" });
+    const orphan = await w.owner.exec("job.create", { kind: "email_investigation", title: "No mailbox", params: { from: "2026-08-01", to: "2026-09-01" } }, { actor: "owner", authorization: "owner_tap" });
     const failed = await runAssistantJob({ ...deps, mailFor: async () => null }, w.owner.userId, String(orphan.result["jobId"]));
     expect(failed).toMatchObject({ handled: true, state: "failed", detail: "the mailbox could not be opened in this environment" });
     // Other kinds are left to their own runners.
-    const other = await w.owner.exec("job.create", { kind: "image_backfill", title: "Not mine" }, { actor: "assistant", authorization: "owner_statement" });
+    const other = await w.owner.exec("job.create", { kind: "image_backfill", title: "Not mine" }, { actor: "owner", authorization: "owner_tap" });
     expect(await runAssistantJob(deps, w.owner.userId, String(other.result["jobId"]))).toMatchObject({ handled: false });
   });
 
@@ -410,8 +410,11 @@ describe("purchase investigation as a durable job (REAL Gmail adapter over the F
     // The note's request is at most a proposal; unconfirmed, no job exists.
     expect(pasted.receipts).toHaveLength(0);
     expect((await listJobs(w.h.db, w.owner.principal())).filter((j) => j.state === "queued" && j.kind === "email_investigation")).toHaveLength(0);
-    // A job with the same parameters created by the assistant itself (not the owner's confirmation) searches and drafts, and logs nothing.
-    const forged = await w.owner.exec("job.create", { kind: "email_investigation", title: "Forged", params: { from: "2026-08-01", to: "2026-09-01", importAuthorizedBy: "owner_confirmation" } }, { actor: "assistant", authorization: "owner_statement" });
+    // The assistant cannot create such a job on its own say-so at all: the ledger refuses it and nothing is queued.
+    await expect(w.owner.exec("job.create", { kind: "email_investigation", title: "Forged", params: { from: "2026-08-01", to: "2026-09-01", importAuthorizedBy: "owner_confirmation" } }, { actor: "assistant", authorization: "owner_statement" })).rejects.toMatchObject({ code: "forbidden" });
+    expect((await listJobs(w.h.db, w.owner.principal())).filter((j) => j.state === "queued" && j.kind === "email_investigation")).toHaveLength(0);
+    // A scheduled job with the same parameters (no owner confirmation behind it) searches and drafts, and logs nothing.
+    const forged = await w.owner.exec("job.create", { kind: "email_investigation", title: "Forged", params: { from: "2026-08-01", to: "2026-09-01", importAuthorizedBy: "owner_confirmation" } }, { actor: "system", channel: "system", authorization: "system_schedule" });
     extractor().reset();
     extractor().otherwise((r) => ({ text: JSON.stringify({ isOrderEmail: true, kind: "confirmation", merchant: "Drake's", orderNumber: "DR-60001", currency: "GBP", lines: [{ productName: "Brushed Shetland crewneck", size: "44", price: "245.00" }] }), usage: { inputTokens: excerptOf(r).length, outputTokens: 40 } }));
     await runAssistantJob(deps, w.owner.userId, String(forged.result["jobId"]));
@@ -444,7 +447,7 @@ describe("purchase investigation as a durable job (REAL Gmail adapter over the F
     const sheetConnection = await w.owner.exec("connection.register", { kind: "sheets", label: "Sheets", endpoint: "https://sheets.googleapis.com/", namespace: "sheets", secretRef: "GOOGLE_GRANT" });
     const connectionId = String(sheetConnection.result["connectionId"]);
     const garments = (await listInventory(w.h.db, w.owner.principal())).total;
-    const created = await w.owner.exec("job.create", { kind: "sheet_import", title: "Inventory sheet", params: { connectionId, spreadsheetId: "sheet_inv", range: "A1:B50" } }, { actor: "assistant", authorization: "owner_statement" });
+    const created = await w.owner.exec("job.create", { kind: "sheet_import", title: "Inventory sheet", params: { connectionId, spreadsheetId: "sheet_inv", range: "A1:B50" } }, { actor: "owner", authorization: "owner_tap" });
     const outcome = await runAssistantJob({ ...deps, sheetsFor: async () => createSheetsClient(new GoogleApi({ accessToken: async () => "good-token", grantedScopes: [GOOGLE_SCOPES.sheets], fetch: sheetGoogle.fetch })) }, w.owner.userId, String(created.result["jobId"]));
     expect(outcome).toMatchObject({ handled: true, state: "completed" });
     const job = (await listJobs(w.h.db, w.owner.principal())).find((j) => j.jobId === created.result["jobId"])!;

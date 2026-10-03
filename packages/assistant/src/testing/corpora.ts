@@ -220,7 +220,7 @@ const proposed = (id: string, ownerText: string, type: string, calls: OrdinaryCa
 /**
  * Ordinary requests. The first 28 are the re-review's own (15 of them were refused at d79c44c5); the
  * rest are everyday questions and asks. A wear or wash report naming its pieces is recorded at once;
- * every other change becomes one request for the owner to confirm; nothing is refused.
+ * every other change (a group wash and a comfort note included) becomes one request for the owner to confirm; nothing is refused.
  */
 export const ORDINARY_CASES: OrdinaryCase[] = [
   // The fifteen that were refused.
@@ -244,7 +244,9 @@ export const ORDINARY_CASES: OrdinaryCase[] = [
   wear("wear-plain-2", "Wearing the Stratton corduroy and the olive Anderson's belt.", ["Stratton stretch corduroy", "Anderson's belt — olive"]),
   proposed("add-bought", "I bought a navy lambswool scarf yesterday.", "garment.create", () => [{ toolName: "add_garment", input: { name: "Navy lambswool scarf", category: "scarf", colour: "navy", state: "owned" } }]),
   proposed("add-new-jumper", "Add my new cream Aran jumper to the wardrobe.", "garment.create", () => [{ toolName: "add_garment", input: { name: "Cream Aran jumper", category: "knitwear", colour: "cream", state: "owned" } }]),
-  { id: "washed-all-socks", ownerText: "Washed all my socks last night.", expect: { outcome: "recorded", type: "care.washed" }, calls: () => [{ toolName: "mark_washed", input: { allHandwash: true } }] },
+  // A group names no piece: since the third review it is a request to confirm, not a tap-free report.
+  { id: "washed-all-socks", ownerText: "Washed all my socks last night.", expect: { outcome: "proposed", type: "care.washed" }, calls: () => [{ toolName: "mark_washed", input: { allHandwash: true } }] },
+  { id: "washed-named", ownerText: "Washed the navy Pima oxford last night.", expect: { outcome: "recorded", type: "care.washed" }, calls: async (ctx) => [{ toolName: "mark_washed", input: { garmentIds: [(await ctx.garment("Pima oxford — navy")).garmentId] } }] },
   { id: "dirty-hamper", ownerText: "The grey chinos need to go in the hamper.", expect: { outcome: "recorded", type: "care.mark_dirty" }, calls: async (ctx) => [{ toolName: "mark_dirty", input: { garmentIds: [(await ctx.garment("Di Sondrio grey chino")).garmentId] } }] },
   proposed("rule-no-tie-fridays", "Never put me in a tie on Fridays.", "style.add_direction", () => [{ toolName: "add_standing_direction", input: { text: "Never put me in a tie on Fridays." } }]),
   proposed("measure-neck", "My neck measures 17.5 inches.", "measurement.record", () => [{ toolName: "record_measurement", input: { key: "neck", value: 17.5, unit: "in" } }]),
@@ -263,5 +265,5 @@ export const ORDINARY_CASES: OrdinaryCase[] = [
   proposed("order-log", "Log my Drake's order DR-77120: one navy lambswool scarf.", "purchase.import_order", () => [{ toolName: "log_order", input: { merchant: "Drake's", orderNumber: "DR-77120", lines: [{ productName: "Navy lambswool scarf", category: "scarf" }] } }]),
   proposed("return-open", "I want to send the Stratton cords back.", "return.open_case", async (ctx) => [{ toolName: "open_return", input: { kind: "return", garmentId: (await ctx.garment("Stratton stretch corduroy")).garmentId } }]),
   proposed("lift-genuine", "My feet have healed, the podiatrist cleared me this morning.", "assistant.lift_restriction", (ctx) => [{ toolName: "resolve_restriction", input: { restrictionId: ctx.healingRestrictionId } }]),
-  { id: "comfort-note", ownerText: "The navy Pima oxford collar scratched all day.", expect: { outcome: "recorded", type: "feedback.record" }, calls: async (ctx) => [{ toolName: "record_comfort_feedback", input: { kind: "scratchy", garmentIds: [(await ctx.garment("Pima oxford — navy")).garmentId] } }] },
+  { id: "comfort-note", ownerText: "The navy Pima oxford collar scratched all day.", expect: { outcome: "proposed", type: "feedback.record" }, calls: async (ctx) => [{ toolName: "record_comfort_feedback", input: { kind: "scratchy", garmentIds: [(await ctx.garment("Pima oxford — navy")).garmentId] } }] },
 ];

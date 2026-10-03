@@ -9,7 +9,7 @@
 import { env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { all } from "@garderobe/domain";
-import { ABANDONED_AFTER_MS, LOOKUP_NOT_BEFORE_MS, createGatewayLogsLookup, getInferenceOverview, profileSpec, reconcileInferenceReservations, runAssistantMaintenance, type DispatchedCall, type ProviderUsageFinding } from "../src/index.ts";
+import { ABANDONED_AFTER_MS, LOOKUP_NOT_BEFORE_MS, SWEEP_SLOT_MS, createGatewayLogsLookup, getInferenceOverview, profileSpec, reconcileInferenceReservations, runAssistantMaintenance, type DispatchedCall, type ProviderUsageFinding } from "../src/index.ts";
 import { TEST_GATEWAY_ID } from "../src/testing/index.ts";
 import { START, createWorld, setNow, submission, type World } from "./helpers.ts";
 
@@ -68,7 +68,7 @@ describe("uncertain model-call reservations are closed only on the provider's re
 
     // Too soon after the call: the provider's record may not exist yet, so it is not consulted.
     const early = fakeRecord({});
-    expect(await sweep(early)).toEqual({ markedUncertain: 0, settled: 0, released: 0, stillUncertain: 0, lookupFailures: 0 });
+    expect(await sweep(early)).toEqual({ markedUncertain: 0, settled: 0, released: 0, stillUncertain: 0, lookupFailures: 0, notLookedUp: 0 });
     expect(early.asked).toEqual([]);
 
     setNow(w, at(LOOKUP_NOT_BEFORE_MS / 60_000 + 1));
@@ -87,7 +87,7 @@ describe("uncertain model-call reservations are closed only on the provider's re
       1: { status: "charged", inputTokens: 1200, outputTokens: 80, resolvedModel: "deepseek-chat (FAKE RECORD)", ref: "gateway-log:log-attempt-1" },
       2: { status: "not_charged", ref: "gateway-log:log-attempt-2" },
     });
-    expect(await sweep(record)).toEqual({ markedUncertain: 0, settled: 1, released: 1, stillUncertain: 0, lookupFailures: 0 });
+    expect(await sweep(record)).toEqual({ markedUncertain: 0, settled: 1, released: 1, stillUncertain: 0, lookupFailures: 0, notLookedUp: 0 });
     const after = await rows(w);
     const price = profileSpec("deepseek-v41-flash")!.price;
     const cost = Math.ceil((1200 * price.inputMicroUsdPerMTok + 80 * price.outputMicroUsdPerMTok) / 1_000_000);
@@ -103,7 +103,7 @@ describe("uncertain model-call reservations are closed only on the provider's re
 
     // A second sweep finds nothing open and changes nothing.
     const again = fakeRecord({});
-    expect(await sweep(again)).toEqual({ markedUncertain: 0, settled: 0, released: 0, stillUncertain: 0, lookupFailures: 0 });
+    expect(await sweep(again)).toEqual({ markedUncertain: 0, settled: 0, released: 0, stillUncertain: 0, lookupFailures: 0, notLookedUp: 0 });
     expect(again.asked).toEqual([]);
     expect(await rows(w)).toEqual(after);
   });
@@ -118,7 +118,7 @@ describe("uncertain model-call reservations are closed only on the provider's re
     setNow(w, at(60 + ABANDONED_AFTER_MS / 60_000 - 1));
     // Through the Worker's scheduled entry point, with no provider record configured.
     const swept = await runAssistantMaintenance({ db: w.h.db, service: w.h.service, env: env as never, gatewayId: TEST_GATEWAY_ID, nowMs: w.h.clock.now() });
-    expect(swept.reservations).toEqual({ markedUncertain: 1, settled: 0, released: 0, stillUncertain: 1, lookupFailures: 0 });
+    expect(swept.reservations).toEqual({ markedUncertain: 1, settled: 0, released: 0, stillUncertain: 1, lookupFailures: 0, notLookedUp: 0 });
     const open = (await rows(w)).filter((r) => r.reservation_id === "rsv_evicted_actor" || r.reservation_id === "rsv_still_running");
     expect(open.map((r) => [r.reservation_id, r.state, r.error_class, r.settled_at])).toEqual([
       ["rsv_evicted_actor", "uncertain", "abandoned", null],
@@ -126,6 +126,69 @@ describe("uncertain model-call reservations are closed only on the provider's re
     ]);
     // Its 700 is still held against the day's budget.
     expect((await interactive()).uncertainMicroUsd).toBe(700);
+  });
+});
+
+describe("third review, pull request 25: the sweep reaches every reservation and counts only what it closed (FAKE PROVIDER RECORD)", () => {
+  let w: World;
+  const reserve = (id: string, attempt = 1) =>
+    w.owner.exec("inference.reserve", { reservationId: id, runId: `run_${id}`, task: "conversation", budgetClass: "interactive", profileId: "deepseek-v41-flash", attempt, reservedMicroUsd: 10, budgetDay: "2026-09-15", dailyLimitMicroUsd: 10_000_000, parent: { kind: "turn", id: `turn_${id}` }, gatewayId: TEST_GATEWAY_ID }, SYSTEM);
+  const states = async () => Object.fromEntries((await rows(w)).map((r) => [r.reservation_id, r.state]));
+
+  beforeAll(async () => {
+    w = await createWorld({ real: false });
+  });
+
+  it("reservations older than the newest 25 are looked up too: successive sweeps start further on until every one was asked about", async () => {
+    // 60 abandoned calls, one a minute. The oldest three were not charged; the rest have no record.
+    for (let n = 0; n < 60; n++) {
+      setNow(w, at(n));
+      await reserve(`rsv_${String(n).padStart(2, "0")}`);
+    }
+    setNow(w, at(60 + ABANDONED_AFTER_MS / 60_000 + 5));
+    const asked = new Set<string>();
+    const record = {
+      find: async (call: DispatchedCall): Promise<ProviderUsageFinding> => {
+        if (/^run_rsv_\d\d$/.test(call.runId)) asked.add(call.runId);
+        return ["run_rsv_00", "run_rsv_01", "run_rsv_02"].includes(call.runId) ? { status: "not_charged", ref: `gateway-log:${call.runId}` } : { status: "not_found" };
+      },
+    };
+    const first = await reconcileInferenceReservations({ db: w.h.db, service: w.h.service, nowMs: w.h.clock.now(), usageLookup: record });
+    // Every abandoned call is marked, not just 25 of them.
+    // (One local database serves this whole file, so another describe's open reservation may be swept too.)
+    expect(first.markedUncertain).toBeGreaterThanOrEqual(60);
+    expect((await rows(w)).filter((r) => r.state === "reserved")).toEqual([]);
+    expect(first.notLookedUp).toBeGreaterThanOrEqual(35);
+    expect(asked.size).toBeLessThanOrEqual(25);
+    // Later sweeps move on through the rest; none is passed over for good.
+    let released = first.released;
+    for (let sweep = 1; sweep <= 6 && asked.size < 60; sweep++) {
+      const r = await reconcileInferenceReservations({ db: w.h.db, service: w.h.service, nowMs: w.h.clock.now() + sweep * SWEEP_SLOT_MS, usageLookup: record });
+      released += r.released;
+    }
+    expect(asked.size).toBe(60);
+    expect(released).toBe(3);
+    const after = await states();
+    expect([after["rsv_00"], after["rsv_01"], after["rsv_02"], after["rsv_03"], after["rsv_59"]]).toEqual(["released", "released", "released", "uncertain", "uncertain"]);
+  });
+
+  it("'released' and 'settled' count only reservations the sweep itself closed", async () => {
+    const fresh = await createWorld({ real: false });
+    w = fresh;
+    await reserve("rsv_a");
+    await reserve("rsv_b");
+    setNow(w, at(ABANDONED_AFTER_MS / 60_000 + 5));
+    // While the lookup for the first is in flight, both close some other way (the call's own late settlement).
+    const record = {
+      find: async (call: DispatchedCall): Promise<ProviderUsageFinding> => {
+        for (const id of ["rsv_a", "rsv_b"]) await w.owner.exec("inference.settle", { reservationId: id, outcome: "settled", actualMicroUsd: 5, inputTokens: 10, outputTokens: 1, resolvedModel: "deepseek-chat (TEST)", errorClass: null }, { ...SYSTEM });
+        if (call.runId === "run_rsv_a") return { status: "not_charged", ref: "gateway-log:a" };
+        return call.runId === "run_rsv_b" ? { status: "charged", inputTokens: 999, outputTokens: 9, resolvedModel: null, ref: "gateway-log:b" } : { status: "not_found" };
+      },
+    };
+    const r = await reconcileInferenceReservations({ db: w.h.db, service: w.h.service, nowMs: w.h.clock.now(), usageLookup: record }, { limit: 500 });
+    expect(r).toMatchObject({ markedUncertain: 2, released: 0, settled: 0 });
+    expect((await rows(w)).map((x) => [x.reservation_id, x.state, x.actual_microusd])).toEqual([["rsv_a", "settled", 5], ["rsv_b", "settled", 5]]);
   });
 });
 
@@ -157,17 +220,68 @@ describe("the AI Gateway logs adapter (FAKE fetch in the documented shape of 'Li
     expect(requests).toHaveLength(1);
     const { url, init } = requests[0]!;
     expect(`${url.origin}${url.pathname}`).toBe(`https://api.cloudflare.com/client/v4/accounts/acct-test/ai-gateway/gateways/${TEST_GATEWAY_ID}/logs`);
-    expect(Object.fromEntries(url.searchParams)).toEqual({ search: "run_abc123", per_page: "50", order_by: "created_at", order_by_direction: "desc" });
+    expect(Object.fromEntries(url.searchParams)).toEqual({ search: "run_abc123", page: "1", per_page: "50", order_by: "created_at", order_by_direction: "asc" });
     expect(init.method).toBe("GET");
     expect(init.redirect).toBe("manual");
     expect((init.headers as Record<string, string>)["Authorization"]).toBe("Bearer TEST-TOKEN-not-a-real-credential");
   });
 
-  it("a logged call that used no tokens is 'not charged'; no matching entry is 'not found', never 'not charged'", async () => {
+  it("a call is 'not charged' only on explicit evidence: a failed call with both token counts exactly 0, or an answer served from cache; no matching entry is 'not found'", async () => {
     expect(await lookupWith(() => list([entry({ id: "log-failed", success: false, status_code: 502, tokens_in: 0, tokens_out: 0 })])).lookup.find(call)).toEqual({ status: "not_charged", ref: "gateway-log:log-failed" });
     expect(await lookupWith(() => list([entry({ id: "log-cached", cached: true })])).lookup.find(call)).toEqual({ status: "not_charged", ref: "gateway-log:log-cached" });
     expect(await lookupWith(() => list([])).lookup.find(call)).toEqual({ status: "not_found" });
     expect(await lookupWith(() => list([entry({ metadata: undefined })])).lookup.find(call)).toEqual({ status: "not_found" });
+  });
+
+  it("third review: token fields that are absent, null, text, fractional or negative are never read as 'no charge', and neither is a successful call with no tokens", async () => {
+    const failed = { success: false, status_code: 502 };
+    const unreadable: Record<string, unknown>[] = [
+      { ...failed, tokens_in: undefined, tokens_out: undefined },
+      { ...failed, tokens_in: null, tokens_out: null },
+      { ...failed, tokens_in: "1500", tokens_out: "60" },
+      { ...failed, tokens_in: 0, tokens_out: null },
+      { ...failed, tokens_in: 0.5, tokens_out: 0 },
+      { ...failed, tokens_in: -1, tokens_out: 0 },
+      { success: true, tokens_in: 0, tokens_out: 0 },
+      { success: "false", tokens_in: 0, tokens_out: 0 },
+      { success: false, cached: "false", tokens_in: 0, tokens_out: 0 },
+    ];
+    for (const over of unreadable) expect(await lookupWith(() => list([entry({ id: "log-x", ...over })])).lookup.find(call), JSON.stringify(over)).toEqual({ status: "not_found" });
+    // One unreadable entry among the call's entries spoils the finding, whatever the others say.
+    expect(await lookupWith(() => list([entry({ id: "log-ok", ...failed, tokens_in: 0, tokens_out: 0 }), entry({ id: "log-bad", ...failed, tokens_in: null, tokens_out: 0 })])).lookup.find(call)).toEqual({ status: "not_found" });
+    // A charged entry beside a failed one is charged.
+    expect(await lookupWith(() => list([entry({ id: "log-failed", ...failed, tokens_in: 0, tokens_out: 0 }), entry({ id: "log-paid" })])).lookup.find(call)).toMatchObject({ status: "charged", inputTokens: 1500, outputTokens: 60 });
+  });
+
+  it("third review: the attempt must be exactly this attempt; a loose match (empty, null, true, a list, a padded string) is not this call", async () => {
+    const first: DispatchedCall = { ...call, attempt: 1 };
+    const zero: DispatchedCall = { ...call, attempt: 0 };
+    const meta = (attempt: unknown) => entry({ metadata: JSON.stringify({ garderobe_run: "run_abc123", garderobe_attempt: attempt }) });
+    for (const loose of [true, [1], "1.0", " 1", "01", null, "", 1.5]) expect(await lookupWith(() => list([meta(loose)])).lookup.find(first), JSON.stringify(loose)).toEqual({ status: "not_found" });
+    for (const loose of [null, "", false, [], " "]) expect(await lookupWith(() => list([meta(loose)])).lookup.find(zero), JSON.stringify(loose)).toEqual({ status: "not_found" });
+    expect(await lookupWith(() => list([entry({ metadata: JSON.stringify({ garderobe_run: "run_abc123" }) })])).lookup.find(zero)).toEqual({ status: "not_found" });
+    expect(await lookupWith(() => list([meta(1)])).lookup.find(first)).toMatchObject({ status: "charged" });
+    expect(await lookupWith(() => list([meta("1")])).lookup.find(first)).toMatchObject({ status: "charged" });
+  });
+
+  it("third review: every page is read; a charged entry beyond the first fifty is found, and a search that does not end gives no finding", async () => {
+    // 120 entries match the search text: this call's failed entry is on page 1, its charged retry on page 3.
+    const other = (n: number) => entry({ id: `log-other-${n}`, metadata: JSON.stringify({ garderobe_run: "run_abc123", garderobe_attempt: 1 }) });
+    const all120 = [entry({ id: "log-failed", success: false, status_code: 502, tokens_in: 0, tokens_out: 0 }), ...Array.from({ length: 118 }, (_, n) => other(n)), entry({ id: "log-paid-late", tokens_in: 700, tokens_out: 30 })];
+    const paged = lookupWith((url) => {
+      const page = Number(url.searchParams.get("page"));
+      const slice = all120.slice((page - 1) * 50, page * 50);
+      return Response.json({ success: true, result: slice, result_info: { count: slice.length, page, per_page: 50, total_count: all120.length } });
+    });
+    expect(await paged.lookup.find(call)).toEqual({ status: "charged", inputTokens: 700, outputTokens: 30, resolvedModel: "deepseek-chat", ref: "gateway-log:log-failed,log-paid-late" });
+    expect(paged.requests.map((r) => r.url.searchParams.get("page"))).toEqual(["1", "2", "3"]);
+    // Without a total, a full page means there may be more.
+    const noTotal = lookupWith((url) => Response.json({ success: true, result: all120.slice((Number(url.searchParams.get("page")) - 1) * 50, Number(url.searchParams.get("page")) * 50) }));
+    expect(await noTotal.lookup.find(call)).toMatchObject({ status: "charged", inputTokens: 700 });
+    // A listing that never ends is not evidence of anything.
+    const endless = lookupWith((url) => Response.json({ success: true, result: Array.from({ length: 50 }, (_, n) => entry({ id: `log-${url.searchParams.get("page")}-${n}`, success: false, tokens_in: 0, tokens_out: 0 })), result_info: { total_count: 1_000_000 } }));
+    expect(await endless.lookup.find(call)).toEqual({ status: "not_found" });
+    expect(endless.requests.length).toBe(20);
   });
 
   it("an answer that is not a plain success fails the lookup instead of reading as 'nothing was charged', and a foreign gateway is never queried", async () => {

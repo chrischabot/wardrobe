@@ -1,7 +1,7 @@
 import { SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { MCP_TOOL_NAMES } from "@garderobe/contracts/ext/api";
-import { APP_ORIGIN, MCP_ORIGIN, connectMcp, decideConsent, provisionOwner, testApp, toolResult, type McpConnection, type TestOwner } from "../src/testing/index.ts";
+import { APP_ORIGIN, MCP_ORIGIN, connectMcp, decideConsent, ownerDay, provisionOwner, testApp, toolResult, type McpConnection, type TestOwner } from "../src/testing/index.ts";
 
 /*
  * A real MCP client (the TypeScript SDK's Client over streamable HTTP) against the real Worker:
@@ -69,7 +69,8 @@ describe("tools", () => {
 });
 
 describe("commands over MCP", () => {
-  const today = () => new Date().toISOString().slice(0, 10);
+  /** Today as the owner counts it (the owner's timezone), not the UTC date. */
+  const today = () => ownerDay(owner);
   const cleanTop = async (skip: string[] = []) => {
     const inventory = await owner.api.json("GET", "/v1/wardrobe");
     return inventory.items.find((i: any) => i.garment.acquisition === "owned" && i.garment.roles.includes("top") && !skip.includes(i.garment.garmentId) && i.balances.some((b: any) => b.bucket === "clean" && b.quantity > 0));
@@ -78,7 +79,7 @@ describe("commands over MCP", () => {
   it("executes a typed command through the same command service: the receipt is the one the API serves", async () => {
     const top = await cleanTop();
     const key = `mcp-wear-${crypto.randomUUID()}`;
-    const args = { type: "wear.record", payload: { wearingDate: today(), garmentIds: [top.garment.garmentId] }, idempotencyKey: key };
+    const args = { type: "wear.record", payload: { wearingDate: await today(), garmentIds: [top.garment.garmentId] }, idempotencyKey: key };
     const result = toolResult(await writer.client.callTool({ name: "garderobe_command", arguments: args }));
     expect(result.ok).toBe(true);
     const receipt = result.data.receipt;
@@ -88,7 +89,7 @@ describe("commands over MCP", () => {
     // The native API reads the very same stored receipt, and the day's record shows the wear.
     const viaApi = await owner.api.json("GET", `/v1/commands/${receipt.commandId}`);
     expect(viaApi).toEqual({ ...receipt, replayed: false });
-    const day = await owner.api.json("GET", `/v1/days/${today()}`);
+    const day = await owner.api.json("GET", `/v1/days/${await today()}`);
     expect(day.garments.map((g: any) => g.garmentId)).toContain(top.garment.garmentId);
     // A retry with the same key returns the stored receipt; nothing is recorded twice.
     const retry = toolResult(await writer.client.callTool({ name: "garderobe_command", arguments: args }));
@@ -100,7 +101,7 @@ describe("commands over MCP", () => {
   });
 
   it("returns the API's typed errors for a refused command and writes nothing", async () => {
-    const missing = toolResult(await writer.client.callTool({ name: "garderobe_command", arguments: { type: "wear.record", payload: { wearingDate: today(), garmentIds: ["gmt_invented_by_a_model"] }, idempotencyKey: `mcp-${crypto.randomUUID()}` } }));
+    const missing = toolResult(await writer.client.callTool({ name: "garderobe_command", arguments: { type: "wear.record", payload: { wearingDate: await today(), garmentIds: ["gmt_invented_by_a_model"] }, idempotencyKey: `mcp-${crypto.randomUUID()}` } }));
     expect(missing.ok).toBe(false);
     expect(missing.error!.code).toBe("not_found");
     const unknown = toolResult(await writer.client.callTool({ name: "garderobe_command", arguments: { type: "garment.invent", payload: {}, idempotencyKey: `mcp-${crypto.randomUUID()}` } }));
@@ -213,7 +214,7 @@ describe("sensitive typed commands wait for the owner", () => {
     const undoProposal = (await pending()).find((p) => p.type === "command.undo" && p.payload.commandId === created.commandId);
     expect(undoProposal.summary).toContain("The change to undo: garment.create, recorded ");
     // A wear report on a garment the connection names is recorded at once, and so is its undo.
-    const wore = toolResult(await writer.client.callTool({ name: "garderobe_command", arguments: { type: "wear.record", payload: { wearingDate: new Date().toISOString().slice(0, 10), garmentIds: [garmentId] }, idempotencyKey: `wear-${crypto.randomUUID()}` } }));
+    const wore = toolResult(await writer.client.callTool({ name: "garderobe_command", arguments: { type: "wear.record", payload: { wearingDate: await ownerDay(owner), garmentIds: [garmentId] }, idempotencyKey: `wear-${crypto.randomUUID()}` } }));
     expect(wore.ok, JSON.stringify(wore.error)).toBe(true);
     const undone = toolResult(await writer.client.callTool(undo(wore.data.receipt.commandId)));
     expect(undone.ok, JSON.stringify(undone.error)).toBe(true);

@@ -17,10 +17,10 @@ struct OwnerProposalsJourney {
         #expect(model.decided.isEmpty)
 
         let add = try #require(model.pending.first { $0.type == "garment.create" })
-        let retire = try #require(model.pending.first { $0.type == "garment.retire" })
+        let retire = try #require(model.pending.first { $0.type == "garment.retire" && !$0.turnId.isEmpty })
         // Sent as a typed command, so there is no conversation turn behind it; shown like the others.
-        let stale = try #require(model.pending.first { $0.type == "style.add_direction" })
-        #expect(stale.turnId.isEmpty)
+        let stale = try #require(model.pending.first { $0.type == "garment.retire" && $0.turnId.isEmpty })
+        #expect(stale.payload["garmentId"]?.stringValue != retire.payload["garmentId"]?.stringValue)
         #expect(model.sourceLine(add).hasPrefix("Asked through Connected assistant (fixture), "))
         #expect(model.stateLine(add) == "Waiting for your decision. Nothing has been changed.")
         // The exact command and its fields, as the backend holds them.
@@ -50,7 +50,7 @@ struct OwnerProposalsJourney {
         #expect(model.decided.first { $0.proposalId == retire.proposalId }?.state == .rejected)
         #expect(model.stateLine(try #require(model.decided.first { $0.proposalId == retire.proposalId })) == "Rejected by you. Nothing was changed.")
 
-        // The third request was made against a style revision that has since changed.
+        // The third request was made against a garment version that has since changed.
         #expect(model.pending.map(\.proposalId) == [stale.proposalId])
         #expect(model.sourceLine(stale).hasPrefix("Asked through Connected assistant (fixture), "))
         #expect(model.canConfirm(stale))

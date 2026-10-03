@@ -4,13 +4,16 @@
  *
  * Verified on 2026-10-03 against Cloudflare's API reference, "List Gateway Logs"
  * (GET /accounts/{account_id}/ai-gateway/gateways/{gateway_id}/logs, permission "AI Gateway Read"): the
- * query parameters used here are `search` ("free-text search over log metadata"), `per_page` (1-50),
- * `order_by=created_at` and `order_by_direction`; each result carries `id`, `success`, `cached`, `model`,
+ * query parameters used here are `search` ("free-text search over log metadata"), `page` (from 1),
+ * `per_page` (1-50), `order_by=created_at` and `order_by_direction`; the answer carries
+ * `result_info.total_count`, and each result carries `id`, `success`, `cached`, `model`,
  * `tokens_in`, `tokens_out`, an optional `status_code` and an optional `metadata` string. The reference
  * does not state the format of `metadata` or how a `filters` array is written in a query string, so this
  * adapter does not use `filters`, and it accepts an entry only when its `metadata` parses as a JSON object
  * carrying exactly this call's `garderobe_run` and `garderobe_attempt` (the values gateway.ts sends).
- * Anything else is "not found", which leaves the reservation uncertain. The log's own `cost` is not used:
+ * Anything else is "not found", which leaves the reservation uncertain. All pages of the search are read,
+ * and a reservation is released only when every entry of the call explicitly shows no upstream usage
+ * (`findingFrom` below): missing, null, textual or fractional token fields are never read as zero. The log's own `cost` is not used:
  * its unit is not stated, and settlement uses the registry's price for the recorded tokens, as every other
  * settlement does.
  *
@@ -31,7 +34,7 @@ export interface GatewayLogsOptions {
   allowedGatewayIds?: readonly string[];
 }
 
-interface GatewayLogEntry {
+export interface GatewayLogEntry {
   id?: unknown;
   success?: unknown;
   cached?: unknown;
@@ -42,9 +45,10 @@ interface GatewayLogEntry {
   metadata?: unknown;
 }
 
-const tokens = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
+/** A token count exactly as the log gives it: a whole number, zero or more. Anything else is not a count. */
+const count = (v: unknown): number | null => (typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null);
 
-/** Whether a log entry is this call's: its metadata must name the same run and the same attempt. */
+/** Whether a log entry is this call's: its metadata must name exactly the same run and exactly the same attempt. */
 function isCall(entry: GatewayLogEntry, call: DispatchedCall): boolean {
   let meta: unknown = entry.metadata;
   if (typeof meta === "string") {
@@ -56,7 +60,49 @@ function isCall(entry: GatewayLogEntry, call: DispatchedCall): boolean {
   }
   if (!meta || typeof meta !== "object" || Array.isArray(meta)) return false;
   const m = meta as Record<string, unknown>;
-  return m["garderobe_run"] === call.runId.slice(0, 64) && Number(m["garderobe_attempt"]) === call.attempt;
+  // The attempt is the number gateway.ts sent, or that number written out in decimal. Never a loose
+  // conversion: an absent, empty, boolean or list value is not an attempt number.
+  const attempt = m["garderobe_attempt"];
+  const sameAttempt = (typeof attempt === "number" && attempt === call.attempt) || (typeof attempt === "string" && attempt === String(call.attempt));
+  return m["garderobe_run"] === call.runId.slice(0, 64) && sameAttempt;
+}
+
+/** Pages of 50 read for one call before the lookup gives up without a finding. */
+const MAX_PAGES = 20;
+const PER_PAGE = 50;
+
+/**
+ * What the complete set of this call's log entries says. Evidence rules (third review):
+ *   - an entry whose token counts are not both whole numbers says nothing reliable, and neither does a
+ *     successful, uncached entry with no tokens at all: the finding is `not_found` and the reservation
+ *     stays uncertain;
+ *   - `charged` when any entry used tokens upstream (not served from cache);
+ *   - `not_charged` only when EVERY entry explicitly shows no upstream usage: served from cache, or failed
+ *     (`success: false`) with both token counts exactly 0.
+ */
+export function findingFrom(entries: GatewayLogEntry[]): ProviderUsageFinding {
+  if (entries.length === 0) return { status: "not_found" };
+  const ref = `gateway-log:${entries.map((e) => String(e.id)).join(",")}`;
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let model: string | null = null;
+  for (const e of entries) {
+    const tin = count(e.tokens_in);
+    const tout = count(e.tokens_out);
+    if (typeof e.cached !== "boolean" || typeof e.success !== "boolean") return { status: "not_found" };
+    if (e.cached) continue; // answered from the Gateway's cache: nothing was used upstream
+    if (tin === null || tout === null) return { status: "not_found" };
+    if (tin + tout > 0) {
+      inputTokens += tin;
+      outputTokens += tout;
+      model ??= typeof e.model === "string" ? e.model : null;
+      continue;
+    }
+    // No tokens at all: evidence of no charge only for a call the log itself records as failed.
+    if (e.success) return { status: "not_found" };
+  }
+  if (inputTokens + outputTokens > 0) return { status: "charged", inputTokens, outputTokens, resolvedModel: model, ref };
+  return { status: "not_charged", ref };
 }
 
 export function createGatewayLogsLookup(options: GatewayLogsOptions): ProviderUsageLookup {
@@ -65,36 +111,42 @@ export function createGatewayLogsLookup(options: GatewayLogsOptions): ProviderUs
   return {
     async find(call: DispatchedCall): Promise<ProviderUsageFinding> {
       const gatewayId = assertGatewayId(call.gatewayId, options.allowedGatewayIds);
-      const url = new URL(`${base}/accounts/${encodeURIComponent(options.accountId)}/ai-gateway/gateways/${encodeURIComponent(gatewayId)}/logs`);
-      url.searchParams.set("search", call.runId.slice(0, 64));
-      url.searchParams.set("per_page", "50");
-      url.searchParams.set("order_by", "created_at");
-      url.searchParams.set("order_by_direction", "desc");
-      const abort = new AbortController();
-      const timer = setTimeout(() => abort.abort(), options.timeoutMs ?? 10_000);
-      let body: { success?: unknown; result?: unknown };
-      try {
-        const response = await doFetch(url.toString(), { method: "GET", headers: { Authorization: `Bearer ${options.apiToken}`, Accept: "application/json" }, redirect: "manual", signal: abort.signal });
-        // A redirect is never followed with the token attached; any answer but a plain success is a failed lookup.
-        if (response.status !== 200) throw new Error(`the Gateway logs request answered ${response.status}`);
-        body = (await response.json()) as { success?: unknown; result?: unknown };
-      } finally {
-        clearTimeout(timer);
+      const entries: GatewayLogEntry[] = [];
+      const seen = new Set<string>();
+      // Every page of the search is read: an attempt's entries can lie beyond the first fifty when the run
+      // ID also matches other attempts or other text. A search that does not end within the page limit
+      // gives no finding at all, because the unread part could hold a charged entry.
+      for (let page = 1; ; page++) {
+        if (page > MAX_PAGES) return { status: "not_found" };
+        const url = new URL(`${base}/accounts/${encodeURIComponent(options.accountId)}/ai-gateway/gateways/${encodeURIComponent(gatewayId)}/logs`);
+        url.searchParams.set("search", call.runId.slice(0, 64));
+        url.searchParams.set("page", String(page));
+        url.searchParams.set("per_page", String(PER_PAGE));
+        url.searchParams.set("order_by", "created_at");
+        url.searchParams.set("order_by_direction", "asc");
+        const abort = new AbortController();
+        const timer = setTimeout(() => abort.abort(), options.timeoutMs ?? 10_000);
+        let body: { success?: unknown; result?: unknown; result_info?: { total_count?: unknown } };
+        try {
+          const response = await doFetch(url.toString(), { method: "GET", headers: { Authorization: `Bearer ${options.apiToken}`, Accept: "application/json" }, redirect: "manual", signal: abort.signal });
+          // A redirect is never followed with the token attached; any answer but a plain success is a failed lookup.
+          if (response.status !== 200) throw new Error(`the Gateway logs request answered ${response.status}`);
+          body = (await response.json()) as typeof body;
+        } finally {
+          clearTimeout(timer);
+        }
+        if (body.success !== true || !Array.isArray(body.result)) throw new Error("the Gateway logs answer was not a successful result list");
+        const results = body.result as GatewayLogEntry[];
+        for (const e of results) {
+          if (!e || typeof e !== "object" || typeof e.id !== "string" || seen.has(e.id)) continue;
+          seen.add(e.id);
+          if (isCall(e, call)) entries.push(e);
+        }
+        const total = body.result_info?.total_count;
+        const complete = typeof total === "number" && Number.isInteger(total) ? page * PER_PAGE >= total : results.length < PER_PAGE;
+        if (results.length === 0 || complete) break;
       }
-      if (body.success !== true || !Array.isArray(body.result)) throw new Error("the Gateway logs answer was not a successful result list");
-      const entries = (body.result as GatewayLogEntry[]).filter((e) => e && typeof e === "object" && typeof e.id === "string" && isCall(e, call));
-      if (entries.length === 0) return { status: "not_found" };
-      // Every upstream request the Gateway made for this attempt counts; a cached answer used no tokens upstream.
-      const charged = entries.filter((e) => e.cached !== true && tokens(e.tokens_in) + tokens(e.tokens_out) > 0);
-      const ref = `gateway-log:${entries.map((e) => String(e.id)).join(",")}`;
-      if (charged.length === 0) return { status: "not_charged", ref };
-      return {
-        status: "charged",
-        inputTokens: charged.reduce((n, e) => n + tokens(e.tokens_in), 0),
-        outputTokens: charged.reduce((n, e) => n + tokens(e.tokens_out), 0),
-        resolvedModel: typeof charged[0]!.model === "string" ? (charged[0]!.model as string) : null,
-        ref,
-      };
+      return findingFrom(entries);
     },
   };
 }
