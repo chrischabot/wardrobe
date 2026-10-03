@@ -4,7 +4,9 @@ End-to-end owner journeys through the **real Worker**: its HTTP API and its MCP 
 workerd on local D1, KV, R2, a queue and the conversation Durable Object, seeded by the **real importer**
 with the owner's real profile (`requirements/chris-wardrobe-profile.md`) and real inventory
 (`requirements/wardrobe_inventory_clean.csv`, 127 garments, 144 units). Assertions read application state
-back through the same public surfaces and check the stored receipts; none of them reads a mock.
+back through the same public surfaces and check the stored receipts; application state is never read
+from a stand-in. (What a journey reads from a stand-in is only what the Worker sent to it: the events
+and request log of the Calendar double, in 05, 10 and 13.)
 
 ## Running
 
@@ -15,6 +17,7 @@ From the repository root, after `npm install`:
 | `npm test -w @garderobe/journey-tests` | The suite. Known product defects are expected failures; anything else that fails is a regression. Exit code 0 means "no regression", **not** "no defects". |
 | `npm run test:strict -w @garderobe/journey-tests` | The acceptance view: every known defect fails as an ordinary test. Its failures are exactly the open defects in [DEFECTS.md](DEFECTS.md). |
 | `npm run typecheck -w @garderobe/journey-tests` | Typecheck of the suite. |
+| `npm run evals:check -w @garderobe/journey-tests` | Checks the bundled 64-case evaluation corpus and its grader controls (see "Evaluation corpus" below). Needs `python3`; not part of `npm test`. |
 
 The root `npm test` runs the default mode along with every other workspace. One file:
 `npx vitest run test/05-repair-calendar.test.ts` in this directory. A whole-suite run at another time of
@@ -54,13 +57,55 @@ proves anything about the real service:
 | Google Calendar events API | In-memory calendar in Google's documented wire shape (caller-supplied IDs, 409, `If-Match` and 412, cancelled-on-delete) with scriptable outage, lost response and refusal; the Worker's real adapter and projector talk to it | `src/outbound.ts` | 05, 10, 13 |
 | Google OAuth, calendar list and creation; remote MCP tool service; APNs | The Worker package's own labelled fixture | `apps/worker/src/testing/vitest-config.ts` | 05, 10, 13 |
 | Cloudflare Access sign-in | Assertions signed with a key generated per run, verified by the Worker's real verification code | `apps/worker/src/testing` | all files |
-| Language model (AI Gateway) | The assistant workstream's labelled FAKE MODEL, scripted per step | `@garderobe/assistant/testing` | 11, 14 only |
+| Language model (AI Gateway) | The assistant workstream's labelled FAKE MODEL, scripted per step | `@garderobe/assistant/testing` | 11, 14, and one scripted reply in 13 |
 | Garment photographs | `testPng()` labelled test images | `apps/worker/src/testing` | 11, 13 |
 
 Consequences, stated plainly: every board in this suite comes from the deterministic composer (what the
 owner gets when no model is available); no model-written outfit or reply is judged here; nothing ran
 against Cloudflare's hosted D1, R2, KV or Durable Objects, Google, Apple or a real model. Those belong
 to the deployment acceptance and the evaluation corpus, not to this suite.
+
+The helpers the journeys import from `@garderobe/worker/testing` are the Worker package's own test
+support (owned by the API thread, not part of this suite). What each does, as read in
+`apps/worker/src/testing`:
+
+- `provisionOwner` is the one helper that does not go through a public route for everything: it creates
+  the user row and an invitation directly in local D1, runs the product's importer on the supplied
+  profile and sheet through the real command service (for `real: true`), and then claims the
+  invitation through the real `/auth/claim` route with a test-signed sign-in.
+- `owner.api` sends each request to the Worker's `fetch` entry with that sign-in.
+- `publishBoard` is `POST /v1/recommendations` in board mode, nothing else.
+- `connectMcp` goes through the real OAuth consent flow and returns the MCP SDK client.
+- `ownerDay` reads the owner's timezone from local D1 to name the owner's local date.
+- `enableFakeModel` records the model-route probes as a labelled test fixture, so a conversation turn
+  can run at all; `worker-entry` is the production Worker (same fetch, scheduled and queue handlers)
+  whose conversation actor uses the fake model instead of AI Gateway.
+
+## Evaluation corpus
+
+`evals/corpus-check.mjs` checks the supplied evaluation bundle
+(`requirements/support/wardrobe-support/evals`) without changing a byte of it:
+
+- 64 cases (40 adapted from history, 24 constructed), split 45 development and 19 held out, with no
+  source conversation in both splits and calibration replies from development conversations only;
+- the profile copy is the September 14 profile byte for byte, and the September 15 decisions are a
+  separate document;
+- every historical excerpt keeps its conversation, message, date, position and source-message hash;
+- all 64 candidate packets, built by the bundle's own `evaluate.py`, carry the complete profile,
+  amendments, fixture and request and none of the judge criteria, source feedback, historical answers
+  or expected state; a judge packet cannot be built before a candidate exists;
+- the bundle's structural grader catches labelled negative controls (missing socks, an invented
+  garment, restricted footwear, a duplicated role), and its state check refuses a record with no
+  application-adapter provenance and catches a stale Calendar revision;
+- the eight bundled historical reviews are well-formed.
+
+What this is not. It runs no candidate, calls no model and judges nothing, so it says nothing about how
+this application performs on any case. The owner's private chat export is not in the bundle: 38 of the
+42 historical excerpts are whole messages and are re-hashed from the bundle alone, the other four are
+partial quotations that only the export could confirm, and the script reports the bundle's own full
+validation as not run to completion for that reason. Not built yet: the application adapter that
+records observed state for the 18 behavioural cases, candidate runs through a live model, and
+independent judging.
 
 ## Independent checks
 
@@ -69,6 +114,30 @@ to the deployment acceptance and the evaluation corpus, not to this suite.
   alone: garment names an outfit shows, the forecast the journey scripted, the wears the journey
   reported. It imports nothing from the product, and its first test proves it catches each violation.
 - `internalCodesIn` (`src/world.ts`) is the check behind "no internal codes in owner-facing text".
+
+### Known limits of these checks
+
+Stated so that nobody reads more into a green run than it shows (most were raised by the independent
+review of 2026-10-03 and are not yet closed):
+
+- The thermal rule is checked only for garments whose season in the sheet states a number ("To 22°C",
+  "10-24°C", "Hot (30°C+)"). A worded season ("Cold", "Winter", "Warm-weather" and the like) has no
+  number in the owner's documents, and the checker does not invent one; such garments get no thermal check.
+- `internalCodesIn` finds identifiers, UUIDs, snake_case codes, maker fabric codes and field names. It
+  does not find a dotted command name without an underscore ("board.select"), camelCase codes, or a
+  phrase such as "revision 2".
+- `sheetRowsFor` matches a shown name to the sheet by item and the first word of the colour. Lines that
+  disagree are reported as ambiguous; a wrong name sharing that first word would still be accepted.
+- `safeLeadViolations` knows the plain sheet colours White, Off-white, Blue and Light blue.
+- The Calendar double cannot fail a read (journey 05 covers a disconnected calendar, not a failed
+  read) and answers a write to a cancelled event more leniently than Google does (204, where Google
+  answers 410).
+- Journey 03's weekly-baseline steps take "the most recent Sunday" from the clock and are not pinned to
+  a weekday; they have not been run on a Sunday.
+- The Studio forecast step in 12 asserts that Studio no longer says the forecast is unavailable; it does
+  not assert positively which forecast the verdict used, and it uses Explore mode for a later day.
+- In 06, the seven-day repeat is asserted for the days inside the week; that the pieces return on the
+  eighth day is not asserted.
 
 ## Data rules
 
@@ -88,4 +157,6 @@ command types wait.
 A defect test states what the specification or the profile requires and is never weakened. See
 [DEFECTS.md](DEFECTS.md) for each one's reproduction and owning workstream, and `src/defect.ts` for how
 the two run modes treat them. When a defect is fixed its test starts to pass, the default run reports
-"expected to fail", and the fix is to turn `defect(...)` into `it(...)` and delete the entry.
+"expected to fail", and the fix is to turn `defect(...)` into `it(...)` and move the entry to the
+"Fixed" table of DEFECTS.md with the revision that fixed it. Only the journey suite's owner converts a
+test, after re-running the journey on the branch that holds the fix.

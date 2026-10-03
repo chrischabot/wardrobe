@@ -16,7 +16,6 @@
  * command with an earlier `occurredAt`, and wears the journey itself reports late as the owner.
  */
 import { beforeAll, describe, expect, it } from "vitest";
-import { defect } from "../src/defect.ts";
 import { connectMcp, provisionOwner, publishBoard, toolResult, type TestOwner } from "@garderobe/worker/testing";
 import type { CommandReceipt } from "@garderobe/contracts";
 import { addDays, exec, internalCodesIn, isoWeekday, mcpCommand, quantityIn, realOwnerAt, refused, runCron, wholeWardrobe, type JourneyOwner } from "../src/world.ts";
@@ -58,7 +57,6 @@ describe("a laundry week with exceptions (the owner's real stock)", () => {
   let secondBatch: string;
   let lostReturn: Receipt;
   let washUndo: Receipt;
-  let assistantRoute: string;
 
   beforeAll(async () => {
     j = await realOwnerAt("Laundry");
@@ -124,10 +122,10 @@ describe("a laundry week with exceptions (the owner's real stock)", () => {
     await tell(owner, "care.mark_dirty", { items: pieces.map((garmentId) => ({ garmentId })) });
   });
 
-  defect("D03-1", "the Undo receipt of an \"in the wash\" report is in plain words, without a machine command code", () => {
+  it("the Undo receipt of an \"in the wash\" report is in plain words, without a machine command code", () => {
     // Section 3: "Reversible actions show Undo in their receipt card and a short-lived banner"; section 8:
-    // the assistant "confirms concisely"; profile section 8 rule 7 (words he can see at the wardrobe). The
-    // receipt reads "Undone: In the wash: ... . Undid care.mark_dirty": the command's type code is shown to him.
+    // the assistant "confirms concisely"; profile section 8 rule 7 (words he can see at the wardrobe).
+    // Was defect D03-1 (the receipt ended "Undid care.mark_dirty"); fixed by the foundation in a5e6c8fa.
     expect(internalCodesIn(washUndo.summary)).toEqual([]);
   });
 
@@ -173,8 +171,26 @@ describe("a laundry week with exceptions (the owner's real stock)", () => {
     expect((await itemOf(owner, g.lateShirt)).detail.balances).toEqual([{ bucket: "dirty", ref: "", quantity: 1 }]);
   });
 
-  it("a partial return completes only the returning batch, less the shirt still away; a return is corrected by a report, not undone", async () => {
-    const receipt = await tell(owner, "laundry.return", { batchId: firstBatch, stillAway: [{ garmentId: g.beige }] });
+  it("a partial return completes only the returning batch, less the shirt still away; undoing it puts the bag back at the laundry", async () => {
+    const returnIt = () => tell(owner, "laundry.return", { batchId: firstBatch, stillAway: [{ garmentId: g.beige }] });
+    let receipt = await returnIt();
+
+    // Owner decision of 2026-10-03: a recorded return is a routine action with a receipt and an undo.
+    // Nothing recorded since speaks for a returned piece, so the undo is allowed: the bag is at the
+    // laundry again with all three shirts, and the "still away" note it opened is gone with it.
+    expect(receipt.undo.available).toBe(true);
+    const undone = await tell(owner, "command.undo", { commandId: receipt.commandId });
+    expect(undone.outcome).toBe("committed");
+    expect(internalCodesIn(undone.summary)).toEqual([]);
+    said.push(undone.summary);
+    const reopened = await laundryOf(owner);
+    expect(reopened.batches.find((b: any) => b.batchId === firstBatch)).toMatchObject({ status: "collected", returnedAt: null, returnBasis: null });
+    expect(reopened.exceptions).toEqual([]);
+    for (const id of [g.plaid, g.beige, g.sage]) expect((await itemOf(owner, id)).detail.balances).toEqual([{ bucket: "service", ref: firstBatch, quantity: 1 }]);
+    await ledgerIsSound(owner, 144);
+
+    // The bag really did come back without the beige shirt: he reports it again.
+    receipt = await returnIt();
     expect(receipt.summary).toBe("Laundry returned: 2 items clean; still away: Clark oxford — beige");
     expect(receipt.result).toMatchObject({ returned: 2, stillAway: 1 });
     const laundry = await laundryOf(owner);
@@ -188,12 +204,7 @@ describe("a laundry week with exceptions (the owner's real stock)", () => {
     for (const id of [g.plaid, g.sage]) expect((await itemOf(owner, id)).detail.balances).toEqual([{ bucket: "clean", ref: "", quantity: 1 }]);
     expect(laundry.exceptions).toHaveLength(1);
     expect(laundry.exceptions[0]).toMatchObject({ kind: "still_away", garmentId: g.beige, quantity: 1 });
-
-    expect(receipt.undo.available).toBe(false);
-    const undo = await refused(await owner.api.command("command.undo", { commandId: receipt.commandId }));
-    expect(undo.status).toBe(409);
-    expect(undo.error.message).toMatch(/report what is still away instead/);
-    said.push(undo.error.message);
+    expect(receipt.undo.available).toBe(true);
   });
 
   it("the shirt still away is unavailable, and tomorrow's board offers five outfits without it or anything else in the wash", async () => {
@@ -239,11 +250,10 @@ describe("a laundry week with exceptions (the owner's real stock)", () => {
     await ledgerIsSound(owner, 144);
   });
 
-  defect("D03-2", "the return of a bag whose only shirt was reported lost does not claim that a piece came back clean", async () => {
+  it("the return of a bag whose only shirt was reported lost does not claim that a piece came back clean", async () => {
     // Section 5, Quantity and laundry: "A return completes only the contents of the returning batch, less
     // named exceptions." Section 3: "Each action returns a receipt and updates current availability."
-    // The shirt was reported lost before the bag came back and the ledger rightly keeps it away, but the
-    // return receipt and the batch record both say one item came back clean.
+    // Was defect D03-2 (receipt and batch both said one item came back clean); fixed by the foundation in a5e6c8fa.
     expect(lostReturn.summary).not.toMatch(/1 item clean/);
     expect(lostReturn.result.returned ?? 0).toBe(0);
     const batch = (await laundryOf(owner)).batches.find((b: any) => b.batchId === secondBatch);
@@ -273,8 +283,7 @@ describe("a laundry week with exceptions (the owner's real stock)", () => {
 
   it("a connected assistant relays a wash report and reads the same laundry sheet the app shows", async () => {
     const mcp = await connectMcp(owner, { write: true, clientName: "Laundry helper", redirectUri: "https://laundry-helper.client.test/cb" });
-    const relayed = await mcpCommand(owner, mcp, "care.washed", { items: [{ garmentId: g.lateShirt }] });
-    assistantRoute = relayed.route;
+    const relayed = await mcpCommand(owner, mcp, "care.washed", { items: [{ garmentId: g.lateShirt }] }, { expectRoute: "direct" });
     heard(relayed.receipt);
     expect(relayed.receipt.outcome).toBe("committed");
     expect(relayed.receipt.channel).toBe("mcp");
@@ -303,7 +312,7 @@ describe("a laundry week with exceptions (the owner's real stock)", () => {
     }
     const proposals = await owner.api.json("GET", "/v1/proposals");
     expect(proposals.pending).toBe(0);
-    if (assistantRoute === "direct") expect(proposals.proposals).toEqual([]);
+    expect(proposals.proposals).toEqual([]);
     expect((await owner.api.json("GET", "/v1/recovery")).pending.runsNeedingInput).toBe(0);
     await ledgerIsSound(owner, 144);
   });
@@ -404,12 +413,12 @@ describe("the weekly cycle (labelled SYNTHETIC garments on a timeline that start
     expect(receipt.undo).toMatchObject({ available: false, reason: expect.stringMatching(/standing policy; report an exception instead/) });
   });
 
-  defect("D03-3", "the availability basis of a shirt that is clean only by the weekly inference does not call that an observation", async () => {
+  it("the availability basis of a shirt that is clean only by the weekly inference does not call that an observation", async () => {
     // Section 5, Quantity and laundry: "Availability combines observed physical facts with a separately
     // recorded estimate of routine cleanliness." Probability without status interrogation: "Do not falsely
     // record an observed pickup or return." Section 3: "Availability detail can show its basis".
-    // Nobody observed this shirt being washed or returned; the basis shown for it nevertheless reads
-    // "1 clean unit at home (observed ledger balance)" and says nothing of the weekly estimate.
+    // Nobody observed this shirt being washed or returned. Was defect D03-3 (the basis read "observed
+    // ledger balance"); fixed by the foundation in a5e6c8fa.
     const basis = (await itemOf(owner, s.firstWeek)).availability.basis.join(" ");
     expect(basis).not.toMatch(/observed/i);
     expect(basis).toMatch(/inferred|estimate|baseline/i);

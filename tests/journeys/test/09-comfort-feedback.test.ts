@@ -20,12 +20,8 @@
  *  - test-signed sign-in; the SDK MCP client over in-process fetch.
  * No fake model is used (feedback given inside a conversation turn is not covered here), no calendar
  * double: boards say plainly that Calendar is not connected.
- *
- * Tests named "DEFECT: ..." state what the specification requires and are left failing where the
- * product does something else.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { defect } from "../src/defect.ts";
 import { connectMcp, provisionOwner, publishBoard, type McpConnection, type TestOwner } from "@garderobe/worker/testing";
 import { boardTexts, exec, internalCodesIn, mcpCommand, realOwnerAt, refused, type JourneyOwner } from "../src/world.ts";
 
@@ -77,7 +73,11 @@ describe("Journey 09: optional comfort feedback from the item", () => {
     const prepared = await publishBoard(j.owner, { date: j.day(1), count: 5 });
     expect(prepared.state).toBe("completed");
     expect(prepared.board.options).toHaveLength(5);
-    leadOption = prepared.board.options[0];
+    // The later steps name the pieces of one outfit. On this mild day (11 C leaving) at least one outfit
+    // has a jacket; that one is used, so the steps do not depend on which outfit the composer led with.
+    const jacketed = (prepared.board.options as Option[]).find((o) => o.garments.some((g) => g.role === "outer"));
+    expect(jacketed, "an 11 degree start offers at least one outfit with a jacket").toBeTruthy();
+    leadOption = jacketed!;
     shoe = leadOption.garments.find((g) => g.role === "footwear")!;
     jacket = leadOption.garments.find((g) => g.role === "outer")!;
     shirt = leadOption.garments.find((g) => g.role === "top")!;
@@ -97,8 +97,16 @@ describe("Journey 09: optional comfort feedback from the item", () => {
     expect(internalCodesIn(painReceipt.summary)).toEqual([]);
     expect(painReceipt.summary).not.toMatch(/injur|medical|diagnos|doctor|blister|condition|treat/i);
     expect(painReceipt.undo.available).toBe(true);
-    expect(painReceipt.repairs).toEqual([]);
-    expect(painReceipt.effects).toEqual([]);
+    // The board already prepared for tomorrow is repaired in the same commit (section 10: discomfort is
+    // applied "immediately to the relevant recommendation context"), and the receipt says so: which shoes
+    // were replaced and why. Only what the line says is asserted, not how it words the board or the day.
+    // The only effect is that board's Calendar projection: no reminder, no prompt.
+    expect(painReceipt.repairs).toHaveLength(1);
+    expect(painReceipt.repairs[0]).toContain(`${shoe.name} replaced by `);
+    expect(painReceipt.repairs[0]).toContain("(you said it hurt)");
+    expect(painReceipt.repairs[0]).not.toContain("?");
+    expect(internalCodesIn(painReceipt.repairs[0]!)).toEqual([]);
+    expect(painReceipt.effects.map((e: any) => e.kind)).toEqual(["calendar.project_board"]);
     expect(painReceipt.result).toMatchObject({ garmentIds: [shoe.garmentId], pain: true, scope: null });
 
     // Stored verbatim, linked to the shoe and to nothing that was not said.
@@ -133,7 +141,8 @@ describe("Journey 09: optional comfort feedback from the item", () => {
     expect(read.availability.hardExcluded).toBe(false);
   });
 
-  defect("D09-1", "the board already prepared for tomorrow stops offering the shoes he just said hurt", async () => {
+  it("the board already prepared for tomorrow stops offering the shoes he just said hurt", async () => {
+    // Was defect D09-1 (the published board kept the shoes); fixed by the daily service in cadc3aeb.
     const tomorrow = await boardFor(j.day(1));
     const stillOffered = (tomorrow.options as Option[]).filter((o) => shoesOf(o).some((s) => s.garmentId === shoe.garmentId)).length;
     expect(stillOffered).toBe(0);
@@ -247,7 +256,7 @@ describe("Journey 09: optional comfort feedback from the item", () => {
     expect((await one(warmId)).status).toBe("active");
   });
 
-  it("Undo of the pain report withdraws it, and the shoes can lead a board again", async () => {
+  it("Undo of the pain report withdraws it, and the shoes are offered again when he asks for them", async () => {
     const undone = await exec(api(), "command.undo", { commandId: painReceipt.commandId });
     expect(undone.outcome).toBe("committed");
     expect(undone.summary).toMatch(/Comfort note withdrawn/);
@@ -256,9 +265,13 @@ describe("Journey 09: optional comfort feedback from the item", () => {
     expect(await feedback(`?garmentId=${shoe.garmentId}`)).toEqual([]);
     expect((await api().json("GET", `/v1/commands/${painReceipt.commandId}`)).commandId).toBe(painReceipt.commandId);
 
-    const later = await publishBoard(j.owner, { date: j.day(3), count: 5 });
-    const offering = (later.board.options as Option[]).filter((o) => shoesOf(o).some((s) => s.garmentId === shoe.garmentId)).length;
-    expect(offering).toBeGreaterThan(0);
+    // Which sneakers an ordinary board picks is the composer's choice among several pairs, so the
+    // consequence is checked where it is certain: asked for by name, the shoes are on every outfit.
+    const asked = await api().json("POST", "/v1/recommendations", { clientRequestId: `again-${crypto.randomUUID()}`, date: j.day(3), mode: "preview", count: 2, lockedGarmentIds: [shoe.garmentId] });
+    expect(asked.options.length).toBeGreaterThan(0);
+    for (const option of asked.options as Option[]) expect(shoesOf(option).map((s) => s.garmentId)).toContain(shoe.garmentId);
+    const read = await item(shoe.garmentId);
+    expect(read.availability.status).toBe("available");
   });
 
   it("another owner sees none of the remarks and cannot attach one to his garments", async () => {

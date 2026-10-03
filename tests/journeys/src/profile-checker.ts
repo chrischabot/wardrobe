@@ -1,6 +1,7 @@
 /**
- * An INDEPENDENT checker of the owner profile's hard constraints (chris-wardrobe-profile.md, section 8,
- * with the colour verdict of section 5 and the accessory line of section 9).
+ * An INDEPENDENT checker of the owner profile's hard constraints (chris-wardrobe-profile.md, section 8
+ * rules 1 to 7, with the colour verdict of section 5, the accessory line of section 9 and the "safe
+ * options never lead" expectation of section 11).
  *
  * It is written from the profile text and the owner's inventory sheet alone. It imports nothing from
  * the product: not its validator, not its rule records, not its garment attributes. Its inputs are the
@@ -40,7 +41,20 @@ export const shown = (option: any): ShownOutfit => ({
   flourish: option.flourish ? { role: option.flourish.role, name: option.flourish.name } : null,
 });
 
-const rowOf = (piece: ShownPiece): SheetRow | null => sheetRowsFor(piece.name)[0] ?? null;
+/**
+ * The sheet row behind a shown piece. The sheet lists some garments on several lines (two pairs of the
+ * same trousers); those lines agree on colour, season and status. A name that matches lines which do
+ * NOT agree is ambiguous and is reported as a violation, never silently read from the first line.
+ */
+const rowsOf = (piece: ShownPiece): SheetRow[] => sheetRowsFor(piece.name);
+const agree = (rows: SheetRow[]): boolean => new Set(rows.map((r) => `${r.category}|${r.colour}|${r.season}|${r.status}|${r.fabric}`)).size <= 1;
+const rowOf = (piece: ShownPiece): SheetRow | null => {
+  const rows = rowsOf(piece);
+  return rows.length > 0 && agree(rows) ? rows[0]! : null;
+};
+
+/** Season texts of the sheet that state no number; every other season text must parse to a limit (checked in journey 06). */
+export const WORDED_SEASONS = ["All-but-coldest", "Year-round", "Cold", "-", "Warm-weather", "Transitional", "Hot", "All-season", "Cool", "Cool/cold", "Warm-leaning", "Winter"];
 
 /** Numeric temperature limits the SHEET states for a garment ("To 22°C", "10-24°C", "Hot (30°C+)"). */
 export function sheetLimits(row: SheetRow): { minC: number | null; maxC: number | null } {
@@ -75,7 +89,7 @@ export function profileViolations(outfit: ShownOutfit, day: DayFacts): string[] 
   const rows = new Map<ShownPiece, SheetRow>();
   for (const piece of [...outfit.pieces, ...outfit.footwearAlternatives, ...(outfit.flourish ? [outfit.flourish] : [])]) {
     const row = rowOf(piece);
-    if (!row) say(`"${piece.name}" is not a name from his inventory`);
+    if (!row) say(rowsOf(piece).length > 1 ? `"${piece.name}" matches several different lines of his inventory` : `"${piece.name}" is not a name from his inventory`);
     else rows.set(piece, row);
     if (/\bPCF\d+/i.test(piece.name)) say(`"${piece.name}" shows a maker's fabric code`);
   }
@@ -89,6 +103,9 @@ export function profileViolations(outfit: ShownOutfit, day: DayFacts): string[] 
     if (!row) continue;
     if (row.category !== "Sock") say(`${sock.name} is not a sock`);
     if (isBedSock(row)) say(`${sock.name} is a bed sock`);
+    // Profile section 8 rule 1: "Socks always, wicking merino by default." "By default" is read here
+    // as: on a day that gets above 15 °C nothing but merino is acceptable; on a colder day another
+    // outdoor sock he owns may stand in. The 15 °C line is this checker's reading, not the profile's number.
     if (!/merino/i.test(row.fabric) && day.peakC > 15) say(`${sock.name} is not merino on a ${day.peakC} °C day (merino by default)`);
   }
 
@@ -163,11 +180,40 @@ export function neutralViolations(outfit: ShownOutfit): string[] {
   return [...counts].filter(([, names]) => names.length >= 3).map(([neutral, names]) => `${outfit.label}: ${neutral} appears ${names.length} times (${names.join(", ")})`);
 }
 
+/**
+ * Section 11 (and the standing verdict of section 5): safe options never lead. The "safe option" the
+ * profile names is the white-or-blue shirt with navy trousers; it may be on a board, never first.
+ */
+export function safeLeadViolations(board: { options: any[] }): string[] {
+  const lead = board.options[0];
+  if (!lead) return [];
+  const outfit = shown(lead);
+  const top = outfit.pieces.find((p) => p.role === "top");
+  const bottom = outfit.pieces.find((p) => p.role === "bottom");
+  const shirt = top ? rowOf(top) : null;
+  const trousers = bottom ? rowOf(bottom) : null;
+  if (!shirt || !trousers) return [];
+  const safe = /^(white|off-white|blue|light blue)$/i.test(shirt.colour.trim()) && /navy/i.test(trousers.colour);
+  return safe ? [`${outfit.label}: the safe option (${top!.name} with ${bottom!.name}) leads the board`] : [];
+}
+
+/**
+ * Rule 6: "Never fall back to navy when a piece is swapped out." Judged on the piece a swap brought in,
+ * by the colour his own sheet gives it. A piece the owner asked for by name is his choice, not a fallback,
+ * so callers pass only replacements the product chose.
+ */
+export function navyFallbackViolations(replacementName: string, swappedOutName: string): string[] {
+  const rows = sheetRowsFor(replacementName);
+  if (rows.length === 0) return [`"${replacementName}", offered in place of ${swappedOutName}, is not a name from his inventory`];
+  return rows.some((r) => /navy/i.test(r.colour)) ? [`${replacementName} (navy) was offered in place of ${swappedOutName}`] : [];
+}
+
 /** Violations across a whole board, plus the board-level expectations of the profile. */
 export function boardViolations(board: { options: any[] }, day: DayFacts): string[] {
   const out = board.options.flatMap((o) => profileViolations(shown(o), day));
   const names = (role: string) => board.options.map((o) => o.garments.find((g: any) => g.role === role)?.name);
   // He owns thirty-odd shirts and twenty-odd trousers so that nothing repeats: one board offers five different ones.
   for (const role of ["top", "bottom"]) if (new Set(names(role)).size !== board.options.length) out.push(`the board repeats a ${role === "top" ? "shirt" : "pair of trousers"} across its options: ${names(role).join(", ")}`);
+  out.push(...safeLeadViolations(board));
   return out;
 }

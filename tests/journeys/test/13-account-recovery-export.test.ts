@@ -27,7 +27,7 @@ import { APP_ORIGIN, ApiClient, MCP_ORIGIN, connectMcp, enableFakeModel, newIden
 import suppliedProfile from "../../../requirements/chris-wardrobe-profile.md?raw";
 import checksumList from "../../../requirements/SHA256SUMS?raw";
 import { sheetRowsFor } from "../src/inventory.ts";
-import { calendarState, connectGoogle, exec, internalCodesIn, realOwnerAt, refused, runCron, settleRun, wholeWardrobe, type JourneyOwner } from "../src/world.ts";
+import { calendarState, connectGoogle, eventsOn, exec, internalCodesIn, realOwnerAt, refused, runCron, settleRun, wholeWardrobe, type JourneyOwner } from "../src/world.ts";
 
 /** The profile's checksum as the owner's own requirements bundle lists it. */
 const PROFILE_SHA256 = /^([0-9a-f]{64})\s+chris-wardrobe-profile\.md$/m.exec(checksumList as string)![1]!;
@@ -308,8 +308,9 @@ describe("journey 13b: export my wardrobe, verify it, and import it into an empt
   it("before exporting: the calendar projection really happened, so there is an external effect that could be replayed", async () => {
     const today = await owner.api.json("GET", `/v1/today?date=${j.today}`);
     expect(today.board.calendarProjection.state).toBe("projected");
-    const calendar = await calendarState(calendarId);
-    expect(calendar.events.filter((e) => e.status !== "cancelled")).toHaveLength(1);
+    // Exactly one event for today's board. (Counted for today only: in the evening the scheduled
+    // service also prepares and delivers tomorrow's board, which is the owner's own and not a replay.)
+    expect((await eventsOn(calendarId, j.today)).filter((e) => e.status !== "cancelled")).toHaveLength(1);
     expect(await calendarWrites()).toBeGreaterThan(0);
     expect((await owner.api.json("GET", "/v1/recovery")).pending.effects).toBe(0);
   });
@@ -510,7 +511,7 @@ describe("journey 13b: export my wardrobe, verify it, and import it into an empt
     await runCron();
     await runCron();
     expect(await calendarWrites()).toBe(writesBefore);
-    expect((await calendarState(calendarId)).events.filter((e) => e.status !== "cancelled")).toHaveLength(1);
+    expect((await eventsOn(calendarId, j.today)).filter((e) => e.status !== "cancelled")).toHaveLength(1);
     const status = await target.api.json("GET", "/v1/recovery");
     expect(status.pending.effects).toBe(0);
     expect(status.connectionIssues).toEqual([]);

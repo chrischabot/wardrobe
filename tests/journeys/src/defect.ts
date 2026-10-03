@@ -7,8 +7,8 @@
  *
  *  - Default run (`npm test`): a known defect is an EXPECTED failure. The run stays usable as a
  *    regression gate for everything else, and the day the product is fixed the test turns red with
- *    "expected to fail", which is the signal to delete its entry from DEFECTS.md and make it an
- *    ordinary test.
+ *    "expected to fail", which is the signal to make it an ordinary test and move its entry in DEFECTS.md
+ *    to the "Fixed" table.
  *  - Strict run (`npm run test:strict`, `JOURNEYS_STRICT=1`): every defect test is an ordinary test and
  *    fails. This is the acceptance view: its failures are exactly the open defects.
  *

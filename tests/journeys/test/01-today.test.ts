@@ -15,7 +15,7 @@ import { SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { APP_ORIGIN, connectMcp, provisionOwner, publishBoard, toolResult, type TestOwner } from "@garderobe/worker/testing";
 import { sheetRowsFor } from "../src/inventory.ts";
-import { boardTexts, committed, exec, internalCodesIn, mcpCommand, quantityIn, realOwnerAt, refused, weatherDown, wholeWardrobe, type JourneyOwner } from "../src/world.ts";
+import { boardTexts, exec, internalCodesIn, mcpCommand, quantityIn, realOwnerAt, refused, weatherDown, wholeWardrobe, type JourneyOwner } from "../src/world.ts";
 
 let j: JourneyOwner;
 let owner: TestOwner;
@@ -218,7 +218,7 @@ describe("the morning: Today, choose, swap, record", () => {
 
     const mcp = await connectMcp(owner, { write: true, clientName: "Morning writer", redirectUri: "https://morning-writer.client.test/cb" });
     const top = worn.garments.find((g: any) => g.role === "top");
-    const relayed = await mcpCommand(owner, mcp, "wear.record", { wearingDate: j.day(0), garmentIds: [top.garmentId] });
+    const relayed = await mcpCommand(owner, mcp, "wear.record", { wearingDate: j.day(0), garmentIds: [top.garmentId] }, { expectRoute: "direct" });
     expect(relayed.receipt.outcome).toBe("merged");
     expect(relayed.receipt.channel).toBe("mcp");
     await mcp.close();
@@ -304,6 +304,5 @@ describe("the morning: Today, choose, swap, record", () => {
     expect((await stranger.api.json("GET", `/v1/days/${j.day(0)}`)).garments).toEqual([]);
     const theft = await stranger.api.command("board.select", { boardId: board.boardId, optionId: board.options[0].optionId });
     expect(theft.status).toBe(404);
-    void committed;
   });
 });

@@ -18,7 +18,6 @@
  * without inference" is a property of the phone and is not covered by a backend journey.
  */
 import { beforeAll, describe, expect, it } from "vitest";
-import { defect } from "../src/defect.ts";
 import { connectMcp, provisionOwner, toolResult, type TestOwner } from "@garderobe/worker/testing";
 import { exec, internalCodesIn, realOwnerAt, refused, runCron, wholeWardrobe, type JourneyOwner, type WardrobeItem } from "../src/world.ts";
 
@@ -435,9 +434,8 @@ describe("journey 12: composing, checking and saving outfits in Studio", () => {
       expect(roles).toContain("socks");
       for (const shoe of option.garments.filter((g: any) => g.role === "footwear")) expect(offeredToday.has(shoe.garmentId), shoe.name).toBe(true);
       const verdict = await owner.api.json("POST", "/v1/studio/validate", { mode: "for_today", slots: option.garments.map((g: any) => ({ role: g.role, garmentId: g.garmentId })) });
-      // Studio's check of the jacket band without a forecast is the separate defect D12-1 below; every
-      // other rule must agree with the recommendation.
-      expect(blocking(verdict).filter((v) => !/forecast is unavailable/.test(v.message)), option.name).toEqual([]);
+      // Every rule must agree with the recommendation.
+      expect(blocking(verdict), option.name).toEqual([]);
       expect(internalCodesIn(option.reason)).toEqual([]);
     }
     // Asking published nothing and changed nothing: today's plan is the one the app already had.
@@ -447,13 +445,18 @@ describe("journey 12: composing, checking and saving outfits in Studio", () => {
     await mcp.close();
   });
 
-  defect("D12-1", "Studio checks an outfit against the day's forecast instead of saying the forecast is unavailable", async () => {
-    // Specification section 3 (Studio): "For today uses today's validated eligibility"; section 7: the
-    // forecast is mandatory context, fetched by the backend. For a day nobody has asked a board for yet,
-    // Studio does not fetch the forecast: it reports "the forecast is unavailable" and blocks a jacket
-    // over an oxford, although the weather service answers and `GET /v1/weather` for that day is fresh
-    // (11 C leaving, 19 C later, where the 14-16 C jacket rule does not apply).
-    const idByName = (name: string) => [...wardrobe.values()].find((w) => w.garment.name === name)!.garment.garmentId;
+  // Was defect D12-1 (Studio said "the forecast is unavailable" for a day nobody had asked a board for);
+  // fixed by the visual wardrobe thread in e94af8fb. Kept as two steps: the first proves the situation
+  // (the garments exist, the request is accepted, the forecast for that day is fresh), the second holds
+  // the assertion that used to fail.
+  let laterDayVerdict: any;
+
+  it("for a later day the forecast can be fetched and is fresh, and Studio answers a check of a jacket over an oxford", async () => {
+    const idByName = (name: string) => {
+      const found = [...wardrobe.values()].find((w) => w.garment.name === name);
+      expect(found, name).toBeTruthy();
+      return found!.garment.garmentId as string;
+    };
     const slots = [
       { role: "outer", garmentId: idByName("Drake's Olive Jungle Jacket") },
       { role: "top", garmentId: idByName("Pima oxford — navy") },
@@ -461,9 +464,21 @@ describe("journey 12: composing, checking and saving outfits in Studio", () => {
       { role: "socks", garmentId: idByName("Merino — deep earth brown") },
       { role: "footwear", garmentId: idByName("NB 990v4 — olive/cream") },
     ];
-    const verdict = await owner.api.json("POST", "/v1/studio/validate", { mode: "explore", date: j.day(7), slots });
+    // The order matters: Studio is asked first, while nothing has asked for that day's forecast yet.
+    // Reading the forecast afterwards shows it could be fetched (a read before would record it and hide the defect).
+    laterDayVerdict = await owner.api.json("POST", "/v1/studio/validate", { mode: "explore", date: j.day(7), slots });
+    expect(Array.isArray(laterDayVerdict.violations)).toBe(true);
+    expect(laterDayVerdict.validator).toBe("daily-service");
     const weather = await owner.api.json("GET", `/v1/weather?date=${j.day(7)}`);
     expect(weather.freshness).toBe("fresh");
-    expect((verdict.violations as any[]).map((v) => v.message).filter((m) => /forecast is unavailable/.test(m))).toEqual([]);
+  });
+
+  it("Studio checks an outfit against the day's forecast instead of saying the forecast is unavailable", () => {
+    // Specification section 7: the forecast is mandatory context for validating an outfit for a date and
+    // is fetched by the backend; section 3 (Studio): a combination is validated by the backend for the
+    // day it is planned for. That day starts at 11 C and reaches 19 C, where the 14-16 C jacket rule
+    // does not apply, so a jacket over an oxford is not blocked for want of a forecast.
+    expect(laterDayVerdict).toBeTruthy();
+    expect((laterDayVerdict.violations as any[]).map((v) => v.message).filter((m) => /forecast is unavailable/.test(m))).toEqual([]);
   });
 });

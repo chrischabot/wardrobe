@@ -7,7 +7,8 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "test:strict": "JOURNEYS_STRICT=1 vitest run"
+    "test:strict": "JOURNEYS_STRICT=1 vitest run",
+    "evals:check": "node evals/corpus-check.mjs"
   },
   "dependencies": {
     "@garderobe/contracts": "1.0.0",

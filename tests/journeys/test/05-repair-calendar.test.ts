@@ -12,7 +12,6 @@
  * sign-in. None of this proves anything about Google's real service.
  */
 import { beforeAll, describe, expect, it } from "vitest";
-import { defect } from "../src/defect.ts";
 import { connectMcp, publishBoard, type TestOwner } from "@garderobe/worker/testing";
 import { boardTexts, calendarFaults, calendarState, connectOutfitCalendar, editCalendarEvent, eventsOn, exec, internalCodesIn, mcpCommand, readCalendarFrom, realOwnerAt, runCron, seedCalendar, type JourneyOwner } from "../src/world.ts";
 
@@ -87,10 +86,11 @@ describe("wearing a planned garment repairs later days and the existing Calendar
     expect(event.summary).toMatch(/^Outfits for /);
   });
 
-  defect("D05-1", "the Calendar event links to that day's board, so a tap opens the app or the web board", async () => {
+  it("the Calendar event links to that day's board, so a tap opens the app or the web board", async () => {
     // Specification section 9: "A normal HTTPS link opens the corresponding app view when installed and
-    // the web view otherwise" and "Its link opens the current board". With the owner's settings as
-    // imported (nothing configured by hand) the event carries no link at all.
+    // the web view otherwise" and "Its link opens the current board", with the owner's settings as
+    // imported (nothing configured by hand). Was defect D05-1 (no link at all); fixed by the daily
+    // service in cadc3aeb and the Worker in 5db4fd87.
     const event = (await eventsOn(calendarId, j.day(2)))[0]!;
     expect(`${event.description} ${event.source?.url ?? ""}`).toMatch(new RegExp(`https?://\\S+/board/${j.day(2)}`));
   });
@@ -98,7 +98,7 @@ describe("wearing a planned garment repairs later days and the existing Calendar
   it("a connected assistant relays the owner's choice for that day; it is an intention, with a receipt", async () => {
     const mcp = await connectMcp(owner, { write: true, clientName: "Planner" });
     chosen = planned.options[2];
-    const outcome = await mcpCommand(owner, mcp, "board.select", { boardId: planned.boardId, optionId: chosen.optionId });
+    const outcome = await mcpCommand(owner, mcp, "board.select", { boardId: planned.boardId, optionId: chosen.optionId }, { expectRoute: "direct" });
     expect(outcome.receipt.outcome).toBe("committed");
     expect(outcome.receipt.type).toBe("board.select");
     if (outcome.proposal) {
@@ -193,10 +193,10 @@ describe("wearing a planned garment repairs later days and the existing Calendar
     expect(log.at(-1)!.op).toBe("get");
   });
 
-  defect("D05-2", "the wear's receipt, read again after delivery, no longer says its Calendar update is pending", async () => {
+  it("the wear's receipt, read again after delivery, no longer says its Calendar update is pending", async () => {
     // Specification section 8: "The receipt acknowledges what was recorded and distinguishes any pending
-    // synchronization or projection." The stored receipt keeps the state from the moment of the commit,
-    // so the item's history says "projection pending" for ever, although the event was updated and verified.
+    // synchronization or projection." Was defect D05-2 (a receipt read again said "projection pending"
+    // for ever); fixed by the foundation in a5e6c8fa.
     const board = await boardOf(j.day(2));
     expect(board.calendarProjection.state).toBe("projected");
     const receipt = await owner.api.json("GET", `/v1/commands/${wear.commandId}`);
@@ -259,11 +259,11 @@ describe("the Calendar event is a dependable presentation of the board", () => {
     expect((after.description.match(/^\d\. /gm) ?? []).length).toBe(board.options.length);
   });
 
-  defect("D05-3", "his own note survives even when he also edited the outfit text", async () => {
+  it("his own note survives even when he also edited the outfit text", async () => {
     // Specification section 9: updates "preserve unmanaged content"; "A user edit to the managed outfit
     // text can be replaced by the next authoritative projection; preserve unrelated event fields and
-    // content." Once the managed text has been edited, the next projection replaces the whole
-    // description and the owner's note is lost with it.
+    // content." Was defect D05-3 (the note was lost with the replaced text); fixed by the daily
+    // service in cadc3aeb.
     const after = await theEvent();
     expect(after.description).toContain("My own note: collect the dry cleaning");
   });
@@ -427,14 +427,15 @@ describe("the calendar shapes part of the board", () => {
     expect(board.notice ?? "").not.toMatch(/calendar/i);
   });
 
-  it("when the calendar cannot be read it says so, and does not treat the error as a free day", async () => {
-    // An unknown calendar answers like a real outage for reads: the double has no such calendar to list,
-    // so the adapter's request for the owner's revoked connection fails once the grant is gone.
+  it("when the calendar is disconnected the board says so, and does not present the day as a free day", async () => {
+    // The owner's Google connection is removed. The board must say the calendar is not connected instead
+    // of planning as if nothing were on (a day it could read and found empty reads "ok", checked above).
+    // Not covered: a read that fails while the connection stands; the calendar double can only fail writes.
     const connections = await owner.api.json("GET", "/v1/connections");
     await owner.api.json("POST", `/v1/connections/${connections.connections[0].connectionId}/disconnect`, {});
     const board = (await publishBoard(owner, { date: j.day(5) })).board;
     expect(board.freshness.calendar).toBe("not_connected");
     expect(`${board.notice}`).toMatch(/calendar/i);
-    expect(board.dayLine).not.toMatch(/nothing fixed/i);
+    expect(board.suitabilityLine).toBeNull();
   });
 });

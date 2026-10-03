@@ -152,7 +152,7 @@ export const quantityIn = (item: { balances: { bucket: string; quantity: number 
 
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Poll a durable run to a settled state, as a client that lost its stream would. */
+/** Poll a durable run to a settled state, as a client that lost its stream would. A run that never settles is a failure, not a result. */
 export async function settleRun(api: ApiClient, runId: string): Promise<any> {
   let run: any;
   for (let i = 0; i < 300; i++) {
@@ -160,7 +160,7 @@ export async function settleRun(api: ApiClient, runId: string): Promise<any> {
     if (["completed", "failed", "cancelled", "needs_input", "resumable"].includes(run.state)) return run;
     await sleep(100);
   }
-  return run;
+  throw new Error(`run ${runId} did not settle within 30 seconds; its last state was ${run?.state}`);
 }
 
 /* ------------------------------ scheduled work --------------------- */
@@ -217,8 +217,19 @@ export interface McpCommandOutcome {
  * One typed command from a connected assistant, driven by the server's answer rather than by a list of
  * types: when the server says the owner must confirm, the owner reads the request in the app's proposal
  * list and confirms it there. Either way the result is the committed receipt.
+ *
+ * Where the owner has decided the route (decision of 2026-10-03: wear and wash reports, choosing from the
+ * published board, laundry pickup and return and packing run directly; settings, corrections, moves,
+ * retirements, restrictions, style and measurements wait for the owner), the caller states it as
+ * `expectRoute` and a command taking the other route fails the journey.
  */
-export async function mcpCommand(owner: TestOwner, mcp: McpConnection, type: string, payload: Record<string, unknown>, opts: { idempotencyKey?: string; expectedVersions?: Record<string, number>; occurredAt?: string } = {}): Promise<McpCommandOutcome> {
+export async function mcpCommand(owner: TestOwner, mcp: McpConnection, type: string, payload: Record<string, unknown>, opts: { idempotencyKey?: string; expectedVersions?: Record<string, number>; occurredAt?: string; expectRoute?: McpCommandOutcome["route"] } = {}): Promise<McpCommandOutcome> {
+  const outcome = await sendMcpCommand(owner, mcp, type, payload, opts);
+  if (opts.expectRoute && outcome.route !== opts.expectRoute) throw new Error(`the connected assistant's ${type} took the route "${outcome.route}", but the owner decided it must be "${opts.expectRoute}"`);
+  return outcome;
+}
+
+async function sendMcpCommand(owner: TestOwner, mcp: McpConnection, type: string, payload: Record<string, unknown>, opts: { idempotencyKey?: string; expectedVersions?: Record<string, number>; occurredAt?: string }): Promise<McpCommandOutcome> {
   const args = { type, payload, idempotencyKey: opts.idempotencyKey ?? `mcp-${crypto.randomUUID()}`, ...(opts.expectedVersions ? { expectedVersions: opts.expectedVersions } : {}), ...(opts.occurredAt ? { occurredAt: opts.occurredAt } : {}) };
   const first = toolResult(await mcp.client.callTool({ name: "garderobe_command", arguments: args }));
   if (first.ok) return { route: "direct", receipt: first.data.receipt, proposal: null };
@@ -240,14 +251,16 @@ export async function mcpCommand(owner: TestOwner, mcp: McpConnection, type: str
 export function internalCodesIn(text: string): string[] {
   const patterns: RegExp[] = [
     /\b[a-z]{2,4}_[0-9a-f]{12,}\b/g, // record identifiers (gmt_..., opt_..., brd_..., cmd_...)
+    /\b[a-z]{2,10}(?:_[a-z]{2,10})*_[0-9A-Za-z]*\d[0-9A-Za-z]{5,}\b/g, // longer prefixes and non-hex bodies (msg_trn_01HZ...)
+    /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, // UUIDs
     /\bPCF\d{3,}\b/g, // maker fabric codes (the profile: names must match what he can see at the wardrobe)
     /\b[a-z]+(?:_[a-z]+)+\b/g, // snake_case machine codes
     /\[object Object\]|\bundefined\b|\bNaN\b/g,
     /\b(?:boardId|optionId|garmentId|tripId|batchId|caseId|orderId)\b/g, // field names
   ];
-  const found: string[] = [];
-  for (const pattern of patterns) for (const match of text.matchAll(pattern)) found.push(match[0]);
-  return found;
+  const found = new Set<string>();
+  for (const pattern of patterns) for (const match of text.matchAll(pattern)) found.add(match[0]);
+  return [...found];
 }
 
 /** Every owner-facing string of a board document. */

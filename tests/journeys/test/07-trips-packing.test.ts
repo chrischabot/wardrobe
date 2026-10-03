@@ -18,12 +18,8 @@
  *  - test-signed sign-in (a Cloudflare Access style assertion signed with the test run's key);
  *  - the MCP client is the SDK client over in-process fetch, authorised through the real consent flow.
  * No fake model and no calendar double are used here.
- *
- * Tests named "DEFECT: ..." state what the specification requires and are left failing where the
- * product does something else.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { defect } from "../src/defect.ts";
 import { connectMcp, provisionOwner, toolResult, type McpConnection, type TestOwner } from "@garderobe/worker/testing";
 import { boardTexts, exec, internalCodesIn, mcpCommand, newPlace, quantityIn, realOwnerAt, refused, scriptWeather, wholeWardrobe, type JourneyOwner, type McpCommandOutcome, type TestPlace } from "../src/world.ts";
 
@@ -179,7 +175,7 @@ describe("Journey 07: three days in Paris, one dinner, carry-on only", () => {
     expect(seen.data.data.trips).toEqual([viaApi]);
 
     // Whether the assistant's change runs at once or waits for the owner is the server's answer; the state must be the same.
-    mcpUpdate = await mcpCommand(j.owner, mcp, "trip.update", { tripId, changes: { laundry: [{ localDate: j.day(1), note: "hotel laundry service" }] } });
+    mcpUpdate = await mcpCommand(j.owner, mcp, "trip.update", { tripId, changes: { laundry: [{ localDate: j.day(1), note: "hotel laundry service" }] } }, { expectRoute: "owner_confirmed" });
     expect(mcpUpdate.receipt.outcome).toBe("committed");
     expect(mcpUpdate.receipt.type).toBe("trip.update");
     expect(internalCodesIn(mcpUpdate.receipt.summary)).toEqual([]);
@@ -198,7 +194,8 @@ describe("Journey 07: three days in Paris, one dinner, carry-on only", () => {
     expect(after.packed).toEqual([]);
   });
 
-  defect("D07-1", "the owner's confirmation request for the assistant's trip change is in plain words, without internal identifiers", () => {
+  it("the owner's confirmation request for the assistant's trip change is in plain words, without internal identifiers", () => {
+    // Was defect D07-1 (identifiers and raw fields); fixed by the API thread in 5db4fd87.
     // Only meaningful when the server asked the owner to confirm; a change that ran at once showed the owner nothing.
     const summary = mcpUpdate.proposal ? String(mcpUpdate.proposal.summary) : "";
     expect(internalCodesIn(summary)).toEqual([]);
@@ -283,7 +280,8 @@ describe("Journey 07: three days in Paris, one dinner, carry-on only", () => {
     expect((await api().json("GET", `/v1/today?date=${j.day(1)}`)).board).toBeNull();
   });
 
-  defect("D07-2", "asking for outfits for a day away on the trip offers the packed subset, never clothes left at home", async () => {
+  it("asking for outfits for a day away on the trip offers the packed subset, never clothes left at home", async () => {
+    // Was defect D07-2 (home stock was offered); fixed by the daily service in cadc3aeb.
     // The only way to ask for recommendations is this route; the owner is in Paris on that day with a packed suitcase.
     const packedIds = new Set(proposal.items.map((i) => i.garmentId));
     const answer = await api().json("POST", "/v1/recommendations", { clientRequestId: `trip-day-${crypto.randomUUID()}`, date: j.day(1), mode: "preview", count: 3 });
@@ -331,7 +329,8 @@ describe("Journey 07: three days in Paris, one dinner, carry-on only", () => {
     for (const text of boardTexts(board)) expect(internalCodesIn(text), text).toEqual([]);
   });
 
-  defect("D07-3", "the reuse the proposal planned is still offered at the destination after the first day was worn", async () => {
+  it("the reuse the proposal planned is still offered at the destination after the first day was worn", async () => {
+    // Was defect D07-3 (the planned reuse was withdrawn); fixed by the daily service in cadc3aeb.
     // The proposal deliberately plans a piece again on the second day (the trip's repeat exception).
     const dayTwo = plan(proposal, j.day(1));
     const plannedAgain = [wornTop, wornBottom].filter((id) => dayTwo.slots.some((s) => s.garmentId === id));
@@ -456,7 +455,8 @@ describe("Journey 07: three days in Paris, one dinner, carry-on only", () => {
     expect(quantityIn(trousers.detail, "clean")).toBe((cleanBefore.get(wornBottom) ?? 0) - 1);
   });
 
-  defect("D07-4", "the Packed and Unpacked receipts name the trip in the owner's words, not by an internal identifier", () => {
+  it("the Packed and Unpacked receipts name the trip in the owner's words, not by an internal identifier", () => {
+    // Was defect D07-4; fixed by the foundation in a5e6c8fa.
     expect(internalCodesIn(packReceipt.summary)).toEqual([]);
     expect(internalCodesIn(unpackReceipt.summary)).toEqual([]);
   });

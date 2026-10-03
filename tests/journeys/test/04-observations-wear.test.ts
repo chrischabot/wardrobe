@@ -17,7 +17,6 @@
  * the owner.
  */
 import { beforeAll, describe, expect, it } from "vitest";
-import { defect } from "../src/defect.ts";
 import { connectMcp, provisionOwner, type TestOwner } from "@garderobe/worker/testing";
 import type { CommandReceipt } from "@garderobe/contracts";
 import { exec, internalCodesIn, mcpCommand, quantityIn, realOwnerAt, refused, wholeWardrobe, type JourneyOwner } from "../src/world.ts";
@@ -32,7 +31,6 @@ const s = {} as Record<"washedToday" | "notWashed" | "neverWorn" | "inTheBag" | 
 let startedAt: number;
 let lateReport: Receipt;
 let pickedUpBatch: string;
-let assistantRoute: string;
 
 /** Everything the product said to the owner in this file (receipt summaries, repair notes, refusals). */
 const said: string[] = [];
@@ -203,14 +201,13 @@ describe("what the owner says he wore is recorded as said", () => {
     said.push(early.error.message);
   });
 
-  defect("D04-1", "trousers he says he wore yesterday, not washed since, are not offered as clean today", async () => {
+  it("trousers he says he wore yesterday, not washed since, are not offered as clean today", async () => {
     // Section 5, Owner observations and accounting repair: "'I am wearing it,' 'I washed it,' and 'I wore
     // it yesterday' are authoritative physical observations. ... Recompute the affected daily records, stock
     // estimates, and future plans in event order". Quantity and laundry: "Trousers have a single-wear-day
     // care policy. ... it makes them unavailable to a later fresh outfit after that wear".
-    // The wear is counted, but the trousers stay "1 clean unit at home" and available, and the receipt says
-    // "wear recorded for an item with no owned units on record; no quantity was created" about trousers he
-    // owns: a wear dated before the instant the inventory was imported finds no stock to move.
+    // Was defect D04-1 (a wear dated before the instant the inventory was imported found no stock to move,
+    // and the receipt said "no owned units on record"); fixed by the foundation in a5e6c8fa.
     expect(lateReport.repairs.join(" ")).not.toMatch(/no owned units on record/);
     const trousers = await item(g.lateTrousers);
     expect(quantityIn(trousers.detail, "clean")).toBe(0);
@@ -260,9 +257,8 @@ describe("what the owner says he wore is recorded as said", () => {
     expect(again.results[0]).toMatchObject({ status: "receipt", receipt: { replayed: true, commandId: replay.results[0].receipt.commandId } });
 
     const mcp = await connectMcp(owner, { write: true, clientName: "Wear helper", redirectUri: "https://wear-helper.client.test/cb" });
-    const relayed = await mcpCommand(owner, mcp, "wear.record", { wearingDate: j.day(0), garmentIds: [g.trousers] });
+    const relayed = await mcpCommand(owner, mcp, "wear.record", { wearingDate: j.day(0), garmentIds: [g.trousers] }, { expectRoute: "direct" });
     await mcp.close();
-    assistantRoute = relayed.route;
     heard(relayed.receipt);
     expect(relayed.receipt.outcome).toBe("merged");
     expect(relayed.receipt.channel).toBe("mcp");
@@ -386,11 +382,12 @@ describe("what the owner says he wore is recorded as said", () => {
     await ledgerIsSound(149);
   });
 
-  defect("D04-2", "when that bag comes back, the return counts the one shirt that was in it, not the shirt the amendment took out", async () => {
+  it("when that bag comes back, the return counts the one shirt that was in it, not the shirt the amendment took out", async () => {
     // Section 8, Repair after reality changes: "If a later laundry pickup has already happened, correction
     // preserves that historical pickup and computes an explicit adjustment". Section 5: "A return completes
     // only the contents of the returning batch". The amendment's own receipt says the batch is adjusted
-    // because the shirt "was not in the bag", yet the return says two items came back clean.
+    // because the shirt "was not in the bag". Was defect D04-2 (the return counted two); fixed by the
+    // foundation in a5e6c8fa.
     const receipt = await tell("laundry.return", { batchId: pickedUpBatch });
     expect((await item(s.inTheBag)).detail.balances).toEqual(CLEAN());
     expect(receipt.result.returned).toBe(1);
@@ -480,7 +477,7 @@ describe("what the owner says he wore is recorded as said", () => {
     }
     const proposals = await owner.api.json("GET", "/v1/proposals");
     expect(proposals.pending).toBe(0);
-    if (assistantRoute === "direct") expect(proposals.proposals).toEqual([]);
+    expect(proposals.proposals).toEqual([]);
     expect((await owner.api.json("GET", "/v1/recovery")).pending.runsNeedingInput).toBe(0);
 
     expect((await stranger.api.json("GET", `/v1/days/${j.day(0)}`)).garments).toEqual([]);

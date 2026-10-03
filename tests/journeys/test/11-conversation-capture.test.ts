@@ -22,7 +22,6 @@
  * synthetic; they are used where a step would otherwise invent a fact about a garment the owner owns.
  */
 import { beforeAll, describe, expect, it } from "vitest";
-import { defect } from "../src/defect.ts";
 import { enableFakeModel, provisionOwner, publishBoard, readSse, uploadImage, type FakeModel, type TestOwner } from "@garderobe/worker/testing";
 import { exec, internalCodesIn, realOwnerAt, refused, runCron, settleRun, sleep, wholeWardrobe, type JourneyOwner, type WardrobeItem } from "../src/world.ts";
 
@@ -381,12 +380,11 @@ describe("journey 11: one continuous conversation, reports, requests and photo c
     expect(foreign.status).toBeGreaterThanOrEqual(400);
   });
 
-  // Was KNOWN DEFECT D11-2; fixed in packages/assistant/src/policy/describe.ts (converted by the assistant thread with its fix, so the default run stays green).
   it("the request the owner is asked to confirm for a new garment is in plain words, without role codes or message identifiers", () => {
     // Owner decision of 2026-10-01: a sensitive change is confirmed on "a system-generated summary of
-    // the exact proposed mutation", and owner-facing text carries no internal codes. Since the summaries
-    // list every written field, the one for adding a garment reads: roles 1 "mid_layer"; care channel
-    // "handwash"; source "message:msg_trn_...". Every field should be shown, in words he can read.
+    // the exact proposed mutation", and owner-facing text carries no internal codes: every field is
+    // shown, in words he can read. Was defect D11-2 (role codes and a message identifier); fixed by the
+    // assistant in 486b1311 and a6795a3d.
     expect(selfieRequests.length).toBeGreaterThan(0);
     expect(selfieRequests.filter((r) => internalCodesIn(r.summary).length > 0).map((r) => r.summary)).toEqual([]);
   });
@@ -455,9 +453,10 @@ describe("journey 11: one continuous conversation, reports, requests and photo c
     expect((await transcript()).filter((m) => m.role === "user" && m.text === "The grey one")).toEqual([]);
   });
 
-  defect("D11-1", "after the owner has answered the assistant's question, the recovery screen still counts a run waiting for input", async () => {
+  it("after the owner has answered the assistant's question, the recovery screen no longer counts a run waiting for input", async () => {
     // Specification section 15: the recovery screen offers the concrete state of pending work. The question of
     // the previous step was answered and its run completed, so nothing is waiting for the owner.
+    // Was defect D11-1; fixed by the API thread in 5db4fd87.
     expect((await owner.api.json("GET", "/v1/recovery")).pending.runsNeedingInput).toBe(0);
   });
 

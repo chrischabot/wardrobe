@@ -18,8 +18,8 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { defect } from "../src/defect.ts";
 import { publishBoard, type TestOwner } from "@garderobe/worker/testing";
-import { sheetRowsFor } from "../src/inventory.ts";
-import { boardViolations, neutralViolations, profileViolations, shown, type DayFacts } from "../src/profile-checker.ts";
+import { SHEET_ROWS, sheetRowsFor } from "../src/inventory.ts";
+import { WORDED_SEASONS, boardViolations, navyFallbackViolations, neutralViolations, profileViolations, safeLeadViolations, sheetLimits, shown, type DayFacts } from "../src/profile-checker.ts";
 import { boardTexts, exec, internalCodesIn, realOwnerAt, wholeWardrobe, type JourneyOwner, type WardrobeItem } from "../src/world.ts";
 
 /** The scripted week: offset -> forecast. Each day exists to press on one rule. */
@@ -71,6 +71,38 @@ describe("every board of a varied week obeys the profile's hard constraints", ()
     expect(profileViolations(outfit(swap("top", "A shirt he does not own")), mild).join()).toMatch(/not a name from his inventory/);
     expect(neutralViolations(outfit([["outer", "ISTO Linen Work Jacket — navy"], ["top", "Pima oxford — navy"], ["bottom", "Cord — navy"], ["socks", "Merino — inky blue"], ["footwear", "NB 990v4 — navy"]])).join()).toMatch(/navy appears 4 times/);
     expect(neutralViolations(outfit(fine))).toEqual([]);
+    // Rule 6 and section 11 have their own checks, each with a control that must be caught and one that must pass.
+    expect(navyFallbackViolations("ISTO Linen Work Jacket — navy", "Drake's Olive Jungle Jacket").join()).toMatch(/\(navy\) was offered in place of/);
+    expect(navyFallbackViolations("Drake's Olive Jungle Jacket", "ISTO Linen Work Jacket — navy")).toEqual([]);
+    expect(navyFallbackViolations("A jacket he does not own", "Drake's Olive Jungle Jacket").join()).toMatch(/not a name from his inventory/);
+    const boardLedBy = (top: string, bottom: string) => ({ options: [{ number: 1, name: "probe", garments: [{ role: "top", name: top }, { role: "bottom", name: bottom }], footwearAlternatives: [], flourish: null }] });
+    expect(safeLeadViolations(boardLedBy("Pima oxford — white", "Cord — navy")).join()).toMatch(/safe option .* leads the board/);
+    expect(safeLeadViolations(boardLedBy("Lightweight oxford — light blue", "Cord — navy")).join()).toMatch(/leads the board/);
+    expect(safeLeadViolations(boardLedBy("Lightweight oxford — pink", "Cord — navy"))).toEqual([]);
+    expect(safeLeadViolations(boardLedBy("Pima oxford — white", "Di Sondrio grey chino"))).toEqual([]);
+  });
+
+  it("the checker reads a temperature limit from every sheet line that states a number, and skips only the worded seasons", () => {
+    // The thermal rule is silently skipped for a garment whose season text is not understood. So every
+    // shirt, trouser and jacket line either yields a numeric limit or carries one of the worded seasons.
+    const unread = SHEET_ROWS.filter((r) => ["Shirt", "Trouser", "Outerwear"].includes(r.category)).filter((r) => {
+      const { minC, maxC } = sheetLimits(r);
+      return minC === null && maxC === null && !WORDED_SEASONS.includes(r.season.trim());
+    });
+    expect(unread.map((r) => `${r.item}: ${r.season}`)).toEqual([]);
+    expect(WORDED_SEASONS.filter((s) => /\d/.test(s))).toEqual([]);
+  });
+
+  it("the detector of internal codes catches each kind it claims to, and leaves ordinary wording alone", () => {
+    expect(internalCodesIn("Board brd_0123456789abcdef updated")).toEqual(["brd_0123456789abcdef"]);
+    expect(internalCodesIn("see message:msg_trn_01HZX3V9Q2 for details").length).toBeGreaterThan(0);
+    expect(internalCodesIn("trip 3f2b8c1e-9a4d-4e2b-8c1e-9a4d4e2b8c1e")).toEqual(["3f2b8c1e-9a4d-4e2b-8c1e-9a4d4e2b8c1e"]);
+    expect(internalCodesIn("Undid care.mark_dirty")).toEqual(["mark_dirty"]);
+    expect(internalCodesIn("roles 1 mid_layer")).toEqual(["mid_layer"]);
+    expect(internalCodesIn("fabric PCF4339")).toEqual(["PCF4339"]);
+    expect(internalCodesIn("boardId: 12")).toEqual(["boardId"]);
+    expect(internalCodesIn("value undefined")).toEqual(["undefined"]);
+    expect(internalCodesIn("Recorded for today: Lightweight oxford — pink, NB 990v4 — olive/cream. 19 °C later.")).toEqual([]);
   });
 
   for (const [offset, weather] of Object.entries(WEEK)) {
@@ -111,30 +143,26 @@ describe("every board of a varied week obeys the profile's hard constraints", ()
     }
   });
 
-  defect("D06-1", "on mild days the belt line carries an optional scarf or tie suggestion too", () => {
+  it("on mild days the belt line carries an optional scarf or tie suggestion too", () => {
     // Profile section 9: "The belt line in any plan should carry an optional scarf or tie suggestion
     // appropriate to the day: often ignored, always welcome." He owns four active all-season silk knit
-    // ties. The boards for mild and warm days offer no flourish on any option.
+    // ties. Was defect D06-1 (no flourish on mild and warm days); fixed by the daily service in cadc3aeb.
     for (const offset of [1, 2, 6, 7, 8]) for (const option of boards.get(offset).options) expect(option.flourish, `day +${offset}, ${option.name}`).toBeTruthy();
   });
 
   defect("D06-2", "no single neutral appears three times in one outfit", () => {
     // Profile section 5: "A standing colour verdict worth keeping: never let a single neutral appear
     // three times in one outfit". Counted on the owner's own sheet colours across jacket, shirt,
-    // trousers, belt, socks and shoes. The composer keeps the jacket and shoes within the limit but not
-    // the belt and socks, so combinations such as black chore coat, black belt and black socks are
-    // offered although other belts and socks are free. Which board shows it varies from run to run.
+    // trousers, belt, socks and shoes. Was seen as black chore coat, black belt and black socks while
+    // other belts and socks were free. Since cadc3aeb the composer counts belt and socks and this passed
+    // in every strict run made here, but the limit is a preference in the composer and the boards are
+    // seeded, so it stays marked intermittent (DEFECTS.md, "Under watch").
     const found = [...boards.entries()].flatMap(([offset, board]) => board.options.flatMap((o: any) => neutralViolations(shown(o)).map((v) => `day +${offset}, ${v}`)));
     expect(found).toEqual([]);
   }, { intermittent: true });
 
   it("safe options never lead: the first outfit is not the white-or-blue shirt with navy trousers", () => {
-    for (const board of boards.values()) {
-      const lead = board.options[0];
-      const shirt = sheetRowsFor(pieceOf(lead, "top").name)[0]!.colour;
-      const trousers = sheetRowsFor(pieceOf(lead, "bottom").name)[0]!.colour;
-      expect(/^(white|off-white|blue|light blue)$/i.test(shirt) && /navy/i.test(trousers), `${lead.name}`).toBe(false);
-    }
+    for (const [offset, board] of boards) expect(safeLeadViolations(board), `day +${offset}`).toEqual([]);
   });
 
   it("spreads the wardrobe across the week instead of repeating the same favourites", () => {
@@ -156,18 +184,19 @@ describe("the constraints hold when he acts", () => {
       board = response.board;
       const replacement = pieceOf(board.options.find((o: any) => o.optionId === option.optionId), role).name;
       swappedIn.push(replacement);
-      expect(sheetRowsFor(replacement)[0]!.colour, `${replacement} swapped in for ${pieceOf(option, role).name}`).not.toMatch(/navy/i);
+      expect(replacement, "a swap brings in a different piece").not.toBe(pieceOf(option, role).name);
+      expect(navyFallbackViolations(replacement, pieceOf(option, role).name)).toEqual([]);
     }
     expect(swappedIn.length).toBeGreaterThanOrEqual(6);
     // The swapped board still obeys everything else.
     expect(board.options.flatMap((o: any) => profileViolations(shown(o), facts(1)))).toEqual([]);
   });
 
-  defect("D06-6", "swapping out a navy jacket does not hand him another navy jacket (rule 6)", async () => {
+  it("swapping out a navy jacket does not hand him another navy jacket (rule 6)", async () => {
     // Profile section 8 rule 6: "Never fall back to navy when a piece is swapped out. He calls it
     // boring, and he is right about his own wardrobe." He puts his navy raglan work coat on an outfit
-    // himself, then asks for a different jacket: with a dozen non-navy jackets free, the replacement
-    // offered is another navy one. Shirt and trouser swaps (the step above) do avoid navy.
+    // himself, then asks for a different jacket, with a dozen non-navy jackets free. Was defect D06-6
+    // (the replacement was another navy one); fixed by the daily service in cadc3aeb.
     let board = (await publishBoard(owner, { date: j.day(6) })).board; // 14 C leaving: a jacket day
     const optionId = board.options[0].optionId;
     const swap = (role: string, body: Record<string, unknown>) => owner.api.json("POST", `/v1/boards/${board.boardId}/swap`, { clientRequestId: `swap-${crypto.randomUUID()}`, optionId, role, ...body }).then((r: any) => (board = r.board));
@@ -175,7 +204,7 @@ describe("the constraints hold when he acts", () => {
     await swap("outer", { garmentId: idOf("Drake's Navy Cotton-Linen Raglan Work Coat") });
     await swap("outer", {});
     const replacement = pieceOf(board.options.find((o: any) => o.optionId === optionId), "outer").name;
-    expect(sheetRowsFor(replacement)[0]!.colour, `${replacement} was offered in place of the navy raglan work coat`).not.toMatch(/navy/i);
+    expect(navyFallbackViolations(replacement, "Drake's Navy Cotton-Linen Raglan Work Coat")).toEqual([]);
   });
 
   it("a piece he asks for himself is still checked: a jacket over a heavier shirt at 15 degrees is refused in plain words", async () => {
@@ -220,7 +249,7 @@ describe("the constraints hold when he acts", () => {
     expect(internalCodesIn(body.error.message)).toEqual([]);
   });
 
-  it("what he wore today is a repeat for the next seven days and free again on the eighth (rule 5)", async () => {
+  it("what he wore today is a repeat for the next seven days (rule 5)", async () => {
     const worn = boards.get(8).options[0];
     const shirt = pieceOf(worn, "top").name;
     const trousers = pieceOf(worn, "bottom").name;
@@ -232,21 +261,21 @@ describe("the constraints hold when he acts", () => {
       const violations = boardViolations(board, facts(offset, { wornInLastSevenDays: [shirt, trousers] }));
       expect(violations, `day +${offset}`).toEqual([]);
     }
-    // Day +8 is outside the seven days: the pieces are not excluded any more (they may or may not be picked).
-    const eighth = (await owner.api.json("GET", `/v1/today?date=${j.day(8)}`)).board;
-    const stillOffered = eighth.options.some((o: any) => pieceOf(o, "top").name === shirt || pieceOf(o, "bottom").name === trousers);
+    // Not asserted: that the pieces come back on the eighth day. Whether they are picked then is the
+    // composer's choice, and asking for them by name would itself be the override of the next step.
     const item = await owner.api.json("GET", `/v1/items/${idOf(shirt)}`);
-    expect(item.availability.hardExcluded).toBe(false);
-    expect(typeof stillOffered).toBe("boolean");
+    expect(item.availability.hardExcluded).toBe(false); // washed: the week keeps them out, not the laundry
   });
 
-  defect("D06-3", "an explicit owner override lets one request repeat this week's pieces, without rewriting the week rule", async () => {
+  it("an explicit owner override lets one request repeat this week's pieces, without rewriting the week rule", async () => {
     // Specification section 7: "An explicit owner override can relax a repeat preference; it cannot
-    // make unavailable stock present." The shirt and trousers are clean (washed above). Naming them as
-    // pieces that must stay returns no outfit, and the request has no other way to state the override.
+    // make unavailable stock present." The shirt and trousers are clean (washed above); naming them as
+    // pieces that must stay is the override. Was defect D06-3 (no outfit came back); fixed by the daily
+    // service in cadc3aeb.
     const settingsBefore = (await owner.api.json("GET", "/v1/settings")).settings.variety;
     const styleBefore = (await owner.api.json("GET", "/v1/style")).styleRevision;
     const worn = (await owner.api.json("GET", `/v1/days/${j.day(0)}`)).garments.map((g: any) => g.garmentId);
+    expect(worn).toHaveLength(2); // the shirt and trousers reported in the previous step
     const again = await owner.api.json("POST", "/v1/recommendations", { clientRequestId: `again-${crypto.randomUUID()}`, date: j.day(2), mode: "preview", count: 1, lockedGarmentIds: worn, brief: "the same shirt and trousers again, deliberately" });
     expect(again.options).toHaveLength(1);
     expect(again.options[0].garments.map((g: any) => g.garmentId)).toEqual(expect.arrayContaining(worn));
@@ -282,15 +311,18 @@ describe("availability in ordinary and explicit requests", () => {
     const shirt = pieceOf(option, "top");
     const jacket = pieceOf(option, "outer");
     const trousers = pieceOf(option, "bottom");
-    await exec(a.owner.api, "care.mark_dirty", { items: [{ garmentId: shirt.garmentId, quantity: 1 }] });
-    await exec(a.owner.api, "garment.move", { garmentId: jacket.garmentId, to: "tailor" });
+    const inTheWash = await exec(a.owner.api, "care.mark_dirty", { items: [{ garmentId: shirt.garmentId, quantity: 1 }] });
+    const atTheTailor = await exec(a.owner.api, "garment.move", { garmentId: jacket.garmentId, to: "tailor" });
     const retired = await exec(a.owner.api, "garment.retire", { garmentId: trousers.garmentId, quantity: wardrobe.find((i) => i.garment.garmentId === trousers.garmentId)!.totalOwnedUnits, disposition: "donated" });
     for (let i = 0; i < 3; i++) {
       const names = offered(await preview({ count: 8 }));
       for (const gone of [shirt.name, jacket.name, trousers.name]) expect(names, gone).not.toContain(gone);
     }
-    // The retirement was this journey's own step on a test copy of the wardrobe: put it back.
-    await exec(a.owner.api, "command.undo", { commandId: retired.commandId });
+    // These were this journey's own steps on a test copy of the wardrobe: put all three back, so the
+    // later steps start from the wardrobe as imported whichever pieces the composer happened to lead with.
+    for (const receipt of [retired, atTheTailor, inTheWash]) await exec(a.owner.api, "command.undo", { commandId: receipt.commandId });
+    expect((await a.owner.api.json("GET", `/v1/items/${shirt.garmentId}`)).availability.hardExcluded).toBe(false);
+    expect((await a.owner.api.json("GET", `/v1/items/${jacket.garmentId}`)).availability.hardExcluded).toBe(false);
     expect((await a.owner.api.json("GET", `/v1/items/${trousers.garmentId}`)).detail.totalOwnedUnits).toBe(wardrobe.find((i) => i.garment.garmentId === trousers.garmentId)!.totalOwnedUnits);
   });
 
@@ -309,7 +341,7 @@ describe("availability in ordinary and explicit requests", () => {
     await exec(a.owner.api, "garment.remove_fabricated", { garmentId: incomingId, reason: "synthetic test fixture removed at the end of its step" });
   });
 
-  it("with only three clean shirts he gets three real outfits and one plain sentence why, never a padded board", async () => {
+  it("with only three clean shirts he gets at most three real outfits and one plain sentence why, never a padded board", async () => {
     const shirts = wardrobe.filter((i) => i.garment.category === "shirt" && !i.availability!.hardExcluded);
     const receipt = await exec(a.owner.api, "care.mark_dirty", { items: shirts.slice(3).map((i) => ({ garmentId: i.garment.garmentId, quantity: 1 })) });
     const result = await a.owner.api.json("POST", "/v1/recommendations", { clientRequestId: `few-${crypto.randomUUID()}`, date: a.day(2), mode: "board" });
@@ -345,18 +377,19 @@ describe("availability in ordinary and explicit requests", () => {
     expect(back.options).toHaveLength(3);
   });
 
-  defect("D06-4", "asking for three outfits around one named shirt gives three, all with that shirt", async () => {
+  it("asking for three outfits around one named shirt gives three, all with that shirt", async () => {
     // Specification section 13: `lockedGarmentIds` are "Garments that must stay". He owns twenty-odd
-    // trousers that go with the pink oxford; the product returns one outfit and says no other
-    // combination passes every rule.
+    // trousers that go with the pink oxford. Was defect D06-4 (one outfit came back); fixed by the
+    // daily service in cadc3aeb.
     const result = await preview({ count: 3, lockedGarmentIds: [id("Lightweight oxford — pink")] });
     expect(result.options.map((o: any) => pieceOf(o, "top").name)).toEqual(Array(3).fill("Lightweight oxford — pink"));
   });
 
-  defect("D06-5", "an occasional piece he asks for by name is admitted to the outfit", async () => {
+  it("an occasional piece he asks for by name is admitted to the outfit", async () => {
     // Specification section 17, Availability: "occasional pieces behave correctly in ordinary and
     // explicit requests". The linen pocket square is "Occasional" in his sheet: absent from ordinary
-    // boards (checked above), but an explicit request for it returns no outfit at all.
+    // boards (checked above). Was defect D06-5 (an explicit request returned no outfit); fixed by the
+    // daily service in cadc3aeb.
     const result = await preview({ count: 1, lockedGarmentIds: [id("Anglo-Italian pocket square")] });
     expect(offered(result)).toContain("Anglo-Italian pocket square");
   });

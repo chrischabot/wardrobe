@@ -26,12 +26,8 @@
  * (`settings.update`): the morning time is set to the current minute in Europe/London and the evening
  * composition time to 00:00. Automatic resume when a resume date arrives needs days to pass and is not
  * covered. The file assumes it does not run across midnight, Europe/London.
- *
- * Tests named "DEFECT: ..." state what the specification requires and are left failing where the
- * product does something else.
  */
 import { beforeAll, describe, expect, it } from "vitest";
-import { defect } from "../src/defect.ts";
 import { calendarState, connectGoogle, exec, internalCodesIn, LONDON, quantityIn, realOwnerAt, runCron, wholeWardrobe, type JourneyOwner } from "../src/world.ts";
 
 type Receipt = { commandId: string; type: string; actor: string; outcome: string; summary: string; effects: { kind: string; state: string }[] };
@@ -285,7 +281,8 @@ describe("Journey 10: pause and resume", () => {
     expect((await exec(away.owner.api, "service.resume", {})).outcome).toBe("noop");
   });
 
-  defect("D10-1", "after the owner resumes, the next useful board is prepared", async () => {
+  it("after the owner resumes, the next useful board is prepared", async () => {
+    // Was defect D10-1 (no board was prepared); fixed by the API thread in 5db4fd87.
     // The receipt said "The next board is being prepared". Give the scheduled service a run to do it.
     await runCron();
     const todayView = await today(away);

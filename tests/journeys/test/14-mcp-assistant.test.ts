@@ -24,8 +24,8 @@
  */
 import { SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
-import { defect } from "../src/defect.ts";
 import { APP_ORIGIN, MCP_ORIGIN, connectMcp, enableFakeModel, publishBoard, toolResult, type FakeModel, type McpConnection, type TestOwner } from "@garderobe/worker/testing";
+import { defect } from "../src/defect.ts";
 import { internalCodesIn, mcpCommand, realOwnerAt, settleRun, wholeWardrobe, type JourneyOwner, type McpCommandOutcome, type WardrobeItem } from "../src/world.ts";
 
 let j: JourneyOwner;
@@ -49,6 +49,8 @@ const inventory = (args: Record<string, unknown>) => call(reader, "garderobe_inv
 const pending = async () => (await owner.api.json("GET", "/v1/proposals")).proposals as Record<string, any>[];
 const dayRecord = async (date: string) => (await owner.api.json("GET", `/v1/days/${date}`)).garments as { garmentId: string; observationCount: number }[];
 const wearCount = async (garmentId: string) => (await owner.api.json("GET", `/v1/items/${garmentId}`)).detail.recordedWearCount as number;
+/** The text a connected assistant reads beside the last page of the paged item list. */
+let lastItemsPageText = "";
 const rawList = (token: string) => SELF.fetch(`${MCP_ORIGIN}/mcp`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", Authorization: `Bearer ${token}` }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
 
 /** What every typed command must show, whichever route the server took. */
@@ -170,7 +172,9 @@ describe("journey 14: a connected assistant reads, reports, asks and is disconne
     const seen: string[] = [];
     let cursor: string | null = null;
     for (let page = 0; page < 20; page++) {
-      const part: any = await inventory({ view: "items", limit: 40, ...(cursor ? { cursor } : {}) });
+      const raw: any = await reader.client.callTool({ name: "garderobe_inventory", arguments: { view: "items", limit: 40, ...(cursor ? { cursor } : {}) } });
+      const part: any = toolResult(raw);
+      lastItemsPageText = (raw.content as { type: string; text?: string }[]).filter((c) => c.type === "text").map((c) => c.text ?? "").join("\n");
       expect(part.data.total).toBe(127);
       seen.push(...part.data.data.items.map((i: any) => i.garment.garmentId));
       cursor = part.data.nextCursor;
@@ -247,7 +251,7 @@ describe("journey 14: a connected assistant reads, reports, asks and is disconne
   it("an outfit choice sent by the assistant ends as the owner's intention on the board, not as a wear", async () => {
     const current = (await owner.api.json("GET", `/v1/today?date=${j.today}`)).board;
     const option = current.options[1];
-    const outcome = await mcpCommand(owner, writer, "board.select", { boardId: current.boardId, optionId: option.optionId }, { expectedVersions: { [`board:${current.boardId}`]: current.revision } });
+    const outcome = await mcpCommand(owner, writer, "board.select", { boardId: current.boardId, optionId: option.optionId }, { expectedVersions: { [`board:${current.boardId}`]: current.revision }, expectRoute: "direct" });
     expectVerified(outcome, "board.select");
     expect(outcome.receipt.summary).toMatch(/not a recorded wear|intention/i);
     if (outcome.proposal) expect(outcome.proposal.payload).toEqual({ boardId: current.boardId, optionId: option.optionId });
@@ -299,12 +303,12 @@ describe("journey 14: a connected assistant reads, reports, asks and is disconne
 
   it("a laundry pickup sent by the assistant moves the dirty shirt into a service batch", async () => {
     // First the report that the shirt is dirty (a wash report).
-    const dirty = await mcpCommand(owner, writer, "care.mark_dirty", { items: [{ garmentId: top.garmentId, quantity: 1 }] });
+    const dirty = await mcpCommand(owner, writer, "care.mark_dirty", { items: [{ garmentId: top.garmentId, quantity: 1 }] }, { expectRoute: "direct" });
     expectVerified(dirty, "care.mark_dirty");
     expect(dirty.receipt.summary).toContain(top.name);
     expect(JSON.stringify((await owner.api.json("GET", "/v1/laundry")).awaitingService)).toContain(top.garmentId);
 
-    const collected = await mcpCommand(owner, writer, "laundry.collect", {});
+    const collected = await mcpCommand(owner, writer, "laundry.collect", {}, { expectRoute: "direct" });
     expectVerified(collected, "laundry.collect");
     const laundry = await owner.api.json("GET", "/v1/laundry");
     expect(laundry.batches).toHaveLength(1);
@@ -323,7 +327,7 @@ describe("journey 14: a connected assistant reads, reports, asks and is disconne
   it("a setting change sent by the assistant takes effect in the owner's settings with a receipt", async () => {
     const before = await owner.api.json("GET", "/v1/settings");
     expect(before.settings.delivery.morningLocalTime).not.toBe("06:45");
-    const outcome = await mcpCommand(owner, writer, "settings.update", { patch: { delivery: { ...before.settings.delivery, morningLocalTime: "06:45" } } });
+    const outcome = await mcpCommand(owner, writer, "settings.update", { patch: { delivery: { ...before.settings.delivery, morningLocalTime: "06:45" } } }, { expectRoute: "owner_confirmed" });
     expectVerified(outcome, "settings.update");
     expect(outcome.receipt.outcome).toBe("committed");
     const after = await owner.api.json("GET", "/v1/settings");
@@ -336,11 +340,21 @@ describe("journey 14: a connected assistant reads, reports, asks and is disconne
     expect((await owner.api.json("GET", `/v1/commands/${outcome.receipt.commandId}`)).type).toBe("settings.update");
   });
 
-  defect("D14-1", "the confirmation the owner is shown for an assistant's typed command gives internal identifiers or raw payload instead of plain words", () => {
+  it("the confirmation the owner is shown for an assistant's typed command is in plain words, without internal identifiers or raw payload", () => {
+    // Was defect D14-1; fixed by the API thread in 5db4fd87.
     // Specification section 13 and the profile (section 11): what the owner reads is plain wording; a
     // confirmation shows the exact change. Every summary collected above was shown in GET /v1/proposals.
     const notPlain = shownToOwner.filter((p) => internalCodesIn(p.summary).length > 0 || /[{}]|":/.test(p.summary)).map((p) => `${p.type}: ${p.summary}`);
     expect(notPlain).toEqual([]);
+  });
+
+  defect("D14-2", "the last page of the item list does not tell the assistant that more pages follow", () => {
+    // Specification section 13 and research rows R14 to R16: "Pagination is explicit; complete snapshots
+    // and counts cannot be silently truncated." The last page has no next cursor, yet its text still
+    // says more pages follow and to pass a cursor that does not exist, so an assistant that trusts the
+    // text keeps asking or reports the wardrobe as partly read.
+    expect(lastItemsPageText.length).toBeGreaterThan(0);
+    expect(lastItemsPageText).not.toMatch(/more pages|pass nextCursor/i);
   });
 
   it("garderobe_ask relays words: a named wear is recorded; anything else becomes a request for the owner", async () => {
