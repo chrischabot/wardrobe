@@ -1,0 +1,10 @@
+{
+  "checkedAt": "2026-10-03T18:49:18.327Z",
+  "requiredEnvironmentVariables": {
+    "CLOUDFLARE_API_TOKEN": false,
+    "CLOUDFLARE_ACCOUNT_ID": true
+  },
+  "result": "blocked",
+  "reason": "not set in the environment: CLOUDFLARE_API_TOKEN (project secrets; names only are reported, values are never printed)",
+  "deployed": false
+}
