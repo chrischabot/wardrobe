@@ -11,7 +11,7 @@ import { describe, expect, it } from "vitest";
 import type { BoardDocument } from "@garderobe/contracts/ext/daily";
 import { colourFamily, NEUTRAL_FAMILIES } from "../src/model.ts";
 import { getBoard, optionLines, rebuildDay, validateOutfit } from "../src/index.ts";
-import { COLD_DAY, compose, createDailyHarness, garmentRows, garmentsByName, MILD_DAY, realOwner } from "./helpers.ts";
+import { COLD_DAY, compose, createDailyHarness, garmentRows, garmentsByName, MILD_DAY, realOwner, syntheticOwner } from "./helpers.ts";
 
 const piece = (o: BoardDocument["options"][number], role: string) => o.garments.find((g) => g.role === role);
 
@@ -43,6 +43,49 @@ describe("profile verdicts on the real owner's boards", () => {
       }
     }
     expect(options).toBe(15);
+  });
+
+  // SYNTHETIC wardrobes (labelled test owners, not the owner's stock): the outcome does not depend on the
+  // seeded tie-breaking, which is why the real-owner test above caught this only about one run in forty.
+  const NEUTRAL_RULE = { key: "colour.no_neutral_three_times", kind: "soft", status: "active", params: { maxSameNeutralPerOutfit: 2 }, interpretation: "synthetic: a single neutral appears at most twice in one outfit", origin: "owner_direction" };
+  const NAVY_OVER_NAVY = [
+    { id: "shirt-navy", name: "navy oxford", colour: "Navy", fabric: "Cotton oxford", category: "shirt", roles: ["top"], careChannel: "service", attributes: { fabricClass: "lightweight_oxford" } },
+    { id: "trouser-beige", name: "beige chinos", colour: "Beige", fabric: "Cotton twill", category: "trousers", roles: ["bottom"], careChannel: "service" },
+    { id: "jacket-navy", name: "navy work jacket", colour: "Navy", category: "outerwear", roles: ["outer"], careChannel: "none", attributes: { jacketLike: true } },
+    { id: "sock-grey", name: "grey merino socks", colour: "Grey", quantity: 3, category: "socks", roles: ["socks"], careChannel: "handwash", fabric: "Merino wool", attributes: { fabricClass: "merino" } },
+    { id: "belt-brown", name: "brown woven belt", colour: "Brown", category: "belt", roles: ["belt"], careChannel: "none" },
+  ] as const;
+  const shoe = (id: string, name: string, colour: string) => ({ id, name, colour, category: "footwear", roles: ["footwear"], careChannel: "none", attributes: { footwearKind: "sneaker", model: "990v4" } }) as const;
+
+  it("SYNTHETIC: a navy jacket over a navy shirt takes the grey sneaker, not the navy one, although navy echoes a colour higher up", async () => {
+    const h = await createDailyHarness({ startAt: "2026-09-15T07:30:00Z", isolate: true });
+    const owner = await syntheticOwner(h, { garments: [...NAVY_OVER_NAVY, shoe("shoe-navy", "navy sneakers", "Navy"), shoe("shoe-grey", "grey sneakers", "Grey")] as never });
+    await owner.exec("style.upsert_rule", NEUTRAL_RULE);
+    h.weather.setForecast("2026-09-16", MILD_DAY); // 12 C at departure: a jacket is worn
+    const board = (await compose(h, owner, "2026-09-16", { count: 1 })).board!;
+    expect(board.options).toHaveLength(1);
+    const o = board.options[0]!;
+    expect(piece(o, "outer")!.garmentId).toBe("jacket-navy");
+    expect(piece(o, "top")!.garmentId).toBe("shirt-navy");
+    expect(piece(o, "footwear")!.garmentId).toBe("shoe-grey");
+    const v = await validateOutfit(h.db, owner.principal(), { forDate: "2026-09-16", nowMs: h.clock.now(), slots: o.garments.map((g) => ({ role: g.role, garmentId: g.garmentId })) as never });
+    expect(v.violations.map((x) => x.code)).not.toContain("neutral_three_times");
+  });
+
+  it("SYNTHETIC: when the only eligible shoe is the third navy piece the outfit is still offered, and the validator reports the soft verdict", async () => {
+    const h = await createDailyHarness({ startAt: "2026-09-15T07:30:00Z", isolate: true });
+    const owner = await syntheticOwner(h, { garments: [...NAVY_OVER_NAVY, shoe("shoe-navy", "navy sneakers", "Navy")] as never });
+    await owner.exec("style.upsert_rule", NEUTRAL_RULE);
+    h.weather.setForecast("2026-09-16", MILD_DAY);
+    const board = (await compose(h, owner, "2026-09-16", { count: 1 })).board!;
+    expect(board.options).toHaveLength(1);
+    const o = board.options[0]!;
+    expect(piece(o, "footwear")!.garmentId).toBe("shoe-navy");
+    const v = await validateOutfit(h.db, owner.principal(), { forDate: "2026-09-16", nowMs: h.clock.now(), slots: o.garments.map((g) => ({ role: g.role, garmentId: g.garmentId })) as never });
+    expect(v.violations.filter((x) => x.severity === "blocking")).toEqual([]);
+    // With one jacket and one shoe, the jacket is kept for the cold start and the verdict is advisory.
+    expect(piece(o, "outer")!.garmentId).toBe("jacket-navy");
+    expect(v.violations.find((x) => x.code === "neutral_three_times")).toMatchObject({ severity: "advisory" });
   });
 
   it("the validator reports a single neutral worn three times as a soft verdict under the owner's rule, never as a refusal", async () => {

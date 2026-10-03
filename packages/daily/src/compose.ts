@@ -135,6 +135,25 @@ function pairScore(ctx: RecommendationContext, top: PoolGarment, bottom: PoolGar
   return score;
 }
 
+/**
+ * The owner's limit on one neutral in an outfit (profile section 5) counts the jacket, shirt, trousers
+ * and shoes. True when adding `g` to the pieces already settled would take its neutral over that limit.
+ */
+function exceedsNeutralLimit(ctx: RecommendationContext, g: PoolGarment, settled: (PoolGarment | undefined)[]): boolean {
+  const limit = ctx.rules.neutralMax;
+  if (!limit || !NEUTRAL_FAMILIES.has(g.colourFamily)) return false;
+  return settled.filter((s) => s && s.garmentId !== g.garmentId && s.colourFamily === g.colourFamily).length + 1 > limit.max;
+}
+
+/**
+ * The pieces of a pool that keep the outfit within the neutral limit. The limit is a soft verdict, so
+ * when every piece would break it the whole pool stands and the validator reports the advisory.
+ */
+function withinNeutralLimit(ctx: RecommendationContext, pool: PoolGarment[], settled: (PoolGarment | undefined)[]): PoolGarment[] {
+  const kept = pool.filter((g) => !exceedsNeutralLimit(ctx, g, settled));
+  return kept.length > 0 ? kept : pool;
+}
+
 /** Garments of a role that pass every single-garment check for the day (or are wearable-in-principle in Explore). */
 export function eligibleFor(ctx: RecommendationContext, role: Role, opts: ValidateOptions = {}): PoolGarment[] {
   const out: PoolGarment[] = [];
@@ -209,13 +228,14 @@ function jacketWanted(ctx: RecommendationContext, index: number, smart: boolean)
   return false;
 }
 
-function chooseOuter(ctx: RecommendationContext, pools: Pools, top: PoolGarment, bottom: PoolGarment, usage: BoardUsage, seed: string): PoolGarment | undefined {
+function chooseOuter(ctx: RecommendationContext, pools: Pools, top: PoolGarment, bottom: PoolGarment, usage: BoardUsage, seed: string, lockedFootwear: PoolGarment | undefined): PoolGarment | undefined {
   const band = ctx.rules.jacketBand;
   const t = ctx.conditions.departureC;
   // Inside the 14-16 C band - or when the outdoor temperature is unknown and the band cannot be ruled
   // out - a jacket only goes over the required shirt; any other shirt simply goes without a jacket.
   if (band && top.attributes.fabricClass !== band.requiredShirtFabricClass && (t === null || (t >= band.minC && t <= band.maxC))) return undefined;
-  return pick(pools.outers, (g) => {
+  // A jacket that would be the third piece in one neutral is passed over while another jacket is eligible.
+  return pick(withinNeutralLimit(ctx, pools.outers, [top, bottom, lockedFootwear]), (g) => {
     let s = seasonFit(g, t) * 1.5 + rotation(ctx, g) - (usage.outers.get(g.garmentId) ?? 0) * 2.5 + seededUnit(seed, g.garmentId) * 0.6;
     if (NEUTRAL_FAMILIES.has(g.colourFamily) && g.colourFamily === top.colourFamily && g.colourFamily === bottom.colourFamily) s -= 3; // same neutral three times
     if (g.colourFamily === bottom.colourFamily) s -= 0.6;
@@ -227,7 +247,7 @@ function chooseOuter(ctx: RecommendationContext, pools: Pools, top: PoolGarment,
 function buildOutfit(ctx: RecommendationContext, pools: Pools, top: PoolGarment, bottom: PoolGarment, usage: BoardUsage, smart: boolean, locked: Map<Role, PoolGarment>): { slots: OutfitSlot[]; footwearAlternatives: string[] } | null {
   const seed = `${ctx.userId}|${ctx.localDate}|${top.garmentId}|${bottom.garmentId}`;
   const slots: OutfitSlot[] = [];
-  const outer = locked.get("outer") ?? (jacketWanted(ctx, usage.index, smart) ? chooseOuter(ctx, pools, top, bottom, usage, seed) : undefined);
+  const outer = locked.get("outer") ?? (jacketWanted(ctx, usage.index, smart) ? chooseOuter(ctx, pools, top, bottom, usage, seed, locked.get("footwear")) : undefined);
   if (outer) slots.push({ role: "outer", garmentId: outer.garmentId });
   slots.push({ role: "top", garmentId: top.garmentId }, { role: "bottom", garmentId: bottom.garmentId });
 
@@ -246,12 +266,15 @@ function buildOutfit(ctx: RecommendationContext, pools: Pools, top: PoolGarment,
     rotation(ctx, g) - (usage.footwear.get(g.garmentId) ?? 0) * 1.5 + (upper.has(g.colourFamily) ? 0.8 : 0) - (g.colourFamily === bottom.colourFamily ? 0.3 : 0) + (g.attributes.breakingIn ? -0.5 : 0) + seededUnit(seed, g.garmentId) * 0.6;
   const paired = ctx.rules.pairedFootwear?.inForce === true;
   const sneakers = pools.footwear.filter((g) => g.attributes.footwearKind === "sneaker");
-  const footwear = locked.get("footwear") ?? pick(paired && sneakers.length > 0 ? sneakers : pools.footwear, footwearScore);
+  // The shoe echoes a colour from higher up, but never as the third piece in one neutral while another
+  // eligible shoe exists (a navy jacket over a navy shirt does not take the navy sneaker as well).
+  const worn = [outer, top, bottom];
+  const footwear = locked.get("footwear") ?? pick(withinNeutralLimit(ctx, paired && sneakers.length > 0 ? sneakers : pools.footwear, worn), footwearScore);
   if (!footwear) return null;
   const footwearAlternatives: string[] = [];
   if (paired) {
     const otherKind = footwear.attributes.footwearKind === "welted" ? "sneaker" : "welted";
-    const other = pick(pools.footwear.filter((g) => g.attributes.footwearKind === otherKind && g.garmentId !== footwear.garmentId), footwearScore);
+    const other = pick(withinNeutralLimit(ctx, pools.footwear.filter((g) => g.attributes.footwearKind === otherKind && g.garmentId !== footwear.garmentId), worn), footwearScore);
     if (other) footwearAlternatives.push(other.garmentId);
   }
 
