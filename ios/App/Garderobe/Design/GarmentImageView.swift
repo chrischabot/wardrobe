@@ -149,6 +149,7 @@ struct GarmentInspectionView: View {
                 }
             }
                 .task(id: image?.renditionId) {
+                    fullSize = nil   // never the previous photograph under a new name
                     guard let image, let data = await app.images.inspectionData(for: image), let decoded = UIImage(data: data) else { return }
                     fullSize = decoded
                 }

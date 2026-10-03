@@ -284,7 +284,7 @@ struct OwnerStudioJourney {
 @MainActor
 @Suite("Journey: the continuous conversation against the real Worker's turns, runs and event stream")
 struct OwnerConversationJourney {
-    @Test("A turn is accepted once, followed through its event stream and settles into the canonical transcript; Ask about this attaches the item")
+    @Test("A turn is accepted once, followed through its event stream and settles into the canonical transcript; Ask about this attaches the item; a turn that ends in a request to confirm is confirmed by the owner")
     func turnsAndAttachedIdentity() async throws {
         let j = try Journey("owner-conversation")
         let env = j.environment
@@ -342,11 +342,34 @@ struct OwnerConversationJourney {
         #expect(j.backend.log.allSatisfy { $0.path != "/v1/commands" })              // capture never sends a wear command itself
         #expect(transcript.entries.count == 6)
 
+        // A change the assistant may not make on its own: the reply commits nothing and leaves a request
+        // to confirm, in the backend's words. The owner confirms it in Requests to confirm, the backend
+        // runs it once as the owner's own action, and the reply stops saying that it waits.
+        let proposals = ProposalsModel(environment: env)
+        composer.isSettled = { turn, type, summary in proposals.isSettled(turnId: turn, type: type, summary: summary) }   // as AppModel wires the two
+        composer.draft = "I bought a navy merino cardigan, add it to my wardrobe"
+        await composer.send()
+        #expect(composer.follower?.phase == .completed)
+        #expect(composer.follower?.receipts.isEmpty == true)                      // nothing was recorded by the turn
+        let asked = try #require(composer.follower?.proposals.first)
+        #expect(composer.follower?.proposals.count == 1)
+        #expect(composer.confirmationLine == "Not done yet. This waits for your confirmation: \(asked.summary).")
+        #expect(transcript.entries.count == 8)
+        await proposals.open()
+        let request = try #require(proposals.pending.first)
+        #expect(proposals.pendingCount == 1 && request.type == asked.type && request.summary == asked.summary)
+        #expect(composer.confirmationLine != nil)                                 // listed, and still waiting
+        let receipt = try #require(await proposals.confirm(request))
+        #expect(receipt.outcome == .committed && receipt.actor == .owner && receipt.type == asked.type)
+        #expect(proposals.pendingCount == 0)
+        #expect(composer.confirmationLine == nil)                                 // decided: no longer shown as waiting
+        #expect(j.backend.log.allSatisfy { $0.path != "/v1/commands" })              // the phone never sends the proposed command itself
+
         // A new launch opens the same transcript from the cache, with no new-chat step.
         j.backend.offline = true
         let reopened = TranscriptModel(environment: j.relaunch())
         await reopened.loadLatest()
-        #expect(reopened.entries.count == 6)
+        #expect(reopened.entries.count == 8)
         #expect(reopened.isOffline)
         j.backend.offline = false
 
