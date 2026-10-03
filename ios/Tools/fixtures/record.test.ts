@@ -312,7 +312,11 @@ describe("iOS fixture cassettes", () => {
   });
 
   it("owner-conversation: one continuous transcript, a turn with its event stream, and an attached item identity", async () => {
-    const { owner, rec } = await start("owner-conversation", [`The assistant's wording comes from the ${FAKE_MODEL_LABEL}; the turn, run, event stream and transcript are the Worker's.`, "The model route's capability probes are recorded as passed by this fixture (no AI Gateway was contacted)."]);
+    const { owner, rec } = await start("owner-conversation", [
+      `The assistant's wording comes from the ${FAKE_MODEL_LABEL}; the turn, run, event stream and transcript are the Worker's.`,
+      "The model route's capability probes are recorded as passed by this fixture (no AI Gateway was contacted).",
+      `In the last turn the ${FAKE_MODEL_LABEL} is scripted to ask for a garment to be added; the request to confirm, its summary, the decision route and the receipt are the Worker's. The garment it adds is a labelled FIXTURE entry in the test database, not one of the owner's garments.`,
+    ]);
     // The assistant refuses an unprobed model route. Locally the route is the fake model;
     // `enableFakeModel` writes the labelled fixture probe records through the ordinary command.
     const model = await enableFakeModel(owner);
@@ -320,8 +324,8 @@ describe("iOS fixture cassettes", () => {
     await rec.get("/v1/conversation/messages", { limit: 40 });
     const garment = wardrobe.items.find((i: any) => i.garment.category === "outerwear").garment;
 
-    const turn = async (id: string, body: Record<string, unknown>, reply: string) => {
-      model.script({ text: reply });
+    const turn = async (id: string, body: Record<string, unknown>, reply: string, before: Parameters<typeof model.script> = []) => {
+      model.script(...before, { text: reply });
       const accepted = await rec.change(id, "POST", "/v1/conversation/turns", { clientTurnId: `fixture-${crypto.randomUUID()}`, intent: "chat", ...body });
       expect(accepted.runId).toBeTruthy();
       let run: any;
@@ -332,9 +336,9 @@ describe("iOS fixture cassettes", () => {
       }
       expect(run.state).toBe("completed");
       await rec.stream(`/v1/runs/${accepted.runId}/events`);
-      await rec.get(`/v1/runs/${accepted.runId}`);
+      const settled = await rec.get(`/v1/runs/${accepted.runId}`);
       await rec.get("/v1/conversation/messages", { limit: 40 });
-      return accepted;
+      return { ...accepted, run: settled };
     };
 
     await turn("first-turn", { text: "What goes with the chore coat when it is mild?" }, "The chore coat sits well over an oxford shirt with the dark jeans when it is mild.");
@@ -352,6 +356,24 @@ describe("iOS fixture cassettes", () => {
     const completed = await rec.change("upload-complete", "POST", `/v1/uploads/${authorization.uploadId}/complete`, {});
     expect(completed.state).toBe("finalized");
     await turn("capture-turn", { text: "What I wore", attachmentIds: [completed.asset.assetId], imageRoles: { [completed.asset.assetId]: "selfie" }, intent: "what_i_wore" }, "I can see the photo. Tell me what you had on and I will log it.");
+
+    // A change the assistant may not make on its own authority: the turn commits nothing and ends with a
+    // request to confirm, which the owner then confirms in the app (Requests to confirm).
+    const askText = "I bought a navy merino cardigan, add it to my wardrobe";
+    const asked = await turn("request-turn", { text: askText }, "That needs your confirmation.", [
+      { toolCalls: [{ toolName: "add_garment", input: { name: "Navy merino cardigan (FIXTURE, conversation request)", category: "knitwear", quantity: 1, state: "owned", ownerQuote: askText } }] },
+    ]);
+    expect(asked.run.receipts).toEqual([]);
+    expect(asked.run.proposals, JSON.stringify(asked.run).slice(0, 600)).toHaveLength(1);
+    const waiting = await rec.get("/v1/proposals", { state: "all" });
+    expect(waiting.pending).toBe(1);
+    const request = waiting.proposals.find((p: any) => p.turnId === asked.turnId);
+    expect(request?.state, JSON.stringify(waiting).slice(0, 600)).toBe("pending");
+    expect(request.type).toBe(asked.run.proposals[0].type);
+    expect(request.summary).toBe(asked.run.proposals[0].summary);
+    const confirmed = await rec.change("confirm-request", "POST", `/v1/proposals/${request.proposalId}/decision`, { decision: "confirm" });
+    expect(confirmed.receipt.outcome).toBe("committed");
+    expect((await rec.get("/v1/proposals", { state: "all" })).pending).toBe(0);
 
     await expect(rec.render()).toMatchFileSnapshot(`${OUT}/owner-conversation.json`);
   });
