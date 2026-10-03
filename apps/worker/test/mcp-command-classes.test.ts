@@ -14,7 +14,7 @@ import { CONSEQUENTIAL_COMMAND_TYPES } from "@garderobe/contracts/ext/api";
  */
 
 /** Recorded at once. Everything not named in these three lists waits for the owner. */
-const DIRECT = ["care.mark_dirty", "care.washed", "product.record", "product.record_fit_assessment", "product.record_observation", "research.save_note", "wear.record"];
+const DIRECT = ["board.select", "care.mark_dirty", "care.washed", "laundry.collect", "product.record", "product.record_fit_assessment", "product.record_observation", "research.save_note", "stock.pack", "stock.unpack", "wear.record"];
 /** Refused outright by the restriction guard. */
 const LIFT = ["assistant.lift_restriction", "restriction.resolve"];
 /** Not available to a connection at all: system bookkeeping, account-level commands, commands that take no owner statement. */
@@ -54,7 +54,7 @@ beforeAll(async () => {
 });
 
 describe("the class of every command type", () => {
-  it("is direct only for wear and wash reports and research records; every other owner-facing type waits for the owner", async () => {
+  it("is direct only for wear and wash reports, research records and the four routine actions the owner allowed; every other owner-facing type waits for the owner", async () => {
     const { registry } = await testApp();
     const actual: Record<string, string> = {};
     for (const type of registry.types()) actual[type] = connectedDispositionOfType(registry, type, {});
@@ -68,8 +68,9 @@ describe("the class of every command type", () => {
     expect(connectedDispositionOfType(registry, "job.create", { kind: "email_investigation" })).toBe("owner");
     // The contract's list of sensitive types is a floor: each of them waits for the owner or is not available at all.
     for (const type of CONSEQUENTIAL_COMMAND_TYPES) expect(["owner", "internal"], type).toContain(actual[type]);
-    // No type runs directly from a typed command by a separate owner decision yet.
-    expect([...TYPED_DIRECT_BY_OWNER_DECISION]).toEqual([]);
+    // The routine, undoable actions of the owner's decision of 2026-10-03, and nothing else, run from a typed command only.
+    // `laundry.return` is named by that decision but has no undo for a recorded batch, so it still waits.
+    expect([...TYPED_DIRECT_BY_OWNER_DECISION].sort()).toEqual(["board.select", "laundry.collect", "stock.pack", "stock.unpack"]);
   });
 
   it("publishes the same thing in command_types, to the app and to the connection", async () => {
@@ -138,6 +139,7 @@ describe("a typed command from a connected assistant", () => {
       ["garment.set_planning_policy", { garmentId, policy: "excluded", reason: "test fixture" }],
       ["garment.retire", { garmentId, disposition: "donated" }],
       ["stock.reconcile", { garmentId, counts: { clean: 1, total: 1 } }],
+      // Packing for something that is not one of the owner's planned trips is not a packing check.
       ["stock.pack", { tripId: "trp_fixture", items: [{ garmentId, quantity: 1 }] }],
       ["stock.unpack", { tripId: "trp_fixture" }],
       ["measurement.record", { subject: "body", key: "chest", value: 40, unit: "in", source }],
@@ -146,13 +148,12 @@ describe("a typed command from a connected assistant", () => {
       ["memory.set_status", { conclusionId: "mem_fixture", status: "retired" }],
       ["feedback.record", { text: "Synthetic comfort note (test fixture)", kind: "scratchy", garmentIds: [garmentId] }],
       ["wear.amend", { wearingDate: "2026-09-01", remove: [garmentId] }],
-      // Laundry batches and the hamper as a whole: these name no garment.
-      ["laundry.collect", {}],
+      // Laundry returns and exceptions, and the hamper as a whole. (A pickup runs directly: mcp-routine-actions.test.ts.)
       ["laundry.return", {}],
       ["laundry.report_exception", { kind: "delayed" }],
       ["care.washed", { allOfChannel: "service" }],
-      // Everyday choices, plans and settings.
-      ["board.select", { boardId: "brd_fixture", optionId: null }],
+      // Plans and settings. (Choosing an option on the published board runs directly.)
+      ["board.suppress", { localDate: "2026-12-01" }],
       ["service.resume", {}],
       ["style.set_brief", { localDate: "2026-12-01", text: "Synthetic brief (test fixture)", source }],
       ["studio.save_combination", { slots: [{ role: "top", garmentId }] }],

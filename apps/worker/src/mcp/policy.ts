@@ -9,7 +9,8 @@
  * conversation path (`garderobe_ask`) cannot drift apart.
  *
  *   - `direct`    recorded at once: a wear report for garments no active restriction excludes, a wash or
- *                 needs-a-wash report naming its garments, the records of a piece of research, and the
+ *                 needs-a-wash report naming its garments, the records of a piece of research, the routine
+ *                 actions the owner allowed on 2026-10-03 (see `TYPED_DIRECT_BY_OWNER_DECISION`), and the
  *                 undo of one of these.
  *   - `owner`     kept as a proposal; only the owner's confirmation in the app runs it.
  *   - `internal`  not available to a connection at all: bookkeeping the system does for itself (class
@@ -29,8 +30,8 @@ export type ConnectedDisposition = "direct" | "owner" | "internal" | "lift";
 
 const LIFTS = new Set(["restriction.resolve", "assistant.lift_restriction"]);
 
-/** The owner's reports that are recorded without a tap. */
-const REPORTS = new Set(["wear.record", "care.mark_dirty", "care.washed"]);
+/** What is recorded without a tap and says when something happened: the owner's reports, and the routine actions that are observations. */
+const REPORTS = new Set(["wear.record", "care.mark_dirty", "care.washed", "laundry.collect", "stock.pack", "stock.unpack"]);
 
 /**
  * How far back a connected assistant's report is recorded without the owner: today and this many days
@@ -65,12 +66,36 @@ async function reportOutsideWindow(db: Db, type: string, payload: Record<string,
 
 /**
  * Types the owner has decided a connected assistant's TYPED command may run directly although relayed
- * conversation text may not. Empty: the owner has decided no such difference. This is the one place to
- * add a type for the typed path only (for example `board.select` or `laundry.collect`, if the owner
- * decides everyday actions need no confirmation); a type that should also run from relayed conversation
- * text belongs in the assistant workstream's classification instead.
+ * conversation text may not. This is the one place to add a type for the typed path only; a type that
+ * should also run from relayed conversation text belongs in the assistant workstream's classification
+ * instead.
+ *
+ * Owner decision of 2026-10-03: a connected assistant may directly perform the routine, undoable actions,
+ * each with an authenticated receipt and undo: choosing from the published outfit board, laundry pickup
+ * and return, and packing checks. Each of the four commands below has an undo of its own.
+ *
+ * `laundry.return` is NOT here although the decision names it: the foundation's command gives a return of
+ * a recorded batch no undo (its receipt says to report what is still away instead, and that report is an
+ * exception, which waits for the owner). A connection that recorded a return wrongly could therefore not
+ * take it back, so the condition of the decision is not met and a return waits for the owner until the
+ * command has an undo or the owner accepts it without one. Record corrections, moves, retirements,
+ * settings, restrictions, style and measurements wait for the owner as before, and so do
+ * `laundry.report_exception`, trips, reminders, feedback and images, which the decision does not name.
  */
-export const TYPED_DIRECT_BY_OWNER_DECISION: ReadonlySet<string> = new Set<string>();
+export const TYPED_DIRECT_BY_OWNER_DECISION: ReadonlySet<string> = new Set<string>(["board.select", "laundry.collect", "stock.pack", "stock.unpack"]);
+
+/**
+ * The part of a routine action the decision does not cover, so it waits for the owner after all: packing
+ * or unpacking for something that is not one of the owner's planned trips is not a packing check of a
+ * trip; it would only move pieces out of what can be suggested.
+ */
+async function routineActionNeedsOwner(db: Db, userId: string, type: string, payload: Record<string, unknown>): Promise<boolean> {
+  if (type === "stock.pack" || type === "stock.unpack") {
+    if (typeof payload.tripId !== "string") return false; // refused by the command's own schema
+    return !(await first(db, "SELECT 1 AS x FROM trips WHERE user_id = ? AND trip_id = ? AND status = 'planned'", userId, payload.tripId));
+  }
+  return false;
+}
 
 /** The part that depends only on the type and payload (no ledger read). Unknown types are `direct`: the command service names the error. */
 export function connectedDispositionOfType(registry: CommandRegistry, type: string, payload: Record<string, unknown>): ConnectedDisposition {
@@ -99,6 +124,7 @@ export async function connectedDisposition(registry: CommandRegistry, db: Db, us
     return connectedDispositionOfType(registry, target.type, targetPayload) === "direct" ? "direct" : "owner";
   }
   const disposition = connectedDispositionOfType(registry, type, payload);
+  if (disposition === "direct" && TYPED_DIRECT_BY_OWNER_DECISION.has(type) && (await routineActionNeedsOwner(db, userId, type, payload))) return "owner";
   // A wear report naming a garment that an active restriction excludes contradicts the restriction on words nobody verified.
   if (disposition === "direct" && type === "wear.record" && (await wearsRestrictedGarment(db, userId, payload))) return "owner";
   // The tap-free exception is for garments the report names: "everything in the hamper is washed" names none.
