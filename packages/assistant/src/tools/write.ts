@@ -383,9 +383,13 @@ export function buildWriteTools(rt: TurnRuntime): ToolSet {
       execute: async (i) => {
         // Nothing is attributed to the owner from a message in which the owner wrote no words of their own.
         const byOwner = i.saidByOwner && ownerSpoke(rt);
+        // The message the statement is linked to is the one that holds the owner's words: for a tapped
+        // answer that is the message the question was about, never the wordless tap (as ownerSource).
+        const stated = byOwner ? ownerSource(rt).ref : "";
+        const sourceMessageId = stated.startsWith("message:") ? stated.slice("message:".length) : rt.userMessageId;
         return forModel(await commit(rt, {
           tool: "remember", type: "memory.record_conclusion", targets: [i.kind, i.text.slice(0, 80)],
-          payload: { kind: i.kind, text: i.text, speaker: byOwner ? "owner" : "assistant", sourceMessageIds: [rt.userMessageId], premises: i.premises.map((p) => ({ ...p, value: p.value ?? null })), entityIds: i.entityIds, status: byOwner ? "active" : "candidate" },
+          payload: { kind: i.kind, text: i.text, speaker: byOwner ? "owner" : "assistant", sourceMessageIds: [sourceMessageId], premises: i.premises.map((p) => ({ ...p, value: p.value ?? null })), entityIds: i.entityIds, status: byOwner ? "active" : "candidate" },
         }));
       },
     }),

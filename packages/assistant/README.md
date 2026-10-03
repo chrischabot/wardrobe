@@ -94,7 +94,11 @@ value is quoted exactly as it would be stored, even when it looks like a code or
 reference that names no record on file is never hidden: it is shown in full and said to match no record.
 The one identifier that is not printed is one trusted code made up in that turn for the record the
 request itself creates (a tool passes it as `minted`; today only the mailbox-search job), which reads
-"a new job record is created"; a value the model supplied is never treated that way.
+"a new job record is created"; a value the model supplied is never treated that way. A command's machine
+name is never shown either: a kind of change with no sentence of its own opens with its plain label from
+`CHANGE_LABELS` ("Add a trip."), an unlabelled kind reads "Make a change to your records.", and an undo
+names the earlier change by its label and its receipt. `CHANGE_LABELS` and `changeLabel` are exported for
+the Worker, which shows a connected assistant's requests with the same describer.
 
 The source of a change is recorded as what it was (`ownerSource` in `src/tools/runtime.ts`): "your own
 statement" only when the owner wrote words of their own in that message. A tapped answer to the
@@ -176,7 +180,13 @@ Known limits, stated on every receipt: a later message or record is found by the
 what was forgotten (two of the words that message introduced, or its only one when that is distinctive).
 Anything that restates it in entirely different words is not found. The owner's own later messages are
 never removed unless the owner forgets them too. The match can also take a later record that shares two
-such words for another reason.
+such words for another reason. Only records written or changed at or after the earliest named message are
+searched: a note, candidate or request that was there before the message was sent and has not been
+touched since cannot hold its words and is never removed, even when it shares them (a record changed
+after the message is searched like a new one). The two-word test counts different words: a word and its
+stem are one. Not yet fixed (change review, 2026-10-03): messages indexed before
+migration 0204 have no `data_terms`, so forgetting an older message does not find where its attachment or
+tool-call words went; tool-call text beyond 60,000 characters of a message is not indexed.
 
 ## Secrets
 

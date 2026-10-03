@@ -25,7 +25,7 @@ export { createCompositionModel, parseCandidates, type CompositionRequest, type 
 export { assembleMandatoryContext, ASSISTANT_POLICY, ASSISTANT_PROMPT_VERSION, estimateTokens, type MandatoryContext } from "./context/mandatory.ts";
 export { ownerAuthoredText, isDirectReport } from "./policy/voice.ts";
 export { classifyChange, mayCommitFromConversation, OBSERVATION_TYPES, type ChangeClass } from "./policy/classes.ts";
-export { describeChange, MAX_SHOWN_VALUE, MAX_SUMMARY } from "./policy/describe.ts";
+export { CHANGE_LABELS, changeLabel, describeChange, MAX_SHOWN_VALUE, MAX_SUMMARY } from "./policy/describe.ts";
 export { REPORT_WINDOW_DAYS, withinReportWindow, reportsIn, reportDateOf, type OwnerReport } from "./policy/report.ts";
 export { redactSecrets, redactDeep, SECRET_PLACEHOLDER } from "./policy/secrets.ts";
 export { recall, indexMessages, indexWatermark, extractJudgements, type CanonicalMessage, type RecallInput } from "./recall/index.ts";

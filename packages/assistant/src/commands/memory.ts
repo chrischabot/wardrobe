@@ -1,7 +1,7 @@
 import { ASSISTANT_COMMANDS as C } from "@garderobe/contracts/ext/assistant";
 import { CommandError, SCRUBBED_TEXT, all, define, first, json, planLedgerScrub, stmt, type CommandContext, type Stmt } from "@garderobe/domain";
 import { NO_UNDO, plural } from "./common.ts";
-import { termsOfText } from "../recall/index.ts";
+import { canonicalTerm, termsOfText } from "../recall/index.ts";
 
 /**
  * A source-linked conclusion. A model extraction can only ever be a candidate: it becomes active by the
@@ -180,14 +180,24 @@ async function introducedTerms(ctx: CommandContext, messageId: string, withData:
   return { terms: mine, position: row.position, conversationId: row.conversation_id };
 }
 
-/** Whether a text repeats what a forgotten message introduced: it shares two of those words (or the only one, when that is distinctive). */
-function repeats(introduced: Set<string>, text: string | null | undefined): boolean {
-  if (!text || introduced.size === 0) return false;
-  const need = introduced.size === 1 ? 1 : 2;
-  if (need === 1 && [...introduced][0]!.length < 7) return false;
-  let shared = 0;
-  for (const t of termsOfText(text)) if (introduced.has(t) && ++shared >= need) return true;
-  return false;
+/**
+ * The test for "this text repeats what the forgotten message introduced": it shares two DIFFERENT of
+ * those words, or the only one when that is distinctive (seven letters or more as written). Index terms
+ * hold a word and its stem ("jumpers" and "jumper"), so words are compared by the one form both reduce
+ * to: counted as stored, one shared word would pass for two. Built once per forgotten message and used
+ * for every record looked at.
+ */
+function repeatsOf(introduced: Set<string>): (text: string | null | undefined) => boolean {
+  const words = new Map<string, number>();
+  for (const t of introduced) words.set(canonicalTerm(t), Math.max(words.get(canonicalTerm(t)) ?? 0, t.length));
+  const need = words.size === 1 ? 1 : 2;
+  if (words.size === 0 || (need === 1 && [...words.values()][0]! < 7)) return () => false;
+  return (text) => {
+    if (!text) return false;
+    const shared = new Set<string>();
+    for (const t of termsOfText(text)) if (introduced.has(t) && shared.add(canonicalTerm(t)).size >= need) return true;
+    return false;
+  };
 }
 
 /** Later assistant messages that repeat what a forgotten message first said, in their reply or (for a message the owner named) in their tool calls and results. */
@@ -195,7 +205,8 @@ async function echoesOf(ctx: CommandContext, messageId: string, withData: boolea
   const intro = await introducedTerms(ctx, messageId, withData);
   if (!intro || intro.terms.size === 0) return [];
   const later = await all<{ message_id: string; terms: string; data_terms: string }>(ctx.db, "SELECT message_id, terms, data_terms FROM conversation_index WHERE user_id = ? AND conversation_id = ? AND position > ? AND speaker = 'assistant' ORDER BY position DESC LIMIT 4000", ctx.userId, intro.conversationId, intro.position);
-  return later.filter((o) => repeats(intro.terms, withData ? `${o.terms} ${o.data_terms}` : o.terms)).map((o) => o.message_id);
+  const repeats = repeatsOf(intro.terms);
+  return later.filter((o) => repeats(withData ? `${o.terms} ${o.data_terms}` : o.terms)).map((o) => o.message_id);
 }
 
 interface Copies {
@@ -216,76 +227,83 @@ interface Copies {
  * background job, a request for the owner, a question - without its reply repeating them. Found here by
  * the same test as a repeating reply, over every turn's records, every conversation command and intent,
  * and the assistant's own tables, whoever wrote the row.
+ *
+ * Only rows written or changed at or after the earliest named message are looked at (`sinceMs`): a note,
+ * candidate or request that was there before the message was sent and has not been touched since cannot
+ * hold its words, and such an earlier record that merely shares them is never removed by forgetting a
+ * later message. A record changed after the message, for whatever reason, is searched like a new one.
  */
-async function copiesOf(ctx: CommandContext, introduced: Set<string>, skipTurnIds: Set<string>): Promise<Copies> {
+async function copiesOf(ctx: CommandContext, introduced: Set<string>, skipTurnIds: Set<string>, sinceMs: number): Promise<Copies> {
   const out: Copies = { statements: [], commandIds: [], replyMessageIds: [], withdrawnRequests: 0, records: 0 };
   if (introduced.size === 0) return out;
-  const hit = (text: string | null | undefined) => repeats(introduced, text);
+  const hit = repeatsOf(introduced);
+  /** Written before the earliest named message (instants are compared as instants, never as text). */
+  const earlier = (instant: string | null | undefined) => typeof instant === "string" && Date.parse(instant) < sinceMs;
   const touched = new Set<string>();
 
-  const commands = await all<{ command_id: string; turn_id: string | null; payload_json: string; receipt_json: string }>(
+  const commands = await all<{ command_id: string; turn_id: string | null; payload_json: string; receipt_json: string; written_at: string }>(
     ctx.db,
-    "SELECT command_id, json_extract(source_json, '$.parentId') AS turn_id, payload_json, receipt_json FROM commands WHERE user_id = ? AND scrubbed_at IS NULL AND json_extract(source_json, '$.parentKind') = 'turn' AND substr(type, 1, 10) != 'inference.'",
+    "SELECT command_id, json_extract(source_json, '$.parentId') AS turn_id, payload_json, receipt_json, recorded_at AS written_at FROM commands WHERE user_id = ? AND scrubbed_at IS NULL AND json_extract(source_json, '$.parentKind') = 'turn' AND substr(type, 1, 10) != 'inference.'",
     ctx.userId,
   );
   for (const c of commands) {
-    if (c.command_id === ctx.commandId || (c.turn_id && skipTurnIds.has(c.turn_id)) || !(hit(c.payload_json) || hit(c.receipt_json))) continue;
+    if (earlier(c.written_at) || c.command_id === ctx.commandId || (c.turn_id && skipTurnIds.has(c.turn_id)) || !(hit(c.payload_json) || hit(c.receipt_json))) continue;
     out.commandIds.push(c.command_id);
     if (c.turn_id) touched.add(c.turn_id);
   }
-  const intents = await all<{ action_id: string; parent_id: string; effect_json: string; targets_json: string }>(ctx.db, "SELECT action_id, parent_id, effect_json, targets_json FROM action_intents WHERE user_id = ? AND parent_kind = 'turn'", ctx.userId);
+  const intents = await all<{ action_id: string; parent_id: string; effect_json: string; targets_json: string; written_at: string }>(ctx.db, "SELECT action_id, parent_id, effect_json, targets_json, updated_at AS written_at FROM action_intents WHERE user_id = ? AND parent_kind = 'turn'", ctx.userId);
   for (const i of intents) {
-    if (skipTurnIds.has(i.parent_id) || !(hit(i.effect_json) || hit(i.targets_json))) continue;
+    if (earlier(i.written_at) || skipTurnIds.has(i.parent_id) || !(hit(i.effect_json) || hit(i.targets_json))) continue;
     out.statements.push(stmt("UPDATE action_intents SET effect_json = ?, targets_json = '[]' WHERE user_id = ? AND action_id = ?", FORGOTTEN_JSON, ctx.userId, i.action_id));
     touched.add(i.parent_id);
   }
 
   // The assistant's own records, by their text (a background job writes these outside any turn).
   const creator = async (kind: string, id: string) => (await all<{ command_id: string }>(ctx.db, "SELECT command_id FROM command_entities WHERE user_id = ? AND kind = ? AND entity_id = ?", ctx.userId, kind, id)).map((r) => r.command_id);
-  for (const n of await all<{ note_id: string; command_id: string; text: string }>(ctx.db, "SELECT note_id, command_id, topic || ' ' || body || ' ' || claims_json AS text FROM research_notes WHERE user_id = ? AND status != 'forgotten'", ctx.userId)) {
-    if (!hit(n.text)) continue;
+  for (const n of await all<{ note_id: string; command_id: string; text: string; written_at: string }>(ctx.db, "SELECT note_id, command_id, topic || ' ' || body || ' ' || claims_json AS text, updated_at AS written_at FROM research_notes WHERE user_id = ? AND status != 'forgotten'", ctx.userId)) {
+    if (earlier(n.written_at) || !hit(n.text)) continue;
     out.statements.push(stmt("UPDATE research_notes SET status = 'forgotten', topic = ?, body = ?, claims_json = '[]', version = version + 1, updated_at = ? WHERE user_id = ? AND note_id = ?", FORGOTTEN, FORGOTTEN, ctx.now, ctx.userId, n.note_id));
     out.commandIds.push(n.command_id, ...(await creator("research_note", n.note_id)));
     out.records++;
   }
-  for (const m of await all<{ conclusion_id: string; command_id: string; status: string; text: string }>(ctx.db, "SELECT conclusion_id, command_id, status, text || ' ' || premises_json || ' ' || history_json AS text FROM memory_conclusions WHERE user_id = ? AND status != 'forgotten'", ctx.userId)) {
-    if (!hit(m.text)) continue;
+  for (const m of await all<{ conclusion_id: string; command_id: string; status: string; text: string; written_at: string }>(ctx.db, "SELECT conclusion_id, command_id, status, text || ' ' || premises_json || ' ' || history_json AS text, updated_at AS written_at FROM memory_conclusions WHERE user_id = ? AND status != 'forgotten'", ctx.userId)) {
+    if (earlier(m.written_at) || !hit(m.text)) continue;
     out.statements.push(scrubMemory(ctx, m.conclusion_id));
     out.commandIds.push(m.command_id, ...(await creator("memory_conclusion", m.conclusion_id)));
     out.records++;
   }
-  for (const p of await all<{ product_id: string; text: string }>(ctx.db, "SELECT product_id, name || ' ' || coalesce(maker, '') || ' ' || coalesce(note, '') || ' ' || coalesce(url, '') || ' ' || coalesce(product_code, '') AS text FROM products WHERE user_id = ? AND name != ?", ctx.userId, FORGOTTEN)) {
-    if (!hit(p.text)) continue;
+  for (const p of await all<{ product_id: string; text: string; written_at: string }>(ctx.db, "SELECT product_id, name || ' ' || coalesce(maker, '') || ' ' || coalesce(note, '') || ' ' || coalesce(url, '') || ' ' || coalesce(product_code, '') AS text, updated_at AS written_at FROM products WHERE user_id = ? AND name != ?", ctx.userId, FORGOTTEN)) {
+    if (earlier(p.written_at) || !hit(p.text)) continue;
     out.statements.push(scrubProduct(ctx, p.product_id));
     out.commandIds.push(...(await creator("product", p.product_id)));
     out.records++;
   }
-  for (const j of await all<{ job_id: string; text: string }>(ctx.db, "SELECT job_id, title || ' ' || params_json || ' ' || progress_json || ' ' || coalesce(unresolved_reason, '') AS text FROM assistant_jobs WHERE user_id = ? AND title != ?", ctx.userId, FORGOTTEN)) {
-    if (!hit(j.text)) continue;
+  for (const j of await all<{ job_id: string; text: string; written_at: string }>(ctx.db, "SELECT job_id, title || ' ' || params_json || ' ' || progress_json || ' ' || coalesce(unresolved_reason, '') AS text, updated_at AS written_at FROM assistant_jobs WHERE user_id = ? AND title != ?", ctx.userId, FORGOTTEN)) {
+    if (earlier(j.written_at) || !hit(j.text)) continue;
     // The job itself is scrubbed and cancelled through the command that created it (scrubAssistantRecords).
     out.commandIds.push(...(await creator("job", j.job_id)));
     out.records++;
   }
-  for (const f of await all<{ command_id: string; text: string }>(ctx.db, "SELECT command_id, text || ' ' || coalesce(activity, '') || ' ' || coalesce(layer, '') || ' ' || coalesce(scope, '') AS text FROM comfort_feedback WHERE user_id = ? AND status != 'forgotten'", ctx.userId)) {
-    if (!hit(f.text)) continue;
+  for (const f of await all<{ command_id: string; text: string; written_at: string }>(ctx.db, "SELECT command_id, text || ' ' || coalesce(activity, '') || ' ' || coalesce(layer, '') || ' ' || coalesce(scope, '') AS text, created_at AS written_at FROM comfort_feedback WHERE user_id = ? AND status != 'forgotten'", ctx.userId)) {
+    if (earlier(f.written_at) || !hit(f.text)) continue;
     out.commandIds.push(f.command_id);
     out.records++;
   }
-  for (const r of await all<{ command_id: string; text: string }>(ctx.db, "SELECT command_id, title || ' ' || coalesce(note, '') || ' ' || coalesce(url, '') AS text FROM reminders WHERE user_id = ? AND title != ?", ctx.userId, FORGOTTEN)) {
-    if (!hit(r.text)) continue;
+  for (const r of await all<{ command_id: string; text: string; written_at: string }>(ctx.db, "SELECT command_id, title || ' ' || coalesce(note, '') || ' ' || coalesce(url, '') AS text, updated_at AS written_at FROM reminders WHERE user_id = ? AND title != ?", ctx.userId, FORGOTTEN)) {
+    if (earlier(r.written_at) || !hit(r.text)) continue;
     out.commandIds.push(r.command_id);
     out.records++;
   }
 
   // Each turn's own record: requests waiting for the owner, the question it asked, its receipts and result.
-  const turns = await all<{ turn_id: string; status: string; reply_message_id: string | null; receipts_json: string; refusals_json: string; proposals_json: string; clarification_json: string | null; result_json: string | null }>(
+  const turns = await all<{ turn_id: string; status: string; reply_message_id: string | null; receipts_json: string; refusals_json: string; proposals_json: string; clarification_json: string | null; result_json: string | null; written_at: string }>(
     ctx.db,
-    "SELECT turn_id, status, reply_message_id, receipts_json, refusals_json, proposals_json, clarification_json, result_json FROM assistant_turns WHERE user_id = ?",
+    "SELECT turn_id, status, reply_message_id, receipts_json, refusals_json, proposals_json, clarification_json, result_json, updated_at AS written_at FROM assistant_turns WHERE user_id = ?",
     ctx.userId,
   );
   const scrubbing = new Set(out.commandIds);
   for (const t of turns) {
-    if (skipTurnIds.has(t.turn_id)) continue;
+    if (skipTurnIds.has(t.turn_id) || earlier(t.written_at)) continue;
     const proposals = json<Record<string, unknown>[]>(t.proposals_json, []);
     const keptProposals = proposals.filter((p) => !hit(JSON.stringify(p)));
     const receipts = json<{ commandId: string; summary?: string }[]>(t.receipts_json, []);
@@ -428,7 +446,16 @@ export const conversationForgetSource = define({
         const part = listed.slice(n, n + 50);
         for (const r of await all<{ turn_id: string }>(ctx.db, `SELECT turn_id FROM assistant_turns WHERE user_id = ? AND user_message_id IN (${part.map(() => "?").join(",")})`, ctx.userId, ...part)) ownTurns.add(r.turn_id);
       }
-      const copies = await copiesOf(ctx, introduced, ownTurns);
+      // Nothing written before the earliest named message can hold its words. A named message whose
+      // sending time is not on record sets no bound, and neither does an empty list.
+      let sinceMs = Number.POSITIVE_INFINITY;
+      for (const id of named) {
+        const sent = await first<{ created_at: string }>(ctx.db, "SELECT created_at FROM assistant_turns WHERE user_id = ? AND (user_message_id = ? OR reply_message_id = ?) ORDER BY created_at LIMIT 1", ctx.userId, id, id);
+        const at = sent ? Date.parse(sent.created_at) : Number.NaN;
+        sinceMs = Number.isNaN(at) ? Number.NEGATIVE_INFINITY : Math.min(sinceMs, at);
+      }
+      if (sinceMs === Number.POSITIVE_INFINITY) sinceMs = Number.NEGATIVE_INFINITY;
+      const copies = await copiesOf(ctx, introduced, ownTurns, sinceMs);
       statements.push(...copies.statements);
       for (const c of copies.commandIds) if (c !== ctx.commandId) commandIds.add(c);
       withdrawnRequests = copies.withdrawnRequests;

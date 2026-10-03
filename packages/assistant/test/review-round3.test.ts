@@ -17,7 +17,7 @@ import { env } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { all, getStyleContext } from "@garderobe/domain";
 import { HEALING_RESTRICTION_ID } from "@garderobe/domain/import";
-import { MAX_SHOWN_VALUE, exportAssistantData, reportDateOf, reportsIn, runAssistantMaintenance, withinReportWindow } from "../src/index.ts";
+import { CHANGE_LABELS, MAX_SHOWN_VALUE, describeChange, exportAssistantData, reportDateOf, reportsIn, runAssistantMaintenance, withinReportWindow } from "../src/index.ts";
 import type { GarmentWords } from "../src/policy/naming.ts";
 import { TEST_GATEWAY_ID, type FakeToolCall } from "../src/testing/index.ts";
 import { confirm, createWorld, setNow, submission, tablesHolding, type World } from "./helpers.ts";
@@ -429,6 +429,25 @@ describe("journey finding D11-2: a request is shown in words, with no role codes
     expect(await confirm(w, turn)).toMatchObject({ type: "settings.update", outcome: "committed" });
   });
 
+  it("a change without a sentence of its own, and the change an undo would reverse, are named in plain words, never by the command's machine name", async () => {
+    const trip = await describeChange(w.h.db, w.owner.userId, "trip.create", { name: "SYNTHETIC weekend", departsOn: "2026-09-20", returnsOn: "2026-09-22" });
+    expect(trip).toBe("Add a trip. Written exactly: name \u201CSYNTHETIC weekend\u201D; departs on \u201C2026-09-20\u201D; returns on \u201C2026-09-22\u201D.");
+    expect(codesIn(trip)).toEqual([]);
+    // A type nobody labelled is still never shown by its machine name.
+    const unknown = await describeChange(w.h.db, w.owner.userId, "synthetic.unlabelled_type", { note: "x" });
+    expect(unknown).toBe("Make a change to your records. Written exactly: note \u201Cx\u201D.");
+    for (const type of ["constructor", "toString", "__proto__"]) expect(await describeChange(w.h.db, w.owner.userId, type, {})).toBe("Make a change to your records.");
+    // An undo names the earlier change by its label and its receipt.
+    const shirt = await w.garment("oxford");
+    const earlier = await w.owner.exec("garment.add_alias", { garmentId: shirt.garmentId, phrase: "SYNTHETIC label alias" });
+    const undo = await describeChange(w.h.db, w.owner.userId, "command.undo", { commandId: earlier.commandId });
+    expect(undo).toBe(`Undo an earlier change (add another name for a garment) whose receipt read \u201C${earlier.summary.replace(/["\u201C\u201D]/g, "'")}\u201D.`);
+    expect(undo).not.toContain("garment.add_alias");
+    expect(codesIn(undo)).toEqual([]);
+    // Every label is itself plain words.
+    for (const [type, label] of Object.entries(CHANGE_LABELS)) expect(codesIn(label), type).toEqual([]);
+  });
+
   it("a tapped answer has no words of its own: the statement recorded is the message the question was about, named by when it was sent", async () => {
     w.model.script({ toolCalls: [{ toolName: "ask_owner", input: { question: "Shall I add it as owned?", choices: [{ id: "a", label: "Yes" }, { id: "b", label: "No" }] } }] }, { text: "x" });
     const asked = await w.client.runTurn({ submissionId: submission("d11-2-ask"), text: "SYNTHETIC: a navy Harley lambswool crewneck arrived, it is mine." });
@@ -446,6 +465,15 @@ describe("journey finding D11-2: a request is shown in words, with no role codes
     expect(created.payload["source"]).toEqual({ kind: "owner_statement", ref: `message:${askedRow.user_message_id}` });
     expect(created.summary).toContain(`Its source is recorded as your own statement, your message of ${askedRow.created_at.slice(0, 10)} at ${askedRow.created_at.slice(11, 19)} UTC.`);
     expect(created.summary).not.toContain(tappedRow.created_at.slice(11, 19));
+    // A conclusion the owner stated is linked to the message that holds the words as well, not to the tap.
+    setNow(w, `${TODAY}T08:02:30Z`);
+    w.model.script({ toolCalls: [{ toolName: "ask_owner", input: { question: "Shall I remember that?", choices: [{ id: "a", label: "Yes" }, { id: "b", label: "No" }] } }] }, { text: "x" });
+    const askedAgain = await w.client.runTurn({ submissionId: submission("d11-2-ask-remember"), text: "SYNTHETIC: I like my crewnecks a size up." });
+    w.model.script({ toolCalls: [{ toolName: "remember", input: { kind: "preference", text: "SYNTHETIC: crewnecks a size up", saidByOwner: true } }] }, { text: "Recorded as a request." });
+    const tappedAgain = await w.client.answerClarification(askedAgain.turnId, { inputId: askedAgain.clarification!.inputId, choiceId: "a" });
+    setNow(w, `${TODAY}T08:00:00Z`);
+    const wordedMessage = (await all<{ user_message_id: string }>(w.h.db, "SELECT user_message_id FROM assistant_turns WHERE user_id = ? AND turn_id = ?", w.owner.userId, askedAgain.turnId))[0]!.user_message_id;
+    expect(tappedAgain.proposals.find((x) => x.type === "memory.record_conclusion")!.payload).toMatchObject({ speaker: "owner", sourceMessageIds: [wordedMessage] });
   });
 
   it("an identifier that names no record is shown in full and said to match nothing; free text that looks like a code or an identifier is shown exactly as stored", async () => {
@@ -554,6 +582,30 @@ describe("C: forgetting a message removes its words wherever a later turn put th
     // The unrelated turn and its note are untouched.
     expect((await tablesHolding(w.h.db, w.owner.userId, /featherweight/)).holding).toMatchObject({ research_notes: ["body"] });
     expect((await w.client.transcript({ limit: 200 })).messages.some((m) => m.text === "Tweed comes in several weights.")).toBe(true);
+  });
+
+  it("a record that was already there before the forgotten message was sent is never removed, although it shares the message's words; nor is a later record that shares just one of them", async () => {
+    const w = await createWorld();
+    // Written by the owner an hour before the message, outside any conversation turn.
+    const note = await w.owner.exec("research.save_note", { topic: "Clinics abroad", body: "SYNTHETIC: the Ljubljana dialysis unit is near the station." }, { actor: "owner", authorization: "owner_tap" });
+    setNow(w, `${TODAY}T09:00:00Z`);
+    w.model.script({ toolCalls: [{ toolName: "save_research_note", input: { topic: "Swelling", body: "Owner: ankles swell since the Ljubljana dialysis.", claims: [] } }] }, { text: "Sorry to hear that." });
+    const told = await w.client.runTurn({ submissionId: submission("told-after"), text: "My ankles swell since the Ljubljana dialysis." });
+    // Later, a note about something else that shares ONE of the message's words (indexed as the word and its stem).
+    setNow(w, `${TODAY}T09:30:00Z`);
+    w.model.script({ toolCalls: [{ toolName: "save_research_note", input: { topic: "Noise", body: "SYNTHETIC: dialysis machines are loud.", claims: [] } }] }, { text: "Noted." });
+    await w.client.runTurn({ submissionId: submission("one-word"), text: "Keep a note on noisy machines." });
+    const userMessage = (await w.client.transcript({ limit: 50 })).messages.find((m) => m.turnId === told.turnId && m.role === "user")!;
+    const receipt = await w.owner.exec("conversation.forget_source", { sourceKind: "message", sourceIds: [userMessage.messageId] });
+    setNow(w, `${TODAY}T08:00:00Z`);
+    // The note the message's own turn wrote is gone; the earlier one is untouched and nothing counts it.
+    const notes = await all<{ note_id: string; status: string; body: string }>(w.h.db, "SELECT note_id, status, body FROM research_notes WHERE user_id = ? ORDER BY created_at", w.owner.userId);
+    expect(notes.map((n) => n.status)).toEqual(["active", "forgotten", "active"]);
+    expect(notes[0]).toMatchObject({ note_id: String(note.result["noteId"]), body: "SYNTHETIC: the Ljubljana dialysis unit is near the station." });
+    expect(notes[1]!.body).not.toMatch(OWN);
+    expect(notes[2]!.body).toBe("SYNTHETIC: dialysis machines are loud.");
+    // The one record found by its words is the note the message's own turn wrote, not the earlier one.
+    expect(receipt.result).toMatchObject({ reusedRecords: 1, withdrawnRequests: 0 });
   });
 
   it("a rule the owner confirmed in a later turn is kept and named, never silently left (the receipt does not say 'kept: []'); a remembered conclusion repeating it goes", async () => {

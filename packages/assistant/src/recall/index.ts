@@ -61,6 +61,15 @@ export function termsOfText(text: string): string[] {
 function stem(word: string): string {
   return word.length > 4 ? word.replace(/(ies|es|s|ed|ing)$/, "") : word;
 }
+/**
+ * The one form every index term of a word reduces to: the stem of its stem, until it no longer changes
+ * ("dresses", "dress" and "dres" are all "dres"). Two index terms are the same word exactly when this is equal.
+ */
+export function canonicalTerm(term: string): string {
+  let current = term;
+  for (let next = stem(current); next !== current; next = stem(current)) current = next;
+  return current;
+}
 function topicsOf(words: string[]): string[] {
   return Object.entries(TOPIC_LEXICON).filter(([, list]) => words.some((w) => list.includes(w))).map(([topic]) => topic);
 }

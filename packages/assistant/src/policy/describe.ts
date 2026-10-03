@@ -42,6 +42,8 @@ export function quoted(value: unknown): string {
 
 const words = (value: unknown) => String(value ?? "").replace(/_/g, " ").replace(INVISIBLE, " ").replace(QUOTE_LIKE, "'");
 const list = (items: string[]) => (items.length <= 1 ? (items[0] ?? "nothing") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`);
+/** A table's own entry for a key that may be model text: never something inherited (`constructor`, `__proto__`). */
+const own = <T>(table: Readonly<Record<string, T>>, key: unknown): T | undefined => (typeof key === "string" && Object.hasOwn(table, key) ? table[key] : undefined);
 const minor = (value: unknown, currency: unknown) => (typeof value === "number" ? `${currency ? `${words(currency)} ` : ""}${(value / 100).toFixed(2)}` : null);
 
 async function garmentNames(db: Db, userId: string, ids: unknown[]): Promise<string[]> {
@@ -158,7 +160,7 @@ async function referenceInWords(db: Db, userId: string, value: string): Promise<
     return turn ? `your message of ${when(turn.created_at)}` : null;
   }
   const cut = value.indexOf("_");
-  const record = cut > 0 ? RECORDS[value.slice(0, cut)] : undefined;
+  const record = cut > 0 ? own(RECORDS, value.slice(0, cut)) : undefined;
   if (!record) return null;
   const row = await first<Record<string, unknown>>(db, record.sql, userId, value);
   return row ? record.say(row) : null;
@@ -194,13 +196,13 @@ const SOURCE_KINDS: Record<string, string> = {
 
 /** The fields of the payload the sentence did not state, each by name and in full, in words. */
 async function unstated(db: Db, userId: string, type: string, payload: Record<string, unknown>, minted: ReadonlySet<string>): Promise<string> {
-  const stated = new Set(STATED[type] ?? []);
+  const stated = new Set(own(STATED, type) ?? []);
   let rest = leaves(payload).filter((leaf) => !stated.has(leaf.path.map((s) => (/^\d+$/.test(s) ? "*" : s)).join(".")));
   // The provenance trusted code attaches to a change reads as one phrase rather than two fields.
   let provenance = "";
   const source = payload["source"] as { kind?: unknown; ref?: unknown } | null | undefined;
   if (source && typeof source === "object" && typeof source.kind === "string" && typeof source.ref === "string" && Object.keys(source).every((k) => k === "kind" || k === "ref")) {
-    provenance = ` Its source is recorded as ${SOURCE_KINDS[source.kind] ?? words(source.kind)}, ${(await referenceInWords(db, userId, source.ref)) ?? quoted(source.ref)}.`;
+    provenance = ` Its source is recorded as ${own(SOURCE_KINDS, source.kind) ?? words(source.kind)}, ${(await referenceInWords(db, userId, source.ref)) ?? quoted(source.ref)}.`;
     rest = rest.filter((leaf) => leaf.path[0] !== "source");
   }
   if (rest.length === 0) return provenance;
@@ -214,10 +216,107 @@ async function unstated(db: Db, userId: string, type: string, payload: Record<st
     if (typeof leaf.value === "string" && minted.has(leaf.value) && REFERENCE_FIELD.test(field)) parts.push(`a new ${label(leaf.path)} record is created`);
     else parts.push(`${label(leaf.path)} ${await shown(db, userId, leaf.value, field)}`);
   }
-  return ` ${STATED[type] ? "Also written with it" : "Written exactly"}: ${parts.join("; ")}.${provenance}`;
+  return ` ${own(STATED, type) ? "Also written with it" : "Written exactly"}: ${parts.join("; ")}.${provenance}`;
 }
 
 type P = Record<string, any>;
+
+/**
+ * What each kind of change is called to the owner, in plain words, when it has no sentence of its own below
+ * or is the change an undo would reverse. The owner never reads a command's machine name: a type without a
+ * label here is "a change to your records". The Worker's requests from a connected assistant use the same
+ * labels (apps/worker/src/proposals/store.ts), so both paths read alike.
+ */
+export const CHANGE_LABELS: Readonly<Record<string, string>> = {
+  "garment.create": "Add a garment to the wardrobe",
+  "garment.receive": "Mark an incoming garment as arrived and owned",
+  "assistant.report_arrival": "Mark an incoming garment as arrived and owned",
+  "garment.retire": "Retire a garment from the wardrobe",
+  "garment.merge": "Merge two garment records into one",
+  "garment.remove_fabricated": "Remove a garment record as a mistake",
+  "garment.bulk_correct": "Correct several garments at once",
+  "garment.correct": "Correct a garment's details",
+  "garment.add_alias": "Add another name for a garment",
+  "garment.remove_alias": "Remove a name for a garment",
+  "garment.move": "Record where a garment is",
+  "garment.set_planning_policy": "Change whether a garment is offered in outfits",
+  "stock.reconcile": "Set the counted quantities of a garment",
+  "stock.pack": "Record garments as packed for a trip",
+  "stock.unpack": "Record garments as unpacked after a trip",
+  "style.add_amendment": "Add an amendment to My style",
+  "style.set_amendment_status": "Change the status of an amendment to My style",
+  "style.save_document": "Save a new version of My style",
+  "style.import_document": "Replace My style with an imported document",
+  "style.upsert_rule": "Add or change a style rule",
+  "style.add_direction": "Add a standing direction",
+  "style.retire_direction": "Retire a standing direction",
+  "style.resolve_fact_conflict": "Decide a conflict between My style and a stored fact",
+  "style.set_brief": "Set the brief for a day",
+  "style.retire_brief": "Withdraw the brief for a day",
+  "size_experience.record": "Record how a size fits",
+  "laundry.collect": "Record a laundry pickup",
+  "laundry.return": "Record that laundry came back",
+  "laundry.report_exception": "Record that laundry did not come back as expected",
+  "board.select": "Choose an outfit on a day's board",
+  "board.swap_slot": "Swap one piece of an outfit on a day's board",
+  "board.suppress": "Stop showing a day's board",
+  "board.restore": "Bring back a day's board",
+  "exposure.select": "Record which offered option was chosen",
+  "feedback.record": "Record feedback on an outfit or a garment",
+  "feedback.retract": "Withdraw recorded feedback",
+  "service.pause": "Pause the daily service",
+  "service.resume": "Resume the daily service",
+  "settings.update": "Change settings",
+  "trip.create": "Add a trip",
+  "trip.update": "Change a trip",
+  "trip.cancel": "Cancel a trip",
+  "studio.save_combination": "Save a combination in Studio",
+  "studio.remove_combination": "Remove a saved combination",
+  "studio.plan_for_day": "Plan a combination for a day",
+  "studio.remove_day_plan": "Remove a day's plan",
+  "reminder.set": "Set a reminder",
+  "reminder.cancel": "Cancel a reminder",
+  "memory.record_conclusion": "Remember something about you",
+  "memory.set_status": "Change what is remembered about you",
+  "purchase.import_order": "Record an order",
+  "purchase.link_line": "Link an order line to a garment",
+  "purchase.record_event": "Record an event on an order",
+  "purchase.mark_delivered": "Mark an order as delivered",
+  "return.open_case": "Open a return or exchange",
+  "return.update_case": "Change a return or exchange",
+  "return.link_exchange": "Link an exchange to its replacement",
+  "lifecycle.open_project": "Open a repair or alteration project",
+  "lifecycle.update_project": "Change a repair or alteration project",
+  "lifecycle.record_event": "Record an event on a repair or alteration project",
+  "lifecycle.authorize_action": "Authorize an action with another party",
+  "connection.register": "Add a connection to another service",
+  "connection.set_status": "Enable or disable a connection to another service",
+  "connection.set_tool_groups": "Change what a connected service may be used for",
+  "inference.set_routing": "Change which model answers",
+  "media.authorize_upload": "Prepare an image upload",
+  "media.finalize_upload": "Finish an image upload",
+  "media.decide_review": "Decide an image waiting for review",
+  "media.set_primary_asset": "Choose a garment's main image",
+  "media.request_discovery": "Search for product images",
+  "media.request_composite_preview": "Render an outfit preview",
+  "media.delete_asset": "Delete an image",
+  "job.create": "Start a background job",
+  "measurement.record": "Record a measurement",
+  "restriction.add": "Record a restriction",
+  "restriction.resolve": "Lift a restriction",
+  "assistant.lift_restriction": "Lift a restriction",
+  "conversation.forget_source": "Forget something you said or sent",
+  "command.undo": "Undo an earlier change",
+  "wear.record": "Record a wear",
+  "wear.amend": "Change a recorded wear",
+  "care.mark_dirty": "Mark garments as needing a wash",
+  "care.washed": "Mark garments as washed",
+  "research.save_note": "Keep a research note",
+  "product.record": "Keep a shopping candidate",
+};
+
+/** The label of a kind of change, in plain words; never the command's machine name. */
+export const changeLabel = (type: string): string => own(CHANGE_LABELS, type) ?? "Make a change to your records";
 
 /** Project events whose `moveStock` moves or retires the pieces (see STOCK_FOR_EVENT in commands/lifecycle.ts). */
 const STOCK_MOVING_EVENTS = new Set(["sent_to_tailor", "returned_from_tailor", "stored", "retrieved", "pickup_completed", "discarded"]);
@@ -252,7 +351,7 @@ async function sentenceFor(db: Db, userId: string, type: string, p: P): Promise<
       // A role is a code from a fixed vocabulary; anything of another shape is shown as the value it is.
       const roles = ((p.roles ?? []) as unknown[]).map((r) => (/^[a-z]+(?:_[a-z]+)*$/.test(String(r)) ? words(r) : quoted(r)));
       const facts = fields(p, ["colour", "fabric", "maker", "size"]);
-      return `Add a piece to your wardrobe as ${p.acquisition === "incoming" ? "ordered, not yet arrived" : "owned"}: ${quoted(p.name)} (${words(p.category)}${p.quantity && p.quantity !== 1 ? `, quantity ${p.quantity}` : ""})${facts ? `, ${facts}` : ""}. It ${roles.length > 0 ? `is worn as ${list(roles)} and ` : ""}${care[String(p.careChannel)] ?? `has the care ${quoted(words(p.careChannel))}`}.`;
+      return `Add a piece to your wardrobe as ${p.acquisition === "incoming" ? "ordered, not yet arrived" : "owned"}: ${quoted(p.name)} (${words(p.category)}${p.quantity && p.quantity !== 1 ? `, quantity ${p.quantity}` : ""})${facts ? `, ${facts}` : ""}. It ${roles.length > 0 ? `is worn as ${list(roles)} and ` : ""}${own(care, String(p.careChannel)) ?? `has the care ${quoted(words(p.careChannel))}`}.`;
     }
     case "assistant.report_arrival":
     case "garment.receive":
@@ -317,7 +416,7 @@ async function sentenceFor(db: Db, userId: string, type: string, p: P): Promise<
       const moves: Record<string, string> = { sent_to_tailor: "are recorded as gone to the tailor", returned_from_tailor: "are recorded as back and available", stored: "are recorded as in storage", retrieved: "are recorded as back and available", pickup_completed: "LEAVE your wardrobe for good (sold)", discarded: "LEAVE your wardrobe for good (discarded)" };
       let pieces = (p.garmentIds ?? []) as string[];
       if (p.moveStock && pieces.length === 0) pieces = (await all<{ garment_id: string }>(db, "SELECT garment_id FROM lifecycle_project_items WHERE user_id = ? AND project_id = ?", userId, p.projectId)).map((r) => r.garment_id);
-      const stock = p.moveStock && moves[p.kind] ? ` ${await g(pieces)} ${moves[p.kind]}.` : "";
+      const stock = p.moveStock && own(moves, p.kind) ? ` ${await g(pieces)} ${own(moves, p.kind)}.` : "";
       return `Record ${quoted(words(p.kind))} on the project ${project ? quoted(project.title) : quoted(p.projectId)}${minor(p.proceedsMinor, p.currency) ? `, proceeds ${minor(p.proceedsMinor, p.currency)}` : ""}${p.nextAction ? `, next step ${quoted(p.nextAction)}` : ""}.${stock}`;
     }
     case "lifecycle.authorize_action": {
@@ -352,11 +451,15 @@ async function sentenceFor(db: Db, userId: string, type: string, p: P): Promise<
       } catch {
         was = "";
       }
-      return c ? `Undo an earlier change (${quoted(c.type)}) whose receipt read ${quoted(was)}.` : `Undo a change that is not on record (${quoted(p.commandId)}).`;
+      // The earlier change is named by its plain label, never by its command name.
+      const label = c ? own(CHANGE_LABELS, c.type) : undefined;
+      const named = label ? ` (${label.charAt(0).toLowerCase()}${label.slice(1)})` : "";
+      return c ? `Undo an earlier change${named} whose receipt read ${quoted(was)}.` : `Undo a change that is not on record (${quoted(p.commandId)}).`;
     }
     default:
-      // No sentence of its own: every field is listed, in full, by describeChange.
-      return `Carry out ${quoted(type)}.`;
+      // No sentence of its own: the change is named by its plain label (never the command's machine name)
+      // and every field is listed, in full, by describeChange.
+      return `${changeLabel(type)}.`;
   }
 }
 
