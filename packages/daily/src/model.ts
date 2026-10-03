@@ -36,6 +36,19 @@ export function colourFamily(colour: string | null | undefined): ColourFamily {
   return "unknown";
 }
 
+/**
+ * Every neutral family a recorded colour names. A two-colour piece ("olive/cream") counts towards each
+ * neutral it names, so the count behind the "never one neutral three times" verdict errs on the side
+ * of variety. A colour whose only words are not neutrals yields none.
+ */
+export function neutralFamiliesOf(colour: string | null | undefined): ColourFamily[] {
+  const text = (colour ?? "").toLowerCase();
+  if (!text) return [];
+  const out: ColourFamily[] = [];
+  for (const [family, pattern] of FAMILY_WORDS) if (NEUTRAL_FAMILIES.has(family) && pattern.test(text)) out.push(family);
+  return out;
+}
+
 export interface PoolGarment {
   garmentId: string;
   name: string;

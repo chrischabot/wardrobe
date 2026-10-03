@@ -35,7 +35,7 @@ describe("profile verdicts on the real owner's boards", () => {
         expect(upper, `${label}: the sock echoes the jacket or the shirt`).toContain(family(socks.garmentId));
         expect(family(socks.garmentId), `${label}: the sock does not repeat the trouser`).not.toBe(family(piece(o, "bottom")!.garmentId));
         const counts = new Map<string, number>();
-        for (const role of ["outer", "top", "bottom", "footwear"]) {
+        for (const role of ["outer", "top", "bottom", "belt", "socks", "footwear"]) {
           const f = family(piece(o, role)?.garmentId);
           if (f && NEUTRAL_FAMILIES.has(f)) counts.set(f, (counts.get(f) ?? 0) + 1);
         }
@@ -103,14 +103,21 @@ describe("profile verdicts on the real owner's boards", () => {
     expect(v.violations.filter((x) => x.severity === "blocking")).toEqual([]);
   });
 
-  it("the belt line carries an optional scarf on a cold start and nothing on a mild one", async () => {
+  it("the belt line carries an optional scarf on a cold start and an optional tie on a mild one (profile section 9)", async () => {
     const h = await createDailyHarness({ startAt: "2026-09-15T07:30:00Z", isolate: true });
     const owner = await realOwner(h);
     const rows = await garmentRows(h, owner);
     h.weather.setForecast("2026-09-16", MILD_DAY);
     h.weather.setForecast("2026-09-17", COLD_DAY);
     const mild = (await compose(h, owner, "2026-09-16")).board!;
-    for (const o of mild.options) expect(o.flourish, `mild option ${o.number}`).toBeNull();
+    for (const o of mild.options) {
+      // "The belt line in any plan should carry an optional scarf or tie suggestion appropriate to the day."
+      expect(o.flourish, `mild option ${o.number}`).not.toBeNull();
+      const tie = rows.get(o.flourish!.garmentId)!;
+      expect(tie.category).toBe("tie");
+      expect(tie.name, "the benched tie is never suggested").not.toMatch(/Wool-stripe/);
+      expect(optionLines(o).find((l) => l.label === "Belt")!.text).toBe(`${piece(o, "belt")!.name}; optional: ${o.flourish!.name}`);
+    }
     const cold = (await compose(h, owner, "2026-09-17")).board!;
     for (const o of cold.options) {
       expect(o.flourish, `cold option ${o.number}`).not.toBeNull();

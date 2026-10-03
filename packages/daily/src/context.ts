@@ -14,6 +14,7 @@ import {
 import { addDays, all, buildEstimatorInput, deepMerge, estimateAll, first, getStyleContext, isCommandError, json, localDateOf, type BalanceRow, type Db, type EstimatorRestriction, type Principal } from "@garderobe/domain";
 import { colourFamily, parseScope, unknownConditions, type ComfortObservation, type ContextSource, type PoolGarment, type RecommendationContext } from "./model.ts";
 import { buildRuleSet } from "./rules.ts";
+import { plannedReuse } from "./trip-day.ts";
 
 /**
  * State the current command is about to commit, laid over what D1 still shows. Used by the in-commit
@@ -160,12 +161,24 @@ export async function assembleContext(db: Db, principal: Principal, opts: Assemb
   }
   if (parsedScope.tripId) {
     const tripId = parsedScope.tripId;
+    // Deliberate reuse the packing proposal planned: a unit of such a piece that was WORN on this trip
+    // is still in the suitcase and still wearable on a day the proposal plans it. Everything else worn
+    // on the trip, and anything packed already awaiting care, stays out.
+    const reuse = await plannedReuse(db, userId, tripId);
+    const wornOnTrip = new Set<string>();
+    if (reuse.size > 0 && tripDepartsOn) {
+      const rows = await all<{ garment_id: string; wearing_date: string }>(db, "SELECT garment_id, wearing_date FROM daily_wears WHERE user_id = ? AND status = 'active' AND wearing_date >= ? AND wearing_date <= ?", userId, tripDepartsOn, localDate);
+      for (const r of rows) if (!overlay.removeWears?.some((w) => w.garmentId === r.garment_id && w.wearingDate === r.wearing_date)) wornOnTrip.add(r.garment_id);
+      for (const w of overlay.addWears ?? []) if (w.wearingDate >= tripDepartsOn && w.wearingDate <= localDate) wornOnTrip.add(w.garmentId);
+    }
     for (const g of input.garments) {
-      const clean = packedClean.get(g.garmentId) ?? 0;
       const worn = g.balances.filter((b) => b.bucket === "trip" && b.ref === `${tripId}#dirty`).reduce((n, b) => n + b.quantity, 0);
+      const rewearable = reuse.get(g.garmentId)?.has(localDate) && wornOnTrip.has(g.garmentId) ? worn : 0;
+      const clean = (packedClean.get(g.garmentId) ?? 0) + rewearable;
+      packedClean.set(g.garmentId, clean);
       g.balances = [
         ...(clean > 0 ? [{ bucket: "clean" as const, ref: "", quantity: clean, held: false }] : []),
-        ...(worn > 0 ? [{ bucket: "dirty" as const, ref: "", quantity: worn, held: false }] : []),
+        ...(worn - rewearable > 0 ? [{ bucket: "dirty" as const, ref: "", quantity: worn - rewearable, held: false }] : []),
       ];
     }
     const from = tripDepartsOn ?? addDays(localDate, -settings.variety.patternHorizonDays);

@@ -9,13 +9,14 @@
  */
 import type { Role } from "@garderobe/contracts";
 import { DAILY_COMMANDS, DayBrief } from "@garderobe/contracts/ext/daily";
-import type { CalendarSnapshot, OutfitSlot, PackingProposal, Trip, TripDestination } from "@garderobe/contracts/ext/daily";
-import { addDays, all, assertPrincipal, CommandError, define, first, json, newId, requireScope, stmt, toInstant, type CommandPlan, type CommandRegistry, type Db, type Principal } from "@garderobe/domain";
+import type { OutfitSlot, PackingProposal, Trip, TripDestination } from "@garderobe/contracts/ext/daily";
+import { addDays, all, assertPrincipal, CommandError, define, first, json, requireScope, stmt, type CommandPlan, type CommandRegistry, type Db, type Principal } from "@garderobe/domain";
 import { assembleContext } from "./context.ts";
 import { composeBoard } from "./compose.ts";
 import { execAs, nowOf, type DailyDeps } from "./deps.ts";
 import { fetchWeatherSnapshot } from "./snapshots.ts";
 import { prepareBoard, type PrepareBoardResult } from "./service.ts";
+import { destinationFor, occasionSnapshot } from "./trip-day.ts";
 
 function checkDestinations(departsOn: string, returnsOn: string, destinations: TripDestination[]): void {
   if (returnsOn < departsOn) throw new CommandError("invalid_command", "the return date is before the departure date");
@@ -145,6 +146,8 @@ export const tripRecordPackingProposal = define({
 export function registerTripCommands(registry: CommandRegistry): void {
   for (const def of [tripCreate, tripUpdate, tripCancel, tripRecordPackingProposal]) registry.register(def);
   registry.registerVersionResolver("trip", (userId, id) => ({ sql: "SELECT version FROM trips WHERE user_id = ? AND trip_id = ?", params: [userId, id] }));
+  // Receipts of other workstreams' commands (packing, unpacking) name a trip in the owner's words.
+  registry.registerEntityNamer("trip", async (db, userId, id) => (await first<{ name: string }>(db, "SELECT name FROM trips WHERE user_id = ? AND trip_id = ?", userId, id))?.name ?? null);
 }
 
 /* ------------------------------------------------------------------ */
@@ -195,18 +198,6 @@ export async function getTrip(db: Db, principal: Principal, tripId: string): Pro
   requireScope(principal, "read");
   const r = await first<any>(db, "SELECT * FROM trips WHERE user_id = ? AND trip_id = ?", principal.userId, tripId);
   return r ? rowToTrip(db, principal.userId, r) : null;
-}
-
-function destinationFor(trip: Trip, localDate: string): TripDestination {
-  return trip.destinations.find((d) => d.from <= localDate && localDate <= d.to) ?? trip.destinations[0]!;
-}
-
-/** The trip's stated occasions as calendar context for one day (they are the owner's own statements). */
-function occasionSnapshot(trip: Trip, localDate: string, segment: "day" | "evening", nowMs: number): CalendarSnapshot {
-  const events = trip.occasions
-    .filter((o) => o.localDate === localDate && o.segment === segment && o.register !== "none")
-    .map((o, i) => ({ eventId: `trip-occasion:${trip.tripId}:${localDate}:${segment}:${i}`, calendarId: "trip", title: o.label, startsAt: null, endsAt: null, allDay: false, location: null, attendance: "accepted" as const, cancelled: false, weight: "full" as const, inferredOccasion: o.register }));
-  return { snapshotId: newId("cal"), localDate, status: "ok", readAt: toInstant(nowMs), ageMinutes: 0, events, limitation: null };
 }
 
 /* ------------------------------------------------------------------ */
@@ -268,7 +259,7 @@ export async function proposePacking(deps: DailyDeps, principal: Principal, inpu
           const id = evening.slots.find((s) => s.role === role)?.garmentId;
           if (id && !locked.some((l) => l.role === role)) locked.push({ role, garmentId: id });
         }
-        const composed = await composeBoard(rc, { count: 1, reserveCount: 0, locked, avoidTops: usedTops, validate: { allowRepeat: true, ignoreBriefInclusions: true } });
+        const composed = await composeBoard(rc, { count: 1, reserveCount: 0, locked, avoidTops: usedTops, everydayFlourish: false, validate: { allowRepeat: true, ignoreBriefInclusions: true } });
         return composed.options[0] ?? null;
       };
       const option = (await attempt(["bottom", "outer", "footwear", "belt"])) ?? (await attempt(["outer", "footwear", "belt"])) ?? (await attempt(["footwear"])) ?? (await attempt([]));

@@ -46,36 +46,73 @@ function whyPhrase(rc: RecommendationContext, code: string, garmentId: string): 
 /**
  * Revalidate a board's options against `rc` and repair what is invalid: keep unaffected slots, replace
  * the affected piece, else promote a complete reserve, else withdraw the option. Pure.
+ *
+ * `painGarmentIds` are pieces the owner has just reported as painful. Pain is not a ban and makes no
+ * option invalid, but it is never outweighed by styling (specification section 10): wherever another
+ * eligible piece can take the place of a painful one, it does, and the option keeps its identity.
+ * Where nothing else is eligible the option stays as it is.
  */
-export function repairOptions(rc: RecommendationContext, stored: StoredOption[], requestedCount: number): RepairOutcome {
+export function repairOptions(rc: RecommendationContext, published: StoredOption[], requestedCount: number, extra: { painGarmentIds?: string[] } = {}): RepairOutcome {
   const optsFor = (o: StoredOption) => ({ requirePairedFootwear: true, ignoreBriefInclusions: false, explicitGarmentIds: o.evidence.explicitGarmentIds ?? [] });
+  const why = new Map<string, string>();
+  const pain = new Set(extra.painGarmentIds ?? []);
+  const eased = new Set<string>();
+  const stored = pain.size === 0 ? published : published.map((o) => {
+    const explicit = new Set(o.evidence.explicitGarmentIds ?? []);
+    // A painful piece he put on the option himself, or asked for in the day's brief, is his decision.
+    const hurts = (id: string) => pain.has(id) && !explicit.has(id) && !rc.brief.include.includes(id);
+    let current = { slots: o.slots, footwearAlternatives: o.footwearAlternatives.filter((id) => !hurts(id)) };
+    let changed = current.footwearAlternatives.length !== o.footwearAlternatives.length;
+    for (const s of o.slots.filter((x) => hurts(x.garmentId))) {
+      const found = findReplacement(rc, current, s.role, { avoidGarmentIds: pain, validate: { explicitGarmentIds: [...explicit] } });
+      if (!found) continue;
+      current = { slots: found.slots, footwearAlternatives: found.footwearAlternatives };
+      changed = true;
+    }
+    if (!changed) return o;
+    eased.add(o.optionId);
+    return { ...o, slots: current.slots, footwearAlternatives: current.footwearAlternatives };
+  });
   // When the sneaker + welted format has come into force since an option was published (the owner
   // reported the healing restriction over), the option is not broken: it only lacks its second shoe.
   // The alternative is added and the option keeps its pieces, its ID and therefore the owner's selection.
   const pairUsage = new Map<string, number>();
   const paired = new Set<string>();
-  const prepared = stored.map((o) => {
+  const sameShoes = (a: StoredOption, b: { slots: OutfitSlot[]; footwearAlternatives: string[] }) => JSON.stringify([a.slots, [...a.footwearAlternatives].sort()]) === JSON.stringify([b.slots, [...b.footwearAlternatives].sort()]);
+  const prepared = stored.map((o, index) => {
     const completed = withPairedFootwear(rc, o, { validate: optsFor(o), usage: pairUsage });
+    if (eased.has(o.optionId)) {
+      // The only eligible second shoe may be the painful pair again: then nothing changed for this option.
+      const original = published[index]!;
+      if (sameShoes(original, completed)) {
+        eased.delete(o.optionId);
+        return original;
+      }
+      paired.add(o.optionId);
+      return { ...o, footwearAlternatives: completed.footwearAlternatives };
+    }
     if (completed.added.length === 0) return o;
     paired.add(o.optionId);
     return { ...o, footwearAlternatives: completed.footwearAlternatives };
   });
-  const originalOffered = stored.filter((o) => o.state === "offered");
+  if (eased.size > 0) for (const id of pain) why.set(id, "you said it hurt");
+  const originalOffered = published.filter((o) => o.state === "offered");
   const offered = prepared.filter((o) => o.state === "offered");
   const reserves = prepared.filter((o) => o.state === "reserve");
   const refreshed = (o: StoredOption, validation: ReturnType<typeof validateCandidate>): DraftOption => ({
     optionId: o.optionId,
     slots: o.slots,
     footwearAlternatives: o.footwearAlternatives,
-    reason: o.reason,
+    reason: eased.has(o.optionId) ? factualReason(rc, o.slots) : o.reason,
     suitsEventIds: o.suitsEventIds,
-    evidence: optionEvidence(validation, Number((validation.evidence as any).availability.jointAvailability), { source: o.evidence.source, explanationSource: o.evidence.explanationSource, removedClaims: o.evidence.removedClaims, explicitGarmentIds: o.evidence.explicitGarmentIds ?? [] }),
+    evidence: optionEvidence(validation, Number((validation.evidence as any).availability.jointAvailability), eased.has(o.optionId) ? { source: "repair", explanationSource: "factual", removedClaims: [], explicitGarmentIds: (o.evidence.explicitGarmentIds ?? []).filter((id) => o.slots.some((s) => s.garmentId === id)) } : { source: o.evidence.source, explanationSource: o.evidence.explanationSource, removedClaims: o.evidence.removedClaims, explicitGarmentIds: o.evidence.explicitGarmentIds ?? [] }),
     changed: true,
   });
   const checks = offered.map((o) => ({ o, validation: validateCandidate(rc, o, optsFor(o)) }));
   const reserveChecks = reserves.map((o) => ({ o, validation: validateCandidate(rc, o, optsFor(o)) }));
   const usedTops = new Set<string>();
   const usedBottoms = new Set<string>();
+  const next: DraftOption[] = [];
   for (const c of checks) {
     if (!c.validation.valid) continue;
     const t = slotOf(c.o, "top");
@@ -83,8 +120,6 @@ export function repairOptions(rc: RecommendationContext, stored: StoredOption[],
     if (t) usedTops.add(t);
     if (b) usedBottoms.add(b);
   }
-  const why = new Map<string, string>();
-  const next: DraftOption[] = [];
   const spareReserves = reserveChecks.filter((c) => c.validation.valid).map((c) => ({ o: c.o, validation: c.validation }));
   let changed = reserveChecks.some((c) => !c.validation.valid) || paired.size > 0;
   let withdrawn = 0;
@@ -243,7 +278,11 @@ const FLAG_ONLY = new Set(["command.undo", "garment.correct", "style.upsert_rule
 export const boardRepairHook: CommitHook = async (ctx, plan, changes): Promise<PlanFragment | void> => {
   const type = ctx.envelope.type;
   if (type.startsWith("board.") || type.startsWith("exposure.") || type.startsWith("weather.") || type.startsWith("calendar.") || type.startsWith("trip.") || type.startsWith("service.")) return;
-  const affected = new Set<string>([...changes.availabilityChanged, ...changes.wears.map((w) => w.garmentId)]);
+  // A comfort note that reports pain (the assistant workstream's `feedback.record`, whose result names
+  // the garments and whether it was pain) is applied to the boards already published, in its own commit.
+  const noted = (plan.result ?? {}) as { pain?: unknown; garmentIds?: unknown };
+  const pain = type === "feedback.record" && plan.outcome !== "noop" && noted.pain === true && Array.isArray(noted.garmentIds) ? noted.garmentIds.filter((id): id is string => typeof id === "string") : [];
+  const affected = new Set<string>([...changes.availabilityChanged, ...changes.wears.map((w) => w.garmentId), ...pain]);
   const broad = changes.restrictionsChanged;
   const flagOnly = FLAG_ONLY.has(type) || changes.styleChanged || changes.settingsChanged;
   if (affected.size === 0 && !broad && !flagOnly) return;
@@ -307,9 +346,10 @@ export const boardRepairHook: CommitHook = async (ctx, plan, changes): Promise<P
       if (!revision) continue;
       const weather = revision.weather_snapshot_id ? await weatherSnapshotById(ctx.db, ctx.userId, revision.weather_snapshot_id) : null;
       const calendar = revision.calendar_snapshot_id ? await calendarSnapshotById(ctx.db, ctx.userId, revision.calendar_snapshot_id) : null;
-      const rc = await assembleContext(ctx.db, ctx.principal, { localDate: board.local_date, nowMs: ctx.nowMs, scope: board.scope, brief: revision.brief, conditions: revision.conditions, weather, calendar, overlay, withoutProfileText: true });
+      const comfort = pain.length > 0 ? [{ feedbackId: "committing", text: "", kind: "pain", pain: true, garmentIds: pain, wearingDate: null, scope: null, createdAt: ctx.now }] : [];
+      const rc = await assembleContext(ctx.db, ctx.principal, { localDate: board.local_date, nowMs: ctx.nowMs, scope: board.scope, brief: revision.brief, conditions: revision.conditions, weather, calendar, overlay, comfort, withoutProfileText: true });
       const stored = await loadOptions(ctx.db, ctx.userId, board.board_id, board.current_revision);
-      const outcome = repairOptions(rc, stored, revision.requested_count);
+      const outcome = repairOptions(rc, stored, revision.requested_count, { painGarmentIds: pain });
       if (!outcome.changed) continue;
       const evening = parseScope(board.scope).evening;
       const write = await planRevisionWrite(ctx, {
