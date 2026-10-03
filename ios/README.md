@@ -94,8 +94,9 @@ are signed with the test key; the garment photo in `owner-media` is a generated 
 local run has no Images service, it is stored but never becomes the garment's display image; the
 notification token is a fixture value, not one issued by Apple, and no notification service is contacted.
 Some recorded edits are fixture actions, not the owner's wishes: a rewording of one profile sentence (then
-kept as it was), a `condition` note set on the socks category, a labelled FIXTURE garment, and two labelled
-FIXTURE standing directions behind the request that had gone stale. They exist in the test database only.
+kept as it was), a `condition` note set on the socks category, a labelled FIXTURE garment, and a labelled
+FIXTURE scarf with a FIXTURE condition note behind the request that had gone stale. They exist in the test
+database only.
 
 Unit tests that need a boundary case use invented data from `Tests/GarderobeKitTests/Synthetic.swift`; every
 such garment is named "Test ..." with a `gmt_test_` identifier.
@@ -239,6 +240,7 @@ Notifications capability registered, a push (APNs) key configured on the backend
   backend decides what is sent).
 - Signed delivery is used for the full-size inspection image. Grid and card thumbnails still use the
   authenticated image routes, which the app can call directly.
-- The stale-request recording uses a standing direction made against an old style revision. A request made
-  against an old garment version is not refused by the backend today (reported to the foundation thread);
-  re-record with a garment case once that is fixed.
+- The stale-request recording is a typed `garment.retire` from a connected assistant, made against a
+  garment version the owner then changed; the backend refuses the confirmation with 409 and applies
+  nothing. A retire, move or receive request made in conversation carries no garment version, so the
+  backend does not refuse it as stale (the assistant thread's side).
