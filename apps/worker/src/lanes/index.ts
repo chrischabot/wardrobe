@@ -1,5 +1,5 @@
 import { registerAssistant, configureAssistant, AiSearchIndex } from "@garderobe/assistant";
-import { outfitValidator, registerDaily, validateOutfit } from "@garderobe/daily";
+import { registerDaily, validateOutfit } from "@garderobe/daily";
 import { CommandError, createFoundationRegistry, first, stmt, type CommandRegistry, type CommandService, type Db, type Principal } from "@garderobe/domain";
 import { depsFromBindings, registerMedia, type MediaDeps } from "@garderobe/media";
 import type { Env } from "../env.ts";
@@ -12,6 +12,7 @@ import { wearsRestrictedGarment } from "../restrictions.ts";
 import { createAssistantPort } from "./assistant.ts";
 import { createDailyPort } from "./daily.ts";
 import { createMediaPort } from "./media.ts";
+import { createStudioValidator } from "./studio-validator.ts";
 
 export interface LaneContext {
   env: Env;
@@ -46,7 +47,7 @@ let mediaDeps: MediaDeps | null = null;
 
 export function mediaDepsFor(env: Env): MediaDeps {
   if (!mediaConfigured(env)) throw new CommandError("precondition_failed", "image storage is not configured in this deployment");
-  mediaDeps ??= depsFromBindings({ DB: env.DB, MEDIA_BUCKET: env.MEDIA_BUCKET!, MEDIA_QUEUE: env.MEDIA_QUEUE as never, IMAGES: env.IMAGES as never, MEDIA_SIGNING_KEY: env.MEDIA_SIGNING_KEY! }, { validator: outfitValidator as never });
+  mediaDeps ??= depsFromBindings({ DB: env.DB, MEDIA_BUCKET: env.MEDIA_BUCKET!, MEDIA_QUEUE: env.MEDIA_QUEUE as never, IMAGES: env.IMAGES as never, MEDIA_SIGNING_KEY: env.MEDIA_SIGNING_KEY! }, { validator: createStudioValidator(async () => (await import("../app.ts")).appFor(env).daily) });
   return mediaDeps;
 }
 

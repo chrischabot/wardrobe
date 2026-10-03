@@ -5,6 +5,12 @@
  *                              estimator as a selected option); it is never a wear or a reservation;
  *   - Wear this                is the foundation's `wear.record`; nothing here records a wear.
  * Browsing, validating, suggesting and composing are reads and mutate nothing.
+ *
+ * A saved combination and a day plan store the verdict they were accepted on (`validation`, with its
+ * `checkedAt`). The verdict comes from the injected validator; the forecast it rested on is whatever the
+ * validator used at that moment (the day's recorded forecast, or one read only for the check) and is
+ * neither recorded nor referenced by the plan. A plan is an intention: it is validated again against
+ * current records when it is flagged for re-validation, and the board for that day records its own forecast.
  */
 import { FOUNDATION_COMMANDS } from "@garderobe/contracts";
 import { MEDIA_COMMANDS as C } from "@garderobe/contracts/ext/media";

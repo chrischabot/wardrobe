@@ -31,6 +31,12 @@ export interface ValidatorResult {
 /**
  * The daily service's validation interface (`outfitValidator` exported by `@garderobe/daily` matches
  * this shape). Studio never decides eligibility, availability or profile rules itself.
+ *
+ * Studio holds no weather provider. Whoever mounts this package supplies the day's forecast to the
+ * validator it injects (the Worker reads it for `forDate` without recording anything); a validator
+ * given none reports the temperature rules as unchecked rather than assuming a temperature. A forecast
+ * the validator read only for a check is not recorded as the owner's snapshot, so the verdict stored
+ * with a saved combination or a day plan names no snapshot (see `studio.plan_for_day`).
  */
 export interface OutfitValidator {
   /** Shown in `StudioValidation.validator`. */
