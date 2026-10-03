@@ -16,6 +16,7 @@ import { buildBoardDocument, getBoard, loadBoard, loadOptions, loadRevision, typ
 import { parseScope, type RecommendationContext } from "./model.ts";
 import { repairOptions } from "./repair.ts";
 import { fetchWeatherSnapshot, readCalendarSnapshot } from "./snapshots.ts";
+import { destinationFor, occasionSnapshot, packedTripOn } from "./trip-day.ts";
 import { garmentViolations, validateCandidate } from "./validate.ts";
 
 /* ------------------------------------------------------------------ */
@@ -23,30 +24,37 @@ import { garmentViolations, validateCandidate } from "./validate.ts";
 /* ------------------------------------------------------------------ */
 
 /**
- * Validate a combination against the owner's real stock, restrictions, rules and the stored forecast
- * for the date. Reads only; never fetches weather and never writes.
+ * Validate a combination against the owner's real stock, restrictions, rules and the forecast for the
+ * date. Reads only: it never fetches weather and never writes. The forecast is the one recorded for
+ * the date unless the caller supplies a snapshot it fetched without recording (`weather`; `null`
+ * states that none is available).
  */
-export async function validateOutfit(db: Db, principal: Principal, input: ValidateOutfitInput & { nowMs?: number }): Promise<OutfitValidation> {
+export async function validateOutfit(db: Db, principal: Principal, input: ValidateOutfitInput & { nowMs?: number; weather?: WeatherSnapshot | null }): Promise<OutfitValidation> {
   assertPrincipal(principal);
   requireScope(principal, "read");
   const p = ValidateOutfitInput.parse(input);
-  const rc = await assembleContext(db, principal, { localDate: p.forDate, nowMs: input.nowMs ?? Date.now(), scope: p.tripId ? `trip:${p.tripId}` : "home", mode: p.mode, withoutProfileText: true });
+  const rc = await assembleContext(db, principal, { localDate: p.forDate, nowMs: input.nowMs ?? Date.now(), scope: p.tripId ? `trip:${p.tripId}` : "home", mode: p.mode, withoutProfileText: true, ...(input.weather !== undefined ? { weather: input.weather } : {}) });
   return validateCandidate(rc, { slots: p.slots, footwearAlternatives: p.footwearAlternatives }, { allowRepeat: p.allowRepeat, explicitGarmentIds: p.explicitGarmentIds, ignoreBriefInclusions: true });
 }
 
 /** "Find something that works with this": fill the unlocked slots around the locked pieces. */
-export async function suggestOutfits(db: Db, principal: Principal, input: SuggestOutfitsInput & { nowMs?: number }): Promise<SuggestedOutfit[]> {
+export async function suggestOutfits(db: Db, principal: Principal, input: SuggestOutfitsInput & { nowMs?: number; weather?: WeatherSnapshot | null }): Promise<SuggestedOutfit[]> {
   assertPrincipal(principal);
   requireScope(principal, "read");
   const p = SuggestOutfitsInput.parse(input);
-  const rc = await assembleContext(db, principal, { localDate: p.forDate, nowMs: input.nowMs ?? Date.now(), scope: p.tripId ? `trip:${p.tripId}` : "home", mode: p.mode, withoutProfileText: true });
+  const rc = await assembleContext(db, principal, { localDate: p.forDate, nowMs: input.nowMs ?? Date.now(), scope: p.tripId ? `trip:${p.tripId}` : "home", mode: p.mode, withoutProfileText: true, ...(input.weather !== undefined ? { weather: input.weather } : {}) });
   const lockedIds = p.locked.map((s) => s.garmentId);
   const result = await composeBoard(rc, { locked: p.locked, count: p.limit, reserveCount: 0, validate: { ignoreBriefInclusions: true, explicitGarmentIds: lockedIds } });
   const keepRoles = new Set<Role>(["top", "bottom", "footwear", "socks", ...p.locked.map((s) => s.role), ...p.openRoles]);
-  return result.options.map((o) => {
+  const seen = new Set<string>();
+  return result.options.flatMap((o) => {
     const slots = p.openRoles.length > 0 ? o.slots.filter((s) => keepRoles.has(s.role)) : o.slots;
+    // Options that differed only in a role the caller did not ask for are one suggestion, not two.
+    const key = slots.map((s) => `${s.role}:${s.garmentId}`).sort().join("|");
+    if (seen.has(key)) return [];
+    seen.add(key);
     const validation = slots.length === o.slots.length ? o.validation : validateCandidate(rc, { slots, footwearAlternatives: o.footwearAlternatives }, { ignoreBriefInclusions: true, explicitGarmentIds: lockedIds });
-    return { slots, reason: o.reason, validation };
+    return [{ slots, reason: o.reason, validation }];
   });
 }
 
@@ -276,6 +284,13 @@ function previewOptions(rc: RecommendationContext, options: ComposedOption[]): B
  * Request outfits with a brief, a date and a count. `preview` writes nothing; `board` publishes the
  * day's board (or its evening board for an evening brief). A requested count never justifies
  * unavailable garments: fewer valid options come back with a note.
+ *
+ * A day inside a trip the owner has packed for is answered from the trip: destination forecast, the
+ * trip's stated occasions and ONLY the packed subset, published (in `board` mode) as that day's trip
+ * board. Clothes left at home cannot appear, and home stock is not made present by asking.
+ *
+ * A piece named in `lockedGarmentIds` stays on every outfit returned, and naming it is the owner's
+ * explicit override of the repeat preference for that piece in this request only.
  */
 export async function recommend(deps: DailyDeps, principal: Principal, input: RecommendInput): Promise<RecommendResult> {
   assertPrincipal(principal);
@@ -284,11 +299,14 @@ export async function recommend(deps: DailyDeps, principal: Principal, input: Re
   const owner = await loadOwner(deps.db, principal.userId);
   const localDate = input.date ?? localDateOf(nowMs, owner.settings.timezone);
   const brief = DayBrief.parse({ ...(input.brief ?? {}), requestedCount: input.count ?? input.brief?.requestedCount ?? null, include: [...new Set([...(input.brief?.include ?? []), ...(input.lockedGarmentIds ?? [])])], occasionOnly: input.occasionOnly ?? input.brief?.occasionOnly ?? false });
-  const scope = brief.segment === "evening" ? "home:evening" : "home";
+  const evening = brief.segment === "evening";
+  const trip = await packedTripOn(deps.db, principal.userId, localDate);
+  const scope = trip ? `trip:${trip.tripId}${evening ? ":evening" : ""}` : evening ? "home:evening" : "home";
+  const location = trip ? destinationFor(trip, localDate) : undefined;
 
   if (input.mode === "preview") {
-    const weather = await fetchWeatherSnapshot(deps, principal, { localDate, purpose: "adhoc", segment: brief.segment, nowMs, record: false });
-    const calendar = await readCalendarSnapshot(deps, principal, { localDate, scope, nowMs, record: false });
+    const weather = await fetchWeatherSnapshot(deps, principal, { localDate, purpose: trip ? "trip" : "adhoc", segment: brief.segment, nowMs, record: false, ...(location ? { location } : {}) });
+    const calendar = trip ? occasionSnapshot(trip, localDate, brief.segment, nowMs) : await readCalendarSnapshot(deps, principal, { localDate, scope, nowMs, record: false });
     const rc = await assembleContext(deps.db, principal, { localDate, nowMs, scope, brief, weather, calendar, comfort: await loadComfort(deps, principal) });
     const composed = await composeBoard(rc, { model: modelOf(deps, principal), modelBudgetMs: deps.modelBudgetMs, maxModelAttempts: deps.maxModelAttempts ?? 2, reserveCount: 0, deadlineAtMs: nowMs + 120_000 });
     return { state: "completed", options: previewOptions(rc, composed.options), board: null, insufficient: composed.options.length < composed.requestedCount, note: composed.notice };
@@ -301,7 +319,13 @@ export async function recommend(deps: DailyDeps, principal: Principal, input: Re
     return { state: "completed", options: [], board: doc, insufficient: true, note: "The day's outfit is already recorded; ask for an evening outfit or amend the wear instead." };
   }
   try {
-    const result = await prepareBoard(deps, principal, { localDate, scope, reason: existing ? "rebuild" : "compose", brief, purpose: "adhoc", idempotencyKey: `recommend:${input.clientRequestId}`, nowMs });
+    let tripSources: Pick<PrepareBoardOptions, "location" | "calendar"> = {};
+    if (trip) {
+      const calendar = occasionSnapshot(trip, localDate, brief.segment, nowMs);
+      await execAs(deps, principal, "calendar.record_snapshot", { snapshot: calendar }, `calendar-snapshot:${calendar.snapshotId}`);
+      tripSources = { location, calendar };
+    }
+    const result = await prepareBoard(deps, principal, { localDate, scope, reason: existing ? "rebuild" : "compose", brief, purpose: trip ? "trip" : "adhoc", idempotencyKey: `recommend:${input.clientRequestId}`, nowMs, ...tripSources });
     return { state: "completed", options: result.board?.options ?? [], board: result.board, insufficient: (result.board?.options.length ?? 0) < result.requestedCount, note: result.board?.notice ?? result.note };
   } catch (e) {
     if (isCommandError(e) && e.code === "precondition_failed") {

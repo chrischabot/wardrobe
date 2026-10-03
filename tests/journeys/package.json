@@ -1,0 +1,17 @@
+{
+  "name": "@garderobe/journey-tests",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Functional and user-experience journeys through the real Garderobe Worker (HTTP API and MCP server) with the owner's real profile and inventory.",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:strict": "JOURNEYS_STRICT=1 vitest run"
+  },
+  "dependencies": {
+    "@garderobe/contracts": "1.0.0",
+    "@garderobe/worker": "1.0.0",
+    "fflate": "0.8.3"
+  }
+}

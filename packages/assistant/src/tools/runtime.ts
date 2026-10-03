@@ -4,8 +4,9 @@
  *
  * A tool never writes to the database. A write tool hands a typed command to `commit()`, which
  *   1. classifies it in trusted code (policy/classes.ts);
- *   2. for a wear or wash report, checks that every garment was named by the owner in their own words
- *      or attached to the message (policy/naming.ts) and keeps that provenance with the turn;
+ *   2. for a wear or wash report, checks that trusted code finds that very report in the owner's own
+ *      words of the message - its kind, its date and every garment (policy/report.ts) - and keeps that
+ *      provenance with the turn;
  *   3. for everything else that changes the wardrobe, the profile, rules, purchases, returns, memory or
  *      the account - and for any report that failed step 2, and for every write on a read-only
  *      connection - records a PROPOSAL with a summary written by trusted code (policy/describe.ts) and
@@ -19,7 +20,8 @@ import type { CommandReceipt } from "@garderobe/contracts";
 import { CommandError, all, isCommandError, registerActionIntent, type CommandService, type Db, type Principal } from "@garderobe/domain";
 import { classifyChange } from "../policy/classes.ts";
 import { describeChange, expectedVersionsFor } from "../policy/describe.ts";
-import { garmentsOfCategories, resolveOwnerNaming, type OwnerNaming } from "../policy/naming.ts";
+import { ownerAuthoredText } from "../policy/voice.ts";
+import { attachedGarmentIds, coverOf, resolveOwnerReports, type OwnerReport, type ReportKind } from "../policy/report.ts";
 import type { CanonicalMessage } from "../recall/index.ts";
 import type { SearchIndexPort } from "../recall/ai-search.ts";
 import type { ExtractionRouter, SearchProvider } from "../research/index.ts";
@@ -58,9 +60,19 @@ export interface TurnRuntime {
   readOnly: boolean;
   now(): number;
   localDate: string;
-  /** Owner text of this turn first, then the most recent earlier owner messages. */
+  /**
+   * The owner's words that can stand behind a change in this turn: this turn's own text and, ONLY when
+   * this turn answers a question the assistant asked, the text of the message that question was about.
+   * No other earlier message is ever in this list. Empty texts are left out.
+   */
   ownerTexts: string[];
+  /** The owner's own text of this turn's message alone ("" for a photograph, an attachment or a tapped choice). */
+  currentOwnerText: string;
+  /** When this turn answers the assistant's question: the ID of the owner's message that question was about. */
+  askedMessageId?: string;
   attachedRefs: string[];
+  /** True when the owner attached a photograph to this turn's message. */
+  hasImages?: boolean;
   /** Garments under an active restriction at the start of the turn (from the mandatory context). */
   restrictedGarmentIds?: string[];
   /** What was asked in this turn, in the asker's own words (the owner's own voice, or a research request's topic). Bounds what a web search may carry out. */
@@ -84,8 +96,8 @@ export interface TurnRuntime {
   sessionSearch?: (query: string, limit: number) => Promise<{ messageId: string }[]>;
   /** Record, with the turn, why an observation was accepted without a tap (trusted code only). */
   onGrant?(grant: Record<string, unknown>): Promise<void> | void;
-  /** What the owner named in this turn's own words; resolved once per turn by commit(). */
-  naming?: Promise<OwnerNaming>;
+  /** The owner's own wear and wash reports of this turn, read by trusted code; resolved once per turn by commit(). */
+  reports?: Promise<OwnerReport[]>;
   /** Proposals recorded in this turn so far (bounded). */
   proposalCount?: number;
   onReceipt(receipt: CommandReceipt): Promise<void> | void;
@@ -100,6 +112,11 @@ export interface CommitRequest {
   type: string;
   payload: Record<string, unknown>;
   targets: string[];
+  /**
+   * Identifiers TRUSTED CODE made up in this turn for the record this command creates (never a value the
+   * model supplied). The summary says such a record is new instead of printing the identifier.
+   */
+  minted?: string[];
   /** Durable business key for effects that are identified by a source occurrence rather than by the turn. */
   businessKey?: string;
   occurredAt?: string;
@@ -112,8 +129,9 @@ export type CommitResult =
 
 /** No turn may leave more than this many requests for the owner to go through. */
 export const MAX_PROPOSALS_PER_TURN = 8;
-/** A wear report is taken without a tap for today and the last week; anything older waits for the owner. */
-const WEAR_REPORT_DAYS = 7;
+
+/** Changes the ledger records only from the owner's own statement (packages/domain refuses a photograph or a model inference as their source). */
+const NEEDS_OWNER_WORDS = new Set(["style.add_amendment", "style.add_direction", "measurement.record"]);
 
 const PROPOSED_NOTE = "NOT DONE. This was recorded as a request for the owner to confirm in the Garderobe app (Settings, Requests to confirm). Nothing has changed. Tell the owner exactly that; never say it was done.";
 
@@ -134,58 +152,37 @@ function garmentsOf(type: string, payload: Record<string, any>): string[] {
   }
 }
 
-function daysBetween(a: string, b: string): number {
-  return Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86_400_000);
-}
-
 interface ObservationGate {
   ok: boolean;
-  /** The command as it may be recorded (a group report is narrowed to what the owner named). */
-  payload: Record<string, unknown>;
-  provenance: { garmentId: string; basis: "named_by_owner" | "attached_by_owner" | "category_named_by_owner"; matched: string[] }[];
+  provenance: { garmentId: string; basis: "named_by_owner" | "attached_by_owner"; matched: string[]; clause: string }[];
 }
 
+const REPORT_KIND: Record<string, ReportKind> = { "wear.record": "wear", "care.mark_dirty": "dirty", "care.washed": "washed" };
+
 /**
- * Whether a wear or wash report (or a comfort note) may be recorded without the owner's tap: every garment
- * in it must have been named by the owner in this turn's own words, in a sentence that reads as their own
- * report, or attached to the message by the owner. Text in attachments and relayed passages never names
- * anything. A report that does not pass is not refused: it becomes a proposal.
+ * Whether a wear or wash report may be recorded without the owner's tap: trusted code must find that
+ * very report in the owner's own words of this turn (policy/report.ts) - a clause in the form of a
+ * first-person report of this kind, for a wear report dated by that code to exactly the command's date,
+ * that names every garment of the command or points at garments the owner attached. A group ("all my
+ * hand-wash things"), a model-chosen date and text in attachments or relayed passages never pass. A report
+ * that does not pass is not refused: it becomes a proposal.
  */
 async function observationGate(rt: TurnRuntime, type: string, payload: Record<string, any>): Promise<ObservationGate> {
-  const no: ObservationGate = { ok: false, payload, provenance: [] };
-  rt.naming ??= resolveOwnerNaming(rt.db, rt.principal.userId, rt.ownerTexts.join("\n\n"));
-  const naming = await rt.naming;
-  const date = (payload["wearingDate"] as string | null | undefined) ?? null;
-  if ((type === "wear.record" || type === "wear.amend") && date) {
-    const age = daysBetween(date, rt.localDate);
-    if (age < 0 || age > WEAR_REPORT_DAYS) return no;
-  }
-  let effective: Record<string, unknown> = payload;
-  let ids = garmentsOf(type, payload);
-  const groupReport = type === "care.washed" || type === "care.mark_dirty";
-  const inNamedCategory = new Set<string>();
-  if (groupReport && naming.categories.size > 0) for (const g of await garmentsOfCategories(rt.db, rt.principal.userId, [...naming.categories])) inNamedCategory.add(g.garmentId);
-  if (type === "care.washed" && payload["allOfChannel"]) {
-    if (!naming.handwashGroup) {
-      // "Washed all my socks": the report covers the hand-wash pieces of the categories the owner named.
-      const group = (await garmentsOfCategories(rt.db, rt.principal.userId, [...naming.categories])).filter((g) => g.careChannel === payload["allOfChannel"]);
-      if (group.length === 0) return no;
-      ids = group.map((g) => g.garmentId);
-      effective = { items: ids.map((garmentId) => ({ garmentId })) };
-    } else return { ok: true, payload, provenance: [] };
-  }
-  if (ids.length === 0 && type !== "feedback.record") return no;
-  const provenance: ObservationGate["provenance"] = [];
-  for (const garmentId of [...new Set(ids)]) {
-    const named = naming.named.get(garmentId);
-    if (rt.attachedRefs.includes(garmentId)) provenance.push({ garmentId, basis: "attached_by_owner", matched: [] });
-    else if (named?.direct) provenance.push({ garmentId, basis: "named_by_owner", matched: named.matched });
-    else if (groupReport && inNamedCategory.has(garmentId)) provenance.push({ garmentId, basis: "category_named_by_owner", matched: [] });
-    else return no;
-  }
+  const no: ObservationGate = { ok: false, provenance: [] };
+  const kind = REPORT_KIND[type];
+  if (!kind) return no;
+  // A whole care channel is a group the owner did not enumerate: always confirmed.
+  if (payload["allOfChannel"]) return no;
+  const ids = garmentsOf(type, payload);
+  if (ids.length === 0) return no;
+  rt.reports ??= resolveOwnerReports(rt.db, rt.principal.userId, rt.ownerTexts, rt.localDate);
+  const date = kind === "wear" ? ((payload["wearingDate"] as string | null | undefined) ?? null) : null;
+  if (kind === "wear" && !date) return no;
+  const cover = coverOf(await rt.reports, kind, date, ids, attachedGarmentIds(rt.attachedRefs));
+  if (!cover) return no;
   // Words relayed by a connected assistant never record the wear of a piece under an active restriction.
   if (rt.principal.channel === "mcp" && type === "wear.record" && ids.some((id) => (rt.restrictedGarmentIds ?? []).includes(id))) return no;
-  return { ok: true, payload: effective, provenance };
+  return { ok: true, provenance: cover };
 }
 
 async function propose(rt: TurnRuntime, req: CommitRequest): Promise<CommitResult> {
@@ -199,6 +196,16 @@ async function propose(rt: TurnRuntime, req: CommitRequest): Promise<CommitResul
       return { status: "refused", code: refusal.code, message: `Nothing was changed. ${refusal.message}` };
     }
   }
+  // What the ledger accepts only on the owner's own statement is not offered from a message in which the
+  // owner said nothing: the confirmation could never be carried out, and a photograph or an attachment is
+  // not a statement.
+  // Decided from the turn itself, not from a field a tool may or may not have put in the payload.
+  const sourceKind = (req.payload["source"] as { kind?: unknown } | undefined)?.kind;
+  if (NEEDS_OWNER_WORDS.has(req.type) && (!ownerSpoke(rt) || sourceKind === "photograph" || sourceKind === "model_inference")) {
+    const refusal = { tool: req.tool, code: "no_owner_words", message: "the owner wrote nothing in their own words in this message; a rule, a profile amendment or a measurement is recorded only from what the owner says. Tell the owner what you found and let them say it" };
+    await rt.onRefusal(refusal);
+    return { status: "refused", code: refusal.code, message: `Nothing was changed. ${refusal.message}` };
+  }
   const referenced = [...new Set([...garmentsOf(req.type, req.payload), ...(typeof req.payload["garmentId"] === "string" ? [req.payload["garmentId"] as string] : [])])];
   if (referenced.length > 0) {
     const known = new Set((await all<{ garment_id: string }>(rt.db, `SELECT garment_id FROM garments WHERE user_id = ? AND garment_id IN (${referenced.map(() => "?").join(",")})`, rt.principal.userId, ...referenced)).map((r) => r.garment_id));
@@ -209,13 +216,23 @@ async function propose(rt: TurnRuntime, req: CommitRequest): Promise<CommitResul
       return { status: "refused", code: refusal.code, message: `Nothing was changed. ${refusal.message}` };
     }
   }
+  // The summary states the whole change in full. A change too long to show in full is not shortened and
+  // not proposed: the owner never confirms text they were not shown (third review, finding B).
+  let summary: string;
+  try {
+    summary = await describeChange(rt.db, rt.principal.userId, req.type, req.payload, { minted: req.minted ?? [] });
+  } catch (e) {
+    if (!isCommandError(e)) throw e;
+    const refusal = { tool: req.tool, code: "too_long_to_confirm", message: (e as CommandError).message };
+    await rt.onRefusal(refusal);
+    return { status: "refused", code: refusal.code, message: `Nothing was changed. ${refusal.message}` };
+  }
   rt.proposalCount = (rt.proposalCount ?? 0) + 1;
   if (rt.proposalCount > MAX_PROPOSALS_PER_TURN) {
     const refusal = { tool: req.tool, code: "too_many_requests", message: `this turn already left ${MAX_PROPOSALS_PER_TURN} requests for the owner to confirm; no more are added` };
     await rt.onRefusal(refusal);
     return { status: "refused", code: refusal.code, message: `Nothing was changed. ${refusal.message}` };
   }
-  const summary = await describeChange(rt.db, rt.principal.userId, req.type, req.payload);
   const expectedVersions = await expectedVersionsFor(rt.db, rt.principal.userId, req.type, req.payload);
   await rt.onProposal({ type: req.type, summary, payload: req.payload, ...(Object.keys(expectedVersions).length > 0 ? { expectedVersions } : {}) });
   return { status: "proposed", summary, note: PROPOSED_NOTE };
@@ -231,12 +248,11 @@ export async function commit(rt: TurnRuntime, req: CommitRequest): Promise<Commi
   if (rt.readOnly) return propose(rt, req);
   const cls = classifyChange(req.type, req.payload, rt.principal.channel);
   if (cls === "confirm") return propose(rt, req);
-  let payload = req.payload;
+  const payload = req.payload;
   if (cls === "observation") {
     const gate = await observationGate(rt, req.type, req.payload);
     if (!gate.ok) return propose(rt, req);
-    payload = gate.payload;
-    await rt.onGrant?.({ tool: req.tool, type: req.type, basis: "owner_report", messageId: rt.userMessageId, garments: gate.provenance });
+    await rt.onGrant?.({ tool: req.tool, type: req.type, basis: "owner_report", messageId: rt.userMessageId, ...(req.type === "wear.record" ? { wearingDate: req.payload["wearingDate"] } : {}), garments: gate.provenance });
   }
   try {
     let idempotencyKey: string;
@@ -284,8 +300,31 @@ export function forModel(result: CommitResult): Record<string, unknown> {
   return result;
 }
 
-export function ownerSource(rt: TurnRuntime): { kind: "owner_statement"; ref: string } {
-  return { kind: "owner_statement", ref: `message:${rt.userMessageId}` };
+const hasWords = (text: string) => ownerAuthoredText(text).trim().length > 0;
+
+/**
+ * Whether words of the owner's own stand behind this turn: written in this turn's message or, when this
+ * turn answers the assistant's question, in the message that question was about (attachments,
+ * photographs, relayed passages and tapped choice labels are not their words). An earlier message is
+ * never counted otherwise: `ownerTexts` holds nothing else.
+ */
+export function ownerSpoke(rt: Pick<TurnRuntime, "ownerTexts">): boolean {
+  return rt.ownerTexts.some(hasWords);
+}
+
+/**
+ * The source trusted code records for a change asked for in this turn. It says "owner statement" only
+ * when the owner wrote words of their own; a message that was only a photograph or an attachment is
+ * recorded as what it was, so the summary the owner confirms never credits them with a statement they
+ * did not make.
+ */
+export function ownerSource(rt: TurnRuntime): { kind: "owner_statement" | "photograph" | "model_inference"; ref: string } {
+  const ref = `message:${rt.userMessageId}`;
+  if (hasWords(rt.currentOwnerText)) return { kind: "owner_statement", ref };
+  // A tapped answer has no words of its own: the statement is the message the question was about, and
+  // the reference names THAT message, never the wordless one.
+  if (rt.askedMessageId && ownerSpoke(rt)) return { kind: "owner_statement", ref: `message:${rt.askedMessageId}` };
+  return { kind: rt.hasImages ? "photograph" : "model_inference", ref };
 }
 
 /** An address normalized for comparison: scheme, host, path and query; no fragment, no trailing slash. Null when it is not a valid https address. */

@@ -27,6 +27,11 @@ export interface DailyDeps {
   comfort?: ((principal: Principal) => Promise<ComfortObservation[]>) | null;
   /** Upper bound on model calls per composition (the morning budget). */
   maxModelAttempts?: number;
+  /**
+   * The deployment's own origin (for example `https://garderobe.example`). The Calendar event links to
+   * `<origin>/board/<date>` unless the owner's settings name another base address.
+   */
+  boardBaseUrl?: string | null;
 }
 
 /** Comfort observations are context, never a dependency of the morning: a failing reader yields none. */

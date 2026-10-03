@@ -173,6 +173,16 @@ async function oauthMcpFixture(request: Request, url: URL): Promise<Response> {
 export const APNS_FIXTURE_ORIGIN = "https://apns.fixture.test";
 export const TEST_APNS = { teamId: "TESTTEAM01", keyId: "TESTKEY001", topic: "com.example.garderobe.test" };
 let apnsPublicKey: KeyObject | null = null;
+/** How far the Workers runtime's clock runs ahead of this process's, when a run asks for a shifted clock (see clock.ts). */
+let clockOffsetMs = 0;
+const nextUtc = (timeOfDay: string, nowMs: number): number => {
+  const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(timeOfDay);
+  if (!match) throw new Error(`GARDEROBE_TEST_CLOCK must be HH:MM (UTC), got '${timeOfDay}'`);
+  const target = new Date(nowMs);
+  target.setUTCHours(Number(match[1]), Number(match[2]), 0, 0);
+  const offset = target.getTime() - nowMs;
+  return offset < 0 ? offset + 86_400_000 : offset;
+};
 
 async function apnsFixture(request: Request, url: URL): Promise<Response> {
   const deviceToken = url.pathname.split("/").at(-1) ?? "";
@@ -183,7 +193,7 @@ async function apnsFixture(request: Request, url: URL): Promise<Response> {
     const header = JSON.parse(Buffer.from(h!, "base64url").toString()) as { alg?: string; kid?: string };
     const claims = JSON.parse(Buffer.from(p!, "base64url").toString()) as { iss?: string; iat?: number };
     const signed = verifySignature("sha256", Buffer.from(`${h}.${p}`), { key: apnsPublicKey!, dsaEncoding: "ieee-p1363" }, Buffer.from(s!, "base64url"));
-    providerTokenValid = signed && header.alg === "ES256" && header.kid === TEST_APNS.keyId && claims.iss === TEST_APNS.teamId && Math.abs(Date.now() / 1000 - (claims.iat ?? 0)) < 3600;
+    providerTokenValid = signed && header.alg === "ES256" && header.kid === TEST_APNS.keyId && claims.iss === TEST_APNS.teamId && Math.abs((Date.now() + clockOffsetMs) / 1000 - (claims.iat ?? 0)) < 3600;
   } catch {
     providerTokenValid = false;
   }
@@ -326,6 +336,7 @@ export async function garderobeWorkerTestPlugin(options: WorkerTestPluginOptions
   // A test key for the notification provider token; the fixture verifies signatures against its public half.
   const apns = generateKeyPairSync("ec", { namedCurve: "P-256" });
   apnsPublicKey = createPublicKey(apns.publicKey.export({ type: "spki", format: "pem" }));
+  clockOffsetMs = process.env.GARDEROBE_TEST_CLOCK ? nextUtc(process.env.GARDEROBE_TEST_CLOCK, Date.now()) : 0;
   return garderobeWorkersPlugin({
     main: options.main ?? path.join(here, "worker-entry.ts"),
     miniflare: {
@@ -364,6 +375,7 @@ export async function garderobeWorkerTestPlugin(options: WorkerTestPluginOptions
       APNS_TOPIC: TEST_APNS.topic,
       APNS_PRIVATE_KEY: String(apns.privateKey.export({ type: "pkcs8", format: "pem" })),
       APNS_BASE_URL: APNS_FIXTURE_ORIGIN,
+      TEST_CLOCK_OFFSET_MS: clockOffsetMs,
       ...(options.bindings ?? {}),
     },
   });

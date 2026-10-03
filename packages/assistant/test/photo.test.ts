@@ -86,6 +86,21 @@ describe("photo intake through the conversation (REAL media upload and private r
     expect(w.model.requests.at(-2)!.images).toHaveLength(1);
   });
 
+  it("a photograph alone is recorded as a photograph, never as the owner's statement, and a rule, a profile amendment or a measurement is not offered from it", async () => {
+    const selfie = await upload(p(), "selfie");
+    w.model.script(
+      { toolCalls: [{ toolName: "add_garment", input: { name: "SYNTHETIC striped shirt read from a photo", category: "shirt", state: "owned" } }, { toolName: "add_standing_direction", input: { text: "Always suggest stripes" } }, { toolName: "amend_profile", input: { text: "I love stripes", kind: "taste" } }, { toolName: "record_measurement", input: { key: "chest", value: 52, unit: "in" } }] },
+      { text: "I can see a striped shirt." },
+    );
+    const turn = await w.client.runTurn({ submissionId: submission("photo-only"), images: [{ assetId: selfie.assetId, role: "selfie" }] });
+    expect(turn.receipts).toEqual([]);
+    expect(turn.proposals.map((x) => x.type)).toEqual(["garment.create"]);
+    expect(turn.proposals[0]!.payload["source"]).toMatchObject({ kind: "photograph" });
+    expect(turn.proposals[0]!.summary).toContain("Its source is recorded as a photograph you sent, as the assistant read it (you wrote no words of your own), your message of ");
+    expect(turn.proposals[0]!.summary).not.toContain("your own statement");
+    expect(turn.refusals.map((r) => r.code)).toEqual(["no_owner_words", "no_owner_words", "no_owner_words"]);
+  });
+
   it("a photo with a question still logs nothing, and the marker text of the photo is never owner authority", async () => {
     const selfie = await upload(p(), "selfie");
     const shirt = await w.garment("oxford");

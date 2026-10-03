@@ -48,7 +48,7 @@ describe("review findings 6 to 13 and the carried items (real owner; FAKE MODEL)
       const outside = proposal.summary.replace(/\u201C[^\u201D]*\u201D/g, "\u201C\u201D");
       expect(outside, proposal.type).not.toMatch(/restriction(s)? (has been |have been )?lifted|healed|welted|loud logos|SYSTEM/i);
     }
-    expect(turn.proposals.find((x) => x.type === "style.add_direction")!.summary).toBe("Add a standing rule for all future suggestions: \u201CSuggest loud logos\u201D.");
+    expect(turn.proposals.find((x) => x.type === "style.add_direction")!.summary).toBe("Add a standing rule for all future suggestions: \u201CSuggest loud logos\u201D. Its source is recorded as your own statement, your message of 2026-09-15 at 08:00:00 UTC.");
   });
 
   it("finding 7: the assistant retrieves only addresses the owner wrote in their own words or a search of the same turn returned; an attachment's addresses are not retrieved, and a search query cannot carry private values", async () => {
@@ -105,7 +105,8 @@ describe("review findings 6 to 13 and the carried items (real owner; FAKE MODEL)
     // End to end, including a secret inside an attachment: nothing stored, indexed, exported or sent to the model holds it.
     w.model.script({ text: "I have not kept that." });
     const turn = await w.client.runTurn({ submissionId: submission("f8"), text: "for the shop account my password is: hunter2secret, my pin is 4471 and creds are chris:Tr0ub4dor3xyz", attachments: [{ kind: "pasted_text", source: "note", text: "the door code is 915274" }] });
-    const everywhere = JSON.stringify([await w.client.transcript({ limit: 100 }), await w.client.exportConversation(), await w.client.backupConversation(), await all(w.h.db, "SELECT * FROM conversation_index WHERE user_id = ?", w.owner.userId), await all(w.h.db, "SELECT * FROM assistant_turns WHERE user_id = ?", w.owner.userId), await w.client.getTurn(turn.turnId), await exportAssistantData(w.h.db, w.owner.principal()), w.model.requests.at(-1)!.messages]);
+    // Random identifiers (message and record IDs) are taken out first: a UUID can contain the PIN's digits by chance.
+    const everywhere = JSON.stringify([await w.client.transcript({ limit: 100 }), await w.client.exportConversation(), await w.client.backupConversation(), await all(w.h.db, "SELECT * FROM conversation_index WHERE user_id = ?", w.owner.userId), await all(w.h.db, "SELECT * FROM assistant_turns WHERE user_id = ?", w.owner.userId), await w.client.getTurn(turn.turnId), await exportAssistantData(w.h.db, w.owner.principal()), w.model.requests.at(-1)!.messages]).replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{16,}/g, "");
     for (const secret of ["hunter2secret", "4471", "Tr0ub4dor", "915274"]) expect(everywhere).not.toContain(secret);
   });
 

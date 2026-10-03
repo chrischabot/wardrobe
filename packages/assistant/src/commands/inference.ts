@@ -67,13 +67,19 @@ export const inferenceSettle = define({
     const row = await first<{ state: string; reserved_microusd: number; task: string }>(ctx.db, "SELECT state, reserved_microusd, task FROM inference_reservations WHERE user_id = ? AND reservation_id = ?", ctx.userId, p.reservationId);
     if (!row) throw new CommandError("not_found", `no reservation '${p.reservationId}'`);
     if (row.state === "settled" || row.state === "released") return { outcome: "noop", summary: "Reservation already closed", result: { reservationId: p.reservationId, state: row.state }, undo: NO_UNDO("nothing changed") };
+    // Already held as uncertain: recording it as uncertain again changes nothing (and keeps why it was).
+    if (row.state === "uncertain" && p.outcome === "uncertain") return { outcome: "noop", summary: "Reservation already held as uncertain", result: { reservationId: p.reservationId, state: row.state }, undo: NO_UNDO("nothing changed") };
+    const reconciled = row.state === "uncertain" ? "Reconciled from the provider's record: " : "";
     return {
+      // The row must still be in the state this plan read: a call settling itself at the same moment wins once.
+      preconditions: [{ label: "the reservation is still open as read", sql: "(SELECT state FROM inference_reservations WHERE user_id = ? AND reservation_id = ?) = ?", params: [ctx.userId, p.reservationId, row.state], class: "internal" as const }],
       summary:
-        p.outcome === "settled"
+        reconciled +
+        (p.outcome === "settled"
           ? `Settled ${p.actualMicroUsd} micro-USD against a reservation of ${row.reserved_microusd} (${row.task.replace(/_/g, " ")})`
           : p.outcome === "released"
             ? `Released an unused reservation of ${row.reserved_microusd} micro-USD`
-            : `Outcome unknown: ${row.reserved_microusd} micro-USD stays reserved until the provider charge is reconciled`,
+            : `Outcome unknown: ${row.reserved_microusd} micro-USD stays reserved until the provider charge is reconciled`),
       statements: [
         stmt(
           "UPDATE inference_reservations SET state = ?, actual_microusd = ?, input_tokens = ?, output_tokens = ?, resolved_model = ?, error_class = ?, settled_at = ? WHERE user_id = ? AND reservation_id = ?",

@@ -1,6 +1,6 @@
 import type { AuthorizationBasis } from "@garderobe/contracts";
 import { CommandError } from "../errors.ts";
-import type { CommandDefinition, CommitHook, OwnerStatementVerifier, VersionResolver } from "./types.ts";
+import type { CommandDefinition, CommitHook, EntityNamer, OwnerStatementVerifier, VersionResolver } from "./types.ts";
 
 const DEFAULT_AUTHORIZATIONS: Record<CommandDefinition["class"], AuthorizationBasis[]> = {
   observation: ["owner_tap", "owner_statement"],
@@ -16,6 +16,7 @@ const DEFAULT_AUTHORIZATIONS: Record<CommandDefinition["class"], AuthorizationBa
 export class CommandRegistry {
   private readonly definitions = new Map<string, CommandDefinition<any>>();
   private readonly resolvers = new Map<string, VersionResolver>();
+  private readonly namers = new Map<string, EntityNamer>();
   private readonly hooks: { name: string; hook: CommitHook }[] = [];
   private statementVerifier: OwnerStatementVerifier | null = null;
 
@@ -71,6 +72,20 @@ export class CommandRegistry {
 
   versionResolver(kind: string): VersionResolver | undefined {
     return this.resolvers.get(kind);
+  }
+
+  /**
+   * Register how a record of this kind is named in the owner's words (for example a trip by its name), so
+   * a receipt written by another workstream's command never has to show the record's identifier.
+   */
+  registerEntityNamer(kind: string, namer: EntityNamer): this {
+    if (this.namers.has(kind)) throw new Error(`entity namer already registered: ${kind}`);
+    this.namers.set(kind, namer);
+    return this;
+  }
+
+  entityNamer(kind: string): EntityNamer | undefined {
+    return this.namers.get(kind);
   }
 
   /**

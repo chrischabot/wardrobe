@@ -104,7 +104,11 @@ export const garmentCreate = define({
     }
     const planner = ctx.stock();
     planner.declare(row);
-    const eventId = planner.add(garmentId, "receive", { quantity: p.quantity, to: p.acquisition === "incoming" ? "incoming" : p.initialBucket }, basisFor(ctx.envelope.authorization), ctx.occurredAt);
+    // A garment recorded as already owned was owned before this record was made: its stock is there for
+    // every later-reported event, however early that event is dated ("I wore it yesterday", said the day
+    // after the import). Something on order has no stock until it arrives.
+    const receivePayload: Record<string, unknown> = p.acquisition === "incoming" ? { quantity: p.quantity, to: "incoming" } : { quantity: p.quantity, to: p.initialBucket, opening: true };
+    const eventId = planner.add(garmentId, "receive", receivePayload, basisFor(ctx.envelope.authorization), ctx.occurredAt);
     const parts = stockParts(await planner.build());
     return {
       summary: `Added ${quoted(p.name)} (${p.quantity} ${p.acquisition === "incoming" ? "on order, not yet arrived" : "owned"})`,
@@ -738,8 +742,9 @@ export const stockPack = define({
       eventIds.push(planner.add(g.garment_id, "pack", { tripId: p.tripId, quantity: item.quantity }, "observed", ctx.occurredAt));
     }
     const parts = stockParts(await planner.build());
+    const trip = await ctx.entityName("trip", p.tripId);
     return {
-      summary: `Packed ${names.length} item${names.length === 1 ? "" : "s"} for trip ${quoted(p.tripId, 64)}`,
+      summary: `Packed for ${trip ? quoted(trip, 64) : "the trip"}: ${nameList(names)}`,
       ...parts,
       result: { tripId: p.tripId, packed: p.items.length },
       changes: { availabilityChanged: parts.availabilityChanged },
@@ -764,14 +769,18 @@ export const stockUnpack = define({
       const rows = await all<{ garment_id: string }>(ctx.db, "SELECT DISTINCT garment_id FROM stock_balances WHERE user_id = ? AND bucket = 'trip' AND (ref = ? OR ref = ?) AND quantity > 0", ctx.userId, p.tripId, `${p.tripId}#dirty`);
       items = rows.map((r) => ({ garmentId: r.garment_id }));
     }
+    const trip = await ctx.entityName("trip", p.tripId);
+    const tripWords = trip ? quoted(trip, 64) : "the trip";
+    const names: string[] = [];
     for (const item of items) {
       const g = await loadGarment(ctx, item.garmentId);
+      names.push(g.name);
       eventIds.push(planner.add(g.garment_id, "unpack", item.quantity ? { tripId: p.tripId, quantity: item.quantity } : { tripId: p.tripId }, "observed", ctx.occurredAt));
     }
-    if (eventIds.length === 0) return { outcome: "noop", summary: `Nothing was packed for trip ${quoted(p.tripId, 64)}`, undo: { unavailableReason: "nothing changed" } };
+    if (eventIds.length === 0) return { outcome: "noop", summary: `Nothing was packed for ${tripWords}`, undo: { unavailableReason: "nothing changed" } };
     const parts = stockParts(await planner.build());
     return {
-      summary: `Unpacked ${items.length} item${items.length === 1 ? "" : "s"} from trip ${quoted(p.tripId, 64)}; laundered pieces are awaiting care, not marked clean`,
+      summary: `Unpacked from ${tripWords}: ${nameList(names)}; laundered pieces are awaiting care, not marked clean`,
       ...parts,
       result: { tripId: p.tripId, unpacked: items.length },
       changes: { availabilityChanged: parts.availabilityChanged },

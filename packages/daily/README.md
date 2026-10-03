@@ -52,6 +52,7 @@ const deps: DailyDeps = {
   modelFor: (principal) => model, // preferred: a model budgeted to that owner (also used by the scheduled sweep)
   modelBudgetMs: 120_000,         // wall-clock budget for the model part of one board
   comfort: null,                  // reader for dated comfort observations; optional
+  boardBaseUrl: env.APP_ORIGIN,   // the deployment's origin: the Calendar event links to <origin>/board/<date>
 };
 await runDueJobs(deps);           // from the five-minute cron
 ```
@@ -67,6 +68,37 @@ phase times, wearing intervals, freshness thresholds, the outfit calendar and it
 
 ## Interpretations recorded here
 
+- The one-neutral limit (profile section 5) counts every piece worn in the outfit: jacket, layers,
+  shirt, trousers, belt, socks and shoes. The composer settles the shoe, then the sock, then the belt,
+  each from pieces that keep the outfit within the limit; when every eligible piece would break it the
+  outfit is still offered and the validator reports the advisory, because the verdict is soft.
+- The belt line carries an optional flourish on every plan (profile section 9): a scarf for a start
+  at 10 C or colder, otherwise a tie whenever the top is a collared shirt and the tie's season words
+  in the sheet fit the day's peak. A packing proposal does not propose the everyday tie (only a scarf
+  for a cold start or a tie for a smart occasion), so the suggestion does not take a place in a bag.
+- A piece named in a request (`lockedGarmentIds`, the brief's `include`) stays on every outfit
+  returned, so a board around one named shirt repeats that shirt. Naming it is also the owner's
+  explicit override of the repeat horizon for that piece in that request only: it is reported as
+  `repeat_at_owner_request` (advisory) instead of refused. Every other piece still obeys the horizon,
+  and a named piece that is unavailable, restricted or wrong for the forecast is still refused.
+- A swap never falls back to navy (profile section 8 rule 6), whatever the colour of the piece being
+  swapped out: a navy replacement is taken only when nothing else validates.
+- A day inside a trip for which something is packed is answered from the trip by `recommend`:
+  destination forecast, the trip's occasions and only the packed subset, published in `board` mode as
+  that day's trip board. A trip with nothing packed is only a plan and the day is answered from home.
+- A piece the latest packing proposal plans on more than one day stays wearable from the suitcase
+  after it was worn on the trip (the trip's own repeat exception). Anything else worn on the trip
+  awaits care, and unpacking still declares nothing clean.
+- A comfort note that reports pain (`feedback.record` with `result.pain` and `result.garmentIds`) is
+  applied to open boards in the note's own commit: wherever another eligible piece can take the
+  painful one's place it does, the option keeps its ID, and the receipt names the change. With
+  nothing else eligible the option stays, and a piece the owner put on an option himself stays.
+- The Calendar event links to `<base>/board/<date>`, where the base is the owner's
+  `calendar.boardBaseUrl` setting when set and otherwise `DailyDeps.boardBaseUrl`. With neither there
+  is no link.
+- When the owner edited the managed outfit text in Calendar, the next projection replaces his edit
+  but keeps what he wrote before or after it: the managed region is located by the lines of the last
+  projection that are still there. If none is left the description is replaced.
 - A garment temperature note whose basis the inventory sheet did not state is assessed on the basis of
   the owner's active rule for that role (shirts, trousers and socks on the daytime peak, outerwear on
   the departure hour). Without such a rule it is not enforced and is reported as unsettled.

@@ -11,7 +11,7 @@
 import { all, allIn, stmt, type Stmt } from "../db.ts";
 import type { CommandContext, CommandPlan, Precondition, StoredCommand } from "../commands/types.ts";
 import type { StockBuild } from "../stock/planner.ts";
-import { stockParts, undoStockEvents } from "./common.ts";
+import { stockParts, undoStockEvents, UNDO_STOCK_SUMMARY } from "./common.ts";
 
 export type ExceptionResolution = "returned" | "with_owner" | "inferred_baseline" | "reported_lost" | "withdrawn";
 
@@ -197,10 +197,10 @@ export async function undoStockBuild(ctx: CommandContext, eventIds: string[]): P
 }
 
 /** The compensating plan for a stock command whose undo also restores other records. */
-export function undoPlan(original: StoredCommand, build: StockBuild, extra: { statements: Stmt[]; preconditions: Precondition[] }, summary?: string): CommandPlan {
+export function undoPlan(_original: StoredCommand, build: StockBuild, extra: { statements: Stmt[]; preconditions: Precondition[] }, summary?: string): CommandPlan {
   const parts = stockParts(build);
   return {
-    summary: summary ?? `Undid ${original.type}`,
+    summary: summary ?? UNDO_STOCK_SUMMARY,
     statements: [...parts.statements, ...extra.statements],
     preconditions: [...parts.preconditions, ...extra.preconditions],
     affected: parts.affected,

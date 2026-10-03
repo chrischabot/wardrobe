@@ -3,7 +3,7 @@ import { all, allIn, first, stmt, type Stmt } from "../db.ts";
 import { CommandError } from "../errors.ts";
 import { addDays, endOfLocalDateMs, isoWeekday, localDateOf, toInstant, zonedToUtcMs } from "../util.ts";
 import type { GarmentRow, StockPlanner } from "../stock/planner.ts";
-import type { CommandContext, CommandPlan, DomainChanges } from "../commands/types.ts";
+import type { CommandContext, CommandPlan, DomainChanges, Precondition, StoredCommand } from "../commands/types.ts";
 import { restrictionCovers } from "../availability/estimator.ts";
 import { attrs, loadGarments, nameList, simpleStockUndo, stockParts, undoStockEvents } from "./common.ts";
 import { define } from "./garments.ts";
@@ -542,9 +542,11 @@ export const laundryReturn = define({
   class: "observation",
   requiredScope: "write",
   async plan(ctx, p): Promise<CommandPlan> {
+    const batchCols = "batch_id, status, returned_at, return_basis";
+    type BatchRow = { batch_id: string; status: string; returned_at: string | null; return_basis: string | null };
     const batch = p.batchId
-      ? await first<{ batch_id: string; status: string }>(ctx.db, "SELECT batch_id, status FROM laundry_batches WHERE user_id = ? AND batch_id = ? AND withdrawn_at IS NULL", ctx.userId, p.batchId)
-      : await first<{ batch_id: string; status: string }>(ctx.db, "SELECT batch_id, status FROM laundry_batches WHERE user_id = ? AND channel = 'service' AND status IN ('collected', 'partially_returned') AND withdrawn_at IS NULL ORDER BY julianday(picked_up_at) ASC, batch_id LIMIT 1", ctx.userId);
+      ? await first<BatchRow>(ctx.db, `SELECT ${batchCols} FROM laundry_batches WHERE user_id = ? AND batch_id = ? AND withdrawn_at IS NULL`, ctx.userId, p.batchId)
+      : await first<BatchRow>(ctx.db, `SELECT ${batchCols} FROM laundry_batches WHERE user_id = ? AND channel = 'service' AND status IN ('collected', 'partially_returned') AND withdrawn_at IS NULL ORDER BY julianday(picked_up_at) ASC, batch_id LIMIT 1`, ctx.userId);
     if (p.batchId && !batch) throw new CommandError("not_found", `no laundry batch '${p.batchId}'`);
     const planner = ctx.stock();
     const eventIds: string[] = [];
@@ -588,51 +590,113 @@ export const laundryReturn = define({
     for (const id of awayRequested.keys()) {
       if (!items.some((i) => i.garment_id === id)) throw new CommandError("precondition_failed", "an item named as still away was not in this batch; nothing was written", { garmentId: id, batchId: batch.batch_id });
     }
-    let returned = 0;
-    let stillAway = 0;
-    const awayNames: string[] = [];
+    // The return is planned against the batch's record, then counted from what the replay actually moved:
+    // a unit the owner reported lost, or one a later correction showed was never in the bag, is not in
+    // the batch's holding any more, so it does not come back and is not claimed to have.
+    const planned: { item: (typeof items)[number]; outstanding: number; away: number; eventId: string }[] = [];
+    // What the batch is actually holding of each item now. A unit named as still away is taken from that
+    // first, so "one is still away" is never answered by returning the only unit that is there.
+    const holding = new Map(
+      (await all<{ garment_id: string; quantity: number }>(ctx.db, "SELECT garment_id, quantity FROM stock_balances WHERE user_id = ? AND bucket = 'service' AND ref = ?", ctx.userId, batch.batch_id)).map((r) => [r.garment_id, r.quantity]),
+    );
     for (const item of items) {
       const outstanding = item.quantity - item.returned_quantity;
       if (outstanding <= 0) continue;
       const away = Math.min(awayRequested.get(item.garment_id) ?? 0, outstanding);
-      const back = outstanding - away;
+      const back = Math.max(0, Math.min(outstanding, holding.get(item.garment_id) ?? 0) - away);
+      planned.push({ item, outstanding, away, eventId: planner.add(item.garment_id, "return", { batchId: batch.batch_id, quantity: back, stillAway: away }, "observed", ctx.occurredAt) });
+      eventIds.push(planned[planned.length - 1]!.eventId);
+    }
+    const build = await planner.build();
+    const openForBatch = await all<{ exception_id: string; garment_id: string; quantity: number }>(
+      ctx.db,
+      "SELECT exception_id, garment_id, quantity FROM laundry_exceptions WHERE user_id = ? AND batch_id = ? AND status = 'active' AND garment_id IS NOT NULL",
+      ctx.userId,
+      batch.batch_id,
+    );
+    const lostIds = new Set(
+      (await allIn<{ garment_id: string }>(ctx.db, "SELECT DISTINCT garment_id FROM laundry_exceptions WHERE user_id = ? AND status = 'active' AND kind = 'lost' AND garment_id IN (:ids)", [ctx.userId], planned.map((x) => x.item.garment_id))).map((r) => r.garment_id),
+    );
+    let returned = 0;
+    let stillAway = 0;
+    const awayNames: string[] = [];
+    const lostNames: string[] = [];
+    const notes: string[] = [];
+    const undoItems: BatchReturnUndo["items"] = [];
+    const createdExceptionIds: string[] = [];
+    const resolvedExceptions: { exceptionId: string; quantity: number }[] = [];
+    for (const { item, outstanding, away: awayAsked, eventId } of planned) {
+      const g = build.garments.get(item.garment_id);
+      const heldBefore = g?.before.state.service.get(batch.batch_id)?.quantity ?? 0;
+      const heldAfter = g?.after.state.service.get(batch.batch_id)?.quantity ?? 0;
+      const back = (g?.after.movements ?? []).filter((m) => m.eventId === eventId && m.from === "service" && m.to === "clean").reduce((n, m) => n + m.quantity, 0);
+      const away = Math.min(awayAsked, heldAfter);
       returned += back;
       stillAway += away;
-      eventIds.push(planner.add(item.garment_id, "return", { batchId: batch.batch_id, quantity: back, stillAway: away }, "observed", ctx.occurredAt));
-      statements.push(stmt("UPDATE laundry_batch_items SET returned_quantity = returned_quantity + ?, still_away = ? WHERE user_id = ? AND batch_id = ? AND garment_id = ?", back, away, ctx.userId, batch.batch_id, item.garment_id));
+      const returnedAfter = item.returned_quantity + back;
+      undoItems.push({ garmentId: item.garment_id, name: item.name, returnedBefore: item.returned_quantity, stillAwayBefore: item.still_away, returnedAfter, stillAwayAfter: away, heldBefore });
+      statements.push(stmt("UPDATE laundry_batch_items SET returned_quantity = ?, still_away = ? WHERE user_id = ? AND batch_id = ? AND garment_id = ?", returnedAfter, away, ctx.userId, batch.batch_id, item.garment_id));
       if (away > 0) {
         awayNames.push(item.name);
+        const exceptionId = ctx.newId("lex");
+        createdExceptionIds.push(exceptionId);
         statements.push(
           stmt(
             "INSERT INTO laundry_exceptions (user_id, exception_id, kind, garment_id, batch_id, quantity, occurred_at, reported_at, command_id) VALUES (?, ?, 'still_away', ?, ?, ?, ?, ?, ?)",
-            ctx.userId, ctx.newId("lex"), item.garment_id, batch.batch_id, away, ctx.occurredAt, ctx.now, ctx.commandId,
+            ctx.userId, exceptionId, item.garment_id, batch.batch_id, away, ctx.occurredAt, ctx.now, ctx.commandId,
           ),
         );
-      } else {
-        statements.push(
-          stmt(
-            "UPDATE laundry_exceptions SET status = 'resolved', resolved_at = ?, resolution = 'returned', resolved_by_command_id = ? WHERE user_id = ? AND garment_id = ? AND batch_id = ? AND status = 'active'",
-            ctx.now, ctx.commandId, ctx.userId, item.garment_id, batch.batch_id,
-          ),
-        );
+      } else if (back > 0) {
+        // What an earlier return of this batch left as still away has now come back.
+        for (const x of openForBatch.filter((o) => o.garment_id === item.garment_id)) {
+          resolvedExceptions.push({ exceptionId: x.exception_id, quantity: x.quantity });
+          statements.push(
+            stmt(
+              "UPDATE laundry_exceptions SET status = 'resolved', resolved_at = ?, resolution = 'returned', resolved_by_command_id = ? WHERE user_id = ? AND exception_id = ? AND status = 'active'",
+              ctx.now, ctx.commandId, ctx.userId, x.exception_id,
+            ),
+          );
+        }
+      }
+      const missing = outstanding - back - away;
+      if (missing > 0) {
+        if (lostIds.has(item.garment_id)) {
+          lostNames.push(item.name);
+          notes.push(`${item.name}: reported lost, so it is not counted as returned and stays recorded as lost`);
+        } else {
+          notes.push(`${item.name}: not counted as returned; a later report shows it was not in this bag when it came back`);
+        }
       }
     }
     const newStatus = stillAway > 0 ? "partially_returned" : "returned";
     statements.push(stmt("UPDATE laundry_batches SET status = ?, returned_at = ?, return_basis = 'observed' WHERE user_id = ? AND batch_id = ?", newStatus, ctx.occurredAt, ctx.userId, batch.batch_id));
-    const parts = stockParts(await planner.build());
+    const parts = stockParts(build);
+    const undoData: BatchReturnUndo = {
+      stockEventIds: eventIds,
+      batchId: batch.batch_id,
+      batchBefore: { status: batch.status, returnedAt: batch.returned_at, returnBasis: batch.return_basis },
+      statusAfter: newStatus,
+      items: undoItems,
+      createdExceptionIds,
+      resolvedExceptions,
+    };
     return {
-      summary: `Laundry returned: ${returned} item${returned === 1 ? "" : "s"} clean` + (stillAway > 0 ? `; still away: ${nameList(awayNames)}` : ""),
+      summary:
+        (returned > 0 ? `Laundry returned: ${returned} item${returned === 1 ? "" : "s"} clean` : "Laundry returned: nothing came back clean") +
+        (stillAway > 0 ? `; still away: ${nameList(awayNames)}` : "") +
+        (lostNames.length > 0 ? `; not returned, reported lost: ${nameList(lostNames)}` : ""),
       statements: [...parts.statements, ...statements],
       preconditions: parts.preconditions,
       affected: [...parts.affected, { kind: "laundry_batch", id: batch.batch_id, version: await nextEntityVersion(ctx, "laundry_batch", batch.batch_id) }],
-      repairs: parts.repairs,
+      repairs: [...parts.repairs, ...notes],
       result: { batchId: batch.batch_id, returned, stillAway },
       changes: { availabilityChanged: parts.availabilityChanged },
       bumpWardrobe: true,
-      undo: { unavailableReason: "report what is still away instead; the return stays in the record" },
+      undo: { data: undoData as unknown as Record<string, unknown> },
     };
   },
   async planUndo(ctx, original, data) {
+    if (typeof data.batchId === "string") return undoBatchReturn(ctx, original, data as unknown as BatchReturnUndo);
     const build = await undoStockBuild(ctx, (data.stockEventIds ?? []) as string[]);
     // What this report settled is open again where the undo's replay shows the units held again; a
     // missed cycle that a later baseline has since released stays settled.
@@ -648,6 +712,81 @@ export const laundryReturn = define({
     return undoPlan(original, build, extra);
   },
 });
+
+interface BatchReturnUndo {
+  stockEventIds: string[];
+  batchId: string;
+  batchBefore: { status: string; returnedAt: string | null; returnBasis: string | null };
+  statusAfter: string;
+  items: { garmentId: string; name: string; returnedBefore: number; stillAwayBefore: number; returnedAfter: number; stillAwayAfter: number; heldBefore: number }[];
+  createdExceptionIds: string[];
+  resolvedExceptions: { exceptionId: string; quantity: number }[];
+}
+
+/**
+ * Take back the return of a recorded batch ("the laundry is back" said by mistake, or of the wrong bag).
+ *
+ * The return is withdrawn exactly or not at all. Its stock events are voided and the journal replayed; the
+ * undo goes ahead only if every item is then held by the batch again as it was before the return. If
+ * anything recorded since speaks for one of those units - a wear, a wash report, a count, a weekly
+ * baseline that has counted the bag as back - the replay does not put it back in the bag, and the undo is
+ * refused: that later record stands and the owner corrects the item itself. The batch row, its items and
+ * the exceptions the return opened or closed go back to what they were, each guarded on the state the
+ * return left, so a later change is never overwritten.
+ */
+async function undoBatchReturn(ctx: CommandContext, original: StoredCommand, data: BatchReturnUndo): Promise<CommandPlan> {
+  const batch = await first<{ status: string }>(ctx.db, "SELECT status FROM laundry_batches WHERE user_id = ? AND batch_id = ? AND withdrawn_at IS NULL", ctx.userId, data.batchId);
+  if (!batch) throw new CommandError("not_undoable", "that laundry batch is no longer on record", { batchId: data.batchId });
+  const build = await undoStockBuild(ctx, data.stockEventIds ?? []);
+  const moved = data.items.filter((i) => (build.garments.get(i.garmentId)?.after.state.service.get(data.batchId)?.quantity ?? 0) !== i.heldBefore);
+  if (moved.length > 0) {
+    throw new CommandError(
+      "not_undoable",
+      `something has been recorded since that laundry came back (${nameList(moved.map((i) => i.name))}): a wear, a wash, a count or a weekly laundry baseline. The return stays in the record; correct the item instead (mark it dirty, or report it still away)`,
+      { batchId: data.batchId, garmentIds: moved.map((i) => i.garmentId) },
+    );
+  }
+  const statements: Stmt[] = [];
+  const preconditions: Precondition[] = [
+    {
+      label: "the laundry batch has not changed since it was returned",
+      sql: "(SELECT status || ':' || COALESCE(returned_at, '') FROM laundry_batches WHERE user_id = ? AND batch_id = ? AND withdrawn_at IS NULL) = ?",
+      params: [ctx.userId, data.batchId, `${data.statusAfter}:${original.occurredAt}`],
+      class: "state",
+    },
+  ];
+  statements.push(
+    stmt("UPDATE laundry_batches SET status = ?, returned_at = ?, return_basis = ? WHERE user_id = ? AND batch_id = ?", data.batchBefore.status, data.batchBefore.returnedAt, data.batchBefore.returnBasis, ctx.userId, data.batchId),
+  );
+  for (const i of data.items) {
+    preconditions.push({
+      label: "the laundry batch item has not changed since",
+      sql: "(SELECT returned_quantity || ':' || still_away FROM laundry_batch_items WHERE user_id = ? AND batch_id = ? AND garment_id = ?) = ?",
+      params: [ctx.userId, data.batchId, i.garmentId, `${i.returnedAfter}:${i.stillAwayAfter}`],
+      class: "state",
+    });
+    statements.push(stmt("UPDATE laundry_batch_items SET returned_quantity = ?, still_away = ? WHERE user_id = ? AND batch_id = ? AND garment_id = ?", i.returnedBefore, i.stillAwayBefore, ctx.userId, data.batchId, i.garmentId));
+  }
+  // The still-away exceptions the return opened are withdrawn with it (marked withdrawn, not settled) ...
+  for (const id of data.createdExceptionIds ?? []) {
+    preconditions.push({ label: "the still-away item has not been reported back since", sql: "(SELECT status FROM laundry_exceptions WHERE user_id = ? AND exception_id = ?) = 'active'", params: [ctx.userId, id], class: "state" });
+    statements.push(
+      stmt("UPDATE laundry_exceptions SET status = 'resolved', resolved_at = ?, resolution = 'withdrawn', resolved_by_command_id = ? WHERE user_id = ? AND exception_id = ? AND status = 'active'", ctx.now, ctx.commandId, ctx.userId, id),
+    );
+  }
+  // ... and the ones it closed are open again, exactly as they were.
+  for (const x of data.resolvedExceptions ?? []) {
+    preconditions.push({
+      label: "the laundry exception has not changed since",
+      sql: "(SELECT status || ':' || quantity || ':' || COALESCE(resolved_by_command_id, '') FROM laundry_exceptions WHERE user_id = ? AND exception_id = ?) = ?",
+      params: [ctx.userId, x.exceptionId, `resolved:${x.quantity}:${original.commandId}`],
+      class: "state",
+    });
+    statements.push(stmt("UPDATE laundry_exceptions SET status = 'active', resolved_at = NULL, resolution = NULL, resolved_by_command_id = NULL WHERE user_id = ? AND exception_id = ?", ctx.userId, x.exceptionId));
+  }
+  const plan = undoPlan(original, build, { statements, preconditions }, "The laundry return is withdrawn; that bag is recorded as out at the service again");
+  return { ...plan, affected: [...(plan.affected ?? []), { kind: "laundry_batch", id: data.batchId, version: await nextEntityVersion(ctx, "laundry_batch", data.batchId) }] };
+}
 
 /**
  * "The laundry is back" with no open batch, after the owner reported a cycle's return missed or delayed:

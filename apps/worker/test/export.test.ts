@@ -2,7 +2,7 @@ import { SELF } from "cloudflare:test";
 import { unzipSync } from "fflate";
 import { beforeAll, describe, expect, it } from "vitest";
 import { decryptPackage, isEncryptedPackage, sha256Hex } from "../src/crypto.ts";
-import { APP_ORIGIN, connectMcp, enableFakeModel, provisionOwner, publishBoard, testApp, uploadImage, type TestOwner } from "../src/testing/index.ts";
+import { APP_ORIGIN, connectMcp, enableFakeModel, ownerDay, provisionOwner, publishBoard, testApp, uploadImage, type TestOwner } from "../src/testing/index.ts";
 
 /*
  * Portable export and import through the real Worker, starting from the REAL owner fixture (supplied
@@ -17,7 +17,8 @@ let secrets: string[];
 const decoder = new TextDecoder();
 const text = (path: string) => decoder.decode(files[path]!);
 const jsonFile = (path: string) => JSON.parse(text(path));
-const today = new Date().toISOString().slice(0, 10);
+/** Today as the owner counts it (the owner's timezone), not the UTC date. */
+let today: string;
 const errorOf = async (response: Response) => ((await response.json()) as { error: { code: string; message: string; details: Record<string, any> } }).error;
 
 async function waitForExport(target: TestOwner, exportId: string): Promise<any> {
@@ -38,6 +39,7 @@ async function download(target: TestOwner, exportId: string): Promise<{ response
 
 beforeAll(async () => {
   owner = await provisionOwner({ real: true });
+  today = await ownerDay(owner);
   const model = await enableFakeModel(owner);
   const wardrobe = await owner.api.json("GET", "/v1/wardrobe");
   const clean = (role: string) => wardrobe.items.find((i: any) => i.garment.acquisition === "owned" && i.garment.roles.includes(role) && i.balances.some((b: any) => b.bucket === "clean" && b.quantity > 0)).garment;

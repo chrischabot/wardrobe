@@ -30,6 +30,12 @@ interface CommandRow {
   undoes_command_id: string | null;
 }
 
+interface ReceiptRow {
+  command_id: string;
+  receipt_json: string;
+  undone_by_command_id: string | null;
+}
+
 const PRECONDITION_MARKERS = ["garderobe_precondition_failed", "CHECK constraint failed: ok = 1"];
 const EFFECT_KEY_MARKERS = ["effects.user_id, effects.operation_key"];
 
@@ -92,7 +98,7 @@ export class CommandService {
     );
 
     const existing = await this.findByIdempotencyKey(principal.userId, envelope.idempotencyKey);
-    if (existing) return this.replay(existing, requestHash);
+    if (existing) return await this.replay(existing, requestHash, principal.userId);
 
     let lastConflict: string | null = null;
     for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
@@ -102,7 +108,7 @@ export class CommandService {
       // A retry of this same request may have committed while this one was planning or waiting.
       if (attempt > 1) {
         const landed = await this.findByIdempotencyKey(principal.userId, envelope.idempotencyKey);
-        if (landed) return this.replay(landed, requestHash);
+        if (landed) return await this.replay(landed, requestHash, principal.userId);
       }
       const ctx = await this.buildContext(principal, envelope);
       const plan = await def.plan(ctx, parsedPayload.data);
@@ -120,12 +126,16 @@ export class CommandService {
     throw new CommandError("internal", "the command could not be committed after repeated concurrent changes; nothing was written. It is safe to send it again with the same idempotency key", { lastConflict, retryable: true });
   }
 
-  /** The stored receipt of a command (never recomputed). */
+  /**
+   * The receipt of a command. What was recorded is stored once and never recomputed; the two things that
+   * change after the commit are read from their own records: the state of its external effects and
+   * whether it has since been undone (see `current`).
+   */
   async getReceipt(principal: Principal, commandId: string): Promise<CommandReceipt | null> {
     assertPrincipal(principal);
     requireScope(principal, "read");
-    const row = await first<{ receipt_json: string }>(this.db, "SELECT receipt_json FROM commands WHERE user_id = ? AND command_id = ?", principal.userId, commandId);
-    return row ? (JSON.parse(row.receipt_json) as CommandReceipt) : null;
+    const row = await first<ReceiptRow>(this.db, "SELECT command_id, receipt_json, undone_by_command_id FROM commands WHERE user_id = ? AND command_id = ?", principal.userId, commandId);
+    return row ? (await this.current(principal.userId, [row]))[0]! : null;
   }
 
   /** Receipts touching an entity (item history) or the most recent receipts, newest first. */
@@ -135,9 +145,9 @@ export class CommandService {
     const limit = Math.min(filter.limit ?? 50, 200);
     const rows =
       filter.kind && filter.entityId
-        ? await all<{ receipt_json: string }>(
+        ? await all<ReceiptRow>(
             this.db,
-            "SELECT c.receipt_json FROM commands c JOIN command_entities e ON e.user_id = c.user_id AND e.command_id = c.command_id WHERE c.user_id = ? AND e.kind = ? AND e.entity_id = ? ORDER BY julianday(c.recorded_at) DESC, c.rowid DESC LIMIT ?",
+            "SELECT c.command_id, c.receipt_json, c.undone_by_command_id FROM commands c JOIN command_entities e ON e.user_id = c.user_id AND e.command_id = c.command_id WHERE c.user_id = ? AND e.kind = ? AND e.entity_id = ? ORDER BY julianday(c.recorded_at) DESC, c.rowid DESC LIMIT ?",
             principal.userId,
             filter.kind,
             filter.entityId,
@@ -145,8 +155,37 @@ export class CommandService {
           )
         // Instants are stored with or without milliseconds, so they are ordered as instants, not as text;
         // commands recorded in the same instant keep their commit order.
-        : await all<{ receipt_json: string }>(this.db, "SELECT receipt_json FROM commands WHERE user_id = ? ORDER BY julianday(recorded_at) DESC, rowid DESC LIMIT ?", principal.userId, limit);
-    return rows.map((r) => JSON.parse(r.receipt_json) as CommandReceipt);
+        : await all<ReceiptRow>(this.db, "SELECT command_id, receipt_json, undone_by_command_id FROM commands WHERE user_id = ? ORDER BY julianday(recorded_at) DESC, rowid DESC LIMIT ?", principal.userId, limit);
+    return this.current(principal.userId, rows);
+  }
+
+  /**
+   * Stored receipts as they read now. A receipt is written in the same batch as the command, when every
+   * external effect it enqueued is still pending and its undo has not been used; both move on afterwards.
+   * Reading them back from the commit-time text would tell the owner for ever that a Calendar update is
+   * pending after it was delivered and verified, and offer an undo that was already used (specification
+   * section 8: the receipt "distinguishes any pending synchronization or projection"). Everything else in
+   * the receipt is exactly what was stored.
+   */
+  private async current(userId: string, rows: ReceiptRow[]): Promise<CommandReceipt[]> {
+    const receipts = rows.map((r) => JSON.parse(r.receipt_json) as CommandReceipt);
+    const withEffects = receipts.filter((r) => (r.effects?.length ?? 0) > 0).map((r) => r.commandId);
+    const states = new Map<string, string>();
+    for (const e of await allIn<{ effect_id: string; state: string }>(this.db, "SELECT effect_id, state FROM effects WHERE user_id = ? AND command_id IN (:ids)", [userId], withEffects)) {
+      states.set(e.effect_id, e.state);
+    }
+    return receipts.map((receipt, i) => {
+      const out: CommandReceipt = { ...receipt };
+      if ((receipt.effects?.length ?? 0) > 0) {
+        out.effects = receipt.effects.map((e) => ({ ...e, state: (states.get(e.effectId) ?? e.state) as typeof e.state }));
+        const outstanding = out.effects.some((e) => e.state === "pending" || e.state === "in_progress" || e.state === "failed");
+        // A superseded effect was overtaken by a newer revision of the same target, which carries the content.
+        const delivered = out.effects.some((e) => e.state === "projected" || e.state === "superseded");
+        out.externalEffectState = outstanding ? "projection_pending" : delivered ? "projected" : "none";
+      }
+      if (rows[i]!.undone_by_command_id && receipt.undo?.available) out.undo = { available: false, reason: "this action was already undone" };
+      return out;
+    });
   }
 
   async loadStoredCommand(userId: string, commandId: string): Promise<StoredCommand | null> {
@@ -198,11 +237,12 @@ export class CommandService {
     );
   }
 
-  private replay(row: CommandRow, requestHash: string): CommandReceipt {
+  private async replay(row: CommandRow, requestHash: string, userId: string): Promise<CommandReceipt> {
     if (row.request_hash !== requestHash) {
       throw new CommandError("idempotency_key_reuse", "this idempotency key was already used with a different request body", { commandId: row.command_id });
     }
-    return { ...(JSON.parse(row.receipt_json) as CommandReceipt), replayed: true };
+    // The repeat is answered with the receipt as it reads now, like any other read of it.
+    return { ...(await this.current(userId, [row]))[0]!, replayed: true };
   }
 
   private async buildContext(principal: Principal, envelope: ParsedCommandEnvelope): Promise<CommandContext> {
@@ -246,6 +286,11 @@ export class CommandService {
       verifyOwnerStatement: async (ref: string) => {
         const verifier = this.registry.ownerStatementVerifier();
         return verifier ? (await verifier(ctx, ref)) === true : false;
+      },
+      entityName: async (kind: string, id: string) => {
+        const namer = this.registry.entityNamer(kind);
+        const name = namer ? await namer(db, userId, id) : null;
+        return typeof name === "string" && name.trim() !== "" ? name : null;
       },
     };
     return ctx;
@@ -425,7 +470,7 @@ export class CommandService {
       // Whatever made the batch fail, a retry of this same request that committed first is the answer:
       // the caller gets the stored receipt, never an error about a change its own request made.
       const landed = await this.findByIdempotencyKey(userId, envelope.idempotencyKey);
-      if (landed) return { kind: "replayed", receipt: this.replay(landed, requestHash) };
+      if (landed) return { kind: "replayed", receipt: await this.replay(landed, requestHash, userId) };
       if (EFFECT_KEY_MARKERS.some((m) => text.includes(m))) return { kind: "retry", label: "an effect with the same operation key was enqueued concurrently" };
       if (PRECONDITION_MARKERS.some((m) => text.includes(m))) {
         const failed = await this.findFailedPrecondition(preconditions);

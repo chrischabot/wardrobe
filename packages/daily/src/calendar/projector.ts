@@ -39,13 +39,38 @@ async function setProjection(db: Db, userId: string, targetKey: string, nowMs: n
   await prepare(db, stmt(`UPDATE calendar_projections SET ${keys.map((k) => `${k} = ?`).join(", ")}, updated_at = ? WHERE user_id = ? AND target_key = ?`, ...keys.map((k) => fields[k]), toInstant(nowMs), userId, targetKey)).run();
 }
 
-/** Replace the managed text inside whatever the description holds now, preserving unmanaged content around it. */
+/**
+ * Replace the managed text inside whatever the description holds now, preserving unmanaged content
+ * around it (specification section 9). When the owner edited the managed outfit text itself, the
+ * authoritative projection replaces his edit, but what he wrote before or after it is still his: the
+ * managed region is located by the lines of the last projection that are still there.
+ */
 export function mergeDescription(remote: string | null, previousManaged: string | null, next: string): string {
   if (!remote || remote.trim() === "") return next;
   if (previousManaged && remote.includes(previousManaged)) return remote.replace(previousManaged, next);
   if (remote.includes(next)) return remote;
-  // The managed outfit text itself was edited: the authoritative projection replaces it.
-  return next;
+  if (!previousManaged) return next;
+  const managed = previousManaged.split(/\r?\n/);
+  const lines = remote.split(/\r?\n/);
+  // Longest common subsequence of non-blank lines: the surviving lines of the last projection, in order.
+  const lcs: number[][] = Array.from({ length: managed.length + 1 }, () => new Array<number>(lines.length + 1).fill(0));
+  const same = (i: number, j: number) => managed[i]!.trim() !== "" && managed[i]!.trim() === lines[j]!.trim();
+  for (let i = managed.length - 1; i >= 0; i--) for (let j = lines.length - 1; j >= 0; j--) lcs[i]![j] = same(i, j) ? lcs[i + 1]![j + 1]! + 1 : Math.max(lcs[i + 1]![j]!, lcs[i]![j + 1]!);
+  const matches: [number, number][] = [];
+  for (let i = 0, j = 0; i < managed.length && j < lines.length; ) {
+    if (same(i, j)) matches.push([i++, j++]);
+    else if (lcs[i + 1]![j]! >= lcs[i]![j + 1]!) i++;
+    else j++;
+  }
+  // Nothing of the last projection is left: the description cannot be told apart, so it is replaced.
+  if (matches.length === 0) return next;
+  const [firstManaged, firstRemote] = matches[0]!;
+  const [lastManaged, lastRemote] = matches[matches.length - 1]!;
+  // Managed lines before the first surviving one (or after the last) were edited in place: the same
+  // number of lines on that side belongs to the managed region, the rest is the owner's own content.
+  const start = Math.max(0, firstRemote - firstManaged);
+  const end = Math.min(lines.length, lastRemote + 1 + (managed.length - 1 - lastManaged));
+  return [...lines.slice(0, start), next, ...lines.slice(end)].join("\n");
 }
 
 function isNotConnected(e: unknown): boolean {
@@ -132,7 +157,9 @@ async function projectOne(deps: DailyDeps, effect: EffectRecord, nowMs: number):
       }
 
       const doc = await buildBoardDocument(db, userId, board);
-      const url = settings.calendar.boardBaseUrl ? `${settings.calendar.boardBaseUrl.replace(/\/+$/, "")}/board/${doc.localDate}` : null;
+      // The owner's own base address when he set one; otherwise this deployment's origin.
+      const base = settings.calendar.boardBaseUrl || deps.boardBaseUrl || null;
+      const url = base ? `${base.replace(/\/+$/, "")}/board/${doc.localDate}` : null;
       const text = renderBoardCalendarText(doc, { boardUrl: url });
       const write = eventWrite(doc, text, owner.settings.delivery.morningLocalTime, settings.calendar.presentation, settings.calendar.reminderMinutesBefore);
 

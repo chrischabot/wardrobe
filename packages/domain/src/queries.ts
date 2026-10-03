@@ -143,6 +143,8 @@ export async function buildEstimatorInput(db: Db, userId: string, forDate: strin
       attributes: json(r.attributes_json, {}),
       balances: balances.get(r.garment_id) ?? [],
       importCleanlinessUnverified: unverified,
+      cleanInferred: Number(r.clean_inferred ?? 0),
+      importNeverObserved: at !== undefined && r.care_channel !== "none" && !verified.has(r.garment_id),
     };
   });
 

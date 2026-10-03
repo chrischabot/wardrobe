@@ -92,7 +92,7 @@ describe("assistant maintenance (real outbox, real Durable Object; FAKE AI Searc
     w.model.script({ text: "Looking into it." });
     const said = await w.client.runTurn({ submissionId: submission(), text: "A private remark I will want forgotten about my old landlord" });
     const messageId = (await w.client.transcript({})).messages.find((m) => m.turnId === said.turnId && m.role === "user")!.messageId;
-    const job = await w.owner.exec("job.create", { kind: "email_investigation", title: "Everything bought from Drake's" }, { actor: "assistant", authorization: "owner_statement" });
+    const job = await w.owner.exec("job.create", { kind: "email_investigation", title: "Everything bought from Drake's" }, { actor: "owner", authorization: "owner_tap" });
     const SYSTEM = { actor: "system" as const, channel: "system" as const, authorization: "system_schedule" as const };
     await w.owner.exec("job.update", { jobId: job.result["jobId"], state: "completed", coverage: { from: "2024-01-01", to: "2026-09-15", completion: "partial", resumeToken: "p3" }, committedCommandIds: ["cmd_1"] }, SYSTEM);
 
@@ -111,7 +111,7 @@ describe("assistant maintenance (real outbox, real Durable Object; FAKE AI Searc
     expect(docs.has(`message:${messageId}`)).toBe(true);
 
     // Forgetting: the sweep erases the transcript copy, removes the AI Search document, and only then is the source fully erased.
-    await w.owner.exec("conversation.forget_source", { sourceKind: "message", sourceIds: [messageId] }, { actor: "assistant", authorization: "owner_statement" });
+    await w.owner.exec("conversation.forget_source", { sourceKind: "message", sourceIds: [messageId] }, { actor: "owner", authorization: "owner_tap" });
     expect((await listForgetStates(w.h.db, w.owner.principal()))[0]).toMatchObject({ state: "suppressed" });
     await sweep();
     expect(docs.has(`message:${messageId}`)).toBe(false);
@@ -122,7 +122,7 @@ describe("assistant maintenance (real outbox, real Durable Object; FAKE AI Searc
     expect((await readOutbox(w.h.db, { topics: ["conversation.deliver", "conversation.erase", "search.delete"], limit: 500 })).filter((e) => e.userId === w.owner.userId)).toHaveLength(0);
 
     // A disabled account receives nothing.
-    await w.owner.exec("job.create", { jobId: "job_late", kind: "other", title: "Late job" }, { actor: "assistant", authorization: "owner_statement" });
+    await w.owner.exec("job.create", { jobId: "job_late", kind: "other", title: "Late job" }, { actor: "owner", authorization: "owner_tap" });
     await w.owner.exec("job.update", { jobId: "job_late", state: "completed" }, SYSTEM);
     await w.h.db.prepare("UPDATE users SET status = 'disabled' WHERE user_id = ?").bind(w.owner.userId).run();
     const blocked = await sweep();

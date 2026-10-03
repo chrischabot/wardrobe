@@ -1,7 +1,7 @@
 /**
  * Typed WRITE tools. Each one builds ONE typed domain command and hands it to `commit()`
  * (tools/runtime.ts). Nothing the model passes is authority: `commit()` records a wear or wash report only
- * for garments the owner named or attached, records the assistant's own bookkeeping, and turns everything
+ * when trusted code finds that report (kind, date, garments) in the owner's own words, records the assistant's own bookkeeping, and turns everything
  * else into a proposal the owner confirms in the app. A tool call is therefore one command or one
  * proposal, never a sequence that could be left half done. Receipts and proposal summaries come from
  * trusted code. No tool here can create an item through a status change, alter a restriction to make
@@ -12,7 +12,7 @@ import { z } from "zod";
 import { first, toInstant } from "@garderobe/domain";
 import { ownerAuthoredText } from "../policy/voice.ts";
 import { lineKeyFor, normalizeMerchantKey, toMinor } from "../research/index.ts";
-import { commit, forModel, ownerSource, urlKey, type TurnRuntime } from "./runtime.ts";
+import { commit, forModel, ownerSource, ownerSpoke, urlKey, type TurnRuntime } from "./runtime.ts";
 
 const Ids = z.array(z.string().min(1)).min(1);
 const DateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -56,12 +56,12 @@ export function buildWriteTools(rt: TurnRuntime): ToolSet {
   return {
     /* ---------------- observations ---------------- */
     record_wear: tool({
-      description: "The owner says they are wearing or wore these pieces. Counted once per garment and wearing date; a repeated report merges.",
+      description: "The owner says they are wearing or wore these pieces. Counted once per garment and wearing date; a repeated report merges. Pass the date the owner gave (today when they gave none); one call per date.",
       inputSchema: z.object({ garmentIds: Ids, wearingDate: DateStr.optional() }),
       execute: async (i) => forModel(await commit(rt, { tool: "record_wear", type: "wear.record", payload: { wearingDate: i.wearingDate ?? rt.localDate, garmentIds: i.garmentIds }, targets: i.garmentIds })),
     }),
     correct_wear: tool({
-      description: "Correct what was worn on a date: remove pieces recorded by mistake and/or add the ones actually worn.",
+      description: "Correct what was worn on a date: remove pieces recorded by mistake and/or add the ones actually worn. Always recorded as a request the owner confirms.",
       inputSchema: z.object({ wearingDate: DateStr, remove: z.array(z.string()).default([]), add: z.array(z.string()).default([]) }),
       execute: async (i) => forModel(await commit(rt, { tool: "correct_wear", type: "wear.amend", payload: { wearingDate: i.wearingDate, remove: i.remove, add: i.add }, targets: [...i.remove, ...i.add] })),
     }),
@@ -71,7 +71,7 @@ export function buildWriteTools(rt: TurnRuntime): ToolSet {
       execute: async (i) => forModel(await commit(rt, { tool: "mark_dirty", type: "care.mark_dirty", payload: { items: i.garmentIds.map((garmentId) => ({ garmentId })) }, targets: i.garmentIds })),
     }),
     mark_washed: tool({
-      description: "The owner says they washed these pieces (or all hand-wash items, e.g. \"socks washed\").",
+      description: "The owner says they washed these pieces. Name the pieces the owner named. allHandwash (every hand-wash piece at once) is always a request the owner confirms.",
       inputSchema: z.object({ garmentIds: z.array(z.string()).default([]), allHandwash: z.boolean().default(false) }),
       execute: async (i) =>
         forModel(await commit(rt, { tool: "mark_washed", type: "care.washed", payload: i.allHandwash ? { allOfChannel: "handwash" } : { items: i.garmentIds.map((garmentId) => ({ garmentId })) }, targets: i.garmentIds })),
@@ -156,18 +156,20 @@ export function buildWriteTools(rt: TurnRuntime): ToolSet {
 
     /* ---------------- comfort feedback ---------------- */
     record_comfort_feedback: tool({
-      description: "The owner volunteers a comfort observation (\"too warm on the train\", \"this collar scratches\"). Record it once, linked only to the pieces the owner named; do NOT ask follow-up questions and do NOT turn it into a universal rule. Leave scope empty unless the owner stated one. The note stores the owner's own words of this message, not yours.",
-      inputSchema: z.object({ kind: z.enum(["too_warm", "too_cold", "scratchy", "pain", "tight", "loose", "restrictive", "other_discomfort", "positive"]), garmentIds: z.array(z.string()).default([]), wearingDate: DateStr.optional(), activity: z.string().max(200).optional(), layer: z.string().max(100).optional(), scope: z.string().max(300).optional() }),
+      description: "The owner volunteers a comfort observation (\"too warm on the train\", \"this collar scratches\"). Recorded as ONE request the owner confirms in the app, linked only to the pieces the owner named; do NOT ask follow-up questions and do NOT turn it into a universal rule. The note stores the owner's own words of this message, not yours, and applies to that occasion only.",
+      inputSchema: z.object({ kind: z.enum(["too_warm", "too_cold", "scratchy", "pain", "tight", "loose", "restrictive", "other_discomfort", "positive"]), garmentIds: z.array(z.string()).default([]), wearingDate: DateStr.optional(), activity: z.string().max(200).optional(), layer: z.string().max(100).optional() }),
       execute: async (i) => {
         // The stored text is what the owner typed in this message, with relayed passages removed; never a paraphrase.
-        const text = oneLine(ownerAuthoredText(rt.ownerTexts[0] ?? ""), 2000);
+        const text = oneLine(ownerAuthoredText(rt.currentOwnerText), 2000);
         if (!text) {
           await rt.onRefusal({ tool: "record_comfort_feedback", code: "no_owner_words", message: "the owner's own message has no words to keep as a comfort note" });
           return { status: "refused", code: "no_owner_words", message: "Nothing was changed. There are no words of the owner's own in this message to keep as a comfort note." };
         }
+        // A note's reach is never the model's to choose (third review, finding A): it is that occasion only.
+        // The kind, the pieces and the occasion are shown to the owner, who confirms the note.
         return forModel(await commit(rt, {
           tool: "record_comfort_feedback", type: "feedback.record", targets: i.garmentIds,
-          payload: { text, kind: i.kind, garmentIds: i.garmentIds, wearingDate: i.wearingDate ?? null, activity: i.activity ?? null, layer: i.layer ?? null, scope: i.scope ?? null, sourceRef: `message:${rt.userMessageId}` },
+          payload: { text, kind: i.kind, garmentIds: i.garmentIds, wearingDate: i.wearingDate ?? null, activity: i.activity ?? null, layer: i.layer ?? null, scope: null, sourceRef: `message:${rt.userMessageId}` },
         }));
       },
     }),
@@ -330,7 +332,7 @@ export function buildWriteTools(rt: TurnRuntime): ToolSet {
         // runner from the ledger (the owner's own confirmation created the job), never from this parameter alone.
         const jobId = `job_mail_${rt.turnId.replace(/^trn_/, "")}_${i.from.replace(/-/g, "")}_${i.to.replace(/-/g, "")}${i.logOrders ? "_log" : ""}`;
         return forModel(await commit(rt, {
-          tool: "search_mailbox_for_purchases", type: "job.create", targets: ["email_investigation", i.from, i.to, String(i.logOrders)],
+          tool: "search_mailbox_for_purchases", type: "job.create", targets: ["email_investigation", i.from, i.to, String(i.logOrders)], minted: [jobId],
           payload: { jobId, kind: "email_investigation", title, params: { from: i.from, to: i.to, merchants: i.merchants, importAuthorizedBy: i.logOrders ? "owner_confirmation" : null } },
         }));
       },
@@ -378,11 +380,14 @@ export function buildWriteTools(rt: TurnRuntime): ToolSet {
     remember: tool({
       description: "Remember a source-linked conclusion (a fit or purchase judgement, a preference, an unfinished investigation). If the OWNER said it (saidByOwner true) it is recorded as a request the owner confirms before it is remembered as settled. Anything you inferred is saved only as a candidate for the owner to confirm. Never use this as an inventory: wardrobe facts live in the records.",
       inputSchema: z.object({ kind: z.enum(["fit_judgement", "purchase_judgement", "preference", "unfinished_investigation", "fact", "other"]), text: z.string().min(1).max(2000), saidByOwner: z.boolean(), premises: z.array(z.object({ kind: z.string(), ref: z.string(), value: z.string().optional() })).default([]), entityIds: z.array(z.string()).default([]) }),
-      execute: async (i) =>
-        forModel(await commit(rt, {
+      execute: async (i) => {
+        // Nothing is attributed to the owner from a message in which the owner wrote no words of their own.
+        const byOwner = i.saidByOwner && ownerSpoke(rt);
+        return forModel(await commit(rt, {
           tool: "remember", type: "memory.record_conclusion", targets: [i.kind, i.text.slice(0, 80)],
-          payload: { kind: i.kind, text: i.text, speaker: i.saidByOwner ? "owner" : "assistant", sourceMessageIds: [rt.userMessageId], premises: i.premises.map((p) => ({ ...p, value: p.value ?? null })), entityIds: i.entityIds, status: i.saidByOwner ? "active" : "candidate" },
-        })),
+          payload: { kind: i.kind, text: i.text, speaker: byOwner ? "owner" : "assistant", sourceMessageIds: [rt.userMessageId], premises: i.premises.map((p) => ({ ...p, value: p.value ?? null })), entityIds: i.entityIds, status: byOwner ? "active" : "candidate" },
+        }));
+      },
     }),
     confirm_remembered: tool({
       description: "The owner confirms, corrects or retires a remembered conclusion.",

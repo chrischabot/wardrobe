@@ -175,8 +175,8 @@ describe("sensitive changes are proposed, never committed, and take effect only 
     w.model.script({ toolCalls: [{ toolName: "correct_garment", input: { garmentId: shirt.garmentId, changes: { condition: "frayed collar" } } }] }, { text: "Recorded as a request." });
     const turn = await w.client.runTurn({ submissionId: submission("stale"), text: "The ISTO denim shirt has a frayed collar now." });
     const stored = JSON.parse((await all<{ proposals_json: string }>(w.h.db, "SELECT proposals_json FROM assistant_turns WHERE user_id = ? AND turn_id = ?", w.owner.userId, turn.turnId))[0]!.proposals_json) as { expectedVersions?: Record<string, number> }[];
-    expect(stored[0]!.expectedVersions).toEqual({ [`garment:${shirt.garmentId}`]: expect.any(Number) });
-    expect(turn.proposals[0]!.summary).toBe(`Change the record of \u201C${shirt.name}\u201D: condition \u201Cfrayed collar\u201D.`);
+    expect(stored[0]!.expectedVersions).toEqual({ [`garment_record:${shirt.garmentId}`]: expect.any(Number) });
+    expect(turn.proposals[0]!.summary.startsWith(`Change the record of \u201C${shirt.name}\u201D: condition \u201Cfrayed collar\u201D. Its source is recorded as your own statement, your message of `)).toBe(true);
     // The owner changes the record in the app before looking at the request.
     await w.owner.exec("garment.correct", { garmentId: shirt.garmentId, changes: { condition: "mended" }, source: { kind: "owner_statement" } });
     await expect(confirm(w, turn)).rejects.toMatchObject({ code: "conflict" });

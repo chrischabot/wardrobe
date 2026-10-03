@@ -14,7 +14,12 @@
  *   - quantities cannot go negative: every movement is clamped to what exists;
  *   - observed and inferred movements stay distinguishable (each movement carries its basis);
  *   - undo/amend voids an event and replays; pickups keep their recorded membership, so a corrected
- *     garment is never placed in a bag it did not enter.
+ *     garment is never placed in a bag it did not enter;
+ *   - the stock a garment was recorded with when its record was created as already owned (`opening`) is
+ *     there for every event of that garment, however early the event is dated: the record was made
+ *     later than the garment was acquired, so "I wore it the day before the import" finds its unit;
+ *   - the clean units that are clean only by the weekly inference are counted separately
+ *     (`cleanInferred`), so a reader never describes an estimate as an observation.
  */
 import type { Basis, Bucket, CareChannel } from "@garderobe/contracts";
 
@@ -61,6 +66,12 @@ export interface ServiceHolding {
 export interface StockState {
   incoming: number;
   clean: number;
+  /**
+   * How many of the clean units are clean by the weekly laundry inference alone (no wash, return or count
+   * was observed for them). Units are interchangeable, so a unit taken out of clean is assumed to be an
+   * observed one first: what remains is never described as better known than it is.
+   */
+  cleanInferred: number;
   /** One entry per dirty unit: the instant from which it is awaiting care. */
   dirty: number[];
   service: Map<string, ServiceHolding>;
@@ -96,11 +107,16 @@ export interface BalanceRow {
 }
 
 export function emptyState(): StockState {
-  return { incoming: 0, clean: 0, dirty: [], service: new Map(), storage: 0, tailor: 0, trip: new Map(), gone: 0 };
+  return { incoming: 0, clean: 0, cleanInferred: 0, dirty: [], service: new Map(), storage: 0, tailor: 0, trip: new Map(), gone: 0 };
+}
+
+/** The stock a garment's record was created with as already owned: it precedes every other event of the garment. */
+export function isOpeningStock(e: StockEvent): boolean {
+  return e.kind === "receive" && e.payload.opening === true;
 }
 
 export function sortEvents(events: StockEvent[]): StockEvent[] {
-  return [...events].sort((a, b) => a.occurredAtMs - b.occurredAtMs || a.seq - b.seq);
+  return [...events].sort((a, b) => Number(isOpeningStock(b)) - Number(isOpeningStock(a)) || a.occurredAtMs - b.occurredAtMs || a.seq - b.seq);
 }
 
 export function ownedUnits(s: StockState): number {
@@ -154,12 +170,13 @@ export function replayGarment(careChannel: CareChannel, events: StockEvent[]): R
     const repair = (note: string) => repairs.push({ eventId: e.eventId, note });
 
     /** Take up to n units out of service holdings; non-held first unless includeHeldFirst. */
-    const takeFromService = (n: number, opts: { allowHeld: boolean }): number => {
+    const takeFromService = (n: number, opts: { allowHeld: boolean; allowLost?: boolean }): number => {
       let taken = 0;
       const entries = [...s.service.entries()].sort((a, b) => Number(a[1].held) - Number(b[1].held) || a[1].pickedUpAtMs - b[1].pickedUpAtMs);
       for (const [ref, h] of entries) {
         if (taken >= n) break;
         if (h.held && !opts.allowHeld) continue;
+        if (h.lost && opts.allowLost === false) continue;
         const q = Math.min(h.quantity, n - taken);
         h.quantity -= q;
         taken += q;
@@ -325,9 +342,12 @@ export function replayGarment(careChannel: CareChannel, events: StockEvent[]): R
         s.clean += q;
         move("dirty", "clean", q);
         let remaining = want - q;
+        // The owner speaks for these units: whatever of them was clean only by inference is now observed clean.
+        s.cleanInferred = Math.max(0, s.cleanInferred - remaining);
         // The owner says it is washed: a unit the ledger believed was away is evidently back and clean.
+        // Without a count the statement is not about a unit he reported lost: that one stays lost.
         while (remaining > 0 && (explicit !== undefined || s.clean === 0)) {
-          if (takeFromService(1, { allowHeld: true }) !== 1) break;
+          if (takeFromService(1, { allowHeld: true, allowLost: explicit !== undefined }) !== 1) break;
           s.clean += 1;
           remaining -= 1;
           move("service", "clean", 1, "owner observation: washed, so it is back and clean");
@@ -445,6 +465,7 @@ export function replayGarment(careChannel: CareChannel, events: StockEvent[]): R
         if (eligible > 0) {
           s.dirty.splice(0, eligible);
           s.clean += eligible;
+          s.cleanInferred += eligible;
           move("dirty", "clean", eligible, `weekly reset ${key}: inferred clean (no pickup or return was observed)`, "inferred");
         }
         for (const [ref, h] of [...s.service.entries()]) {
@@ -452,6 +473,7 @@ export function replayGarment(careChannel: CareChannel, events: StockEvent[]): R
           const ordinaryBatch = !h.held && h.pickedUpAtMs < e.occurredAtMs;
           if (earlierDelayedCycle || ordinaryBatch) {
             s.clean += h.quantity;
+            s.cleanInferred += h.quantity;
             move("service", "clean", h.quantity, `weekly reset ${key}: return inferred, not observed`, "inferred");
             s.service.delete(ref);
           }
@@ -569,6 +591,8 @@ export function replayGarment(careChannel: CareChannel, events: StockEvent[]): R
           else s[b] -= q;
         };
         const specified = new Set(Object.keys(counts).filter((k) => k !== "total"));
+        // He counted what is clean: none of it is an estimate any more.
+        if (counts.clean !== undefined) s.cleanInferred = 0;
         if (counts.total !== undefined) {
           let diff = counts.total - ownedUnits(s);
           if (diff > 0) {
@@ -634,6 +658,8 @@ export function replayGarment(careChannel: CareChannel, events: StockEvent[]): R
         break;
       }
     }
+    // Whatever left the clean pile, the estimate never exceeds what is there.
+    s.cleanInferred = Math.min(s.cleanInferred, s.clean);
   }
   return { state: s, movements, repairs };
 }

@@ -228,7 +228,14 @@ export class StockPlanner {
       }
       if (this.declared.has(p.garment.garment_id)) continue;
       statements.push(
-        stmt("UPDATE garments SET version = version + 1, acquisition = ?, updated_at = ? WHERE user_id = ? AND garment_id = ?", p.acquisitionAfter, this.now, this.userId, p.garment.garment_id),
+        stmt(
+          "UPDATE garments SET version = version + 1, acquisition = ?, clean_inferred = ?, updated_at = ? WHERE user_id = ? AND garment_id = ?",
+          p.acquisitionAfter,
+          p.after.state.cleanInferred,
+          this.now,
+          this.userId,
+          p.garment.garment_id,
+        ),
       );
     }
     return { statements, preconditions, garments, repairs: repairsOut, eventIds: this.added.map((a) => a.event.eventId) };

@@ -6,7 +6,7 @@
 import type { Role } from "@garderobe/contracts";
 import type { OutfitSlot, OutfitValidation, OutfitViolation } from "@garderobe/contracts/ext/daily";
 import { addDays, jointAvailability } from "@garderobe/domain";
-import { NEUTRAL_FAMILIES, type PoolGarment, type RecommendationContext } from "./model.ts";
+import { neutralFamiliesOf, type PoolGarment, type RecommendationContext } from "./model.ts";
 import { AVAILABILITY_MODEL_VERSION_OR_DEFAULT } from "./version.ts";
 
 export interface ValidateOptions {
@@ -170,7 +170,11 @@ export function garmentViolations(ctx: RecommendationContext, garmentId: string,
   if (repeat.categories.includes(g.category) && !opts.allowRepeat && !ctx.brief.allowRepeat && !ctx.tripId) {
     const from = addDays(ctx.localDate, -repeat.days);
     const hit = g.wornDates.filter((d) => d >= from && d < ctx.localDate).pop();
-    if (hit) out.push(v("repeat_within_horizon", `${g.name} was worn on ${hit}, inside the ${repeat.days}-day repeat horizon`, [garmentId], repeat.key));
+    // A piece the request names as one that must stay is the owner's explicit override of the repeat
+    // preference for that piece, for that request only (specification section 7). It is reported, not
+    // refused; every other piece of the outfit still obeys the horizon and no standing rule changes.
+    if (hit && ctx.brief.include.includes(garmentId)) out.push(v("repeat_at_owner_request", `${g.name} was worn on ${hit}; it is repeated because it was asked for by name`, [garmentId], repeat.key, "advisory"));
+    else if (hit) out.push(v("repeat_within_horizon", `${g.name} was worn on ${hit}, inside the ${repeat.days}-day repeat horizon`, [garmentId], repeat.key));
   }
   return out;
 }
@@ -274,12 +278,14 @@ export function validateCandidate(ctx: RecommendationContext, candidate: { slots
     }
   }
 
-  // Soft verdicts recorded as advisories: they inform ranking and never block.
+  // Soft verdicts recorded as advisories: they inform ranking and never block. The neutral count covers
+  // everything worn in the outfit proper: jacket, layers, shirt, trousers, belt, socks and shoes.
   const neutral = ctx.rules.neutralMax;
   if (neutral) {
     const counts = new Map<string, string[]>();
-    for (const g of [outer, top, bottom, footwear]) {
-      if (g && NEUTRAL_FAMILIES.has(g.colourFamily)) counts.set(g.colourFamily, [...(counts.get(g.colourFamily) ?? []), g.garmentId]);
+    for (const g of [outer, get("mid_layer"), top, get("one_piece"), bottom, get("belt"), get("socks"), footwear]) {
+      if (!g) continue;
+      for (const family of neutralFamiliesOf(g.colour ?? g.name)) counts.set(family, [...(counts.get(family) ?? []), g.garmentId]);
     }
     for (const [family, ids] of counts) {
       if (ids.length > neutral.max) violations.push(v("neutral_three_times", `The same neutral (${family.replace("_", " ")}) appears ${ids.length} times`, ids, neutral.key, "advisory"));

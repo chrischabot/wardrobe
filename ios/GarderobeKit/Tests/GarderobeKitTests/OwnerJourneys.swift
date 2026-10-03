@@ -64,8 +64,9 @@ struct OwnerCareJourney {
         #expect(laundry.returnDraft?.lines.first { $0.garmentId == shirts[1].id }?.stillAway == 1)
         let returned = await laundry.confirmReturn()
         #expect(returned?.receipt?.summary.contains("still away") == true)
-        #expect(returned?.receipt?.undo.available == false)
-        #expect(env.center.banner?.record.id != returned?.receipt?.commandId) // no undo banner for an irreversible receipt
+        // The backend says a recorded return can be undone, so the receipt banner offers Undo for it.
+        #expect(returned?.receipt?.undo.available == true)
+        #expect(env.center.banner?.record.id == returned?.receipt?.commandId)
         await shirtA.refresh()
         await shirtB.refresh()
         #expect(shirtA.availability?.hardExcluded == false)

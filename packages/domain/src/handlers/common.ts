@@ -85,12 +85,18 @@ export async function undoStockEvents(ctx: CommandContext, planner: StockPlanner
   for (const r of rows) if (r.voided_by_command_id === null) planner.void(r.event_id, r.garment_id);
 }
 
-export async function simpleStockUndo(ctx: CommandContext, original: StoredCommand, data: Record<string, any>, extra: Stmt[] = []): Promise<CommandPlan> {
+/**
+ * What the receipt of an undone stock command says when its handler has nothing more specific to add.
+ * Receipts are read by the owner: they never show a command's type code.
+ */
+export const UNDO_STOCK_SUMMARY = "The quantities are as they were before";
+
+export async function simpleStockUndo(ctx: CommandContext, _original: StoredCommand, data: Record<string, any>, extra: Stmt[] = []): Promise<CommandPlan> {
   const planner = ctx.stock();
   await undoStockEvents(ctx, planner, (data.stockEventIds ?? []) as string[]);
   const parts = stockParts(await planner.build());
   return {
-    summary: `Undid ${original.type}`,
+    summary: UNDO_STOCK_SUMMARY,
     statements: [...parts.statements, ...extra],
     preconditions: parts.preconditions,
     affected: parts.affected,

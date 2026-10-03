@@ -1,6 +1,6 @@
 import { SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
-import { APP_ORIGIN, connectMcp, provisionOwner, toolResult, type TestOwner } from "../src/testing/index.ts";
+import { APP_ORIGIN, connectMcp, ownerDay, provisionOwner, toolResult, type TestOwner } from "../src/testing/index.ts";
 
 /*
  * Profile saves and bulk corrections through the real Worker, with the REAL owner fixture (supplied
@@ -104,8 +104,8 @@ describe("Save in My style", () => {
   });
 
   it("returns the day's brief with its identifier, so the app can clear a brief it did not set", async () => {
-    const today = new Date().toISOString().slice(0, 10);
-    const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+    const today = await ownerDay(owner);
+    const tomorrow = await ownerDay(owner, 1);
     const set = await owner.api.command("style.set_brief", { localDate: tomorrow, text: "Dinner with clients: no trainers", source: { kind: "owner_statement" } });
     expect(set.status, await set.clone().text()).toBe(200);
     const forDay = await owner.api.json("GET", `/v1/style?date=${tomorrow}`);

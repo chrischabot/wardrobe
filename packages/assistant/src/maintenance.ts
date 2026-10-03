@@ -3,12 +3,14 @@
  * safe to run repeatedly: every step is keyed by a durable ID and re-reads current state.
  *   - job completions are delivered to the owner's conversation as one settled result card each;
  *   - physical erasure of forgotten sources is reconciled (transcript, summaries, AI Search);
- *   - the retrieval index and, when bound, the AI Search projection are caught up from their watermarks.
+ *   - the retrieval index and, when bound, the AI Search projection are caught up from their watermarks;
+ *   - model-call reservations whose outcome is not known are reconciled against the provider's record.
  */
 import { acknowledgeOutbox, all, first, json, readOutbox, systemPrincipalFor, type CommandService, type Db } from "@garderobe/domain";
 import { assistantClient } from "./client.ts";
 import type { SearchIndexPort } from "./recall/ai-search.ts";
 import { runSearchProjection } from "./recall/projection.ts";
+import { reconcileInferenceReservations, type ProviderUsageLookup, type ReconcileResult } from "./inference/reconcile.ts";
 
 export interface MaintenanceDeps {
   db: Db;
@@ -17,6 +19,8 @@ export interface MaintenanceDeps {
   gatewayId: string;
   nowMs: number;
   searchIndexFor?: (userId: string) => SearchIndexPort | null;
+  /** The provider's record of model calls (AI Gateway logs). Absent: uncertain reservations stay uncertain. */
+  usageLookup?: ProviderUsageLookup | null;
 }
 
 export interface MaintenanceResult {
@@ -25,10 +29,12 @@ export interface MaintenanceResult {
   searchUploaded: number;
   searchRemoved: number;
   skippedOwners: string[];
+  /** Model-call reservations: abandoned ones recorded as uncertain, and uncertain ones closed on the provider's record. */
+  reservations: ReconcileResult;
 }
 
 export async function runAssistantMaintenance(deps: MaintenanceDeps, opts: { limit?: number } = {}): Promise<MaintenanceResult> {
-  const result: MaintenanceResult = { delivered: 0, erasuresReconciled: 0, searchUploaded: 0, searchRemoved: 0, skippedOwners: [] };
+  const result: MaintenanceResult = { delivered: 0, erasuresReconciled: 0, searchUploaded: 0, searchRemoved: 0, skippedOwners: [], reservations: { markedUncertain: 0, settled: 0, released: 0, stillUncertain: 0, lookupFailures: 0, notLookedUp: 0 } };
   const pending = await readOutbox(deps.db, { topics: ["conversation.deliver", "conversation.erase", "summary.regenerate", "search.index", "search.delete", "garment"], limit: opts.limit ?? 200 });
   const owners = [...new Set(pending.map((e) => e.userId))];
   for (const userId of owners) {
@@ -101,5 +107,7 @@ export async function runAssistantMaintenance(deps: MaintenanceDeps, opts: { lim
       }
     }
   }
+  // Independent of the outbox: an open reservation belongs to an owner who may have nothing else pending.
+  result.reservations = await reconcileInferenceReservations({ db: deps.db, service: deps.service, nowMs: deps.nowMs, usageLookup: deps.usageLookup ?? null });
   return result;
 }
