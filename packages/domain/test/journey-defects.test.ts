@@ -265,11 +265,130 @@ describe("'washed' without a count is not about a unit reported lost", () => {
     h.clock.set("2026-09-15T08:00:00Z");
     await owner.exec("laundry.report_exception", { kind: "lost", garmentId: "shirt-gold" });
     expect(await balances(h, owner, "shirt-gold")).toMatchObject({ clean: 0, service: 1 });
-    await owner.exec("care.washed", { items: [{ garmentId: "shirt-gold" }] });
+    const nothing = await owner.exec("care.washed", { items: [{ garmentId: "shirt-gold" }] });
+    // The receipt does not claim a wash that moved nothing, and no wash is written (change review of a5e6c8fa).
+    expect(nothing.outcome).toBe("noop");
+    expect(nothing.summary).toBe("Nothing was marked clean; still recorded as lost: gold lightweight oxford. If it has turned up, say how many were washed");
+    // Said together with a shirt that was awaiting a wash: that one is washed, the lost one is named as left.
+    await owner.exec("care.mark_dirty", { items: [{ garmentId: "shirt-moss" }] });
+    const mixed = await owner.exec("care.washed", { items: [{ garmentId: "shirt-gold" }, { garmentId: "shirt-moss" }] });
+    expect(mixed.summary).toBe("Washed and clean: moss lightweight oxford; still recorded as lost: gold lightweight oxford");
+    expect(mixed.result).toMatchObject({ washed: ["shirt-moss"], leftAsLost: ["shirt-gold"] });
+    expect(mixed.repairs.join(" ")).toMatch(/gold lightweight oxford: it is recorded as lost, so nothing was marked clean/);
+    // No wash was written for the lost shirt, so nothing can wash it retroactively.
+    expect(await all(h.db, "SELECT 1 FROM stock_events WHERE user_id = ? AND garment_id = 'shirt-gold' AND kind = 'wash'", owner.userId)).toEqual([]);
     expect(await balances(h, owner, "shirt-gold")).toMatchObject({ clean: 0, service: 1 });
     expect(await openExceptions(h, owner)).toEqual([["lost", "shirt-gold", 1]]);
     await owner.exec("care.washed", { items: [{ garmentId: "shirt-gold", quantity: 1 }] });
     expect(await balances(h, owner, "shirt-gold")).toMatchObject({ clean: 1, service: 0 });
     expect(await openExceptions(h, owner)).toEqual([]);
+  });
+});
+
+describe("change review of the return and its undo (review of 486b1311 to a5e6c8fa)", () => {
+  /** Both pairs of navy chinos worn and collected; the clock is left at Saturday's return. */
+  async function twoPairsCollected(): Promise<{ h: Harness; owner: TestOwner }> {
+    const { h, owner } = await start();
+    await wearOn(h, owner, "2026-09-14", ["trouser-navy"]);
+    await wearOn(h, owner, "2026-09-15", ["trouser-navy"]);
+    h.clock.set("2026-09-18T08:30:00Z");
+    await owner.exec("laundry.collect", {});
+    h.clock.set("2026-09-19T17:00:00Z");
+    return { h, owner };
+  }
+
+  it("of two collected units, one lost and one returning: one comes back and the lost report stays open", async () => {
+    const { h, owner } = await twoPairsCollected();
+    await owner.exec("laundry.report_exception", { kind: "lost", garmentId: "trouser-navy", quantity: 1 });
+    const back = await owner.exec("laundry.return", {});
+    expect(back.result).toMatchObject({ returned: 1, stillAway: 0 });
+    expect(back.summary).toBe("Laundry returned: 1 item clean; not returned, reported lost: navy chinos");
+    expect(await balances(h, owner, "trouser-navy")).toMatchObject({ clean: 1, service: 1 });
+    expect(await openExceptions(h, owner)).toEqual([["lost", "trouser-navy", 1]]);
+  });
+
+  it("a second partial return replaces the earlier still-away exception with what is still away, and its undo restores it", async () => {
+    const { h, owner } = await twoPairsCollected();
+    await owner.exec("laundry.return", { stillAway: [{ garmentId: "trouser-navy", quantity: 2 }] });
+    expect(await openExceptions(h, owner)).toEqual([["still_away", "trouser-navy", 2]]);
+    const first1 = await batchOf(h, owner);
+    h.clock.set("2026-09-19T19:00:00Z");
+    // Said again with nothing new: no second exception for the same two pairs.
+    await owner.exec("laundry.return", { batchId: first1.batchId, stillAway: [{ garmentId: "trouser-navy", quantity: 2 }] });
+    expect(await openExceptions(h, owner)).toEqual([["still_away", "trouser-navy", 2]]);
+    const before = await batchOf(h, owner);
+    h.clock.set("2026-09-19T20:00:00Z");
+    const one = await owner.exec("laundry.return", { batchId: first1.batchId, stillAway: [{ garmentId: "trouser-navy", quantity: 1 }] });
+    expect(one.result).toMatchObject({ returned: 1, stillAway: 1 });
+    expect(await openExceptions(h, owner)).toEqual([["still_away", "trouser-navy", 1]]);
+    expect(await balances(h, owner, "trouser-navy")).toMatchObject({ clean: 1, service: 1 });
+    await owner.exec("command.undo", { commandId: one.commandId });
+    expect(await openExceptions(h, owner)).toEqual([["still_away", "trouser-navy", 2]]);
+    expect(await batchOf(h, owner)).toEqual(before);
+    expect(await balances(h, owner, "trouser-navy")).toMatchObject({ clean: 0, service: 2 });
+  });
+
+  it("the undo is refused once the returned piece has been put in the wash", async () => {
+    const { h, owner } = await collected();
+    const back = await owner.exec("laundry.return", {});
+    await owner.exec("care.mark_dirty", { items: [{ garmentId: "shirt-gold" }] });
+    const refused = await refusal(owner.exec("command.undo", { commandId: back.commandId }));
+    expect(refused.code).toBe("not_undoable");
+    expect(await balances(h, owner, "shirt-gold")).toMatchObject({ dirty: 1, service: 0 });
+  });
+
+  it("units of one garment are interchangeable: a later wear answered by the pair that stayed at home does not block the undo", async () => {
+    const { h, owner } = await start();
+    await wearOn(h, owner, "2026-09-14", ["trouser-navy"]);
+    h.clock.set("2026-09-18T08:30:00Z");
+    await owner.exec("laundry.collect", {});
+    h.clock.set("2026-09-19T17:00:00Z");
+    const back = await owner.exec("laundry.return", {});
+    await wearOn(h, owner, "2026-09-20", ["trouser-navy"]);
+    expect(await balances(h, owner, "trouser-navy")).toMatchObject({ clean: 1, dirty: 1, service: 0 });
+    await owner.exec("command.undo", { commandId: back.commandId });
+    // One pair is out at the service again; the wear stands against the pair that never left.
+    expect(await balances(h, owner, "trouser-navy")).toMatchObject({ clean: 0, dirty: 1, service: 1 });
+  });
+
+  it("an undo of a return recorded with an instant written without milliseconds still matches its batch", async () => {
+    const { h, owner } = await collected();
+    const back = await owner.exec("laundry.return", {}, { occurredAt: "2026-09-19T16:00:00Z" });
+    const undone = await owner.exec("command.undo", { commandId: back.commandId });
+    expect(undone.outcome).toBe("committed");
+    expect((await batchOf(h, owner)).status).toBe("collected");
+  });
+
+  it("a trip namer that throws leaves the generic wording instead of failing the packing", async () => {
+    const { h, owner } = await start();
+    h.registry.registerEntityNamer("trip", async () => {
+      throw new Error("synthetic lookup failure");
+    });
+    const packed = await owner.exec("stock.pack", { tripId: "trp_0123456789abcdef0123", items: [{ garmentId: "shirt-moss" }] });
+    expect(packed.summary).toBe("Packed for the trip: moss lightweight oxford");
+  });
+
+  it("a receipt whose effect failed reads as not delivered, with the effect's own state shown, and its used undo is not offered on a repeat", async () => {
+    const h = await createHarness({ startAt: "2026-09-16T07:00:00Z" });
+    h.registry.register(
+      define({
+        type: "test.publish_once",
+        schema: z.object({ revision: z.number().int() }),
+        class: "system",
+        requiredScope: "write",
+        async plan(_ctx, p) {
+          return { summary: `published revision ${p.revision}`, effects: [{ kind: "test.synthetic_failure", targetKey: "synthetic-failing-target", operationKey: `synthetic-failing-target:r${p.revision}`, desiredRevision: p.revision, payload: {} }] };
+        },
+      }),
+    );
+    const owner = await h.createSyntheticOwner();
+    const published = await owner.exec("test.publish_once", { revision: 1 }, { actor: "system", channel: "scheduled", authorization: "system_schedule" });
+    await h.db.prepare("UPDATE effects SET state = 'failed' WHERE user_id = ? AND command_id = ?").bind(owner.userId, published.commandId).run();
+    expect((await h.service.getReceipt(owner.principal(), published.commandId))!).toMatchObject({ externalEffectState: "projection_pending", effects: [{ state: "failed" }] });
+
+    const dirty = await owner.exec("care.mark_dirty", { items: [{ garmentId: "shirt-gold" }] }, { idempotencyKey: "synthetic-dirty-once" });
+    await owner.exec("command.undo", { commandId: dirty.commandId });
+    const repeated = await owner.exec("care.mark_dirty", { items: [{ garmentId: "shirt-gold" }] }, { idempotencyKey: "synthetic-dirty-once" });
+    expect(repeated).toMatchObject({ commandId: dirty.commandId, replayed: true, undo: { available: false, reason: "this action was already undone" } });
   });
 });

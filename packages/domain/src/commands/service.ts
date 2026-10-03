@@ -1,4 +1,4 @@
-import { CommandEnvelope, CONTRACT_VERSION, DEFAULT_OWNER_SETTINGS, OwnerSettings } from "@garderobe/contracts";
+import { CommandEnvelope, CONTRACT_VERSION, DEFAULT_OWNER_SETTINGS, EffectState, OwnerSettings } from "@garderobe/contracts";
 import type { CommandReceipt, EntityVersion, ParsedCommandEnvelope } from "@garderobe/contracts";
 import { all, allIn, first, json, prepare, stmt, type Db, type Stmt } from "../db.ts";
 import { CommandError, isCommandError } from "../errors.ts";
@@ -177,7 +177,12 @@ export class CommandService {
     return receipts.map((receipt, i) => {
       const out: CommandReceipt = { ...receipt };
       if ((receipt.effects?.length ?? 0) > 0) {
-        out.effects = receipt.effects.map((e) => ({ ...e, state: (states.get(e.effectId) ?? e.state) as typeof e.state }));
+        // An effect row holding a state this build does not know keeps the state the receipt was stored with.
+        out.effects = receipt.effects.map((e) => {
+          const now = EffectState.safeParse(states.get(e.effectId));
+          return { ...e, state: now.success ? now.data : e.state };
+        });
+        // A failed effect has not been delivered: it still counts as outstanding, and its own state says "failed".
         const outstanding = out.effects.some((e) => e.state === "pending" || e.state === "in_progress" || e.state === "failed");
         // A superseded effect was overtaken by a newer revision of the same target, which carries the content.
         const delivered = out.effects.some((e) => e.state === "projected" || e.state === "superseded");
@@ -288,9 +293,15 @@ export class CommandService {
         return verifier ? (await verifier(ctx, ref)) === true : false;
       },
       entityName: async (kind: string, id: string) => {
-        const namer = this.registry.entityNamer(kind);
-        const name = namer ? await namer(db, userId, id) : null;
-        return typeof name === "string" && name.trim() !== "" ? name : null;
+        // A name is cosmetic: a lane's lookup that fails must not fail the command, only leave the generic wording.
+        try {
+          const namer = this.registry.entityNamer(kind);
+          const name = namer ? await namer(db, userId, id) : null;
+          return typeof name === "string" && name.trim() !== "" ? name : null;
+        } catch (error) {
+          console.warn(`entity namer for '${kind}' failed; the receipt uses the generic wording`, error);
+          return null;
+        }
       },
     };
     return ctx;

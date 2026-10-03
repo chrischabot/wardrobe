@@ -52,6 +52,45 @@ describe("H2/M2: a restriction is lifted only by the owner's own statement, neve
     expect(await listRestrictions(h.db, owner.principal(), { status: "active" })).toEqual([]);
   });
 
+  it("only the app channels count as the owner himself: an owner principal on any other channel neither undoes nor lifts a restriction", async () => {
+    // Second change review of pull request 2: the guard used to refuse only the MCP channel, so an owner
+    // principal on conversation, scheduled, system or import could undo a restriction and so lift it.
+    const h = await createHarness();
+    const owner = await h.createSyntheticOwner();
+    const added = await owner.exec("restriction.add", { kind: "healing", scope: { garmentIds: ["shoe-welted"] }, reason: "synthetic healing restriction", source: { kind: "owner_statement" } });
+    const restrictionId = added.result.restrictionId as string;
+    for (const channel of ["conversation", "scheduled", "system", "import", "mcp", "test"] as const) {
+      const who = { actor: "owner" as const, channel, authorization: "owner_statement" as const };
+      const undo = await owner.exec("command.undo", { commandId: added.commandId }, who).catch((e) => e);
+      expect(undo.code, `undo on ${channel}`).toBe("forbidden");
+      expect(undo.details, `undo on ${channel}`).toMatchObject({ reason: "restriction_not_lifted_by_undo" });
+      const lift = await owner.exec("restriction.resolve", { restrictionId, evidence: { kind: "owner_statement" } }, who).catch((e) => e);
+      expect(lift.code, `lift on ${channel}`).toBe("forbidden");
+      expect(lift.details, `lift on ${channel}`).toMatchObject({ reason: "evidence_reference_required" });
+    }
+    expect((await listRestrictions(h.db, owner.principal(), { status: "active" })).map((r) => r.restrictionId)).toEqual([restrictionId]);
+    const record = await first<{ undone_by_command_id: string | null }>(h.db, "SELECT undone_by_command_id FROM commands WHERE user_id = ? AND command_id = ?", owner.userId, added.commandId);
+    expect(record!.undone_by_command_id).toBeNull();
+    // An owner session in the app whose command declares another source is refused too (by the command
+    // service's own channel check, before the handler's guard is reached).
+    for (const sourceChannel of ["conversation", "mcp", "scheduled"] as const) {
+      const envelope = (type: string, payload: unknown) => ({ type, payload, idempotencyKey: `synthetic-${type}-${sourceChannel}`, expectedVersions: {}, authorization: "owner_tap" as const, source: { channel: sourceChannel } });
+      const undo = await h.service.execute(owner.principal({ channel: "ios" }), envelope("command.undo", { commandId: added.commandId }) as never).catch((e) => e);
+      expect(undo.code, `undo declared from ${sourceChannel}`).toBe("forbidden");
+      const lift = await h.service.execute(owner.principal({ channel: "web" }), envelope("restriction.resolve", { restrictionId, evidence: { kind: "owner_statement" } }) as never).catch((e) => e);
+      expect(lift.code, `lift declared from ${sourceChannel}`).toBe("forbidden");
+    }
+    expect(await listRestrictions(h.db, owner.principal(), { status: "active" })).toHaveLength(1);
+    // Control: the owner in the app still can, on both app channels: lift without a reference, and undo.
+    const second = await owner.exec("restriction.add", { kind: "other", scope: { garmentIds: ["shoe-welted"] }, reason: "second synthetic restriction", source: { kind: "owner_statement" } });
+    expect((await owner.exec("restriction.resolve", { restrictionId: second.result.restrictionId, evidence: { kind: "owner_statement" } }, { channel: "web" })).outcome).toBe("committed");
+    const third = await owner.exec("restriction.add", { kind: "other", scope: { garmentIds: ["shoe-welted"] }, reason: "third synthetic restriction", source: { kind: "owner_statement" } });
+    expect((await owner.exec("command.undo", { commandId: third.commandId }, { channel: "ios" })).outcome).toBe("committed");
+    const web = await owner.exec("command.undo", { commandId: added.commandId }, { channel: "web" });
+    expect(web.outcome).toBe("committed");
+    expect(await listRestrictions(h.db, owner.principal(), { status: "active" })).toEqual([]);
+  });
+
   it("an assistant lifting a restriction must reference the owner's statement; the owner's own tap needs no reference", async () => {
     const h = await createHarness();
     const owner = await h.createSyntheticOwner();

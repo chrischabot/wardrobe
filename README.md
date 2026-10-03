@@ -19,7 +19,7 @@ Only data and requirements were migrated; no code from any earlier application i
 | Regenerate JSON Schema and Swift contracts | `npm run generate:contracts` |
 
 Node 22+, TypeScript 7.0.2, zod 4.6.5, vitest 4.1.11 with `@cloudflare/vitest-pool-workers` 0.22.0.
-`npm run test:foundation` currently runs 157 foundation tests (14 contracts, 143 domain). Domain tests run inside workerd
+`npm run test:foundation` currently runs 180 foundation tests (14 contracts, 166 domain). Domain tests run inside workerd
 against a real local D1 database; nothing mocks the ledger. The bundled
 workerd accepts compatibility dates up to 2026-08-22.
 
