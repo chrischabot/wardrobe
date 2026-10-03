@@ -1,7 +1,6 @@
 import { API_VERSION, CONTRACT_VERSION, CommandEnvelope, GarmentSelector, InventoryQuery, LocalDate, type CommandReceipt } from "@garderobe/contracts";
 import {
   AvailabilityQuery,
-  CONSEQUENTIAL_COMMAND_TYPES,
   MCP_COMPAT_PROTOCOL_VERSION,
   MCP_PROTOCOL_VERSION,
   ReceiptListQuery,
@@ -36,6 +35,7 @@ import { ApiException, isRetryable, normalizeError } from "../errors.ts";
 import { json, readJson, readQuery } from "../http.ts";
 import { describeMe } from "../identity/service.ts";
 import { owner, type RouteDef } from "../router.ts";
+import { connectedDispositionOfType } from "../mcp/policy.ts";
 
 const now = (app: App) => toInstant(app.now());
 
@@ -99,8 +99,13 @@ export async function readSettings(app: App, principal: Principal) {
   return { settings, version, profile, inference, service: await readService(app, principal), apiVersion: API_VERSION, contractVersion: CONTRACT_VERSION, readAt: now(app) };
 }
 
-const consequential = new Set<string>(CONSEQUENTIAL_COMMAND_TYPES);
-export const isConsequential = (type: string): boolean => consequential.has(type);
+/**
+ * Whether a connected assistant's typed command of this type waits for the owner's confirmation (or is
+ * not available to it at all) instead of running. Derived from the one policy in mcp/policy.ts, so the
+ * published list cannot differ from what the MCP tool does. `job.create` and `command.undo` are marked
+ * although a research job and the undo of a wear or wash report run directly: that depends on the request.
+ */
+export const isConsequential = (registry: CommandRegistry, type: string): boolean => connectedDispositionOfType(registry, type, {}) !== "direct";
 
 const schemaCache = new WeakMap<CommandRegistry, unknown[]>();
 
@@ -116,7 +121,7 @@ export function describeCommandTypes(registry: CommandRegistry) {
       } catch {
         payloadSchema = { type: "object" };
       }
-      return { type, class: def.class, requiredScope: def.requiredScope, authorizations: registry.allowedAuthorizations(def), consequential: isConsequential(type), payloadSchema };
+      return { type, class: def.class, requiredScope: def.requiredScope, authorizations: registry.allowedAuthorizations(def), consequential: isConsequential(registry, type), payloadSchema };
     });
     schemaCache.set(registry, types);
   }

@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import type { CommandReceipt, InventoryPage } from "@garderobe/contracts";
 import { first } from "@garderobe/domain";
-import { provisionOwner, testApp, type TestOwner } from "../src/testing/index.ts";
+import { ownerDay, provisionOwner, testApp, type TestOwner } from "../src/testing/index.ts";
 
 /*
  * The owner fixture here is the REAL one: the supplied profile and the real inventory CSV, imported
@@ -11,7 +11,8 @@ let owner: TestOwner;
 let synthetic: TestOwner;
 let inventory: InventoryPage;
 
-const today = () => new Date().toISOString().slice(0, 10);
+/** Days as the real owner counts them (the owner's timezone), not UTC dates. */
+const today = () => ownerDay(owner);
 const errorOf = async (response: Response) => ((await response.json()) as { error: { code: string; message: string; details: Record<string, any> } }).error;
 
 beforeAll(async () => {
@@ -96,7 +97,7 @@ describe("commands", () => {
   it("returns a verified receipt and the same receipt again for the same key and body", async () => {
     const shirt = wearable("top");
     const key = `wear-${crypto.randomUUID()}`;
-    const payload = { wearingDate: today(), garmentIds: [shirt.garment.garmentId] };
+    const payload = { wearingDate: await today(), garmentIds: [shirt.garment.garmentId] };
     const firstResponse = await owner.api.command("wear.record", payload, { idempotencyKey: key });
     expect(firstResponse.status).toBe(200);
     expect(firstResponse.headers.get("X-Garderobe-Api")).toBe("v1");
@@ -113,7 +114,7 @@ describe("commands", () => {
     expect(again.commandId).toBe(receipt.commandId);
 
     // One counted wear, not two; and the receipt is readable by ID, by key and from the item's history.
-    const day = await owner.api.json("GET", `/v1/days/${today()}`);
+    const day = await owner.api.json("GET", `/v1/days/${await today()}`);
     expect(day.garments.filter((g: any) => g.garmentId === shirt.garment.garmentId)).toHaveLength(1);
     expect((await owner.api.json("GET", `/v1/commands/${receipt.commandId}`)).commandId).toBe(receipt.commandId);
     expect((await owner.api.json("GET", `/v1/commands?idempotencyKey=${key}`)).receipts[0].commandId).toBe(receipt.commandId);
@@ -145,7 +146,7 @@ describe("commands", () => {
     const invalid = await owner.api.command("wear.record", { wearingDate: "yesterday", garmentIds: [] });
     expect(invalid.status).toBe(400);
     expect((await errorOf(invalid)).code).toBe("invalid_command");
-    const missing = await owner.api.command("wear.record", { wearingDate: today(), garmentIds: ["gmt_does_not_exist"] });
+    const missing = await owner.api.command("wear.record", { wearingDate: await today(), garmentIds: ["gmt_does_not_exist"] });
     expect(missing.status).toBe(404);
     // Nothing was created to make the command succeed.
     expect((await owner.api.json("GET", "/v1/wardrobe")).total).toBe(inventory.total);
@@ -197,7 +198,7 @@ describe("offline replay", () => {
   it("runs queued commands in order, independently, and is safe to resubmit", async () => {
     const top = wearable("top");
     const bottom = wearable("bottom", [top.garment.garmentId]);
-    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    const yesterday = await ownerDay(owner, -1);
     const envelope = (type: string, payload: Record<string, unknown>, key: string, occurredAt?: string) => ({ type, payload, idempotencyKey: key, expectedVersions: {}, authorization: "owner_tap", source: { channel: "ios", clientSubmissionId: key }, ...(occurredAt ? { occurredAt } : {}) });
     const keys = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()].map((k) => `offline-${k}`);
     const batch = {
@@ -226,7 +227,7 @@ describe("offline replay", () => {
 
   it("merges the same wear reported by a second client instead of counting it twice", async () => {
     const top = wearable("top");
-    const date = new Date(Date.now() - 3 * 86_400_000).toISOString().slice(0, 10);
+    const date = await ownerDay(owner, -3);
     const fromPhone = (await (await owner.api.command("wear.record", { wearingDate: date, garmentIds: [top.garment.garmentId] })).json()) as CommandReceipt;
     const web = owner.api.with({ client: "web" });
     const fromWeb = (await (await web.command("wear.record", { wearingDate: date, garmentIds: [top.garment.garmentId] })).json()) as CommandReceipt;
@@ -248,7 +249,7 @@ describe("isolation between owners", () => {
     expect((await synthetic.api.get(`/v1/commands/${receipt.commandId}`)).status).toBe(404);
     expect((await synthetic.api.json("GET", `/v1/commands?entity=garment:${target.garment.garmentId}`)).receipts).toEqual([]);
     expect((await synthetic.api.command("command.undo", { commandId: receipt.commandId })).status).toBe(404);
-    const stolen = await synthetic.api.command("wear.record", { wearingDate: today(), garmentIds: [target.garment.garmentId] });
+    const stolen = await synthetic.api.command("wear.record", { wearingDate: await today(), garmentIds: [target.garment.garmentId] });
     expect(stolen.status).toBe(404);
     // The same idempotency key is independent per owner.
     const key = `shared-${crypto.randomUUID()}`;

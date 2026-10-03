@@ -1,12 +1,13 @@
 import { registerAssistant, configureAssistant, AiSearchIndex } from "@garderobe/assistant";
 import { outfitValidator, registerDaily, validateOutfit } from "@garderobe/daily";
-import { CommandError, createFoundationRegistry, first, all, json as parseJson, restrictionCovers, stmt, type CommandRegistry, type CommandService, type Db, type Principal } from "@garderobe/domain";
+import { CommandError, createFoundationRegistry, first, stmt, type CommandRegistry, type CommandService, type Db, type Principal } from "@garderobe/domain";
 import { depsFromBindings, registerMedia, type MediaDeps } from "@garderobe/media";
 import type { Env } from "../env.ts";
 import { connectionAuthorization } from "../connections/service.ts";
 import { listConnectionTools, outboundPorts, type OutboundDeps } from "../connections/outbound.ts";
 import type { AssistantPort, DailyPort, MediaPort } from "../ports.ts";
 import { recordSubmittedProposal } from "../proposals/store.ts";
+import { wearsRestrictedGarment } from "../restrictions.ts";
 import { createAssistantPort } from "./assistant.ts";
 import { createDailyPort } from "./daily.ts";
 import { createMediaPort } from "./media.ts";
@@ -86,11 +87,11 @@ function guardRestrictionLifts(r: CommandRegistry): void {
 }
 
 /*
- * Sensitive changes (CONSEQUENTIAL_COMMAND_TYPES in the contracts: what the owner owns, the owner's
- * profile, rules and measurements, forgetting, authorizations towards other parties) are carried out
- * only after the signed-in owner confirms them in the app (owner decision of 2026-10-01). A connected
- * assistant can ask for one, as a typed `garderobe_command` (see mcp/server.ts) or through
- * `garderobe_ask`; either way the request waits as a proposal and the assistant cannot confirm it.
+ * A change asked for by a connected assistant is carried out only after the signed-in owner confirms it
+ * in the app (owner decision of 2026-10-01); wear and wash reports and the records of a piece of
+ * research are the exceptions. A connected assistant can ask for a change as a typed `garderobe_command`
+ * (see mcp/policy.ts) or through `garderobe_ask`; either way the request waits as a proposal and the
+ * assistant cannot confirm it.
  */
 
 /**
@@ -111,23 +112,6 @@ type GuardContext = { db: Db; userId: string; nowMs: number; principal: Principa
 const relayedTurn = (ctx: { principal: Principal; envelope: { source: { channel?: string; parentKind?: string | null } } }): boolean =>
   ctx.principal.actor === "assistant" && (ctx.principal.channel === "mcp" || ctx.envelope.source.channel === "mcp") && ctx.envelope.source.parentKind === "turn";
 
-/** Whether a wear report names a garment that an active restriction currently excludes. */
-async function wearsRestrictedGarment(ctx: GuardContext, payload: unknown): Promise<boolean> {
-  const p = payload as { garmentIds?: string[]; additionalUnits?: { garmentId: string }[] };
-  const ids = [...new Set([...(p.garmentIds ?? []), ...(p.additionalUnits ?? []).map((u) => u.garmentId)])];
-  if (ids.length === 0) return false;
-  const scopes = (await all<{ scope_json: string }>(ctx.db, "SELECT scope_json FROM restrictions WHERE user_id = ? AND status = 'active'", ctx.userId)).map((r) => parseJson<Parameters<typeof restrictionCovers>[0]>(r.scope_json, {} as never));
-  if (scopes.length === 0) return false;
-  for (const id of ids) {
-    let row = await first<{ garment_id: string; category: string; attributes_json: string; merged_into: string | null }>(ctx.db, "SELECT garment_id, category, attributes_json, merged_into FROM garments WHERE user_id = ? AND garment_id = ?", ctx.userId, id);
-    if (row?.merged_into) row = await first(ctx.db, "SELECT garment_id, category, attributes_json, merged_into FROM garments WHERE user_id = ? AND garment_id = ?", ctx.userId, row.merged_into);
-    if (!row) continue; // an unknown garment is refused by the command itself
-    const garment = { garmentId: row.garment_id, category: row.category, attributes: parseJson<Record<string, unknown>>(row.attributes_json, {}) };
-    if (scopes.some((scope) => restrictionCovers(scope, garment))) return true;
-  }
-  return false;
-}
-
 function guardRelayedText(r: CommandRegistry): void {
   const allowed = new Set(RELAYED_TEXT_ALLOWED);
   for (const type of r.types()) {
@@ -139,7 +123,7 @@ function guardRelayedText(r: CommandRegistry): void {
     definition.plan = async (context, payload) => {
       const ctx = context as unknown as GuardContext;
       if (!relayedTurn(ctx)) return plan.call(definition, context, payload);
-      if (type === "wear.record" && !(await wearsRestrictedGarment(ctx, payload))) return plan.call(definition, context, payload);
+      if (type === "wear.record" && !(await wearsRestrictedGarment(ctx.db, ctx.userId, payload))) return plan.call(definition, context, payload);
       // Kept for the owner, exactly as it would run; the owner sees it in the app and decides.
       const turnId = String(ctx.envelope.source.parentId ?? "");
       let kept = false;

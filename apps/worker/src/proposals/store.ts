@@ -46,7 +46,11 @@ const COLUMNS = "proposal_id, origin, source_ref, grant_id, turn_id, idempotency
 export const requestHashOf = (input: Pick<SubmittedProposalInput, "type" | "payload" | "expectedVersions" | "occurredAt">): Promise<string> =>
   sha256Hex(canonicalJson({ type: input.type, payload: input.payload, expectedVersions: input.expectedVersions, occurredAt: input.occurredAt }));
 
-/** How many requests one connection (or one relayed turn) may leave waiting for the owner within a day. */
+/**
+ * How many requests one connection (or one relayed turn) may have waiting for the owner at once, counted
+ * over the last day. A request the owner has decided no longer counts: the limit protects the owner's
+ * list, and only the owner can take something off it.
+ */
 export const SUBMITTED_PER_DAY = { typed_command: 40, relayed_turn: 12 } as const;
 
 /**
@@ -61,7 +65,7 @@ export async function recordSubmittedProposal(db: Db, input: SubmittedProposalIn
   const find = () => first<SubmittedProposalRow>(db, `SELECT ${COLUMNS} FROM submitted_proposals WHERE user_id = ? AND origin = ? AND source_ref = ? AND idempotency_key = ?`, input.userId, input.origin, input.sourceRef, input.idempotencyKey);
   const existing = await find();
   if (existing) return existing.request_hash === requestHash ? { row: existing, created: false } : { conflict: true };
-  const recent = await first<{ n: number }>(db, "SELECT COUNT(*) AS n FROM submitted_proposals WHERE user_id = ? AND origin = ? AND source_ref = ? AND created_at > ?", input.userId, input.origin, input.sourceRef, toInstant(input.nowMs - 86_400_000));
+  const recent = await first<{ n: number }>(db, "SELECT COUNT(*) AS n FROM submitted_proposals p WHERE p.user_id = ? AND p.origin = ? AND p.source_ref = ? AND p.created_at > ? AND NOT EXISTS (SELECT 1 FROM proposal_decisions d WHERE d.user_id = p.user_id AND d.proposal_id = p.proposal_id)", input.userId, input.origin, input.sourceRef, toInstant(input.nowMs - 86_400_000));
   if ((recent?.n ?? 0) >= SUBMITTED_PER_DAY[input.origin]) return { limited: true };
   await prepare(
     db,
@@ -101,6 +105,57 @@ const LABELS: Record<string, string> = {
   "style.retire_direction": "Retire a standing direction",
   "style.resolve_fact_conflict": "Decide a conflict between My style and a stored fact",
   "style.set_brief": "Set the brief for a day",
+  "style.retire_brief": "Withdraw the brief for a day",
+  "garment.remove_alias": "Remove a name for a garment",
+  "garment.set_planning_policy": "Change whether a garment is offered in outfits",
+  "stock.pack": "Record garments as packed for a trip",
+  "stock.unpack": "Record garments as unpacked after a trip",
+  "size_experience.record": "Record how a size fits",
+  "laundry.collect": "Record a laundry pickup",
+  "laundry.return": "Record that laundry came back",
+  "laundry.report_exception": "Record that laundry did not come back as expected",
+  "board.select": "Choose an outfit on a day's board",
+  "board.swap_slot": "Swap one piece of an outfit on a day's board",
+  "board.suppress": "Stop showing a day's board",
+  "board.restore": "Bring back a day's board",
+  "exposure.select": "Record which offered option was chosen",
+  "feedback.record": "Record feedback on an outfit or a garment",
+  "feedback.retract": "Withdraw recorded feedback",
+  "service.pause": "Pause the daily service",
+  "service.resume": "Resume the daily service",
+  "settings.update": "Change settings",
+  "trip.create": "Add a trip",
+  "trip.update": "Change a trip",
+  "trip.cancel": "Cancel a trip",
+  "studio.save_combination": "Save a combination in Studio",
+  "studio.remove_combination": "Remove a saved combination",
+  "studio.plan_for_day": "Plan a combination for a day",
+  "studio.remove_day_plan": "Remove a day's plan",
+  "reminder.set": "Set a reminder",
+  "reminder.cancel": "Cancel a reminder",
+  "memory.record_conclusion": "Remember something about you",
+  "memory.set_status": "Change what is remembered about you",
+  "purchase.import_order": "Record an order",
+  "purchase.link_line": "Link an order line to a garment",
+  "purchase.record_event": "Record an event on an order",
+  "purchase.mark_delivered": "Mark an order as delivered",
+  "return.open_case": "Open a return or exchange",
+  "return.update_case": "Change a return or exchange",
+  "return.link_exchange": "Link an exchange to its replacement",
+  "lifecycle.open_project": "Open a repair or alteration project",
+  "lifecycle.update_project": "Change a repair or alteration project",
+  "lifecycle.record_event": "Record an event on a repair or alteration project",
+  "connection.register": "Add a connection to another service",
+  "connection.set_status": "Enable or disable a connection to another service",
+  "connection.set_tool_groups": "Change what a connected service may be used for",
+  "inference.set_routing": "Change which model answers",
+  "media.authorize_upload": "Prepare an image upload",
+  "media.finalize_upload": "Finish an image upload",
+  "media.decide_review": "Decide an image waiting for review",
+  "media.set_primary_asset": "Choose a garment's main image",
+  "media.request_discovery": "Search for product images",
+  "media.request_composite_preview": "Render an outfit preview",
+  "job.create": "Start a background job",
   "measurement.record": "Record a measurement",
   "restriction.add": "Record a restriction",
   "restriction.resolve": "Lift a restriction",

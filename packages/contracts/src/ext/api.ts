@@ -578,7 +578,7 @@ export const CommandTypeInfo = z.object({
   requiredScope: Scope,
   /** Authorization bases this command accepts. */
   authorizations: z.array(z.string()),
-  /** True for operations that need an explicit confirmation step over MCP. */
+  /** True when a connected assistant cannot run this type directly: it waits for the owner's confirmation in the app, or is not available to a connection at all. */
   consequential: z.boolean(),
   payloadSchema: z.record(z.string(), z.unknown()).describe("JSON Schema (draft 2020-12) of the payload."),
 });
@@ -1164,10 +1164,16 @@ export const MCP_RESOURCES = [
 
 /**
  * Sensitive command types: what the owner owns, the owner's profile, rules and measurements, forgetting,
- * deleting an image, and authorizations towards other parties. A connected assistant cannot execute
- * them: sent through `garderobe_command` they are kept as a proposal (see `Proposal`) that only the
- * signed-in owner confirms in the app. The connection's own answer to a confirmation question is not
- * accepted, so none is asked. The undo of one of these is treated the same way.
+ * deleting an image, and authorizations towards other parties.
+ *
+ * This list is a floor, not the rule. Since 2026-10-03 a connected assistant's typed command
+ * (`garderobe_command`) follows an allow-list: only wear and wash reports, research records and the undo
+ * of one of those run directly, and EVERY other owner-facing type, on this list or not (corrections,
+ * aliases, locations, restrictions, outfit choices, trips, laundry batches, settings, pausing), is kept
+ * as a proposal (see `Proposal`) that only the signed-in owner confirms in the app. The connection's own
+ * answer to a confirmation question is not accepted, so none is asked. What a given deployment does per
+ * type is published as `consequential` in `CommandTypeInfo`; a Worker test checks that every type named
+ * here waits for the owner.
  */
 export const CONSEQUENTIAL_COMMAND_TYPES = [
   "garment.create",

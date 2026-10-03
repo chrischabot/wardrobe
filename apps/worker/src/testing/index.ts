@@ -6,10 +6,11 @@
  * authentication, command service, D1, KV, R2 and the conversation actor. The stand-ins are listed in
  * the config helper (test-signed Access assertions, the labelled fake model, mocked Google endpoints).
  */
+import "./clock.ts"; // first: installs the shifted clock when a whole-suite run asks for one
 import { SELF, env as testEnvBindings } from "cloudflare:test";
 import { Client, StreamableHTTPClientTransport, UnauthorizedError, type OAuthClientProvider } from "@modelcontextprotocol/client";
 import type { MeResponse, RecoveryKit } from "@garderobe/contracts/ext/api";
-import { createPrincipal, createUser, type Principal } from "@garderobe/domain";
+import { addDays, createPrincipal, createUser, getOwnerState, localDateOf, type Principal } from "@garderobe/domain";
 import { importOwnerData, type OwnerImportResult } from "@garderobe/domain/import";
 import { ownerDocuments, testDatabase } from "@garderobe/domain/testing";
 import { SignJWT, importJWK } from "jose";
@@ -412,6 +413,21 @@ export async function enableFakeModel(owner: TestOwner, profileId: string = FAKE
     });
   }
   return fakeModelFor(profileId);
+}
+
+/**
+ * A calendar day as the owner counts it: today in the owner's own timezone, plus `offset` days. Use this
+ * wherever a test names "today", "tomorrow" or "yesterday" to the Worker. The UTC date is a different
+ * day for part of every day for an owner who is not on UTC, and the Worker rightly refuses, for example,
+ * to publish a board for a day that is already over for the owner.
+ */
+/** The calendar day at `nowMs` in `timezone`, plus `offset` days. */
+export const localDay = (timezone: string, nowMs: number, offset = 0): string => addDays(localDateOf(nowMs, timezone), offset);
+
+export async function ownerDay(owner: Pick<TestOwner, "systemPrincipal">, offset = 0): Promise<string> {
+  const app = await testApp();
+  const { settings } = await getOwnerState(app.db, owner.systemPrincipal);
+  return localDay(settings.timezone, Date.now(), offset);
 }
 
 /**

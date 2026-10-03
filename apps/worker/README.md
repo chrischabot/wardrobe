@@ -38,7 +38,7 @@ Protocol `2026-07-28` (stateless, `@modelcontextprotocol/server` 2.0.0), with a 
 | `garderobe_today` | The prepared board, at the same revision the app sees | read |
 | `garderobe_recommend` | Validated outfit options for a brief, date and count | read |
 | `garderobe_inventory` | Items, availability, history, the complete snapshot with explicit completeness, or the garments a bulk correction would cover | read |
-| `garderobe_command` | One typed command with a verified receipt. A sensitive command (marked `consequential` in `command_types`) is not executed: it is kept as a proposal for the owner and the tool answers `confirmation_required` until the owner has decided | write (not listed for read-only connections) |
+| `garderobe_command` | One typed command with a verified receipt. Only wear and wash reports and research records run directly; every other type (marked `consequential` in `command_types`) is kept as a proposal for the owner and the tool answers `confirmation_required` (with the proposal's identifier and summary) until the owner has decided | write (not listed for read-only connections) |
 | `garderobe_research` | Start an investigation and return sources, verdict and comparison | read |
 | `garderobe_run` | Read a run, answer its question, cancel or resume it | read |
 
@@ -47,7 +47,7 @@ Resources: `garderobe://guide`, `garderobe://style/profile`, `garderobe://comman
 What a connected assistant cannot do, enforced on the one command registry (`src/lanes/index.ts`), so it holds for every tool:
 
 - **Lift a restriction.** `restriction.resolve` is refused on the MCP channel, and no assistant may undo the command that recorded a restriction. The owner lifts a restriction in the app or in their own Garderobe conversation.
-- **Make a sensitive change.** What the owner owns, the profile, rules, directions, measurements, forgetting, deleting an image and authorizations towards other parties (`CONSEQUENTIAL_COMMAND_TYPES` in the contracts, and the undo of any of them) are carried out only after the signed-in owner confirms them in the app. Sent as a typed `garderobe_command`, such a request is stored (`submitted_proposals`, migration 0304) and answered with `confirmation_required` (`reason: owner_confirmation_required`); the connection is never asked to confirm, because its answer would be its own. Repeating the same call returns the receipt once the owner has confirmed, `forbidden` (`rejected_by_owner`) once rejected. The same idempotency key with a different request is refused. One connection can leave at most 40 such requests waiting within a day (12 for one relayed turn); beyond that it gets `rate_limited` and nothing more is put before the owner. The summary the owner reads is written by the service from the command and names the garments the request refers to as the ledger knows them. Until 2026-10-02 these commands ran after an MCP confirmation question answered by the client; that path is removed.
+- **Make a change without the owner, other than a report.** A typed `garderobe_command` follows an allow-list (`src/mcp/policy.ts`), not a list of sensitive types. Run directly: `wear.record` for garments no active restriction excludes, `care.mark_dirty`, `care.washed` when it names its garments, the research records `research.save_note`, `product.record`, `product.record_observation`, `product.record_fit_assessment`, `job.create` for a research job (kinds `product_investigation`, `historical_research`, `other`), and the undo of one of these. The list is the assistant workstream's own classification of what relayed words may record (`classifyChange(type, payload, "mcp")` in `packages/assistant/src/policy/classes.ts`), so the typed path and the conversation path cannot differ; `TYPED_DIRECT_BY_OWNER_DECISION` in `policy.ts` (empty) is the one place to let a further type run from a typed command only. Refused outright (`forbidden`, `not_available_to_connected_assistant`): system-class commands, account-level commands and commands that take no owner statement. Every other type (corrections, names, locations, counts, adding or retiring a garment, the profile, rules, directions, measurements, adding a restriction, outfit choices, trips and packing, laundry batches, settings, pausing, reminders, orders and returns, connections, model routing, forgetting, images, and the undo of any of them) is carried out only after the signed-in owner confirms it in the app. Such a request is stored (`submitted_proposals`, migration 0304) and answered with `confirmation_required` (`details`: `reason: owner_confirmation_required`, `state: pending`, `proposalId`, `summary`, `expiresAt`); the connection is never asked to confirm, because its answer would be its own. The owner decides it with `POST /v1/proposals/{proposalId}/decision`. Repeating the same call returns the receipt once the owner has confirmed, `forbidden` (`rejected_by_owner`) once rejected. The same idempotency key with a different request is refused. One connection can have at most 40 undecided requests from the last day waiting at once (12 for one relayed turn); beyond that it gets `rate_limited` and nothing more is put before the owner; a request the owner has decided no longer counts. The summary the owner reads is written by the service from the command and names the garments the request refers to as the ledger knows them. `CONSEQUENTIAL_COMMAND_TYPES` in the contracts is a floor that a test holds this policy to. Until 2026-10-02 sensitive commands ran after an MCP confirmation question answered by the client, and until 2026-10-03 a type outside that list (for example `garment.correct`, `garment.add_alias`, `garment.move`, `settings.update`, `service.pause`, `restriction.add`) ran directly; both paths are removed.
 - **Change anything but a short list on relayed text.** When the backend assistant acts on a message that arrived through `garderobe_ask` or `garderobe_research`, the words are whatever the connected model sent and cannot be verified as the owner's. From such a turn the registry lets through only internal bookkeeping (system-class commands) and `RELAYED_TEXT_ALLOWED`: research records (`job.create`, `job.update`, `research.save_note`, `product.record`, `product.record_observation`, `product.record_fit_assessment`) and plain wear and wash reports (`wear.record`, `care.washed`, `care.mark_dirty`). A wear report naming a garment that an active restriction excludes is not let through. Everything else (corrections, adding a restriction, aliases, orders and arrivals, returns, reminders, briefs, settings, memory, undo, and every sensitive change) is stored as a proposal for the owner and refused with reason `relayed_text_not_owner_statement`.
 - **Restore or erase.** Import, restore and account operations are app routes under Access, not tools.
 
@@ -62,7 +62,7 @@ npm run dev              # first run sets up: local keys, .dev.vars, D1 migratio
 npm run dev -- reset     # delete local state and set up again
 npm run dev -- empty-owner   # (Worker stopped) create an empty owner and an invitation, as a restore target
 npm run dev:token        # a local sign-in token (one hour); add -- --header or -- --claim
-npm run smoke:mcp        # 19 checks against the running Worker; exit 1 on any failure
+npm run smoke:mcp        # 21 checks against the running Worker; exit 1 on any failure
 node scripts/restore-drill.mjs --local --target-invitation <code>   # backup, restore into the empty owner, verify
 ```
 
@@ -84,7 +84,9 @@ await mcp.close();
 
 ### In tests
 
-`@garderobe/worker/testing/vitest-config` exports `garderobeWorkerTestPlugin()` (D1, KV, two R2 buckets, queue, the conversation Durable Object, and a fixture for outbound requests). `@garderobe/worker/testing` exports `provisionOwner({ real })`, `ApiClient`, `connectMcp(owner, { write, era, onElicit })`, `toolResult`, `publishBoard`, `uploadImage`, `readSse`, `enableFakeModel` and others.
+`@garderobe/worker/testing/vitest-config` exports `garderobeWorkerTestPlugin()` (D1, KV, two R2 buckets, queue, the conversation Durable Object, and a fixture for outbound requests). `@garderobe/worker/testing` exports `provisionOwner({ real })`, `ApiClient`, `connectMcp(owner, { write, era, onElicit })`, `toolResult`, `publishBoard`, `ownerDay`, `uploadImage`, `readSse`, `enableFakeModel` and others.
+
+Days in tests: name "today", "tomorrow" or "yesterday" with `await ownerDay(owner, offset)`, which is the day in the owner's own timezone. The UTC date is a different day for part of every day for an owner who is not on UTC (the real owner is on Europe/London), and the Worker refuses, for example, to publish a board for a day that is already over for the owner. To run a suite at a chosen time of day, set `GARDEROBE_TEST_CLOCK=HH:MM` (UTC): every `Date` in the Workers runtime under test then reads as the next occurrence of that time (`src/testing/clock.ts`).
 
 ## Scheduled work (cron, every five minutes)
 
@@ -104,7 +106,8 @@ A confirmed `POST /v1/account/delete` erases the owner's stored data: third-part
 
 ```
 npm run typecheck        # in apps/worker
-npm test                 # in apps/worker: 17 files, 175 tests
+npm test                 # in apps/worker: 20 files, 197 tests
+GARDEROBE_TEST_CLOCK=23:30 npm test   # the same suite with the clock at the next 23:30 UTC (the owner's day and the UTC day differ)
 npm test                 # in the repository root: typecheck and tests of every workspace
 ```
 

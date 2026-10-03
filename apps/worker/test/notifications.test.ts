@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { deliverNotifications } from "../src/notifications/service.ts";
-import { provisionOwner, publishBoard, testApp, type TestOwner } from "../src/testing/index.ts";
+import { ownerDay, provisionOwner, publishBoard, testApp, type TestOwner } from "../src/testing/index.ts";
 
 /*
  * Morning notification delivery through the real Worker with the REAL owner fixture. Stand-ins:
@@ -9,7 +9,8 @@ import { provisionOwner, publishBoard, testApp, type TestOwner } from "../src/te
  * device check for the deployment.
  */
 let owner: TestOwner;
-const day = (offset: number) => new Date(Date.now() + offset * 86_400_000).toISOString().slice(0, 10);
+/** A day as the owner counts it (every owner here is the real fixture, so one timezone), not the UTC date. */
+const day = (offset: number) => ownerDay(owner, offset);
 const hex = (prefix: string) => (prefix + crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "")).slice(0, 64);
 const apnsCalls = async () => ((await (await fetch("https://google.fixture.test/__calls?method=APNS")).json()) as { method: string; url: string; body: string }[]).map((c) => ({ device: c.url.split("/").at(-1), ...JSON.parse(c.body) }));
 
@@ -53,7 +54,7 @@ describe("registering a device", () => {
 describe("the morning notification", () => {
   it("is sent once when the board is presented, says where to look and nothing about the outfit", async () => {
     const app = await testApp();
-    await present(owner, day(0));
+    await present(owner, await day(0));
     expect((await effectsOf(owner)).map((e) => e.state)).toEqual(["pending"]);
 
     const first = await deliverNotifications(app, Date.now());
@@ -63,22 +64,22 @@ describe("the morning notification", () => {
     expect(sent[0]).toMatchObject({ providerTokenValid: true, topic: "com.example.garderobe.test", pushType: "alert" });
     expect(sent[0].collapseId).toMatch(/^[0-9a-f]{48}$/);
     expect(sent[0].payload.aps.alert).toEqual({ title: "Today's outfits are ready", body: "Open Garderobe to see today's board." });
-    expect(sent[0].payload.garderobe).toMatchObject({ kind: "notification.morning_board", localDate: day(0) });
+    expect(sent[0].payload.garderobe).toMatchObject({ kind: "notification.morning_board", localDate: await day(0) });
     // No garment, colour or outfit text leaves the service in a push.
-    const board = (await owner.api.json("GET", `/v1/today?date=${day(0)}`)).board;
+    const board = (await owner.api.json("GET", `/v1/today?date=${await day(0)}`)).board;
     for (const option of board.options) for (const garment of option.garments) expect(JSON.stringify(sent[0].payload)).not.toContain(garment.name);
     expect((await effectsOf(owner)).map((e) => e.state)).toEqual(["projected"]);
     expect((await owner.api.json("GET", "/v1/devices")).devices[0].lastDeliveryAt).toBeTruthy();
 
     // A second sweep, and presenting the same day again, send nothing more.
-    await present(owner, day(0));
+    await present(owner, await day(0));
     expect(await deliverNotifications(app, Date.now())).toMatchObject({ claimed: 0, sent: 0 });
     expect(await apnsCalls()).toEqual([]);
   });
 
   it("is not sent late: a reminder still waiting hours after it was queued is cancelled, not delivered", async () => {
     const app = await testApp();
-    await present(owner, day(1));
+    await present(owner, await day(1));
     const late = await deliverNotifications(app, Date.now() + 7 * 3_600_000);
     expect(late).toMatchObject({ sent: 0, cancelled: 1 });
     expect(await apnsCalls()).toEqual([]);
@@ -87,7 +88,7 @@ describe("the morning notification", () => {
 
   it("stays pending and visible while delivery is not configured, instead of being marked sent", async () => {
     const app = await testApp();
-    await present(owner, day(2));
+    await present(owner, await day(2));
     const topic = app.env.APNS_TOPIC;
     delete app.env.APNS_TOPIC;
     try {
@@ -105,10 +106,10 @@ describe("the morning notification", () => {
     const app = await testApp();
     const busy = await provisionOwner({ real: true });
     await busy.api.json("POST", "/v1/devices", { deviceId: "iphone-busy-0001", token: hex("5e5e"), environment: "production" });
-    await present(busy, day(0));
+    await present(busy, await day(0));
     const gone = await provisionOwner({ real: true });
     await gone.api.json("POST", "/v1/devices", { deviceId: "iphone-gone-0001", token: hex("dead"), environment: "production" });
-    await present(gone, day(0));
+    await present(gone, await day(0));
 
     const result = await deliverNotifications(app, Date.now());
     expect(result).toMatchObject({ sent: 0, retried: 1, failed: 1, devicesDisabled: 1 });
@@ -122,7 +123,7 @@ describe("the morning notification", () => {
   it("with no registered device nothing is sent and nothing is recorded as delivered", async () => {
     const app = await testApp();
     const quiet = await provisionOwner({ real: true });
-    await present(quiet, day(0));
+    await present(quiet, await day(0));
     expect(await deliverNotifications(app, Date.now())).toMatchObject({ sent: 0, cancelled: 1 });
     expect((await effectsOf(quiet)).map((e) => e.state)).toEqual(["cancelled"]);
     expect(await apnsCalls()).toEqual([]);
