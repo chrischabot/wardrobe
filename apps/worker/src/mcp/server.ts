@@ -30,7 +30,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import type { z } from "zod";
 import { requireAssistant, requireDaily, type App } from "../app.ts";
 import { submittedProposalState } from "../proposals/service.ts";
-import { recordSubmittedProposal } from "../proposals/store.ts";
+import { hasRoomToWait, MAX_SUMMARY_CHARS, recordSubmittedProposal, waitingRequests } from "../proposals/store.ts";
 import { ApiException, normalizeError } from "../errors.ts";
 import type { ApiRun } from "../ports.ts";
 import { startResearch, submitTurn, toSubmission } from "../routes/conversation.ts";
@@ -277,17 +277,21 @@ export function buildMcpServer(app: App, caller: McpCaller): McpServer {
             authorization: "owner_statement" as const,
             source: { channel: "mcp" as const, clientSubmissionId: args.idempotencyKey },
           };
-          const disposition = await connectedDisposition(app.registry, app.db, principal.userId, args.type, args.payload);
+          const disposition = await connectedDisposition(app.registry, app.db, principal.userId, args.type, args.payload, { principal, nowMs: app.now(), occurredAt: args.occurredAt });
           if (disposition === "internal") throw new ApiException("forbidden", `'${args.type}' is not available to a connected assistant; nothing was changed`, { reason: "not_available_to_connected_assistant" });
           if (disposition === "owner") {
             // Validate first, so the owner is never asked to confirm something that cannot run.
             const parsed = app.registry.get(args.type).schema.safeParse(args.payload);
             if (!parsed.success) throw new ApiException("invalid_command", `invalid payload for '${args.type}'`, { issues: parsed.error.issues });
             // The connection's answer to a confirmation question would be the connection confirming itself, so
-            // none is asked: the exact request waits for the owner's own decision in the app.
-            const stored = await recordSubmittedProposal(app.db, { userId: principal.userId, origin: "typed_command", sourceRef: caller.grantId, grantId: caller.grantId, turnId: null, idempotencyKey: args.idempotencyKey, type: args.type, payload: args.payload, expectedVersions: args.expectedVersions ?? {}, occurredAt: args.occurredAt ?? null, nowMs: app.now() });
+            // none is asked: the exact request waits for the owner's own decision in the app. What is kept is the
+            // payload as the command would take it (the schema's defaults filled in), so the summary the owner
+            // reads lists every field that would be written, not only the ones the connection chose to send.
+            const payload = parsed.data as Record<string, unknown>;
+            const stored = await recordSubmittedProposal(app.db, { userId: principal.userId, origin: "typed_command", sourceRef: caller.grantId, grantId: caller.grantId, turnId: null, idempotencyKey: args.idempotencyKey, type: args.type, payload, expectedVersions: args.expectedVersions ?? {}, occurredAt: args.occurredAt ?? null, nowMs: app.now() });
             if ("conflict" in stored) throw new ApiException("idempotency_key_reuse", "this idempotencyKey was already used for a different request; nothing was changed");
-            if ("limited" in stored) throw new ApiException("rate_limited", "nothing was changed and nothing more was put before the owner: this connection already has many requests waiting for the owner's decision. Ask the owner to decide those in the Garderobe app first.", { reason: "too_many_requests_waiting" });
+            if ("limited" in stored) throw new ApiException("rate_limited", "nothing was changed and nothing more was put before the owner: connected assistants already have many requests waiting for the owner's decision. Ask the owner to decide those in the Garderobe app first.", { reason: "too_many_requests_waiting" });
+            if ("unshowable" in stored) throw new ApiException("invalid_command", `nothing was changed and nothing was put before the owner: this request is too long to show the owner in full (its summary may be at most ${MAX_SUMMARY_CHARS} characters), and the owner only confirms what they can read completely. Send a shorter request.`, { reason: "too_long_to_show_in_full", maxSummaryChars: MAX_SUMMARY_CHARS });
             const decided = await submittedProposalState(app, principal.userId, stored.row.proposal_id);
             const receipt = decided.state === "confirmed" && decided.commandId ? await app.service.getReceipt(principal, decided.commandId) : null;
             if (receipt) {
@@ -313,6 +317,11 @@ export function buildMcpServer(app: App, caller: McpCaller): McpServer {
     async (args) => {
       try {
         const assistant = requireAssistant(app, "the assistant");
+        // A turn can leave requests for the owner, and those count against the same limits as typed requests:
+        // a connection that already has its share waiting gets no new turn until the owner has decided some.
+        if (!hasRoomToWait(await waitingRequests(app.db, principal.userId, app.now()), caller.grantId)) {
+          throw new ApiException("rate_limited", "nothing was sent to Garderobe's assistant: connected assistants already have many requests waiting for the owner's decision. Ask the owner to decide those in the Garderobe app first; reading (garderobe_today, garderobe_inventory, garderobe_recommend) still works.", { reason: "too_many_requests_waiting" });
+        }
         // Natural language is not an authorization bypass: the turn runs under this connection's principal and scopes.
         const submission = toSubmission({ clientTurnId: `mcp:${caller.grantId}:${args.clientTurnId}`, text: args.message, attachmentIds: [], attachedRefs: args.attachedRefs, intent: "chat", ...(args.pastedText ? { pastedText: args.pastedText } : {}) });
         if (args.mode === "start") {
