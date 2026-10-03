@@ -61,7 +61,9 @@ Each workstream edits only its own directories. Nobody edits another workstream'
 - **A command.** In your package export `register<Lane>(registry: CommandRegistry)` that calls
   `registry.register(define({ type, schema, class, requiredScope, plan, planUndo }))`. The plan returns
   statements, preconditions, effects and outbox entries; the service commits them in one D1 batch with
-  the receipt. Use `registry.registerVersionResolver(kind, fn)` for your `expectedVersions` keys and
+  the receipt. Use `registry.registerVersionResolver(kind, fn)` for your `expectedVersions` keys,
+  `registry.registerEntityNamer(kind, fn)` to say how one of your records is named in the owner's words
+  (a trip by its name: a foundation receipt that mentions it then shows that name, never the identifier) and
   `registry.addCommitHook(name, hook)` to add writes to other commands' batches (for example repairing
   open boards inside the commit that recorded a wear). `apps/worker` composes the lanes:
   `const registry = createFoundationRegistry(); registerDaily(registry); ...`.
@@ -170,9 +172,19 @@ Ledger rules the other lanes rely on (regression-tested in `packages/domain/test
     baseline on, even if the owner dates the return earlier) and settles the cycle's exception;
     `stillAway` items become item exceptions.
   - `care.washed` without a quantity is about the units awaiting a wash at home. Only when none is does it
-    bring back units reported still away; never units reported lost while another unit is at home, and
+    bring back units reported still away; never units reported lost (a stated quantity is what brings a
+    lost unit back), and
     never a missed cycle's units (those return with `laundry.return`, or one at a time when the garment
     has nothing at home at all).
+  - `laundry.return` of a recorded batch counts what the replay actually moved back, not the batch's
+    rows: a unit reported lost, or one a wear amendment showed was never in the bag, is not counted and
+    its batch item keeps `returned_quantity` as it was (the receipt's `repairs` say which and why). A unit
+    named `stillAway` is kept away before any unit of that item is returned.
+  - Undo of `laundry.return` of a recorded batch puts the bag back at the service with the batch, its
+    items and the exceptions the return opened or closed exactly as they were. It is refused
+    (`not_undoable`) once anything recorded since speaks for one of the returned units: a wear, a wash, a
+    count, or a weekly baseline (which would count the bag as back anyway); the item itself is corrected
+    instead. A return with no recorded pickup, or after a missed cycle, was already undoable.
   - A unit held as still away that is then reported `lost` is the one that is lost.
   - Undo of `laundry.collect` is refused once the batch has returned; otherwise the batch is marked
     withdrawn (`laundry_batches.withdrawn_at`, migration 0003), never deleted. A withdrawn batch keeps
@@ -181,6 +193,21 @@ Ledger rules the other lanes rely on (regression-tested in `packages/domain/test
 - **Wear.** `additionalUnits` is the total of further units used for that garment and day: a repeated
   report consumes nothing further. A wear resolves only the option sets that offered one of the reported
   garments, and undo reopens them. A packed garment worn again on its trip stays in the suitcase.
+- **Opening stock.** The stock a garment is created with as already owned (`garment.create`, including
+  the import) is journaled as `receive` with `opening: true` and precedes every other event of that
+  garment in the replay, however early the event is dated: "I wore it yesterday", said the day after the
+  import, moves the unit. Something created as on order has no stock before it arrives. Journal rows
+  written before this flag existed keep their recorded time.
+- **Inferred cleanliness.** `garments.clean_inferred` (migration 0005, materialized by the stock planner
+  from the replay's `cleanInferred`) is how many clean units are clean only by the weekly baseline. The
+  availability `basis` names those as an estimate and says "observed" only for what a wash, return, count
+  or the owner's own record established; imported stock nobody has reported on is called the imported
+  balance.
+- **Receipts read back.** `service.getReceipt`, `service.listReceipts` and an idempotent repeat return
+  the stored receipt with two things read from their own records: the current state of its effects (so
+  `externalEffectState` becomes `projected` once every effect is projected or superseded) and `undo`
+  (`available: false` once the command has been undone). `commands.receipt_json` itself is never
+  rewritten; a lane that reads that column directly sees the commit-time text.
 - **Time.** Instants and local dates must be real (no 13th month, no 31 February), timezones must be
   IANA zones the runtime knows, and a weekly baseline cannot be applied for a future `asOf`.
 - **Concurrency.** A retry with the same idempotency key always gets the stored receipt, also when it
@@ -190,7 +217,10 @@ Ledger rules the other lanes rely on (regression-tested in `packages/domain/test
   (a restriction's reason, a direction, a brief, an amendment, a new name, an alias, a rule key) appears
   in it only through `quoted()` (`handlers/common.ts`): inside typographic quotation marks, on one line,
   with its own quotation marks flattened and its length bounded. The stored record keeps the text exactly
-  as given. A lane writing its own summaries should do the same.
+  as given. A lane writing its own summaries should do the same. A summary never shows a command type or
+  a record identifier: an undo says what was undone in the original receipt's words, and `stock.pack` /
+  `stock.unpack` name the trip through the registered entity namer (or say "the trip" when none is
+  registered).
 - **Forgetting.** `planLedgerScrub(ctx, commandIds)` returns statements for a forgetting command's own
   batch that remove a message's text from the ledger's copies (command payload, receipt prose, undo data,
   source record, delivered effect and outbox payloads, action intents, incidental notes), plus an account:

@@ -120,7 +120,16 @@ export interface CommandContext {
    * concerned. Answered by the verifier the composition root registered; false when there is none.
    */
   verifyOwnerStatement(ref: string): Promise<boolean>;
+  /**
+   * The owner's own name for a record of another workstream (for example a trip), for use in a receipt
+   * summary. Answered by the namer that workstream registered; null when there is none or the record is
+   * unknown, in which case the summary speaks of the record without naming it. Never an identifier.
+   */
+  entityName(kind: string, id: string): Promise<string | null>;
 }
+
+/** Looks up the owner's name for a record (registered per kind by the workstream that owns the records). */
+export type EntityNamer = (db: Db, userId: string, id: string) => Promise<string | null>;
 
 /** Checks an evidence reference against the record of what the owner said (registered by the conversation's owner). */
 export type OwnerStatementVerifier = (ctx: CommandContext, ref: string) => Promise<boolean>;

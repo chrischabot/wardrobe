@@ -42,7 +42,8 @@ export function commandUndo(registry: CommandRegistry) {
         undoesCommandId: row.undoes_command_id,
       };
       const plan = await def.planUndo(ctx, original, undo.data);
-      const originalSummary = (json<{ summary?: string }>(row.receipt_json, {}).summary ?? row.type).replace(/\.$/, "");
+      // The receipt is read by the owner: an action whose receipt is unreadable is described in words, never by its type code.
+      const originalSummary = (json<{ summary?: string }>(row.receipt_json, {}).summary || "an earlier action").replace(/\.$/, "");
       return {
         ...plan,
         summary: `Undone: ${originalSummary}. ${plan.summary}`,

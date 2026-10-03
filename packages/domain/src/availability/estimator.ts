@@ -40,6 +40,13 @@ export interface EstimatorGarment {
   balances: BalanceRow[];
   /** Imported stock whose cleanliness has not been established by an observation or a laundry baseline. */
   importCleanlinessUnverified: boolean;
+  /**
+   * How many of the clean units are clean only by the weekly laundry inference (no wash, return or count
+   * was observed for them). Materialized by the stock planner from the replay; absent means none.
+   */
+  cleanInferred?: number;
+  /** Imported stock for which no wash, return or count has been observed since (whatever a baseline has assumed). */
+  importNeverObserved?: boolean;
 }
 
 export interface EstimatorRestriction {
@@ -222,6 +229,23 @@ export function jointAvailability(input: EstimatorInput, garmentIds: string[]): 
   return { pAllAvailable: Math.max(0, Math.min(1, ok * prior)), hardExcluded };
 }
 
+/**
+ * How the clean units at home are known. An inferred state is never called an observation (specification
+ * section 5: "Do not falsely record an observed pickup or return"): units the weekly baseline counted
+ * clean are named as that estimate, imported stock as the ledger's balance (its own caveat follows), and
+ * only what a wash, return, count or arrival established is called observed.
+ */
+function cleanBasis(g: EstimatorGarment, clean: number): string {
+  const units = `${clean} clean unit${clean === 1 ? "" : "s"} at home`;
+  const inferred = g.careChannel === "none" ? 0 : Math.min(clean, Math.max(0, g.cleanInferred ?? 0));
+  if (inferred > 0) {
+    const which = inferred === clean ? "" : `${inferred} of them `;
+    return `${units}; ${which}counted clean by the weekly laundry baseline, an estimate: no wash or return was reported`;
+  }
+  if (g.careChannel !== "none" && (g.importCleanlinessUnverified || g.importNeverObserved)) return `${units} (ledger balance as imported; no wash or return has been reported for it)`;
+  return `${units} (observed ledger balance)`;
+}
+
 export function estimateGarment(input: EstimatorInput, g: EstimatorGarment): GarmentAvailability {
   const { reasons, restrictionIds } = hardReasons(g, input.restrictions);
   const hardExcluded = reasons.length > 0;
@@ -232,7 +256,7 @@ export function estimateGarment(input: EstimatorInput, g: EstimatorGarment): Gar
   let status: GarmentAvailability["status"] = "unavailable";
   if (!hardExcluded) {
     pAvailable = jointAvailability(input, [g.garmentId]).pAllAvailable;
-    basis.push(`${clean} clean unit${clean === 1 ? "" : "s"} at home (observed ledger balance)`);
+    basis.push(cleanBasis(g, clean));
     if (g.careChannel !== "none" && g.importCleanlinessUnverified) {
       reasons.push("import_cleanliness_unverified");
       basis.push("cleanliness imported without an observation; treated as an estimate until a laundry baseline or owner report");

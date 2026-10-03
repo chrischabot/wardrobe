@@ -117,7 +117,7 @@ describe("laundry pickup and return", () => {
     expect(await pending(owner)).toEqual([]);
   });
 
-  it("laundry.return waits for the owner, because a recorded return cannot be undone: confirmed in the app it runs as the owner's tap and its receipt offers no undo", async () => {
+  it("laundry.return still waits for the owner (the policy has not been changed yet): confirmed in the app it runs as the owner's tap, and its receipt offers the undo a recorded return now has", async () => {
     await expectDirectReceipt(owner, await call(mcp, "laundry.collect", {}), "laundry.collect");
     const [batch] = await openBatches(owner);
     const commands = async () => ((await (await testApp()).db.prepare("SELECT COUNT(*) AS n FROM commands WHERE user_id = ?").bind(owner.userId).first<{ n: number }>())!.n);
@@ -133,7 +133,7 @@ describe("laundry pickup and return", () => {
 
     const proposal = (await pending(owner)).find((p) => p.type === "laundry.return");
     const decided = (await (await owner.api.post(`/v1/proposals/${proposal.proposalId}/decision`, { decision: "confirm" })).json()) as any;
-    expect(decided.receipt).toMatchObject({ type: "laundry.return", outcome: "committed", undo: { available: false } });
+    expect(decided.receipt).toMatchObject({ type: "laundry.return", outcome: "committed", undo: { available: true } });
     expect(await stored(owner, decided.receipt.commandId)).toMatchObject({ actor: "owner", authorization_basis: "owner_tap" });
     expect(await openBatches(owner)).toEqual([]);
   });
