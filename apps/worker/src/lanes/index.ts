@@ -7,6 +7,7 @@ import { connectionAuthorization } from "../connections/service.ts";
 import { listConnectionTools, outboundPorts, type OutboundDeps } from "../connections/outbound.ts";
 import type { AssistantPort, DailyPort, MediaPort } from "../ports.ts";
 import { recordSubmittedProposal } from "../proposals/store.ts";
+import { TYPED_DIRECT_BY_OWNER_DECISION } from "../mcp/policy.ts";
 import { wearsRestrictedGarment } from "../restrictions.ts";
 import { createAssistantPort } from "./assistant.ts";
 import { createDailyPort } from "./daily.ts";
@@ -147,7 +148,8 @@ export function composedRegistry(): CommandRegistry {
   if (!registry) {
     const r = createFoundationRegistry();
     registerDaily(r);
-    registerAssistant(r);
+    // The routine actions the owner allowed from a typed command are known to the assistant's ledger guard too.
+    registerAssistant(r, { typedDirect: TYPED_DIRECT_BY_OWNER_DECISION });
     registerMedia(r, () => {
       if (!bound) throw new CommandError("internal", "the Worker bindings are not available yet");
       return mediaDepsFor(bound);

@@ -32,7 +32,7 @@ import { all, canonicalJson, first, json as parseJson, prepare, stmt, toInstant,
 import type { App } from "../app.ts";
 import { sha256Hex } from "../crypto.ts";
 import { ApiException } from "../errors.ts";
-import { describeProposedChange, findSubmittedProposal, garmentIdsIn, grantOfAuthRef, listSubmittedProposals, listWaitingSubmittedProposals, PROPOSAL_LIFETIME_MS, submittedExpectedVersions, submittedPayload, type ProposalReferences, type SubmittedProposalRow } from "./store.ts";
+import { findSubmittedProposal, grantOfAuthRef, listSubmittedProposals, listWaitingSubmittedProposals, notShownSummary, PROPOSAL_LIFETIME_MS, submittedExpectedVersions, submittedPayload, summaryForOwner, type SubmittedProposalRow } from "./store.ts";
 
 export { PROPOSAL_LIFETIME_MS };
 
@@ -86,6 +86,8 @@ interface Held {
   decisionRef: string;
   expectedVersions: Record<string, number>;
   occurredAt: string | null;
+  /** False when the request could not be shown to the owner in full: it can be rejected, never confirmed. */
+  showable: boolean;
 }
 
 const TURN_COLUMNS = "t.turn_id, t.channel, t.auth_ref, t.created_at, t.proposals_json";
@@ -112,7 +114,7 @@ async function build(app: App, userId: string, turns: TurnRow[], submitted: Subm
   const decisions = new Map((await all<DecisionRow>(app.db, "SELECT proposal_id, decision, command_id, decided_at FROM proposal_decisions WHERE user_id = ?", userId)).map((d) => [d.proposal_id, d]));
   const grants = new Map((await all<{ grant_id: string; client_name: string }>(app.db, "SELECT grant_id, client_name FROM mcp_grants WHERE user_id = ?", userId)).map((g) => [g.grant_id, g.client_name]));
   const out: Held[] = [];
-  const add = (input: { proposalId: string; legacyId?: string; turnId: string; decisionRef: string; type: string; summary?: string; payload: Record<string, unknown>; proposedAt: string; channel: string; assistantName: string | null; expectedVersions: Record<string, number>; occurredAt: string | null }) => {
+  const add = (input: { proposalId: string; legacyId?: string; turnId: string; decisionRef: string; type: string; summary: string; showable: boolean; payload: Record<string, unknown>; proposedAt: string; channel: string; assistantName: string | null; expectedVersions: Record<string, number>; occurredAt: string | null }) => {
     // A decision recorded before the identifier covered the summary and versions is still that proposal's decision.
     const decision = decisions.get(input.proposalId) ?? (input.legacyId ? decisions.get(input.legacyId) : undefined);
     const expiresAtMs = Date.parse(input.proposedAt) + PROPOSAL_LIFETIME_MS;
@@ -121,9 +123,9 @@ async function build(app: App, userId: string, turns: TurnRow[], submitted: Subm
         proposalId: input.proposalId,
         turnId: input.turnId,
         type: input.type,
-        // A turn's proposal carries the summary the assistant workstream's trusted code composed; any other
-        // proposal gets one written here from the command type and the exact payload.
-        summary: input.summary ?? describeProposedChange(input.type, input.payload),
+        // A turn's proposal carries the summary the assistant workstream's trusted code composed; a kept
+        // request is described by the same code each time it is read (`summaryForOwner`).
+        summary: input.summary,
         payload: input.payload,
         proposedAt: input.proposedAt,
         expiresAt: toInstant(expiresAtMs),
@@ -135,6 +137,7 @@ async function build(app: App, userId: string, turns: TurnRow[], submitted: Subm
       decisionRef: input.decisionRef,
       expectedVersions: input.expectedVersions,
       occurredAt: input.occurredAt,
+      showable: input.showable,
     });
   };
   const grantOfTurn = new Map(turns.map((t) => [t.turn_id, grantOfAuthRef(t.auth_ref)]));
@@ -146,25 +149,24 @@ async function build(app: App, userId: string, turns: TurnRow[], submitted: Subm
       // The versions the proposal was built against, when the assistant recorded them: passed to the command on confirm.
       const expectedVersions = p.expectedVersions && typeof p.expectedVersions === "object" ? Object.fromEntries(Object.entries(p.expectedVersions as Record<string, unknown>).filter((e): e is [string, number] => typeof e[1] === "number")) : {};
       // The summary the assistant workstream's trusted code composed is what the owner is shown, so it is part of the identifier.
-      const summary = typeof p.summary === "string" && p.summary ? p.summary : describeProposedChange(p.type, payload);
-      add({ proposalId: await proposalIdOf(turn.turn_id, p.type, payload, summary, expectedVersions), legacyId: `prp_${(await sha256Hex(`proposal\u0000${turn.turn_id}\u0000${p.type}\u0000${JSON.stringify(payload)}`)).slice(0, 32)}`, turnId: turn.turn_id, decisionRef: turn.turn_id, type: p.type, summary, payload, proposedAt: turn.created_at, channel: turn.channel, assistantName: grantId ? (grants.get(grantId) ?? null) : null, expectedVersions, occurredAt: null });
+      // A stored proposal without one was never shown in words: it is listed as such and cannot be confirmed.
+      const showable = typeof p.summary === "string" && p.summary.length > 0;
+      const summary = showable ? (p.summary as string) : notShownSummary(p.type);
+      add({ proposalId: await proposalIdOf(turn.turn_id, p.type, payload, summary, expectedVersions), legacyId: `prp_${(await sha256Hex(`proposal\u0000${turn.turn_id}\u0000${p.type}\u0000${JSON.stringify(payload)}`)).slice(0, 32)}`, turnId: turn.turn_id, decisionRef: turn.turn_id, type: p.type, summary, showable, payload, proposedAt: turn.created_at, channel: turn.channel, assistantName: grantId ? (grants.get(grantId) ?? null) : null, expectedVersions, occurredAt: null });
     }
   }
-  // What the ledger holds under the identifiers these requests name, for the summaries written here.
   const payloads = submitted.map((row) => submittedPayload(row));
-  const garmentIds = [...payloads.reduce((ids, p) => garmentIdsIn(p, ids), new Set<string>())];
-  const commandIds = [...new Set(submitted.flatMap((row, i) => (row.command_type === "command.undo" && typeof payloads[i]!.commandId === "string" ? [payloads[i]!.commandId as string] : [])))];
-  const refs: ProposalReferences = {
-    garments: new Map(garmentIds.length ? (await all<{ garment_id: string; name: string }>(app.db, "SELECT garment_id, name FROM garments WHERE user_id = ? AND garment_id IN (SELECT value FROM json_each(?))", userId, JSON.stringify(garmentIds))).map((g) => [g.garment_id, g.name]) : []),
-    commands: new Map(commandIds.length ? (await all<{ command_id: string; type: string; recorded_at: string }>(app.db, "SELECT command_id, type, recorded_at FROM commands WHERE user_id = ? AND command_id IN (SELECT value FROM json_each(?))", userId, JSON.stringify(commandIds))).map((c) => [c.command_id, { type: c.type, recordedAt: c.recorded_at }]) : []),
-  };
   for (const [i, row] of submitted.entries()) {
     let grantId = row.grant_id;
     if (!grantId && row.turn_id) {
       const authRef = grantOfTurn.has(row.turn_id) ? null : (await first<{ auth_ref: string }>(app.db, "SELECT auth_ref FROM assistant_turns WHERE user_id = ? AND turn_id = ?", userId, row.turn_id))?.auth_ref;
       grantId = grantOfTurn.get(row.turn_id) ?? grantOfAuthRef(authRef);
     }
-    add({ proposalId: row.proposal_id, turnId: row.turn_id ?? "", decisionRef: row.turn_id ?? row.source_ref, type: row.command_type, summary: describeProposedChange(row.command_type, payloads[i]!, refs), payload: payloads[i]!, proposedAt: row.created_at, channel: "mcp", assistantName: grantId ? (grants.get(grantId) ?? null) : null, expectedVersions: submittedExpectedVersions(row), occurredAt: row.occurred_at });
+    // In words, by the same trusted code that describes a request made in conversation. A stored request that
+    // cannot be described in full stays on the list with a plain statement, to be rejected; it is never
+    // shown as raw fields and never confirmable.
+    const { summary, showable } = await summaryForOwner(app.db, userId, row.command_type, payloads[i]!);
+    add({ proposalId: row.proposal_id, turnId: row.turn_id ?? "", decisionRef: row.turn_id ?? row.source_ref, type: row.command_type, summary, showable, payload: payloads[i]!, proposedAt: row.created_at, channel: "mcp", assistantName: grantId ? (grants.get(grantId) ?? null) : null, expectedVersions: submittedExpectedVersions(row), occurredAt: row.occurred_at });
   }
   return out.sort((a, b) => Date.parse(b.proposal.proposedAt) - Date.parse(a.proposal.proposedAt) || (a.proposal.proposalId < b.proposal.proposalId ? -1 : 1));
 }
@@ -242,7 +244,7 @@ export interface DecisionResult {
 export async function decideProposal(app: App, principal: Principal, proposalId: string, decision: "confirm" | "reject"): Promise<DecisionResult> {
   assertOwnerInApp(principal);
   const userId = principal.userId;
-  const { proposal, decisionRef, expectedVersions, occurredAt } = await findHeld(app, userId, proposalId);
+  const { proposal, decisionRef, expectedVersions, occurredAt, showable } = await findHeld(app, userId, proposalId);
   const findProposal = async (a: App, u: string, id: string) => (await findHeld(a, u, id)).proposal;
   const receiptOf = async (commandId: string | null) => (commandId ? await app.service.getReceipt(principal, commandId) : null);
 
@@ -252,6 +254,8 @@ export async function decideProposal(app: App, principal: Principal, proposalId:
     return { proposal, receipt: await receiptOf(proposal.commandId), replayed: true };
   }
   if (proposal.state === "expired" && decision === "confirm") throw new ApiException("precondition_failed", "this proposal is too old to confirm; ask for the change again", { state: "expired", expiresAt: proposal.expiresAt });
+  // What could not be shown in full is never carried out on a confirmation; it can only be rejected.
+  if (!showable && decision === "confirm") throw new ApiException("precondition_failed", "this request cannot be shown in full, so it cannot be confirmed; reject it and ask for the change again in a shorter form", { reason: "not_shown_in_full" });
 
   const now = toInstant(app.now());
   if (decision === "reject") {

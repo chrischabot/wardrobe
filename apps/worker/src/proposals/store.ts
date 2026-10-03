@@ -5,7 +5,8 @@
  * `service.ts`. It has no dependency on the composed application, so the command registry guards can
  * use it.
  */
-import { all, canonicalJson, first, json as parseJson, prepare, stmt, toInstant, type Db } from "@garderobe/domain";
+import { describeChange, MAX_SHOWN_VALUE, MAX_SUMMARY } from "@garderobe/assistant";
+import { CommandError, all, canonicalJson, first, isCommandError, json as parseJson, prepare, stmt, toInstant, type Db } from "@garderobe/domain";
 import { sha256Hex } from "../crypto.ts";
 
 export type SubmittedOrigin = "typed_command" | "relayed_turn";
@@ -123,7 +124,7 @@ export async function recordSubmittedProposal(db: Db, input: SubmittedProposalIn
   const find = () => first<SubmittedProposalRow>(db, `SELECT ${COLUMNS} FROM submitted_proposals WHERE user_id = ? AND origin = ? AND source_ref = ? AND idempotency_key = ?`, input.userId, input.origin, input.sourceRef, input.idempotencyKey);
   const existing = await find();
   if (existing) return existing.request_hash === requestHash ? { row: existing, created: false } : { conflict: true };
-  if (!summaryFitsInFull(input.type, input.payload)) return { unshowable: true };
+  if (!(await canBeShownInFull(db, input.userId, input.type, input.payload))) return { unshowable: true };
   // The connection a relayed turn belongs to is read from the turn; a typed command names its grant.
   const grantId = input.grantId ?? (input.turnId ? grantOfAuthRef((await first<{ auth_ref: string }>(db, "SELECT auth_ref FROM assistant_turns WHERE user_id = ? AND turn_id = ?", input.userId, input.turnId))?.auth_ref) : null);
   const waiting = await waitingRequests(db, input.userId, input.nowMs);
@@ -163,7 +164,8 @@ export const findSubmittedProposal = (db: Db, userId: string, proposalId: string
 export const submittedPayload = (row: SubmittedProposalRow): Record<string, unknown> => parseJson<Record<string, unknown>>(row.payload_json, {});
 export const submittedExpectedVersions = (row: SubmittedProposalRow): Record<string, number> => parseJson<Record<string, number>>(row.expected_versions_json, {});
 
-const LABELS: Record<string, string> = {
+/** The plain label of each command type a request can be kept for: how a change is named to the owner when it has no sentence of its own. */
+export const LABELS: Record<string, string> = {
   "garment.create": "Add a garment to the wardrobe",
   "garment.receive": "Mark an incoming garment as arrived and owned",
   "garment.retire": "Retire a garment from the wardrobe",
@@ -245,66 +247,63 @@ const LABELS: Record<string, string> = {
   "wear.amend": "Change a recorded wear",
 };
 
-/**
- * A value exactly as it would be stored, written as JSON: text in straight quotation marks with line
- * breaks and control characters as escapes, numbers, lists and nested records in full. Nothing is cut,
- * collapsed or trimmed. Characters that could make the line read differently from what is stored are
- * written as visible escapes too: invisible and direction-changing characters, and characters that look
- * like the closing quotation mark.
- */
-const MISLEADING = /[\u007f-\u009f\u02ba\u02dd\u02ee\u201c-\u201f\u2028\u2029\u2033\u2036\u3003\u301d-\u301f\uff02]|\p{Cf}/gu;
-const shown = (value: unknown): string => JSON.stringify(value).replace(MISLEADING, (c) => `\\u{${c.codePointAt(0)!.toString(16)}}`);
-
-/** The longest summary the owner is asked to read. A request that needs more is refused, never shortened. */
-export const MAX_SUMMARY_CHARS = 6000;
-
-/** Whether the whole request can be put before the owner: every field, every value in full, within the bound. */
-export const summaryFitsInFull = (type: string, payload: Record<string, unknown>): boolean => describeProposedChange(type, payload).length <= MAX_SUMMARY_CHARS;
-
-/** Every garment identifier that appears anywhere in a payload. */
-export function garmentIdsIn(value: unknown, into: Set<string> = new Set()): Set<string> {
-  if (typeof value === "string") {
-    if (/^gmt_[A-Za-z0-9_-]+$/.test(value)) into.add(value);
-  } else if (Array.isArray(value)) {
-    for (const v of value) garmentIdsIn(v, into);
-  } else if (value && typeof value === "object") {
-    for (const v of Object.values(value)) garmentIdsIn(v, into);
-  }
-  return into;
-}
-
-/** What the ledger says about the things a payload refers to by identifier, for the owner's summary. */
-export interface ProposalReferences {
-  /** Name by garment identifier, for the owner's own garments. */
-  garments: Map<string, string>;
-  /** Type and date of the command a `command.undo` would undo. */
-  commands: Map<string, { type: string; recordedAt: string }>;
-}
+/** The longest summary the owner is asked to read, and the longest single value in it. A request that needs more is refused, never shortened. */
+export const MAX_SUMMARY_CHARS = MAX_SUMMARY;
+export const MAX_VALUE_CHARS = MAX_SHOWN_VALUE;
 
 /**
- * The summary the owner is shown: written here from the command type and the exact payload that would
- * run, never taken from a model or from the requesting assistant. Text values are shown in quotation
- * marks so they read as content of the request, not as a statement by Garderobe. Every field of the
- * request is listed and every value is shown in full (see `shown`): the owner confirms exactly this
- * payload, so nothing of it may be left out or shortened. A request too long to show this way is not kept
- * at all (`summaryFitsInFull`). Because the summary is derived from the stored payload each time it is
- * read, it cannot differ from what would run. Identifiers are followed by what the ledger holds under
- * them, so the owner reads a name and not only an identifier; an identifier that names nothing of the
- * owner's is said to name nothing.
+ * The summary the owner is shown for a kept request, in words. It is the assistant workstream's
+ * `describeChange`, the same trusted code that writes the summary of a request made in conversation, so
+ * both paths read alike: the system's own sentence for the change, records named from the ledger (a
+ * piece by its name, a trip by its name and dates, a board by its day, an option by its position) instead
+ * of identifiers, every other field listed by name with its value in full, and nothing shortened. For a
+ * command that has no sentence of its own there, the opening is this module's plain label for the type
+ * instead of the command's machine name, and the change an undo would reverse is named by its label
+ * rather than by its command name. It is derived from the stored payload each time it is read, so
+ * it cannot differ from what would run. Throws `invalid_command` (`summary_too_long`) when the request
+ * cannot be shown in full.
  */
-export function describeProposedChange(type: string, payload: Record<string, unknown>, refs?: ProposalReferences): string {
-  const fields = Object.entries(payload)
-    .filter(([, value]) => value !== undefined)
-    .map(([key, value]) => `${shown(key).slice(1, -1)}: ${shown(value)}`);
-  const notes: string[] = [];
-  if (refs) {
-    const ids = [...garmentIdsIn(payload)];
-    const named = ids.map((id) => (refs.garments.has(id) ? `${shown(refs.garments.get(id)!)} (${id})` : `${id} is not a garment in this wardrobe`));
-    if (named.length) notes.push(`Garments: ${named.join(", ")}.`);
-    if (type === "command.undo" && typeof payload.commandId === "string") {
-      const target = refs.commands.get(payload.commandId);
-      notes.push(target ? `The change to undo: ${target.type}, recorded ${target.recordedAt}.` : "The change to undo was not found.");
-    }
+export async function describeSubmittedChange(db: Db, userId: string, type: string, payload: Record<string, unknown>): Promise<string> {
+  let summary = await describeChange(db, userId, type, payload);
+  const machineOpening = `Carry out \u201C${type}\u201D.`;
+  if (summary.startsWith(machineOpening)) summary = `${LABELS[type] ?? "Make a change to your records"}.${summary.slice(machineOpening.length)}`;
+  if (type === "command.undo" && typeof payload.commandId === "string") {
+    // The shared describer names the earlier change by its command name in brackets; the owner reads its label.
+    const target = await first<{ type: string }>(db, "SELECT type FROM commands WHERE user_id = ? AND command_id = ?", userId, payload.commandId);
+    const machineName = target ? ` (\u201C${target.type}\u201D)` : null;
+    if (target && machineName && summary.includes(machineName)) summary = summary.replace(machineName, LABELS[target.type] ? ` (${LABELS[target.type]!.charAt(0).toLowerCase()}${LABELS[target.type]!.slice(1)})` : "");
   }
-  return `${LABELS[type] ?? `Run the command ${type}`}${fields.length ? ` (${fields.join("; ")})` : ""}${notes.length ? `. ${notes.join(" ")}` : ""}`;
+  // The bound holds for the text the owner actually reads, after the rewording above.
+  if (summary.length > MAX_SUMMARY_CHARS) throw new CommandError("invalid_command", "This request is too long to be shown to the owner in full, and a request is never confirmed on a shortened summary", { reason: "summary_too_long" });
+  return summary;
 }
+
+/** Whether the whole request can be put before the owner: every field, every value in full, within the bounds. */
+export async function canBeShownInFull(db: Db, userId: string, type: string, payload: Record<string, unknown>): Promise<boolean> {
+  try {
+    await describeSubmittedChange(db, userId, type, payload);
+    return true;
+  } catch (error) {
+    if (isCommandError(error) && (error.details as { reason?: unknown } | undefined)?.reason === "summary_too_long") return false;
+    throw error;
+  }
+}
+
+/**
+ * What the owner reads for a stored request, and whether it may be confirmed. A request that cannot be
+ * described in full (it was kept before the bounds existed, or describing it failed) is still listed, so
+ * the owner can see that it is there and reject it, but with a plain statement instead of its content and
+ * marked as not confirmable: the owner never confirms what they were not shown, and never reads raw
+ * fields or identifiers in its place.
+ */
+export async function summaryForOwner(db: Db, userId: string, type: string, payload: Record<string, unknown>): Promise<{ summary: string; showable: boolean }> {
+  try {
+    return { summary: await describeSubmittedChange(db, userId, type, payload), showable: true };
+  } catch {
+    return { summary: notShownSummary(type), showable: false };
+  }
+}
+
+/** The statement shown in place of a request that cannot be put before the owner in full. */
+export const notShownSummary = (type: string): string =>
+  `${LABELS[type] ?? "A change to your records"}. This request cannot be shown to you in full, so it cannot be confirmed. Reject it; if the change is still wanted, it can be asked for again in a shorter form.`;
