@@ -648,7 +648,10 @@ export abstract class GarderobeAssistantBase extends Think<any> {
     // fenced material inside the owner's message is what someone else said.
     const text = row.role === "user" ? ownerAuthoredText(ownerTextOf(m)).replace(/\n{2,}/g, "\n").trim() : textOf(parts);
     if (text === FORGOTTEN_TEXT || metaOf(m)?.forgotten) return null;
-    return { messageId: row.message_id, position: row.position, role: row.role as "user" | "assistant", text, authoredAt: row.authored_at, channel: row.channel, turnId: row.turn_id };
+    // What the message carries besides speech: an owner message's attachments, an assistant message's tool
+    // calls and results. Indexed as terms only, so that forgetting a message finds where its words went.
+    const rest = row.role === "user" ? parts.filter((p) => p.type === "text").slice(1).map((p) => p.text ?? "").join("\n") : JSON.stringify(parts.filter((p) => p.type !== "text"));
+    return { messageId: row.message_id, position: row.position, role: row.role as "user" | "assistant", text, ...(rest.length > 2 ? { dataText: rest } : {}), authoredAt: row.authored_at, channel: row.channel, turnId: row.turn_id };
   }
 
   private async unindexedMessages(): Promise<CanonicalMessage[]> {
@@ -764,7 +767,7 @@ export abstract class GarderobeAssistantBase extends Think<any> {
   /* RPC surface (called only by trusted Worker code through client.ts)   */
   /* ------------------------------------------------------------------ */
 
-  private async accept(grantInput: unknown, input: unknown, kind: "conversation" | "research", answersTurnId?: string): Promise<{ row: TurnRow; accepted: boolean; message: UIMessage }> {
+  private async accept(grantInput: unknown, input: unknown, kind: "conversation" | "research", answersTurnId?: string, notOwnerWords = false): Promise<{ row: TurnRow; accepted: boolean; message: UIMessage }> {
     const grant = TurnGrant.parse(grantInput);
     const parsed = TurnInput.parse(input);
     // Rejects an unknown or disabled owner before anything is stored.
@@ -802,7 +805,7 @@ export abstract class GarderobeAssistantBase extends Think<any> {
         // Everything that is not the owner's own words travels as delimited, explicitly untrusted data.
         ...attachments.map((a) => ({ type: "text" as const, text: wrapUntrusted(kindMap[a.kind] ?? "document", `${a.kind}${a.source ? `: ${a.source}` : ""}`, a.text) })),
       ],
-      metadata: { garderobe: { turnId: row.turn_id, channel: grant.channel, authoredAt: toInstant(nowMs), kind: "owner", ownerText: kind === "research" ? "" : text, attachedRefs: parsed.attachedRefs, ...(images.length > 0 ? { images } : {}), ...(answersTurnId ? { answersTurnId } : {}) } },
+      metadata: { garderobe: { turnId: row.turn_id, channel: grant.channel, authoredAt: toInstant(nowMs), kind: "owner", ownerText: kind === "research" || notOwnerWords ? "" : text, attachedRefs: parsed.attachedRefs, ...(images.length > 0 ? { images } : {}), ...(answersTurnId ? { answersTurnId } : {}) } },
     };
     return { row, accepted, message };
   }
@@ -946,7 +949,9 @@ export abstract class GarderobeAssistantBase extends Think<any> {
       const text = answer.text ?? choice?.label;
       if (!text) throw new RequestError("invalid_request", "the answer names no choice and has no text");
       await updateTurn(this.db, this.userId, turnId, { status: "completed" }, this.now());
-      const { row: answerRow, accepted, message } = await this.accept(grant, { submissionId: `clarify:${answer.inputId}`, text, attachedRefs: [] }, "conversation", turnId);
+      // A choice label was written by the model. Tapping it tells the assistant which one was meant; it is
+      // never the owner's own words: it names no garment and reports nothing (third review, finding A).
+      const { row: answerRow, accepted, message } = await this.accept(grant, { submissionId: `clarify:${answer.inputId}`, text, attachedRefs: [] }, "conversation", turnId, answer.text === undefined);
       if (answerRow.status === "accepted") await this.execute(answerRow.turn_id, message);
       return toTurnRecord((await findTurn(this.db, this.userId, answerRow.turn_id))!, accepted);
     });

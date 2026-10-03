@@ -5,10 +5,13 @@
  * no reading of the owner's words in code can establish what was meant, so there are exactly three
  * classes and the default is the strict one:
  *
- *   - `observation`: a wear or wash report (and the owner's own comfort note). Recorded without a tap,
- *     but only for garments the owner names in their own words or attaches to the message, with that
- *     provenance kept on the turn. A report that names nothing, or reads as a question, a negation, a
- *     plan or somebody else's doing, becomes a proposal instead.
+ *   - `observation`: a wear or wash report. Recorded without a tap, but only when trusted code
+ *     (policy/report.ts) finds the report itself in the owner's own words of that message: a clause in
+ *     the form of a first-person report of that kind, whose date that code fixed and whose garments the
+ *     clause names (or the owner attached and the clause points at), with that provenance kept on the
+ *     turn. Anything else - a mention, a question, a negation, a plan, a group ("all my socks"), a date
+ *     the sentence does not fix - becomes a proposal instead. A wear CORRECTION and a comfort note are
+ *     never recorded without a tap (third review, finding A): they are `confirm`.
  *   - `bookkeeping`: the assistant's own working records that hold no fact about the wardrobe, the
  *     profile or the owner (a research note, a shopping candidate outside the wardrobe, a product
  *     observation or fit assessment, a research job, a memory CANDIDATE awaiting the owner). Recorded
@@ -22,7 +25,7 @@
  */
 export type ChangeClass = "observation" | "bookkeeping" | "confirm";
 
-export const OBSERVATION_TYPES = new Set(["wear.record", "wear.amend", "care.mark_dirty", "care.washed", "feedback.record"]);
+export const OBSERVATION_TYPES = new Set(["wear.record", "care.mark_dirty", "care.washed"]);
 
 const BOOKKEEPING_TYPES = new Set(["product.record", "product.record_observation", "product.record_fit_assessment", "research.save_note"]);
 /** Background jobs the assistant may start by itself: they read public pages or its own records, never the owner's mailbox or files. */
@@ -55,3 +58,16 @@ export function classifyChange(type: string, payload: Record<string, unknown>, c
 export function mayCommitFromConversation(type: string, payload: Record<string, unknown>, channel: string): boolean {
   return classifyChange(type, payload, channel) !== "confirm";
 }
+
+/** Commands other than `garment.*` that change a piece's record or whether it is in the wardrobe at all (see the `garment_record` version in commands/index.ts). */
+export const RECORD_CHANGING_TYPES = ["assistant.report_arrival", "lifecycle.record_event", "stock.reconcile", "purchase.mark_delivered", "command.undo"];
+
+/**
+ * Everyday, undoable actions the owner decided (2026-10-03) a connected assistant may carry out directly
+ * through the product's own typed surface, each with a receipt and undo: choosing from the published
+ * outfit board, laundry pickup and packing checks. (A laundry return has no undo in the ledger, so it
+ * stays a request.) The Worker's boundary (apps/worker/src/mcp/policy.ts) decides when a typed command of
+ * these types may run; this list only lets the ledger hook pass a command that names no conversation
+ * turn. It never makes conversation text authority for anything.
+ */
+export const EVERYDAY_DIRECT_TYPES: ReadonlySet<string> = new Set(["board.select", "laundry.collect", "stock.pack", "stock.unpack"]);

@@ -38,7 +38,7 @@ describe("AI Search projection (real outbox, real conversation index, real budge
     w.model.script({ text: "Noted." }, { text: "Fine." });
     const first = await w.client.runTurn({ submissionId: submission(), text: "I really love the texture of that Shetland cloth I handled at the mill shop" });
     await w.client.runTurn({ submissionId: submission(), text: "What goes with grey flannels?" });
-    const note = await w.owner.exec("research.save_note", { topic: "Shetland wool grading", body: "Notes on Shetland wool grades and handle." }, { actor: "assistant", authorization: "owner_statement" });
+    const note = await w.owner.exec("research.save_note", { topic: "Shetland wool grading", body: "Notes on Shetland wool grades and handle." }, { actor: "owner", authorization: "owner_tap" });
     const messages = (await w.client.transcript({})).messages;
     const loved = messages.find((m) => m.turnId === first.turnId && m.role === "user")!;
 
@@ -73,7 +73,7 @@ describe("AI Search projection (real outbox, real conversation index, real budge
     expect(found.hits[0]).toMatchObject({ messageId: loved.messageId, origin: "both" });
 
     // Forget the message: the projection removes it from the index...
-    await w.owner.exec("conversation.forget_source", { sourceKind: "message", sourceIds: [loved.messageId] }, { actor: "assistant", authorization: "owner_statement" });
+    await w.owner.exec("conversation.forget_source", { sourceKind: "message", sourceIds: [loved.messageId] }, { actor: "owner", authorization: "owner_tap" });
     await run();
     expect(index.docs.has(`message:${loved.messageId}`)).toBe(false);
     // ...and even an index that still returns the stale document cannot bring it back.
@@ -84,7 +84,7 @@ describe("AI Search projection (real outbox, real conversation index, real budge
 
     // With the search budget exhausted nothing is sent to the service.
     await w.owner.exec("settings.update", { patch: { extensions: { assistant: { budgets: { search: 0 } } } } });
-    await w.owner.exec("research.save_note", { topic: "Another note", body: "More notes." }, { actor: "assistant", authorization: "owner_statement" });
+    await w.owner.exec("research.save_note", { topic: "Another note", body: "More notes." }, { actor: "owner", authorization: "owner_tap" });
     const size = index.docs.size;
     const blocked = await run();
     expect(blocked.skippedForBudget).toBe(true);

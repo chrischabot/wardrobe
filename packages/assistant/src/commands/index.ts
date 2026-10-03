@@ -1,5 +1,5 @@
 import { CommandError, first, json, type CommandRegistry } from "@garderobe/domain";
-import { OBSERVATION_TYPES, mayCommitFromConversation } from "../policy/classes.ts";
+import { EVERYDAY_DIRECT_TYPES, OBSERVATION_TYPES, RECORD_CHANGING_TYPES, mayCommitFromConversation } from "../policy/classes.ts";
 import { bindRegistry, compositeHandlers } from "./composite.ts";
 import { purchaseHandlers } from "./purchases.ts";
 import { researchHandlers } from "./research.ts";
@@ -41,11 +41,18 @@ const RESOLVERS: [kind: string, table: string, idColumn: string][] = [
  * Registers every assistant-lane command and its expected-version resolvers on the shared registry.
  * `apps/worker` composes the lanes: `const registry = createFoundationRegistry(); registerAssistant(registry);`
  */
-export function registerAssistant(registry: CommandRegistry): CommandRegistry {
+export function registerAssistant(registry: CommandRegistry, options: { typedDirect?: ReadonlySet<string> } = {}): CommandRegistry {
   for (const def of ASSISTANT_HANDLERS) registry.register(def);
   for (const [kind, table, idColumn] of RESOLVERS) {
     registry.registerVersionResolver(kind, (userId, id) => ({ sql: `SELECT version FROM ${table} WHERE user_id = ? AND ${idColumn} = ?`, params: [userId, id] }));
   }
+  // How many times a piece's RECORD was changed: the version a waiting request about that piece is held to.
+  // The piece's own `version` also moves with every wear, wash and laundry cycle, which would make a
+  // request stale although nothing the owner was shown has changed (third review, point G).
+  registry.registerVersionResolver("garment_record", (userId, id) => ({
+    sql: `SELECT COUNT(*) FROM command_entities e JOIN commands c ON c.user_id = e.user_id AND c.command_id = e.command_id WHERE e.user_id = ? AND e.kind = 'garment' AND e.entity_id = ? AND (substr(c.type, 1, 8) = 'garment.' OR c.type IN (${RECORD_CHANGING_TYPES.map((t) => `'${t}'`).join(", ")}))`,
+    params: [userId, id],
+  }));
   // The domain refuses an assistant-issued restriction lift unless its evidence reference checks out. A
   // reference is `message:<id>` and holds only when that message is the owner's own message of the turn
   // that issued the command: an invented ID, another turn's message or another owner's message fails.
@@ -78,18 +85,45 @@ export function registerAssistant(registry: CommandRegistry): CommandRegistry {
       }
       return preconditions.length > 0 ? { preconditions } : undefined;
     }
-    if (source.parentKind !== "turn" || authorization !== "owner_statement") return;
+    if (authorization !== "owner_statement") return;
     const refuse = (reason: string) => new CommandError("forbidden", "this change is not made from conversation text; it needs the owner's confirmation in the Garderobe app. Nothing was written", { reason });
+    if (source.parentKind !== "turn") {
+      // An assistant principal acting on "the owner said so" WITHOUT naming a turn (third review, finding
+      // F): the same classes apply, whether or not the caller declared where the command came from. The
+      // Worker's typed MCP path decides wear and wash reports itself (apps/worker/src/mcp/policy.ts); what
+      // the owner decided a connected assistant may run directly is passed in as `typedDirect`.
+      if (ctx.principal.actor !== "assistant") return;
+      // Derived records the product's own services write while answering (a forecast or calendar snapshot,
+      // a composed board, a packing proposal) are `system` commands: they state nothing on the owner's behalf.
+      if (registry.get(type).class === "system") return;
+      let effective: { type: string; payload: Record<string, unknown> } = { type, payload: payload as Record<string, unknown> };
+      if (type === "command.undo") {
+        // Undoing is the same change in the other direction: it is judged as the change it undoes.
+        const target = await first<{ type: string; payload_json: string }>(ctx.db, "SELECT type, payload_json FROM commands WHERE user_id = ? AND command_id = ?", ctx.userId, String((payload as { commandId?: unknown }).commandId ?? ""));
+        if (!target) return; // the command itself answers not_found
+        effective = { type: target.type, payload: json<Record<string, unknown>>(target.payload_json, {}) };
+      }
+      if (EVERYDAY_DIRECT_TYPES.has(effective.type) || options.typedDirect?.has(effective.type)) return;
+      if (!mayCommitFromConversation(effective.type, effective.payload, ctx.principal.channel)) throw refuse("owner_confirmation_required");
+      return;
+    }
     if (!mayCommitFromConversation(type, payload as Record<string, unknown>, ctx.principal.channel)) throw refuse("owner_confirmation_required");
     if (!OBSERVATION_TYPES.has(type)) return;
     // An observation needs the record of why it was accepted: which garments the owner named or attached.
     const turn = await first<{ grants_json: string }>(ctx.db, "SELECT grants_json FROM assistant_turns WHERE user_id = ? AND turn_id = ?", ctx.userId, source.parentId ?? "");
-    const grants = json<{ type?: string; basis?: string; garments?: { garmentId: string }[] }[]>(turn?.grants_json, []).filter((g) => g.type === type && g.basis === "owner_report");
+    const grants = json<{ type?: string; basis?: string; wearingDate?: string; garments?: { garmentId: string }[] }[]>(turn?.grants_json, []).filter((g) => g.type === type && g.basis === "owner_report");
     if (grants.length === 0) throw refuse("owner_report_not_recorded");
-    const p = payload as { garmentIds?: string[]; remove?: string[]; add?: string[]; items?: { garmentId: string }[] };
-    const garments = [...(p.garmentIds ?? []), ...(p.remove ?? []), ...(p.add ?? []), ...(p.items ?? []).map((i) => i.garmentId)];
-    const covered = new Set(grants.flatMap((g) => (g.garments ?? []).map((x) => x.garmentId)));
-    if (garments.some((id) => !covered.has(id))) throw refuse("garment_not_named_by_owner");
+    const p = payload as { wearingDate?: string; allOfChannel?: string | null; garmentIds?: string[]; items?: { garmentId: string }[] };
+    // A whole care channel names no piece: it is never an owner's report of named pieces.
+    if (p.allOfChannel) throw refuse("group_not_named_by_owner");
+    const garments = [...(p.garmentIds ?? []), ...(p.items ?? []).map((i) => i.garmentId)];
+    // One recorded report must cover this command whole: its date (for a wear report) and every garment.
+    const covering = grants.some((g) => {
+      if (type === "wear.record" && g.wearingDate !== p.wearingDate) return false;
+      const covered = new Set((g.garments ?? []).map((x) => x.garmentId));
+      return garments.length > 0 && garments.every((id) => covered.has(id));
+    });
+    if (!covering) throw refuse("garment_not_named_by_owner");
   });
   return registry;
 }
