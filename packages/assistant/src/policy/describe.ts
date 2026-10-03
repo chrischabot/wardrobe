@@ -39,6 +39,9 @@ function fields(payload: Record<string, unknown>, keys: string[]): string {
 
 type P = Record<string, any>;
 
+/** Project events whose `moveStock` moves or retires the pieces (see STOCK_FOR_EVENT in commands/lifecycle.ts). */
+const STOCK_MOVING_EVENTS = new Set(["sent_to_tailor", "returned_from_tailor", "stored", "retrieved", "pickup_completed", "discarded"]);
+
 /** One sentence (or a few) stating exactly what confirming would write. */
 export async function describeChange(db: Db, userId: string, type: string, p: P): Promise<string> {
   const g = async (ids: unknown[]) => list(await garmentNames(db, userId, ids));
@@ -167,6 +170,14 @@ export async function describeChange(db: Db, userId: string, type: string, p: P)
 /**
  * The versions a proposal was built against, as the command's expected versions: a proposal about a
  * record that has changed since is refused as stale when the owner confirms it.
+ *
+ * Every proposal that rewrites, moves, receives or removes a wardrobe piece carries that piece's version
+ * as read when the proposal was made. The commands check a piece's state themselves, but state is not
+ * version: a piece corrected, worn or moved after the owner was shown the summary is no longer the piece
+ * the summary described, and the command service refuses the confirmation with `conflict`. Proposals that
+ * only refer to a piece without changing its record (a restriction, a return, a project being opened, a
+ * wear or wash report that became a request) carry no garment version: their commands refuse a piece
+ * that is gone, and a wear or wash report is never discarded over another change to the piece.
  */
 export async function expectedVersionsFor(db: Db, userId: string, type: string, p: P): Promise<Record<string, number>> {
   const out: Record<string, number> = {};
@@ -181,16 +192,29 @@ export async function expectedVersionsFor(db: Db, userId: string, type: string, 
     if (row) out[`${kind}:${id}`] = row.version;
   };
   switch (type) {
-    // A correction overwrites fields: it must not land on a record that changed since it was proposed.
-    // Retiring, moving or receiving a piece is checked by the command itself against the piece's state.
     case "garment.correct":
+    case "garment.retire":
+    case "garment.move":
+    case "garment.receive":
+    case "garment.add_alias":
+    case "assistant.report_arrival":
       await garment(p.garmentId);
       break;
     case "return.update_case":
     case "return.link_exchange":
       await versioned("return_case", "return_cases", "case_id", p.caseId);
       break;
-    case "lifecycle.record_event":
+    case "lifecycle.record_event": {
+      await versioned("lifecycle_project", "lifecycle_projects", "project_id", p.projectId);
+      // A project event that also moves or retires stock is held to the versions of the pieces it moves:
+      // the ones it names, or every piece of the project when it names none (as the command does).
+      if (p.moveStock && STOCK_MOVING_EVENTS.has(String(p.kind))) {
+        let pieces = Array.isArray(p.garmentIds) ? (p.garmentIds as unknown[]) : [];
+        if (pieces.length === 0 && typeof p.projectId === "string") pieces = (await all<{ garment_id: string }>(db, "SELECT garment_id FROM lifecycle_project_items WHERE user_id = ? AND project_id = ?", userId, p.projectId)).map((r) => r.garment_id);
+        for (const id of new Set(pieces)) await garment(id);
+      }
+      break;
+    }
     case "lifecycle.authorize_action":
       await versioned("lifecycle_project", "lifecycle_projects", "project_id", p.projectId);
       break;

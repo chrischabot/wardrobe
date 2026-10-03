@@ -217,6 +217,41 @@ describe("a genuine statement, the proposal, and the owner's decision", () => {
     expect((await decide(owner, current!.proposalId, "reject")).status).toBe(409);
     await rejectAll(owner);
   });
+
+  it("a request to retire, move or receive a piece is refused as stale when the piece changed before the owner confirmed, and nothing is written", async () => {
+    const app = await testApp();
+    // SYNTHETIC incoming piece for the arrival case (the real inventory has nothing on order), added as the owner in the app.
+    const created = await owner.api.command("garment.create", { name: "Grey lambswool scarf (synthetic test piece)", category: "accessory", roles: ["accessory"], careChannel: "none", acquisition: "incoming", quantity: 1, source: { kind: "owner_statement" } });
+    expect(created.status).toBe(200);
+    const scarf = await ctx.garment("Grey lambswool scarf (synthetic test piece)");
+    const plaid = await ctx.garment("California plaid");
+    const boots = await ctx.garment("Paraboot Michael");
+    const cases: { type: string; garmentId: string; text: string; call: FakeToolCall }[] = [
+      { type: "garment.retire", garmentId: plaid.garmentId, text: "I gave the California plaid away.", call: { toolName: "retire_garment", input: { garmentId: plaid.garmentId, disposition: "donated" } } },
+      { type: "garment.move", garmentId: boots.garmentId, text: "The Paraboot Michael went into storage.", call: { toolName: "move_garment", input: { garmentId: boots.garmentId, to: "storage" } } },
+      { type: "assistant.report_arrival", garmentId: scarf.garmentId, text: "The grey lambswool scarf arrived.", call: { toolName: "report_arrival", input: { garmentId: scarf.garmentId } } },
+    ];
+    const stateOf = async (garmentId: string) => ({
+      record: await app.db.prepare("SELECT acquisition, condition, version FROM garments WHERE user_id = ? AND garment_id = ?").bind(owner.userId, garmentId).first(),
+      stockEvents: (await app.db.prepare("SELECT COUNT(*) AS n FROM stock_events WHERE user_id = ? AND garment_id = ?").bind(owner.userId, garmentId).first<{ n: number }>())!.n,
+    });
+    for (const c of cases) {
+      const run = await say(owner, c.text, [c.call]);
+      expect(run.receipts, c.type).toEqual([]);
+      const [proposal] = (await pending(owner)).filter((p) => p.turnId === run.runId);
+      expect(proposal, c.type).toMatchObject({ type: c.type, state: "pending" });
+      // The owner changes the piece in the app before looking at the request.
+      expect((await owner.api.command("garment.correct", { garmentId: c.garmentId, changes: { condition: "changed after the request (test fixture)" }, source: { kind: "owner_statement" } })).status, c.type).toBe(200);
+      const before = await stateOf(c.garmentId);
+      const response = await decide(owner, proposal!.proposalId, "confirm");
+      expect(response.status, c.type).toBe(409);
+      expect(((await response.json()) as { error: { code: string } }).error.code, c.type).toBe("conflict");
+      expect(await stateOf(c.garmentId), c.type).toEqual(before);
+      // Still the owner's to decide: it stays pending and can be rejected.
+      expect((await pending(owner)).some((p) => p.proposalId === proposal!.proposalId && p.state === "pending"), c.type).toBe(true);
+    }
+    await rejectAll(owner);
+  });
 });
 
 describe("ordinary use through the real routes", () => {
