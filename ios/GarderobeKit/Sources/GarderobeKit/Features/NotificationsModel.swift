@@ -130,6 +130,12 @@ public final class NotificationsModel {
                 message = current.removal
                     ? "Offline. Notifications to this phone will be stopped when there is a connection."
                     : "Offline. This phone will be registered when there is a connection."
+            } else if failure.isRetryable || failure.needsSignIn {
+                // The backend did not decide it (a server fault, a rate limit, an expired sign-in):
+                // it stays waiting and goes again when the app next synchronises.
+                message = current.removal
+                    ? "Not stopped yet: \(failure.ownerMessage) This will be tried again."
+                    : "Not registered yet: \(failure.ownerMessage) This will be tried again."
             } else {
                 // The backend refused it: keeping it would only repeat the refusal.
                 if pending == current { pending = nil }

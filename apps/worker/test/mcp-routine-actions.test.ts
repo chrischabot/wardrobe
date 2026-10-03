@@ -4,11 +4,11 @@ import { connectMcp, ownerDay, provisionOwner, publishBoard, testApp, toolResult
 
 /*
  * The routine, undoable actions a connected assistant may perform directly (owner decision of 2026-10-03):
- * choosing from the published outfit board, laundry pickup, and packing checks. One test per command type
- * through the real Worker's MCP route with the SDK client: the action is recorded at once with a receipt
- * naming the connected assistant, it changes what the app's own routes read, and the connection can undo
- * it. A laundry return is named by the same decision but cannot be undone once recorded for a batch, so
- * it still waits for the owner; that is tested here too.
+ * choosing from the published outfit board, laundry pickup and return, and packing checks. One test per
+ * command type through the real Worker's MCP route with the SDK client: the action is recorded at once
+ * with a receipt naming the connected assistant, it changes what the app's own routes read, and the
+ * connection can undo it. A laundry return that names pieces as still away records an exception, so that
+ * one still waits for the owner; that is tested here too.
  *
  * The board test uses the REAL owner fixture (supplied profile and 127-garment inventory, in the test
  * database), because a board needs a real wardrobe; the choice is undone in the test. Laundry and packing
@@ -39,8 +39,8 @@ async function fixtureGarment(o: TestOwner, name: string): Promise<string> {
   return receipt.affected.find((a: any) => a.kind === "garment").id;
 }
 
-it("names exactly the four routine actions that have an undo", () => {
-  expect([...TYPED_DIRECT_BY_OWNER_DECISION].sort()).toEqual(["board.select", "laundry.collect", "stock.pack", "stock.unpack"]);
+it("names exactly the five routine actions, each of which has an undo", () => {
+  expect([...TYPED_DIRECT_BY_OWNER_DECISION].sort()).toEqual(["board.select", "laundry.collect", "laundry.return", "stock.pack", "stock.unpack"]);
 });
 
 describe("board.select: choosing from the published board", () => {
@@ -117,25 +117,40 @@ describe("laundry pickup and return", () => {
     expect(await pending(owner)).toEqual([]);
   });
 
-  it("laundry.return still waits for the owner (the policy has not been changed yet): confirmed in the app it runs as the owner's tap, and its receipt offers the undo a recorded return now has", async () => {
+  it("laundry.return is recorded at once with a receipt, closes the bag, and can be undone by the connection", async () => {
     await expectDirectReceipt(owner, await call(mcp, "laundry.collect", {}), "laundry.collect");
+    const [batch] = await openBatches(owner);
+    const receipt = await expectDirectReceipt(owner, await call(mcp, "laundry.return", { batchId: batch.batchId }), "laundry.return");
+    expect(await openBatches(owner)).toEqual([]);
+    expect(await pending(owner)).toEqual([]);
+
+    const undone = await undo(mcp, receipt.commandId);
+    expect(undone.ok, JSON.stringify(undone.error)).toBe(true);
+    expect(undone.data.receipt).toMatchObject({ actor: "assistant", channel: "mcp" });
+    // The bag is back at the service with its contents, as before the return.
+    const reopened = await openBatches(owner);
+    expect(reopened.map((b) => b.batchId)).toEqual([batch.batchId]);
+    expect(reopened[0].items.map((i: any) => i.garmentId).sort()).toEqual([shirtA, shirtB].sort());
+  });
+
+  it("a return that names a piece as still away records an exception, so it waits for the owner; so do a reported exception and a pickup or return said to have happened weeks ago", async () => {
     const [batch] = await openBatches(owner);
     const commands = async () => ((await (await testApp()).db.prepare("SELECT COUNT(*) AS n FROM commands WHERE user_id = ?").bind(owner.userId).first<{ n: number }>())!.n);
     const before = await commands();
-    const asked = await call(mcp, "laundry.return", { batchId: batch.batchId });
+    const asked = await call(mcp, "laundry.return", { batchId: batch.batchId, stillAway: [{ garmentId: shirtB, quantity: 1 }] });
     expect(asked.error).toMatchObject({ code: "confirmation_required", details: { reason: "owner_confirmation_required" } });
-    // So do a reported exception and a pickup said to have happened weeks ago.
     expect((await call(mcp, "laundry.report_exception", { kind: "delayed" })).error!.code).toBe("confirmation_required");
     const longAgo = new Date(Date.now() - 30 * 86_400_000).toISOString().replace(/\.\d{3}Z$/, "Z");
     expect((await call(mcp, "laundry.collect", {}, { occurredAt: longAgo })).error!.code).toBe("confirmation_required");
+    expect((await call(mcp, "laundry.return", { batchId: batch.batchId }, { occurredAt: longAgo })).error!.code).toBe("confirmation_required");
     expect(await commands()).toBe(before);
     expect((await openBatches(owner)).map((b) => b.batchId)).toEqual([batch.batchId]);
 
-    const proposal = (await pending(owner)).find((p) => p.type === "laundry.return");
+    // The owner confirms the partial return in the app: it runs as the owner's tap.
+    const proposal = (await pending(owner)).find((p) => p.type === "laundry.return" && p.payload.stillAway.length === 1);
     const decided = (await (await owner.api.post(`/v1/proposals/${proposal.proposalId}/decision`, { decision: "confirm" })).json()) as any;
-    expect(decided.receipt).toMatchObject({ type: "laundry.return", outcome: "committed", undo: { available: true } });
+    expect(decided.receipt).toMatchObject({ type: "laundry.return", outcome: "committed" });
     expect(await stored(owner, decided.receipt.commandId)).toMatchObject({ actor: "owner", authorization_basis: "owner_tap" });
-    expect(await openBatches(owner)).toEqual([]);
   });
 });
 

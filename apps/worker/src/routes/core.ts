@@ -128,9 +128,13 @@ export function describeCommandTypes(registry: CommandRegistry) {
   return { types, contractVersion: CONTRACT_VERSION };
 }
 
+/**
+ * The receipt of the command sent under this idempotency key, as it reads now (effect states and whether
+ * it can still be undone are current, as for a receipt read by its identifier), not as stored at commit.
+ */
 export async function receiptByIdempotencyKey(app: App, principal: Principal, key: string): Promise<CommandReceipt | null> {
-  const row = await first<{ receipt_json: string }>(app.db, "SELECT receipt_json FROM commands WHERE user_id = ? AND idempotency_key = ?", principal.userId, key);
-  return row ? (JSON.parse(row.receipt_json) as CommandReceipt) : null;
+  const row = await first<{ command_id: string }>(app.db, "SELECT command_id FROM commands WHERE user_id = ? AND idempotency_key = ?", principal.userId, key);
+  return row ? await app.service.getReceipt(principal, row.command_id) : null;
 }
 
 export async function listReceipts(app: App, principal: Principal, query: { entity?: string; idempotencyKey?: string; limit: number }): Promise<{ receipts: CommandReceipt[] }> {

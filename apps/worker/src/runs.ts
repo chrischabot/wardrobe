@@ -239,7 +239,24 @@ export async function answerRunInput(app: App, principal: Principal, runId: stri
   // The answer continues as a turn of its own. It is registered like any other, so it can be read,
   // streamed and cancelled by its ID; without this it would be a run nobody could follow.
   if (run.runId !== runId) await registerAssistantRun(app.db, principal, { runId: run.runId, kind: row.kind as Kind, state: run.state, clientRequestId: `answer:${runId}:${input.inputId}` }, app.now());
+  // The question is answered, so the run that asked it no longer waits for the owner: its registered state
+  // follows the assistant's at once, and the recovery screen stops counting it.
+  await getRun(app, principal, runId).catch(() => undefined);
   return { ...run, kind: row.kind };
+}
+
+/**
+ * How many of the owner's runs wait for an answer from them right now. For conversation runs this is
+ * counted from the assistant's own record of its turns (the authority), not from the registry's stored
+ * state, which is only a copy brought up to date when a run is read: a question that was answered,
+ * finished or cancelled is never counted, a question nobody has read yet is, and no run is left out
+ * however many there are. Runs of any other provider are counted from the registry, which is their only
+ * record.
+ */
+export async function runsNeedingInput(app: App, principal: Principal): Promise<number> {
+  const count = async (sql: string) => (await first<{ n: number }>(app.db, sql, principal.userId))?.n ?? 0;
+  const others = await count("SELECT COUNT(*) AS n FROM api_runs WHERE user_id = ? AND provider != 'assistant' AND state = 'needs_input'");
+  return others + (await count("SELECT COUNT(*) AS n FROM assistant_turns WHERE user_id = ? AND status = 'needs_input'"));
 }
 
 /* ------------------------------------------------------------------ */

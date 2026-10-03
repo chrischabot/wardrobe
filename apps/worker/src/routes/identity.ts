@@ -10,6 +10,7 @@ import { disconnectGrant, listGrants } from "../mcp/grants.ts";
 import { listDevices, registerDevice, removeDevice } from "../notifications/service.ts";
 import { DeviceRegistration } from "@garderobe/contracts/ext/api";
 import { identityOnly, owner, type RouteDef } from "../router.ts";
+import { runsNeedingInput } from "../runs.ts";
 
 /** A session for an identity that was linked during this very request. */
 async function sessionFor(app: App, identity: VerifiedIdentity, userId: string, displayName: string): Promise<OwnerSession> {
@@ -86,7 +87,7 @@ export function identityRoutes(): RouteDef[] {
         }
       }
       const effects = await first<{ n: number }>(app.db, "SELECT COUNT(*) AS n FROM effects WHERE user_id = ? AND state IN ('pending', 'in_progress')", userId);
-      const waiting = await first<{ n: number }>(app.db, "SELECT COUNT(*) AS n FROM api_runs WHERE user_id = ? AND state = 'needs_input'", userId);
+      const waiting = { n: await runsNeedingInput(app, session.principal) };
       const rows = await all<{ connection_id: string; name: string; state: string; issue_json: string | null }>(
         app.db,
         "SELECT connection_id, name, state, issue_json FROM connection_profiles WHERE user_id = ? AND state IN ('needs_reconnect', 'error', 'pending_authorization')",

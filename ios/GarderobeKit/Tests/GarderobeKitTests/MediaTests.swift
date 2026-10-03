@@ -190,6 +190,23 @@ struct MediaBoundaryTests {
         router.offline.value = false
         let sent = await model.retryPending()
         #expect(sent && !model.isWaitingToSend)
+
+        // A server fault or an expired sign-in decides nothing, so the request to stop stays waiting
+        // and is sent again; only a refusal drops it.
+        let path = "/v1/devices/\(model.deviceId)/remove"
+        router.on("POST", path) { _ in TestSupport.error("internal", "Something went wrong on the server.", status: 500) }
+        let faulted = await model.turnOff()
+        #expect(!faulted && model.isWaitingToSend)
+        #expect(model.message == "Not stopped yet: Something went wrong on the server. This will be tried again.")
+        router.on("POST", path) { _ in TestSupport.error("unauthenticated", "Sign in again.", status: 401) }
+        let expired = await model.retryPending()
+        #expect(!expired && model.isWaitingToSend)
+        router.json("POST", path, ["removed": true])
+        let delivered = await model.retryPending()
+        #expect(delivered && !model.isWaitingToSend)
+        router.on("POST", path) { _ in TestSupport.error("not_found", "That phone is not registered.", status: 404) }
+        let refused = await model.turnOff()
+        #expect(!refused && !model.isWaitingToSend && model.message == "That phone is not registered.")
         // Turning on again cancels nothing that was already sent and clears no other device.
         model.turnOn()
         #expect(model.wanted && !model.isWaitingToSend)
