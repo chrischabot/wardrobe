@@ -14,7 +14,7 @@ import { CONSEQUENTIAL_COMMAND_TYPES } from "@garderobe/contracts/ext/api";
  */
 
 /** Recorded at once. Everything not named in these three lists waits for the owner. */
-const DIRECT = ["board.select", "care.mark_dirty", "care.washed", "laundry.collect", "product.record", "product.record_fit_assessment", "product.record_observation", "research.save_note", "stock.pack", "stock.unpack", "wear.record"];
+const DIRECT = ["board.select", "care.mark_dirty", "care.washed", "laundry.collect", "laundry.return", "product.record", "product.record_fit_assessment", "product.record_observation", "research.save_note", "stock.pack", "stock.unpack", "wear.record"];
 /** Refused outright by the restriction guard. */
 const LIFT = ["assistant.lift_restriction", "restriction.resolve"];
 /** Not available to a connection at all: system bookkeeping, account-level commands, commands that take no owner statement. */
@@ -69,8 +69,8 @@ describe("the class of every command type", () => {
     // The contract's list of sensitive types is a floor: each of them waits for the owner or is not available at all.
     for (const type of CONSEQUENTIAL_COMMAND_TYPES) expect(["owner", "internal"], type).toContain(actual[type]);
     // The routine, undoable actions of the owner's decision of 2026-10-03, and nothing else, run from a typed command only.
-    // `laundry.return` is named by that decision but has no undo for a recorded batch, so it still waits.
-    expect([...TYPED_DIRECT_BY_OWNER_DECISION].sort()).toEqual(["board.select", "laundry.collect", "stock.pack", "stock.unpack"]);
+    // (`laundry.return` joined them once a recorded return could be undone.)
+    expect([...TYPED_DIRECT_BY_OWNER_DECISION].sort()).toEqual(["board.select", "laundry.collect", "laundry.return", "stock.pack", "stock.unpack"]);
   });
 
   it("publishes the same thing in command_types, to the app and to the connection", async () => {
@@ -149,7 +149,7 @@ describe("a typed command from a connected assistant", () => {
       ["feedback.record", { text: "Synthetic comfort note (test fixture)", kind: "scratchy", garmentIds: [garmentId] }],
       ["wear.amend", { wearingDate: "2026-09-01", remove: [garmentId] }],
       // Laundry returns and exceptions, and the hamper as a whole. (A pickup runs directly: mcp-routine-actions.test.ts.)
-      ["laundry.return", {}],
+      ["laundry.return", { stillAway: [{ garmentId, quantity: 1 }] }],
       ["laundry.report_exception", { kind: "delayed" }],
       ["care.washed", { allOfChannel: "service" }],
       // Plans and settings. (Choosing an option on the published board runs directly.)
@@ -194,9 +194,15 @@ describe("a typed command from a connected assistant", () => {
     expect(new Set(listed.map((p) => p.proposalId))).toEqual(ids);
     const correct = listed.find((p) => p.type === "garment.correct")!;
     expect(correct).toMatchObject({ source: { channel: "mcp", assistantName: "Helpful assistant (test)" }, payload: { garmentId, changes: { name: "Renamed by a connected assistant" } } });
-    expect(correct.summary).toContain("Correct a garment's details");
-    expect(correct.summary).toContain(`${JSON.stringify(GARMENT_NAME)} (${garmentId})`);
-    expect(listed.find((p) => p.type === "command.undo")!.summary).toContain("The change to undo: garment.correct, recorded ");
+    expect(correct.summary).toContain(`Change the record of \u201C${GARMENT_NAME}\u201D: name \u201CRenamed by a connected assistant\u201D`);
+    expect(correct.summary).not.toContain(garmentId);
+    expect(listed.find((p) => p.type === "command.undo")!.summary).toContain("Undo an earlier change (\u201Cgarment.correct\u201D) whose receipt read \u201C");
+    // No summary shows a record identifier of a record that exists, raw JSON or a command's machine name as its opening.
+    for (const p of listed) {
+      expect(p.summary, p.type).not.toContain(garmentId);
+      expect(p.summary, p.type).not.toMatch(/[{}]|":/);
+      expect(p.summary, p.type).not.toMatch(/^Carry out /);
+    }
 
     // The owner confirms the correction in the app: it runs once, as the owner's tap.
     const decided = (await (await owner.api.post(`/v1/proposals/${correct.proposalId}/decision`, { decision: "confirm" })).json()) as any;

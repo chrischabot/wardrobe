@@ -11,6 +11,7 @@ import {
   importDailyData,
   listTrips,
   proposePacking,
+  prepareBoard,
   recommend,
   registerDaily,
   renderBoardHtml,
@@ -21,7 +22,7 @@ import {
   type DailyDeps,
 } from "@garderobe/daily";
 import { createCompositionModel, createGatewayModelService, listComfortFeedback } from "@garderobe/assistant";
-import { getSettings, localDateOf, type Principal } from "@garderobe/domain";
+import { addDays, all, createPrincipal, first, getSettings, localDateOf, type Principal } from "@garderobe/domain";
 import { googleAccessToken } from "../connections/service.ts";
 import { ApiException } from "../errors.ts";
 import type { DailyPort } from "../ports.ts";
@@ -48,6 +49,9 @@ export interface DailyPortOptions {
   compositionModelFor?: (principal: Principal) => CompositionModel | null;
 }
 
+/** How long after a resume its board is still prepared by the scheduled sweep when the first attempt did not finish. */
+const RESUME_FOLLOW_UP_MS = 3 * 3600_000;
+
 export function createDailyPort(ctx: LaneContext, options: DailyPortOptions = {}): DailyPort {
   const { env, db } = ctx;
   const outbound = ((input: string, init?: RequestInit) => fetch(input, init)) as never;
@@ -72,6 +76,54 @@ export function createDailyPort(ctx: LaneContext, options: DailyPortOptions = {}
     calendar: { reader, writer },
     modelFor: options.compositionModelFor ?? gatewayModelFor,
     comfort: (principal) => listComfortFeedback(db, principal) as never,
+    // The Calendar event links to the day's board on this deployment unless the owner set another address.
+    boardBaseUrl: env.APP_ORIGIN,
+  };
+
+  /**
+   * "On resume ... prepare the next useful board" (specification section 9), for a pause that the owner
+   * (in the app, by confirming a request, or in conversation) ended with the plain `service.resume`
+   * command, whose receipt says the next board is being prepared. An automatic resume on the date the
+   * owner set goes through the daily service's own `resumeService` and is not handled here.
+   *
+   * The steps are those `resumeService` takes after the command: the weekly cleanliness baselines that
+   * elapsed during the pause, then the next useful board (today's before midday in the owner's timezone,
+   * otherwise tomorrow's), composed by the daily service's `prepareBoard`. A board that already exists for
+   * that day (prepared before the pause, or made by the owner since) is the next useful board and is left
+   * as it is: the resume command restores its Calendar event, and the ordinary refresh and repair keep it
+   * current. Both steps run as the system for that owner and carry keys derived from the resume command,
+   * so running this again writes nothing twice. Until the day has a board the scheduled sweep tries again
+   * for a few hours, so a follow-up that was cut short is not lost and a resume made in conversation is
+   * covered too. Nothing from the paused days is prepared.
+   */
+  const followUpResumes = async (nowMs: number, userId?: string): Promise<void> => {
+    const ended = await all<{ user_id: string; command_id: string }>(
+      db,
+      `SELECT p.user_id, p.ended_by_command_id AS command_id FROM service_pauses p
+         JOIN commands c ON c.user_id = p.user_id AND c.command_id = p.ended_by_command_id AND c.actor != 'system'
+        WHERE p.status = 'ended' AND unixepoch(p.ended_at) > ? AND (? IS NULL OR p.user_id = ?)
+          AND NOT EXISTS (SELECT 1 FROM service_pauses a WHERE a.user_id = p.user_id AND a.status = 'active')
+        ORDER BY unixepoch(p.ended_at) DESC LIMIT 50`,
+      Math.floor((nowMs - RESUME_FOLLOW_UP_MS) / 1000), userId ?? null, userId ?? null,
+    );
+    const seen = new Set<string>();
+    for (const pause of ended) {
+      // Only the latest resume of an owner matters: an earlier one was followed by another pause.
+      if (seen.has(pause.user_id)) continue;
+      seen.add(pause.user_id);
+      try {
+        const system = createPrincipal({ userId: pause.user_id, actor: "system", channel: "system", scopes: ["read", "write"], authRef: `daily:resume:${pause.command_id}` });
+        const timezone = (await getSettings(db, system)).settings.timezone;
+        const today = localDateOf(nowMs, timezone);
+        const hour = Number(new Intl.DateTimeFormat("en-GB", { timeZone: timezone, hour: "2-digit", hourCycle: "h23" }).format(new Date(nowMs)));
+        const localDate = hour < 12 ? today : addDays(today, 1);
+        await ctx.service.execute(system, { type: "laundry.apply_weekly_reset", payload: {}, idempotencyKey: `resume-weekly-reset:${pause.command_id}`, expectedVersions: {}, authorization: "standing_policy", source: { channel: "system" } });
+        if (await first(db, "SELECT 1 AS x FROM boards WHERE user_id = ? AND local_date = ? AND scope = 'home'", pause.user_id, localDate)) continue;
+        await prepareBoard(deps, system, { localDate, reason: "compose", purpose: "resume", idempotencyKey: `resume-board:${pause.command_id}`, nowMs });
+      } catch (error) {
+        console.warn("the board after a resume was not prepared; the scheduled sweep tries again", String((error as Error)?.message ?? error));
+      }
+    }
   };
   return {
     register: registerDaily,
@@ -105,9 +157,15 @@ export function createDailyPort(ctx: LaneContext, options: DailyPortOptions = {}
     },
     boardHtml: (principal, input) => renderBoardHtml(db, principal, { ...(input.date ? { date: input.date } : {}), baseUrl: input.baseUrl, nowMs: ctx.now() }),
     afterCommit: async (principal) => {
-      if (principal.scopes.includes("write") || principal.scopes.includes("admin")) await replenishBoards(deps, principal, { nowMs: ctx.now() });
+      if (principal.scopes.includes("write") || principal.scopes.includes("admin")) {
+        await followUpResumes(ctx.now(), principal.userId).catch((error) => console.warn("resume follow-up failed", String((error as Error)?.message ?? error)));
+        await replenishBoards(deps, principal, { nowMs: ctx.now() });
+      }
     },
-    scheduled: (nowMs) => runDueJobs(deps, { nowMs }),
+    scheduled: async (nowMs) => {
+      await followUpResumes(nowMs).catch((error) => console.warn("resume follow-up failed", String((error as Error)?.message ?? error)));
+      return runDueJobs(deps, { nowMs });
+    },
     exportData: (principal) => exportDailyData(db, principal),
     importData: (principal, data) => importDailyData(db, principal, data as never),
   };

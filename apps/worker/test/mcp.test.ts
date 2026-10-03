@@ -172,9 +172,9 @@ describe("sensitive typed commands wait for the owner", () => {
     const waiting = (await pending()).filter((p) => p.type === "garment.retire" && p.payload.garmentId === garmentId);
     expect(waiting).toHaveLength(1);
     expect(waiting[0]).toMatchObject({ state: "pending", turnId: "", source: { channel: "mcp", assistantName: "Eager assistant" }, payload: { garmentId, disposition: "donated" } });
-    // The summary is written by the service from the exact request, with the garment's name from the ledger.
-    expect(waiting[0].summary).toContain("Retire a garment from the wardrobe");
-    expect(waiting[0].summary).toContain(`"Synthetic test shirt A (not real stock)" (${garmentId})`);
+    // The summary is written by trusted code from the exact request, in words, with the garment's name from the ledger.
+    expect(waiting[0].summary).toContain("\u201CSynthetic test shirt A (not real stock)\u201D has left your wardrobe for good (donated)");
+    expect(waiting[0].summary).not.toContain(garmentId);
     // The same key with a different request is refused and does not replace what the owner will see.
     const second = await syntheticGarment("Synthetic test shirt A2 (not real stock)");
     expect(toolResult(await eager.client.callTool(retire(second, key))).error!.code).toBe("idempotency_key_reuse");
@@ -212,7 +212,7 @@ describe("sensitive typed commands wait for the owner", () => {
     expect(toolResult(await writer.client.callTool(undo(created.commandId))).error!.code).toBe("confirmation_required");
     expect((await owner.api.json("GET", "/v1/wardrobe")).items.some((i: any) => i.garment.garmentId === garmentId)).toBe(true);
     const undoProposal = (await pending()).find((p) => p.type === "command.undo" && p.payload.commandId === created.commandId);
-    expect(undoProposal.summary).toContain("The change to undo: garment.create, recorded ");
+    expect(undoProposal.summary).toMatch(/^Undo an earlier change \(\u201Cgarment\.create\u201D\) whose receipt read \u201C.+\u201D/);
     // A wear report on a garment the connection names is recorded at once, and so is its undo.
     const wore = toolResult(await writer.client.callTool({ name: "garderobe_command", arguments: { type: "wear.record", payload: { wearingDate: await ownerDay(owner), garmentIds: [garmentId] }, idempotencyKey: `wear-${crypto.randomUUID()}` } }));
     expect(wore.ok, JSON.stringify(wore.error)).toBe(true);
@@ -230,7 +230,7 @@ describe("sensitive typed commands wait for the owner", () => {
     expect(over.error).toMatchObject({ code: "rate_limited", details: { reason: "too_many_requests_waiting" } });
     const listed = (await other.api.json("GET", "/v1/proposals")).proposals as any[];
     expect(listed).toHaveLength(40);
-    expect(listed[0].summary).toMatch(/gmt_invented_\d+ is not a garment in this wardrobe/);
+    expect(listed[0].summary).toMatch(/a piece that is not in the wardrobe \(\u201Cgmt_invented_\d+\u201D\)/);
     // Confirming such a request changes nothing: the command refuses it and the proposal stays open.
     expect((await other.api.post(`/v1/proposals/${listed[0].proposalId}/decision`, { decision: "confirm" })).status).toBe(404);
     expect((await other.api.json("GET", "/v1/proposals")).proposals).toHaveLength(40);

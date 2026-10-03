@@ -12,6 +12,7 @@ import {
   listReturnCases,
   registerAssistant,
   runAssistantMaintenance,
+  createGatewayLogsLookup,
   AiSearchIndex,
   SubmissionReuseError,
 } from "@garderobe/assistant";
@@ -22,6 +23,16 @@ import type { ApiRun, ApiRunEvent, ApiRunState, AssistantPort, TurnSubmission } 
 import type { LaneContext } from "./index.ts";
 
 const STATE: Record<TurnRecord["status"], ApiRunState> = { accepted: "queued", running: "running", needs_input: "needs_input", completed: "completed", failed: "failed", cancelled: "cancelled", resumable: "failed" };
+
+/**
+ * The lookup the assistant's reservation reconciler uses to learn what an uncertain call was charged: the
+ * AI Gateway's logs of this deployment's own gateway, read with a token that can do nothing else. Null
+ * (no lookup) unless the account, the token and the gateway are all configured.
+ */
+export function gatewayUsageLookup(env: Pick<LaneContext["env"], "AI_GATEWAY_ACCOUNT_ID" | "AI_GATEWAY_LOGS_TOKEN" | "AI_GATEWAY_ID">, fetcher?: typeof fetch) {
+  if (!env.AI_GATEWAY_ACCOUNT_ID || !env.AI_GATEWAY_LOGS_TOKEN || !env.AI_GATEWAY_ID) return null;
+  return createGatewayLogsLookup({ accountId: env.AI_GATEWAY_ACCOUNT_ID, apiToken: env.AI_GATEWAY_LOGS_TOKEN, allowedGatewayIds: [env.AI_GATEWAY_ID], ...(fetcher ? { fetch: fetcher } : {}) });
+}
 
 function research(result: Record<string, unknown> | null): NonNullable<ApiRun["result"]>["research"] {
   if (!result || typeof result.summary !== "string") return null;
@@ -166,6 +177,8 @@ export function createAssistantPort(ctx: LaneContext): AssistantPort {
         gatewayId: env.AI_GATEWAY_ID ?? "unconfigured",
         nowMs,
         searchIndexFor: (userId) => (env.AI_SEARCH ? new AiSearchIndex(env.AI_SEARCH as never, env.ENVIRONMENT ?? "dev", userId) : null),
+        // What an uncertain model call was charged is read from the Gateway's own logs, when the deployment holds the read-only token for them.
+        usageLookup: gatewayUsageLookup(env),
       }),
     transcript: (principal, query) => guard(() => client(principal).transcript(query)),
     recall: (principal, query) => guard(() => client(principal).recallSearch(query as never)),

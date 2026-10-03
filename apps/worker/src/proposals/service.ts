@@ -32,7 +32,7 @@ import { all, canonicalJson, first, json as parseJson, prepare, stmt, toInstant,
 import type { App } from "../app.ts";
 import { sha256Hex } from "../crypto.ts";
 import { ApiException } from "../errors.ts";
-import { describeProposedChange, findSubmittedProposal, garmentIdsIn, grantOfAuthRef, listSubmittedProposals, listWaitingSubmittedProposals, PROPOSAL_LIFETIME_MS, submittedExpectedVersions, submittedPayload, type ProposalReferences, type SubmittedProposalRow } from "./store.ts";
+import { describeProposedChange, describeSubmittedChange, findSubmittedProposal, garmentIdsIn, grantOfAuthRef, listSubmittedProposals, listWaitingSubmittedProposals, PROPOSAL_LIFETIME_MS, submittedExpectedVersions, submittedPayload, type ProposalReferences, type SubmittedProposalRow } from "./store.ts";
 
 export { PROPOSAL_LIFETIME_MS };
 
@@ -164,7 +164,10 @@ async function build(app: App, userId: string, turns: TurnRow[], submitted: Subm
       const authRef = grantOfTurn.has(row.turn_id) ? null : (await first<{ auth_ref: string }>(app.db, "SELECT auth_ref FROM assistant_turns WHERE user_id = ? AND turn_id = ?", userId, row.turn_id))?.auth_ref;
       grantId = grantOfTurn.get(row.turn_id) ?? grantOfAuthRef(authRef);
     }
-    add({ proposalId: row.proposal_id, turnId: row.turn_id ?? "", decisionRef: row.turn_id ?? row.source_ref, type: row.command_type, summary: describeProposedChange(row.command_type, payloads[i]!, refs), payload: payloads[i]!, proposedAt: row.created_at, channel: "mcp", assistantName: grantId ? (grants.get(grantId) ?? null) : null, expectedVersions: submittedExpectedVersions(row), occurredAt: row.occurred_at });
+    // In words, by the same trusted code that describes a request made in conversation; should that fail for a
+    // stored request, the plain field listing is shown instead, so nothing waiting is ever missing from the list.
+    const summary = await describeSubmittedChange(app.db, userId, row.command_type, payloads[i]!).catch(() => describeProposedChange(row.command_type, payloads[i]!, refs));
+    add({ proposalId: row.proposal_id, turnId: row.turn_id ?? "", decisionRef: row.turn_id ?? row.source_ref, type: row.command_type, summary, payload: payloads[i]!, proposedAt: row.created_at, channel: "mcp", assistantName: grantId ? (grants.get(grantId) ?? null) : null, expectedVersions: submittedExpectedVersions(row), occurredAt: row.occurred_at });
   }
   return out.sort((a, b) => Date.parse(b.proposal.proposedAt) - Date.parse(a.proposal.proposedAt) || (a.proposal.proposalId < b.proposal.proposalId ? -1 : 1));
 }

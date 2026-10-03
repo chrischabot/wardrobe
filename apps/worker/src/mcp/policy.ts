@@ -22,8 +22,8 @@
  * window the conversation path applies. A wear dated earlier or later, or a report said to have happened
  * longer ago than that, is not refused: it waits for the owner like any other change.
  */
-import { classifyChange } from "@garderobe/assistant";
-import { addDays, first, getOwnerState, localDateOf, type CommandRegistry, type Db, type Principal } from "@garderobe/domain";
+import { classifyChange, REPORT_WINDOW_DAYS, withinReportWindow } from "@garderobe/assistant";
+import { first, getOwnerState, localDateOf, type CommandRegistry, type Db, type Principal } from "@garderobe/domain";
 import { wearsRestrictedGarment } from "../restrictions.ts";
 
 export type ConnectedDisposition = "direct" | "owner" | "internal" | "lift";
@@ -31,17 +31,14 @@ export type ConnectedDisposition = "direct" | "owner" | "internal" | "lift";
 const LIFTS = new Set(["restriction.resolve", "assistant.lift_restriction"]);
 
 /** What is recorded without a tap and says when something happened: the owner's reports, and the routine actions that are observations. */
-const REPORTS = new Set(["wear.record", "care.mark_dirty", "care.washed", "laundry.collect", "stock.pack", "stock.unpack"]);
+const REPORTS = new Set(["wear.record", "care.mark_dirty", "care.washed", "laundry.collect", "laundry.return", "stock.pack", "stock.unpack"]);
 
 /**
- * How far back a connected assistant's report is recorded without the owner: today and this many days
- * before it. The assistant workstream applies the same window to reports made in conversation
- * (`packages/assistant/src/tools/runtime.ts`).
+ * How far back a connected assistant's report is recorded without the owner: today and the seven days
+ * before it. The window is the assistant workstream's own (`REPORT_WINDOW_DAYS`, `withinReportWindow`), the
+ * one it applies to reports made in conversation, so the typed path and the conversation path agree.
  */
-export const REPORT_WINDOW_DAYS = 7;
-
-/** Whether a wearing date lies in the window, given the owner's own calendar day. Dates are YYYY-MM-DD, so text order is date order. */
-export const withinReportWindow = (wearingDate: string, ownerLocalDate: string): boolean => wearingDate <= ownerLocalDate && wearingDate >= addDays(ownerLocalDate, -REPORT_WINDOW_DAYS);
+export { REPORT_WINDOW_DAYS, withinReportWindow };
 
 /** When the request was made and what it says about when the reported thing happened. */
 export interface ReportTiming {
@@ -72,24 +69,26 @@ async function reportOutsideWindow(db: Db, type: string, payload: Record<string,
  *
  * Owner decision of 2026-10-03: a connected assistant may directly perform the routine, undoable actions,
  * each with an authenticated receipt and undo: choosing from the published outfit board, laundry pickup
- * and return, and packing checks. Each of the four commands below has an undo of its own.
+ * and return, and packing checks. Each of the five commands below has an undo of its own (a return of a
+ * recorded laundry bag since the foundation's a5e6c8fa; until then it waited for the owner).
  *
- * `laundry.return` is NOT here although the decision names it: the foundation's command gives a return of
- * a recorded batch no undo (its receipt says to report what is still away instead, and that report is an
- * exception, which waits for the owner). A connection that recorded a return wrongly could therefore not
- * take it back, so the condition of the decision is not met and a return waits for the owner until the
- * command has an undo or the owner accepts it without one. Record corrections, moves, retirements,
+ * Record corrections, moves, retirements,
  * settings, restrictions, style and measurements wait for the owner as before, and so do
  * `laundry.report_exception`, trips, reminders, feedback and images, which the decision does not name.
+ * The same set is given to the assistant workstream's ledger guard (`registerAssistant`, `typedDirect`),
+ * which otherwise refuses a connected assistant's command that names no conversation turn.
  */
-export const TYPED_DIRECT_BY_OWNER_DECISION: ReadonlySet<string> = new Set<string>(["board.select", "laundry.collect", "stock.pack", "stock.unpack"]);
+export const TYPED_DIRECT_BY_OWNER_DECISION: ReadonlySet<string> = new Set<string>(["board.select", "laundry.collect", "laundry.return", "stock.pack", "stock.unpack"]);
 
 /**
- * The part of a routine action the decision does not cover, so it waits for the owner after all: packing
- * or unpacking for something that is not one of the owner's planned trips is not a packing check of a
- * trip; it would only move pieces out of what can be suggested.
+ * The part of a routine action the decision does not cover, so it waits for the owner after all:
+ *   - a laundry return that names pieces as still away records an exception for each of them, which is
+ *     what `laundry.report_exception` does;
+ *   - packing or unpacking for something that is not one of the owner's planned trips is not a packing
+ *     check of a trip; it would only move pieces out of what can be suggested.
  */
 async function routineActionNeedsOwner(db: Db, userId: string, type: string, payload: Record<string, unknown>): Promise<boolean> {
+  if (type === "laundry.return") return Array.isArray(payload.stillAway) && payload.stillAway.length > 0;
   if (type === "stock.pack" || type === "stock.unpack") {
     if (typeof payload.tripId !== "string") return false; // refused by the command's own schema
     return !(await first(db, "SELECT 1 AS x FROM trips WHERE user_id = ? AND trip_id = ? AND status = 'planned'", userId, payload.tripId));

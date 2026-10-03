@@ -23,6 +23,14 @@ export interface Env {
   AI?: unknown;
   AI_SEARCH?: unknown;
   AI_GATEWAY_ID?: string;
+  /**
+   * For settling inference reservations whose outcome was never recorded: the Cloudflare account the AI
+   * Gateway belongs to, and a secret API token limited to "AI Gateway Read". With both set, the scheduled
+   * maintenance asks the Gateway's logs what an uncertain call was charged; without them such a
+   * reservation is only settled by its age, as the assistant workstream's reconciler defines.
+   */
+  AI_GATEWAY_ACCOUNT_ID?: string;
+  AI_GATEWAY_LOGS_TOKEN?: string;
   /** Injected by the OAuth provider for the default handler. */
   OAUTH_PROVIDER?: OAuthHelpers;
 

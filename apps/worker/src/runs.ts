@@ -239,7 +239,24 @@ export async function answerRunInput(app: App, principal: Principal, runId: stri
   // The answer continues as a turn of its own. It is registered like any other, so it can be read,
   // streamed and cancelled by its ID; without this it would be a run nobody could follow.
   if (run.runId !== runId) await registerAssistantRun(app.db, principal, { runId: run.runId, kind: row.kind as Kind, state: run.state, clientRequestId: `answer:${runId}:${input.inputId}` }, app.now());
+  // The question is answered, so the run that asked it no longer waits for the owner: its registered state
+  // follows the assistant's at once, and the recovery screen stops counting it.
+  await getRun(app, principal, runId).catch(() => undefined);
   return { ...run, kind: row.kind };
+}
+
+/**
+ * How many of the owner's runs wait for an answer from them right now. The registry's stored state is
+ * only a copy that is brought up to date when a run is read, so the runs it holds as unfinished are read
+ * from the assistant (the authority) first: one that was answered, finished or cancelled since is no
+ * longer counted, and one that began to wait while nobody was reading it is.
+ */
+export async function runsNeedingInput(app: App, principal: Principal): Promise<number> {
+  if (app.assistant) {
+    const open = await all<{ run_id: string }>(app.db, "SELECT run_id FROM api_runs WHERE user_id = ? AND provider = 'assistant' AND state IN ('queued', 'running', 'needs_input') ORDER BY created_at DESC LIMIT 50", principal.userId);
+    for (const { run_id } of open) await getRun(app, principal, run_id).catch(() => undefined);
+  }
+  return (await first<{ n: number }>(app.db, "SELECT COUNT(*) AS n FROM api_runs WHERE user_id = ? AND state = 'needs_input'", principal.userId))?.n ?? 0;
 }
 
 /* ------------------------------------------------------------------ */
