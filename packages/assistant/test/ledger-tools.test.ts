@@ -26,7 +26,8 @@ function chat(w: World, summary: string) {
   return { say: (...steps: FakeStep[]) => void queue.push(...steps), last: () => [...w.model.requests].reverse().find((r) => !isCompaction(r))! };
 }
 
-const STATEMENT = { actor: "assistant" as const, channel: "ios" as const, authorization: "owner_statement" as const };
+/** The signed-in owner in the app: these tests exercise the handlers, not the conversation gate (an assistant principal cannot run them on its own say-so; see review-round3.test.ts). */
+const STATEMENT = { actor: "owner" as const, channel: "ios" as const, authorization: "owner_tap" as const };
 const SYSTEM = { actor: "system" as const, channel: "system" as const, authorization: "system_schedule" as const };
 
 describe("reminders, ledger reads and separate controls (real owner data; FAKE MODEL)", () => {
@@ -247,7 +248,7 @@ describe("administrative record of an owner's AI Search instance (real command; 
   it("records the instance and its gateway under an admin scope only", async () => {
     const w = await createWorld({ real: false });
     const payload = { environment: "dev", instance: "garderobe-dev-u-abc123", gatewayId: "garderobe-dev", created: true };
-    await expect(w.owner.exec("search.record_instance", payload, { actor: "assistant", authorization: "owner_statement" })).rejects.toMatchObject({ code: "forbidden" });
+    await expect(w.owner.exec("search.record_instance", payload, { actor: "owner", authorization: "owner_tap" })).rejects.toMatchObject({ code: "forbidden" });
     await w.owner.exec("search.record_instance", payload, { actor: "system", channel: "system", scopes: ["read", "write", "admin"], authorization: "system_schedule" });
     await w.owner.exec("search.record_instance", { ...payload, created: false }, { actor: "system", channel: "system", scopes: ["read", "write", "admin"], authorization: "system_schedule" });
     expect(await all(w.h.db, "SELECT environment, instance, gateway_id, created FROM search_instances WHERE user_id = ?", w.owner.userId)).toEqual([{ environment: "dev", instance: "garderobe-dev-u-abc123", gateway_id: "garderobe-dev", created: 1 }]); // one row per owner and environment; a later confirmation does not duplicate it

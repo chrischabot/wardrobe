@@ -36,6 +36,7 @@ let sock: WardrobeItem["garment"];
 let scarf: { garmentId: string; name: string };
 let gloves: { garmentId: string; name: string };
 let wearTurn: { runId: string; commandId: string };
+const selfieRequests: { type: string; summary: string }[] = [];
 
 const KNOWN_EVENTS = ["run_started", "activity", "text_delta", "outfit_board", "product_comparison", "sources", "command_receipt", "needs_input", "run_finished", "snapshot"];
 const turnId = () => `turn-${crypto.randomUUID()}`;
@@ -363,7 +364,9 @@ describe("journey 11: one continuous conversation, reports, requests and photo c
     expect(after.items.some((i) => i.garment.name.includes("seen in a selfie"))).toBe(false);
     // Whatever is left for the owner is a request showing the exact pieces; the owner declines it.
     for (const proposal of await pending(owner)) {
-      expect(internalCodesIn(proposal.summary)).toEqual([]);
+      selfieRequests.push({ type: proposal.type, summary: proposal.summary });
+      if (proposal.type === "wear.record") expect(proposal.summary).toMatch(new RegExp(`${sock.name}|${shoe.name}`));
+      if (proposal.type === "garment.create") expect(proposal.summary).toContain("SYNTHETIC garment seen in a selfie");
       expect((await decide(proposal.proposalId, "reject")).status).toBe(200);
     }
     expect(await dayGarments(j.today)).toEqual([]);
@@ -378,11 +381,20 @@ describe("journey 11: one continuous conversation, reports, requests and photo c
     expect(foreign.status).toBeGreaterThanOrEqual(400);
   });
 
-  it("a photo with the words 'log this' still records only the piece the owner named", async () => {
+  defect("D11-2", "the request the owner is asked to confirm for a new garment is in plain words, without role codes or message identifiers", () => {
+    // Owner decision of 2026-10-01: a sensitive change is confirmed on "a system-generated summary of
+    // the exact proposed mutation", and owner-facing text carries no internal codes. Since the summaries
+    // list every written field, the one for adding a garment reads: roles 1 "mid_layer"; care channel
+    // "handwash"; source "message:msg_trn_...". Every field should be shown, in words he can read.
+    expect(selfieRequests.length).toBeGreaterThan(0);
+    expect(selfieRequests.filter((r) => internalCodesIn(r.summary).length > 0).map((r) => r.summary)).toEqual([]);
+  });
+
+  it("a photo with a plain report still records only the piece the owner named", async () => {
     const photo = await uploadImage(owner, { intent: "attachment" }); // LABELLED TEST IMAGE
     const assetId = photo.complete.asset.assetId as string;
     model.script({ toolCalls: [{ toolName: "record_wear", input: { garmentIds: [shoe.garmentId] } }] }, { toolCalls: [{ toolName: "record_wear", input: { garmentIds: [sock.garmentId] } }] }, { text: "SCRIPTED FAKE MODEL REPLY." });
-    const run = await say(`Log this: I am wearing the ${shoe.name} today`, { attachmentIds: [assetId], imageRoles: { [assetId]: "selfie" }, intent: "what_i_wore" });
+    const run = await say(`I am wearing the ${shoe.name} today`, { attachmentIds: [assetId], imageRoles: { [assetId]: "selfie" }, intent: "what_i_wore" });
     expect(run.state).toBe("completed");
     expect(run.receipts.map((r: any) => r.type)).toEqual(["wear.record"]);
     expect(run.receipts[0].summary).toContain(shoe.name);
@@ -391,6 +403,26 @@ describe("journey 11: one continuous conversation, reports, requests and photo c
     expect(await dayGarments(j.today)).toEqual([shoe.garmentId]);
     for (const proposal of await pending(owner)) expect((await decide(proposal.proposalId, "reject")).status).toBe(200);
     expect(await dayGarments(j.today)).toEqual([shoe.garmentId]);
+  });
+
+  it("a report wrapped in other words is not guessed at: it waits for one tap, then records exactly that piece", async () => {
+    // "Log this: I am wearing ..." is not in the plain first-person form the product reads without a
+    // tap. Nothing is refused and nothing is asked about its truth: the exact wear is put before him.
+    model.script({ toolCalls: [{ toolName: "record_wear", input: { garmentIds: [unnamedTop.garmentId] } }] }, { text: "SCRIPTED FAKE MODEL REPLY." });
+    const run = await say(`Log this: I am wearing the ${unnamedTop.name} today`);
+    expect(run.state).toBe("completed");
+    expect(run.receipts).toEqual([]);
+    expect(await dayGarments(j.today)).toEqual([shoe.garmentId]);
+    const waiting = (await pending(owner)).filter((p) => p.turnId === run.runId);
+    expect(waiting.map((p) => p.type)).toEqual(["wear.record"]);
+    expect(waiting[0]!.summary).toContain(unnamedTop.name);
+    expect(waiting[0]!.summary).toContain(j.today);
+    expect(waiting[0]!.summary).not.toContain("?");
+    expect(internalCodesIn(waiting[0]!.summary)).toEqual([]);
+    const confirmed = (await (await decide(waiting[0]!.proposalId, "confirm")).json()) as Record<string, any>;
+    expect(confirmed.receipt.type).toBe("wear.record");
+    expect(confirmed.receipt.summary).toContain(unnamedTop.name);
+    expect((await dayGarments(j.today)).sort()).toEqual([shoe.garmentId, unnamedTop.garmentId].sort());
   });
 
   it("one compact question from the assistant waits durably and is answered through the run's input route", async () => {

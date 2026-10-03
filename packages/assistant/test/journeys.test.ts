@@ -225,7 +225,9 @@ describe("assistant journeys through the conversation (real Durable Object, real
     const shirt = await w.garment("Brushed wool — Subalpino navy");
     const restrictions = (await listRestrictions(w.h.db, p(), { status: "active" })).length;
     w.model.script({ toolCalls: [{ toolName: "record_comfort_feedback", input: { kind: "too_warm", garmentIds: [shirt.garmentId], activity: "train commute" } }] }, { text: "Noted for the commute." });
-    const turn = await w.client.runTurn({ submissionId: submission(), text: "The brushed wool shirt was way too warm on the train this morning." });
+    // A comfort note is one request the owner confirms (kind, pieces and occasion are the model's reading; the words are the owner's).
+    const turn = await runAndConfirm(w, { submissionId: submission(), text: "The brushed wool shirt was way too warm on the train this morning." });
+    expect(turn.proposals.map((x) => x.type)).toEqual(["feedback.record"]);
     expect(turn.status).toBe("completed"); // no follow-up question
     expect(turn.clarification).toBeNull();
     const note = (await listComfortFeedback(w.h.db, p(), { garmentIds: [shirt.garmentId] }))[0]!;
@@ -292,7 +294,7 @@ describe("assistant journeys through the conversation (real Durable Object, real
     expect(events.map((e) => e.seq)).toEqual([1, 2, 3, 4]);
     expect((await w.client.turnEvents(accepted.turnId, { afterSeq: 2 })).events.map((e) => e.seq)).toEqual([3, 4]);
 
-    const job = await w.owner.exec("job.create", { kind: "email_investigation", title: "Everything bought from Drake's" }, { actor: "assistant", authorization: "owner_statement" });
+    const job = await w.owner.exec("job.create", { kind: "email_investigation", title: "Everything bought from Drake's" }, { actor: "owner", authorization: "owner_tap" });
     const deliveryId = String(job.result["deliveryId"]);
     const calls = w.model.requests.length;
     const first = await w.client.deliverResult({ deliveryId, title: "Drake's purchases", body: "Searched 2024-01-01 to 2026-09-15: 7 orders. Complete." });

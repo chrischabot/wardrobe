@@ -7,40 +7,141 @@
  * name, a rule, a reason, a note) is shown inside quotation marks as the value it is, on one line and
  * with control characters removed, so it can never read as the system speaking.
  */
-import { all, first, type Db } from "@garderobe/domain";
+import { CommandError, all, first, type Db } from "@garderobe/domain";
+import { RECORD_CHANGING_TYPES } from "./classes.ts";
 
-/** A stored free-text value as it appears inside a summary: one line, quoted, never the system's own voice. */
-export function quoted(value: unknown, max = 300): string {
-  const clean = String(value ?? "")
-    .replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, " ")
-    .replace(/[\u201C\u201D"]/g, "'")
-    .replace(/\s+/g, " ")
-    .trim();
-  return `\u201C${clean.length > max ? `${clean.slice(0, max - 1).trimEnd()}\u2026` : clean}\u201D`;
+/** The longest single stored value a summary shows. A longer one is not clipped: the request is refused. */
+export const MAX_SHOWN_VALUE = 2000;
+/** The longest summary the owner is asked to read and confirm. */
+export const MAX_SUMMARY = 8000;
+
+/** Control, format (zero-width, bidirectional), private-use and unpaired-surrogate characters, and line and paragraph separators. */
+const INVISIBLE = /[\p{Cc}\p{Cf}\p{Co}\p{Cs}\p{Zl}\p{Zp}]+/gu;
+/** Every character that could read as a quotation mark closing the value: they are all shown as an apostrophe. */
+const QUOTE_LIKE = /["\u00AB\u00BB\u02BA\u02DD\u02EE\u05F4\u201C-\u201F\u2033\u2034\u2036\u2037\u2039\u203A\u275D\u275E\u276E\u276F\u2E42\u301D-\u301F\uFF02]/g;
+
+function tooLong(what: string): CommandError {
+  return new CommandError("invalid_command", `${what} is too long to be shown to the owner in full, and a request is never confirmed on a shortened summary. Nothing was recorded; ask for it in a shorter form`, { reason: "summary_too_long" });
 }
 
-const words = (value: unknown) => String(value ?? "").replace(/_/g, " ");
+/**
+ * A stored free-text value as it appears inside a summary: IN FULL, on one line, inside quotation marks,
+ * never the system's own voice. Invisible and direction-changing characters are removed and anything that
+ * looks like a closing quotation mark is shown as an apostrophe, so the value cannot appear to end early.
+ * A value too long to show in full is never shortened: describing it fails and nothing is proposed.
+ */
+export function quoted(value: unknown): string {
+  const clean = String(value ?? "")
+    .replace(INVISIBLE, " ")
+    .replace(QUOTE_LIKE, "'")
+    .replace(/\s+/gu, " ")
+    .trim();
+  if (clean.length > MAX_SHOWN_VALUE) throw tooLong("A value in this request");
+  return `\u201C${clean}\u201D`;
+}
+
+const words = (value: unknown) => String(value ?? "").replace(/_/g, " ").replace(INVISIBLE, " ").replace(QUOTE_LIKE, "'");
 const list = (items: string[]) => (items.length <= 1 ? (items[0] ?? "nothing") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`);
-const minor = (value: unknown, currency: unknown) => (typeof value === "number" ? `${currency ? `${String(currency)} ` : ""}${(value / 100).toFixed(2)}` : null);
+const minor = (value: unknown, currency: unknown) => (typeof value === "number" ? `${currency ? `${words(currency)} ` : ""}${(value / 100).toFixed(2)}` : null);
 
 async function garmentNames(db: Db, userId: string, ids: unknown[]): Promise<string[]> {
   const out: string[] = [];
   for (const id of ids.map(String)) {
     const row = await first<{ name: string }>(db, "SELECT name FROM garments WHERE user_id = ? AND garment_id = ?", userId, id);
-    out.push(row ? quoted(row.name, 80) : `a piece that is not in the wardrobe (${quoted(id, 40)})`);
+    out.push(row ? quoted(row.name) : `a piece that is not in the wardrobe (${quoted(id)})`);
   }
   return out;
 }
 
 function fields(payload: Record<string, unknown>, keys: string[]): string {
-  const parts = keys.filter((k) => payload[k] !== undefined && payload[k] !== null && payload[k] !== "").map((k) => `${words(k)} ${typeof payload[k] === "string" ? quoted(payload[k]) : JSON.stringify(payload[k])}`);
+  const parts = keys.filter((k) => payload[k] !== undefined && payload[k] !== null && payload[k] !== "").map((k) => `${words(k)} ${typeof payload[k] === "string" ? quoted(payload[k]) : quoted(JSON.stringify(payload[k]))}`);
   return parts.join(", ");
+}
+
+/** Every leaf of a payload as `[path, value]`, with `*` for a list position; empty values are not leaves. */
+function leaves(value: unknown, path: string[] = [], out: { path: string[]; value: string | number | boolean }[] = []): { path: string[]; value: string | number | boolean }[] {
+  if (value === null || value === undefined || value === "") return out;
+  if (Array.isArray(value)) value.forEach((v, n) => leaves(v, [...path, String(n)], out));
+  else if (typeof value === "object") for (const [k, v] of Object.entries(value as Record<string, unknown>)) leaves(v, [...path, k], out);
+  else out.push({ path, value: value as string | number | boolean });
+  return out;
+}
+
+/**
+ * The payload fields each sentence below states itself, in full (a list position is `*`). EVERY other
+ * field of the payload is listed after the sentence, by name and in full, whatever the command type: the
+ * owner confirms the whole change, never a part of it. A type that is not listed states nothing itself.
+ */
+const STATED: Record<string, string[]> = {
+  "wear.record": ["wearingDate", "garmentIds.*"],
+  "wear.amend": ["wearingDate", "remove.*", "add.*"],
+  "care.mark_dirty": ["items.*.garmentId"],
+  "care.washed": ["allOfChannel", "items.*.garmentId"],
+  "feedback.record": ["kind", "garmentIds.*", "text"],
+  "garment.create": ["name", "category", "acquisition", "quantity", "colour", "fabric", "maker", "size"],
+  "assistant.report_arrival": ["garmentId"],
+  "garment.receive": ["garmentId"],
+  "garment.correct": ["garmentId", "changes.name", "changes.colour", "changes.fabric", "changes.maker", "changes.size", "changes.condition"],
+  "garment.add_alias": ["garmentId", "phrase"],
+  "garment.move": ["garmentId", "to", "note"],
+  "garment.retire": ["garmentId", "disposition", "note"],
+  "restriction.add": ["kind", "scope.garmentIds.*", "reason"],
+  "assistant.lift_restriction": ["restrictionId"],
+  "style.add_direction": ["text", "scope"],
+  "style.set_brief": ["localDate", "text"],
+  "style.add_amendment": ["kind", "text"],
+  "measurement.record": ["subject", "key", "value", "unit", "measuredOn"],
+  "purchase.import_order": ["merchant", "orderNumber", "orderedOn"],
+  "purchase.record_event": ["orderId", "event.kind", "event.occurredAt"],
+  "return.open_case": ["kind", "garmentId", "terms.windowDays", "terms.concerns", "terms.triggerEvent", "terms.sourceRef", "triggerDate", "reason", "nextAction"],
+  "return.update_case": ["caseId", "state", "terms.windowDays", "terms.concerns", "terms.triggerEvent", "terms.sourceRef", "triggerDate", "retailerReceivedOn", "labelRef", "shipmentRef", "nextAction"],
+  "return.link_exchange": ["caseId"],
+  "lifecycle.open_project": ["kind", "title", "items.*.garmentId", "destination", "nextAction"],
+  "lifecycle.record_event": ["projectId", "kind", "nextAction"],
+  "lifecycle.authorize_action": ["projectId", "action", "scope"],
+  "job.create": ["kind", "title", "params.from", "params.to", "params.merchants.*"],
+  "reminder.set": ["reminderId", "title", "dueAt", "note", "url"],
+  "reminder.cancel": ["reminderId"],
+  "memory.record_conclusion": ["status", "kind", "speaker", "text"],
+  "memory.set_status": ["conclusionId", "status", "correctedText"],
+  "conversation.forget_source": ["sourceKind"],
+  "command.undo": ["commandId"],
+};
+
+/** The fields of the payload the sentence did not state, each by name and in full. */
+function unstated(type: string, payload: Record<string, unknown>): string {
+  const stated = new Set(STATED[type] ?? []);
+  let rest = leaves(payload).filter((leaf) => !stated.has(leaf.path.map((s) => (/^\d+$/.test(s) ? "*" : s)).join(".")));
+  // The provenance trusted code attaches to an owner statement reads as one phrase rather than two fields.
+  let provenance = "";
+  const source = payload["source"] as { kind?: unknown; ref?: unknown } | null | undefined;
+  if (source && typeof source === "object" && typeof source.kind === "string" && typeof source.ref === "string" && Object.keys(source).every((k) => k === "kind" || k === "ref")) {
+    provenance = ` Its source is recorded as ${words(source.kind)}, ${quoted(source.ref)}.`;
+    rest = rest.filter((leaf) => leaf.path[0] !== "source");
+  }
+  if (rest.length === 0) return provenance;
+  const label = (path: string[]) => path.map((s) => (/^\d+$/.test(s) ? `${Number(s) + 1}` : words(s.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase()))).join(" ");
+  return ` ${STATED[type] ? "Also written with it" : "Written exactly"}: ${rest.map((leaf) => `${label(leaf.path)} ${typeof leaf.value === "string" ? quoted(leaf.value) : String(leaf.value)}`).join("; ")}.${provenance}`;
 }
 
 type P = Record<string, any>;
 
-/** One sentence (or a few) stating exactly what confirming would write. */
+/** Project events whose `moveStock` moves or retires the pieces (see STOCK_FOR_EVENT in commands/lifecycle.ts). */
+const STOCK_MOVING_EVENTS = new Set(["sent_to_tailor", "returned_from_tailor", "stored", "retrieved", "pickup_completed", "discarded"]);
+
+/**
+ * What confirming would write, in full: the system's sentence for this kind of change followed by every
+ * field of the payload the sentence does not state itself. Nothing is shortened. When the result would be
+ * too long to read, or holds a value too long to show, this throws `invalid_command` and the caller
+ * proposes nothing.
+ */
 export async function describeChange(db: Db, userId: string, type: string, p: P): Promise<string> {
+  const summary = `${await sentenceFor(db, userId, type, p)}${unstated(type, p)}`;
+  if (summary.length > MAX_SUMMARY) throw tooLong("This request");
+  return summary;
+}
+
+async function sentenceFor(db: Db, userId: string, type: string, p: P): Promise<string> {
   const g = async (ids: unknown[]) => list(await garmentNames(db, userId, ids));
   switch (type) {
     case "wear.record":
@@ -70,9 +171,9 @@ export async function describeChange(db: Db, userId: string, type: string, p: P)
       return `Add a restriction (${words(p.kind)}) on ${await g(p.scope?.garmentIds ?? [])} with the reason ${quoted(p.reason)}. They are not suggested until you say it has ended.`;
     case "assistant.lift_restriction": {
       const r = await first<{ kind: string; reason: string; scope_json: string }>(db, "SELECT kind, reason, scope_json FROM restrictions WHERE user_id = ? AND restriction_id = ?", userId, p.restrictionId);
-      if (!r) return `Lift a restriction that is not on record (${quoted(p.restrictionId, 40)}).`;
+      if (!r) return `Lift a restriction that is not on record (${quoted(p.restrictionId)}).`;
       const scoped = ((JSON.parse(r.scope_json || "{}") as { garmentIds?: string[] }).garmentIds ?? []) as string[];
-      const released = scoped.length > 0 ? ` The pieces it holds back become available again: ${await g(scoped.slice(0, 12))}${scoped.length > 12 ? ` and ${scoped.length - 12} more` : ""}.` : " Every piece it holds back becomes available again.";
+      const released = scoped.length > 0 ? ` The pieces it holds back become available again: ${await g(scoped)}.` : " Every piece it holds back becomes available again.";
       return `LIFT the restriction (${words(r.kind)}) whose reason is ${quoted(r.reason)}, and note in your profile that it has ended.${released} Confirm only if its condition really has ended.`;
     }
     case "style.add_direction":
@@ -82,36 +183,36 @@ export async function describeChange(db: Db, userId: string, type: string, p: P)
     case "style.add_amendment":
       return `Amend your profile (${words(p.kind)}) with the dated statement ${quoted(p.text)}.`;
     case "measurement.record":
-      return `Record a ${words(p.subject ?? "body")} measurement: ${quoted(p.key, 60)} = ${p.value} ${p.unit}, measured on ${p.measuredOn}.`;
+      return `Record a ${words(p.subject ?? "body")} measurement: ${quoted(p.key)} = ${p.value} ${p.unit}, measured on ${p.measuredOn}.`;
     case "purchase.import_order": {
-      const lines = (p.lines ?? []).map((l: P) => `${quoted(l.productName, 80)}${l.size ? ` size ${quoted(l.size, 20)}` : ""}${l.quantity && l.quantity !== 1 ? ` x${l.quantity}` : ""}${minor(l.priceMinor, l.currency ?? p.currency) ? ` at ${minor(l.priceMinor, l.currency ?? p.currency)}` : ""}`);
+      const lines = (p.lines ?? []).map((l: P) => `${quoted(l.productName)}${l.size ? ` size ${quoted(l.size)}` : ""}${l.quantity && l.quantity !== 1 ? ` x${l.quantity}` : ""}${minor(l.priceMinor, l.currency ?? p.currency) ? ` at ${minor(l.priceMinor, l.currency ?? p.currency)}` : ""}`);
       const incoming = (p.incoming ?? []).length;
-      return `Log an order from ${quoted(p.merchant, 80)}, number ${quoted(p.orderNumber, 60)}${p.orderedOn ? `, ordered on ${p.orderedOn}` : ""}: ${list(lines)}.${incoming > 0 ? ` ${incoming} wardrobe record${incoming === 1 ? " is" : "s are"} created as ordered, not arrived.` : ""} Nothing becomes wearable until you say it arrived.`;
+      return `Log an order from ${quoted(p.merchant)}, number ${quoted(p.orderNumber)}${p.orderedOn ? `, ordered on ${p.orderedOn}` : ""}: ${list(lines)}.${incoming > 0 ? ` ${incoming} wardrobe record${incoming === 1 ? " is" : "s are"} created as ordered, not arrived.` : ""} Nothing becomes wearable until you say it arrived.`;
     }
     case "purchase.record_event": {
       const o = await first<{ merchant: string; order_number: string }>(db, "SELECT merchant, order_number FROM orders WHERE user_id = ? AND order_id = ?", userId, p.orderId);
-      return `Attach a ${words(p.event?.kind)} notice dated ${String(p.event?.occurredAt ?? "").slice(0, 10)} to the order ${o ? `${quoted(o.merchant, 80)} ${quoted(o.order_number, 60)}` : quoted(p.orderId, 40)}${minor(p.event?.amountMinor, null) ? `, amount ${minor(p.event?.amountMinor, null)}` : ""}. It changes no stock.`;
+      return `Attach a ${words(p.event?.kind)} notice dated ${quoted(p.event?.occurredAt ?? "")} to the order ${o ? `${quoted(o.merchant)} ${quoted(o.order_number)}` : quoted(p.orderId)}${minor(p.event?.amountMinor, null) ? `, amount ${minor(p.event?.amountMinor, null)}` : ""}. It changes no stock.`;
     }
     case "return.open_case":
-      return `Open ${p.kind === "exchange" ? "an exchange" : "a return"}${p.garmentId ? ` for ${await g([p.garmentId])}` : ""}${p.terms ? `, with a ${p.terms.windowDays}-day window to ${words(p.terms.concerns)} counted from ${words(p.terms.triggerEvent)} (source ${quoted(p.terms.sourceRef, 120)})` : ", deadline not yet known"}${p.triggerDate ? `, counted from ${p.triggerDate}` : ""}${minor(p.refundExpectedMinor, p.currency) ? `, refund expected ${minor(p.refundExpectedMinor, p.currency)}` : ""}${p.reason ? `, reason ${quoted(p.reason)}` : ""}${p.nextAction ? `, next step ${quoted(p.nextAction)}` : ""}. Nothing leaves your wardrobe by this.`;
+      return `Open ${p.kind === "exchange" ? "an exchange" : "a return"}${p.garmentId ? ` for ${await g([p.garmentId])}` : ""}${p.terms ? `, with a ${p.terms.windowDays}-day window to ${words(p.terms.concerns)} counted from ${words(p.terms.triggerEvent)} (source ${quoted(p.terms.sourceRef)})` : ", deadline not yet known"}${p.triggerDate ? `, counted from ${p.triggerDate}` : ""}${minor(p.refundExpectedMinor, p.currency) ? `, refund expected ${minor(p.refundExpectedMinor, p.currency)}` : ""}${p.reason ? `, reason ${quoted(p.reason)}` : ""}${p.nextAction ? `, next step ${quoted(p.nextAction)}` : ""}. Nothing leaves your wardrobe by this.`;
     case "return.update_case": {
       const c = await first<{ kind: string; state: string }>(db, "SELECT kind, state FROM return_cases WHERE user_id = ? AND case_id = ?", userId, p.caseId);
       const changes: string[] = [];
       if (p.state) changes.push(`state becomes ${words(p.state)}`);
-      if (p.terms) changes.push(`window becomes ${p.terms.windowDays} days to ${words(p.terms.concerns)} from ${words(p.terms.triggerEvent)} (source ${quoted(p.terms.sourceRef, 120)})`);
+      if (p.terms) changes.push(`window becomes ${p.terms.windowDays} days to ${words(p.terms.concerns)} from ${words(p.terms.triggerEvent)} (source ${quoted(p.terms.sourceRef)})`);
       if (p.triggerDate) changes.push(`the window counts from ${p.triggerDate}`);
       if (p.retailerReceivedOn) changes.push(`retailer received it on ${p.retailerReceivedOn}`);
       if (typeof p.refundReceivedMinor === "number") changes.push(`refund received ${minor(p.refundReceivedMinor, p.currency)}`);
-      if (p.labelRef) changes.push(`label ${quoted(p.labelRef, 80)}`);
-      if (p.shipmentRef) changes.push(`shipment ${quoted(p.shipmentRef, 80)}`);
+      if (p.labelRef) changes.push(`label ${quoted(p.labelRef)}`);
+      if (p.shipmentRef) changes.push(`shipment ${quoted(p.shipmentRef)}`);
       if (p.nextAction) changes.push(`next step ${quoted(p.nextAction)}`);
-      return `Update the ${c ? `${c.kind} (currently ${words(c.state)})` : `return ${quoted(p.caseId, 40)}`}: ${changes.join("; ") || "no change"}.`;
+      return `Update the ${c ? `${c.kind} (currently ${words(c.state)})` : `return ${quoted(p.caseId)}`}: ${changes.join("; ") || "no change"}.`;
     }
     case "return.link_exchange":
-      return `Link the replacement order line to the exchange ${quoted(p.caseId, 40)}, so the piece is not counted twice.`;
+      return `Link the replacement order line to the exchange ${quoted(p.caseId)}, so the piece is not counted twice.`;
     case "lifecycle.open_project": {
       const hold = p.kind === "sale" || p.kind === "consignment" ? " The pieces stay owned but are held back from suggestions while for sale." : "";
-      return `Open a ${words(p.kind)} project ${quoted(p.title, 120)} for ${await g((p.items ?? []).map((i: P) => i.garmentId))}${p.destination ? `, destination ${quoted(p.destination, 120)}` : ""}${p.nextAction ? `, next step ${quoted(p.nextAction)}` : ""}.${hold}`;
+      return `Open a ${words(p.kind)} project ${quoted(p.title)} for ${await g((p.items ?? []).map((i: P) => i.garmentId))}${p.destination ? `, destination ${quoted(p.destination)}` : ""}${p.nextAction ? `, next step ${quoted(p.nextAction)}` : ""}.${hold}`;
     }
     case "lifecycle.record_event": {
       const project = await first<{ title: string }>(db, "SELECT title FROM lifecycle_projects WHERE user_id = ? AND project_id = ?", userId, p.projectId);
@@ -119,28 +220,28 @@ export async function describeChange(db: Db, userId: string, type: string, p: P)
       let pieces = (p.garmentIds ?? []) as string[];
       if (p.moveStock && pieces.length === 0) pieces = (await all<{ garment_id: string }>(db, "SELECT garment_id FROM lifecycle_project_items WHERE user_id = ? AND project_id = ?", userId, p.projectId)).map((r) => r.garment_id);
       const stock = p.moveStock && moves[p.kind] ? ` ${await g(pieces)} ${moves[p.kind]}.` : "";
-      return `Record ${quoted(words(p.kind), 40)} on the project ${project ? quoted(project.title, 120) : quoted(p.projectId, 40)}${minor(p.proceedsMinor, p.currency) ? `, proceeds ${minor(p.proceedsMinor, p.currency)}` : ""}${p.nextAction ? `, next step ${quoted(p.nextAction)}` : ""}.${stock}`;
+      return `Record ${quoted(words(p.kind))} on the project ${project ? quoted(project.title) : quoted(p.projectId)}${minor(p.proceedsMinor, p.currency) ? `, proceeds ${minor(p.proceedsMinor, p.currency)}` : ""}${p.nextAction ? `, next step ${quoted(p.nextAction)}` : ""}.${stock}`;
     }
     case "lifecycle.authorize_action": {
       const project = await first<{ title: string }>(db, "SELECT title FROM lifecycle_projects WHERE user_id = ? AND project_id = ?", userId, p.projectId);
-      return `AUTHORIZE the assistant to ${words(p.action)} for the project ${project ? quoted(project.title, 120) : quoted(p.projectId, 40)}, within the scope ${quoted(p.scope)}. It will not ask again for this project.`;
+      return `AUTHORIZE the assistant to ${words(p.action)} for the project ${project ? quoted(project.title) : quoted(p.projectId)}, within the scope ${quoted(p.scope)}. It will not ask again for this project.`;
     }
     case "job.create":
-      if (p.kind === "email_investigation") return `Search your mailbox for purchases from ${p.params?.from} to ${p.params?.to}${(p.params?.merchants ?? []).length > 0 ? ` at ${list((p.params.merchants as string[]).map((m) => quoted(m, 60)))}` : ""}${p.params?.importAuthorizedBy ? " and LOG the orders it finds (as ordered, not arrived)" : "; found orders are kept as a draft and nothing is logged"}.`;
-      return `Start background work (${words(p.kind)}): ${quoted(p.title, 180)}.`;
+      if (p.kind === "email_investigation") return `Search your mailbox for purchases from ${p.params?.from} to ${p.params?.to}${(p.params?.merchants ?? []).length > 0 ? ` at ${list((p.params.merchants as string[]).map((m) => quoted(m)))}` : ""}${p.params?.importAuthorizedBy ? " and LOG the orders it finds (as ordered, not arrived)" : "; found orders are kept as a draft and nothing is logged"}.`;
+      return `Start background work (${words(p.kind)}): ${quoted(p.title)}.`;
     case "reminder.set":
-      return `${p.reminderId ? "Change the reminder to" : "Set a reminder"} ${quoted(p.title, 200)} for ${p.dueAt}${p.note ? `, note ${quoted(p.note)}` : ""}${p.url ? `, link ${quoted(p.url, 200)}` : ""}.`;
+      return `${p.reminderId ? "Change the reminder to" : "Set a reminder"} ${quoted(p.title)} for ${p.dueAt}${p.note ? `, note ${quoted(p.note)}` : ""}${p.url ? `, link ${quoted(p.url)}` : ""}.`;
     case "reminder.cancel": {
       const r = await first<{ title: string }>(db, "SELECT title FROM reminders WHERE user_id = ? AND reminder_id = ?", userId, p.reminderId);
-      return `Remove the reminder ${r ? quoted(r.title, 200) : quoted(p.reminderId, 40)}.`;
+      return `Remove the reminder ${r ? quoted(r.title) : quoted(p.reminderId)}.`;
     }
     case "settings.update":
-      return `Change settings: ${quoted(JSON.stringify(p.patch ?? {}), 300)}.`;
+      return `Change settings: ${quoted(JSON.stringify(p.patch ?? {}))}.`;
     case "memory.record_conclusion":
       return `Remember as ${p.status === "active" ? "settled" : "a candidate"} (${words(p.kind)}), attributed to ${p.speaker === "owner" ? "you" : "the assistant"}: ${quoted(p.text)}.`;
     case "memory.set_status": {
       const m = await first<{ text: string }>(db, "SELECT text FROM memory_conclusions WHERE user_id = ? AND conclusion_id = ?", userId, p.conclusionId);
-      return `${p.status === "retired" ? "Retire" : "Confirm"} the remembered conclusion ${m ? quoted(m.text) : quoted(p.conclusionId, 40)}${p.correctedText ? `, corrected to ${quoted(p.correctedText)}` : ""}.`;
+      return `${p.status === "retired" ? "Retire" : "Confirm"} the remembered conclusion ${m ? quoted(m.text) : quoted(p.conclusionId)}${p.correctedText ? `, corrected to ${quoted(p.correctedText)}` : ""}.`;
     }
     case "conversation.forget_source":
       return `FORGET ${p.sourceIds?.length ?? 0} ${words(p.sourceKind)}${(p.sourceIds?.length ?? 0) === 1 ? "" : "s"} for good: the text is removed from the conversation, recall, memory and the records of what was done with it. This cannot be undone. Rules, profile amendments and wardrobe records it led to are kept and listed on the receipt.`;
@@ -152,28 +253,39 @@ export async function describeChange(db: Db, userId: string, type: string, p: P)
       } catch {
         was = "";
       }
-      return c ? `Undo an earlier change (${quoted(c.type, 60)}) whose receipt read ${quoted(was)}.` : `Undo a change that is not on record (${quoted(p.commandId, 40)}).`;
+      return c ? `Undo an earlier change (${quoted(c.type)}) whose receipt read ${quoted(was)}.` : `Undo a change that is not on record (${quoted(p.commandId)}).`;
     }
-    default: {
-      const body = Object.entries(p)
-        .filter(([, v]) => v !== null && v !== undefined)
-        .map(([k, v]) => `${words(k)} ${quoted(typeof v === "string" ? v : JSON.stringify(v), 160)}`)
-        .join(", ");
-      return `Carry out ${quoted(type, 60)} with ${body || "no details"}.`;
-    }
+    default:
+      // No sentence of its own: every field is listed, in full, by describeChange.
+      return `Carry out ${quoted(type)}.`;
   }
 }
 
 /**
  * The versions a proposal was built against, as the command's expected versions: a proposal about a
  * record that has changed since is refused as stale when the owner confirms it.
+ *
+ * Every proposal that rewrites, moves, receives or removes a wardrobe piece carries that piece's version
+ * as read when the proposal was made. The commands check a piece's state themselves, but state is not
+ * version: a piece corrected, renamed, moved, received or retired after the owner was shown the summary is
+ * no longer the piece the summary described, and the command service refuses the confirmation with
+ * `conflict`. The version used is the count of changes to the piece's RECORD (`garment_record`, registered
+ * in commands/index.ts), not the piece's own version, which also moves with every wear, wash and laundry
+ * cycle: a wear report must not discard a waiting request (third review, point G). Proposals that
+ * only refer to a piece without changing its record (a restriction, a return, a project being opened, a
+ * wear or wash report that became a request) carry no garment version: their commands refuse a piece
+ * that is gone, and a wear or wash report is never discarded over another change to the piece.
  */
 export async function expectedVersionsFor(db: Db, userId: string, type: string, p: P): Promise<Record<string, number>> {
   const out: Record<string, number> = {};
   const garment = async (id: unknown) => {
     if (typeof id !== "string") return;
-    const row = await first<{ version: number }>(db, "SELECT version FROM garments WHERE user_id = ? AND garment_id = ?", userId, id);
-    if (row) out[`garment:${id}`] = row.version;
+    const row = await first<{ changes: number }>(
+      db,
+      `SELECT COUNT(*) AS changes FROM command_entities e JOIN commands c ON c.user_id = e.user_id AND c.command_id = e.command_id WHERE e.user_id = ? AND e.kind = 'garment' AND e.entity_id = ? AND (substr(c.type, 1, 8) = 'garment.' OR c.type IN (${RECORD_CHANGING_TYPES.map((t) => `'${t}'`).join(", ")}))`,
+      userId, id,
+    );
+    if (await first(db, "SELECT 1 AS x FROM garments WHERE user_id = ? AND garment_id = ?", userId, id)) out[`garment_record:${id}`] = row?.changes ?? 0;
   };
   const versioned = async (kind: string, table: string, column: string, id: unknown) => {
     if (typeof id !== "string") return;
@@ -181,16 +293,29 @@ export async function expectedVersionsFor(db: Db, userId: string, type: string, 
     if (row) out[`${kind}:${id}`] = row.version;
   };
   switch (type) {
-    // A correction overwrites fields: it must not land on a record that changed since it was proposed.
-    // Retiring, moving or receiving a piece is checked by the command itself against the piece's state.
     case "garment.correct":
+    case "garment.retire":
+    case "garment.move":
+    case "garment.receive":
+    case "garment.add_alias":
+    case "assistant.report_arrival":
       await garment(p.garmentId);
       break;
     case "return.update_case":
     case "return.link_exchange":
       await versioned("return_case", "return_cases", "case_id", p.caseId);
       break;
-    case "lifecycle.record_event":
+    case "lifecycle.record_event": {
+      await versioned("lifecycle_project", "lifecycle_projects", "project_id", p.projectId);
+      // A project event that also moves or retires stock is held to the versions of the pieces it moves:
+      // the ones it names, or every piece of the project when it names none (as the command does).
+      if (p.moveStock && STOCK_MOVING_EVENTS.has(String(p.kind))) {
+        let pieces = Array.isArray(p.garmentIds) ? (p.garmentIds as unknown[]) : [];
+        if (pieces.length === 0 && typeof p.projectId === "string") pieces = (await all<{ garment_id: string }>(db, "SELECT garment_id FROM lifecycle_project_items WHERE user_id = ? AND project_id = ?", userId, p.projectId)).map((r) => r.garment_id);
+        for (const id of new Set(pieces)) await garment(id);
+      }
+      break;
+    }
     case "lifecycle.authorize_action":
       await versioned("lifecycle_project", "lifecycle_projects", "project_id", p.projectId);
       break;

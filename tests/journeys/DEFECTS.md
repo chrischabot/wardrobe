@@ -1,6 +1,6 @@
 # Product defects found by the journey suite
 
-Found against `garderobe-rebuild` at `6f89bd39` on 2026-10-03, on the local Worker with stand-ins only
+Found against `garderobe-rebuild` at `6f89bd39` on 2026-10-03 and re-checked at `dd604994`, on the local Worker with stand-ins only
 at external boundaries (see README.md). Each entry is a test that fails in the strict run
 (`npm run test:strict -w @garderobe/journey-tests`) and is an expected failure in the default run.
 "Owner" is the workstream whose code needs the change. Nothing here was fixed by this suite.
@@ -28,6 +28,7 @@ at external boundaries (see README.md). Each entry is a test that fails in the s
 | D09-1 | The board already prepared for tomorrow keeps offering the shoes he just said hurt | §10 "Apply direct statements of discomfort immediately to the relevant recommendation context ... Pain cannot be outweighed by styling scores" | daily-service (repair does not react to comfort feedback) with assistant |
 | D10-1 | After he resumes in the app no board is prepared, although the receipt says one is being prepared | §9 "On resume ... prepare the next useful board" | api-mcp-identity (owner resume not wired to the daily service's resume) and daily-service |
 | D11-1 | The recovery screen still counts a run waiting for input after he answered it | §15 recovery screen shows the concrete state of pending work | api-mcp-identity (`apps/worker/src/runs.ts`) |
+| D11-2 | The request he is asked to confirm for a new garment shows a role code and a message identifier (roles 1 "mid_layer"; source "message:msg_trn_...") | Owner decision of 2026-10-01: confirm "a system-generated summary of the exact proposed mutation"; no internal codes. Every field should still be shown, in words | assistant (`packages/assistant/src/policy/describe.ts`) |
 | D12-1 | For a day no board has been asked for yet, Studio says "the forecast is unavailable" and blocks a jacket over an oxford, although the forecast for that day can be fetched and is fresh | §3 Studio "For today uses today's validated eligibility"; §7 the forecast is mandatory context | visual-wardrobe / api-mcp-identity (Studio validation uses only an already recorded forecast) |
 | D14-1 | The confirmation shown for an assistant's typed command gives identifiers or raw payload ("boardId: ...", "patch: {...}") | as D07-1 | api-mcp-identity (`apps/worker/src/proposals/store.ts`) |
 
@@ -49,6 +50,7 @@ Each is the body of the test of the same ID; in short:
 - **D06-4** `POST /v1/recommendations {mode: "preview", count: 3, lockedGarmentIds: [pink oxford]}` returns one option.
 - **D06-5** The same with the linen pocket square (sheet status "Occasional") returns none.
 - **D06-6** On a jacketed option swap the outer to the navy raglan work coat by ID, then swap the outer again without an ID; the replacement is navy.
+- **D11-2** A turn whose model calls `add_garment` (for example on a photo with no words); read the `garment.create` entry in `GET /v1/proposals`.
 - **D12-1** With a reachable forecast for a day that has no board, `POST /v1/studio/validate {date, slots: jacket + Pima oxford + trousers + socks + sneakers}` returns "the forecast is unavailable" (blocking for the jacket rule); `GET /v1/weather?date=` for the same day is fresh.
 - **D07-1, D14-1** From a write connection call `garderobe_command` with `trip.update`, `board.select` or `settings.update`; read `GET /v1/proposals` as the owner.
 - **D07-2** Create a trip, propose, `stock.pack`; `POST /v1/recommendations {date: <trip day>, mode: "preview"}` offers home stock.
@@ -61,6 +63,9 @@ Each is the body of the test of the same ID; in short:
 ## Observed, not asserted as defects
 
 Behaviour the specification does not clearly forbid, recorded for the owning threads:
+
+- "Log this: I am wearing the grey trainers today" is not read as a report without a tap (the plain "I am wearing ..." and "Log that I am wearing ..." are); it becomes a request the owner confirms. Safe, but one tap more than a plain report.
+- A photo sent with no words can leave a `garment.create` request whose source reads "owner statement" although he said nothing; nothing is written unless he confirms.
 
 - A stored receipt keeps `undo.available: true` after it was undone (the second undo is refused).
 - A refund recorded on a return case does not update the order line's refunded amount; the two are kept separately.
