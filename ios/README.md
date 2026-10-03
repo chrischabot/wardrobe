@@ -60,7 +60,7 @@ SWIFT_BIN=/path/to/swift/usr/bin bash ios/Tools/check.sh
 
 `SWIFT_BIN` is only needed when `swift` is not on `PATH`; `GARDEROBE_SWIFT_SCRATCH` moves the build
 directory. The toolchain used here was Swift 6.4 (swift-6.4-RELEASE, Linux x86_64 from swift.org) and Node
-22.23.1. The results below are from a clean copy of `garderobe-rebuild` at commit `74434534` (`npm ci`)
+22.23.1. The results below are from a clean copy of `garderobe-rebuild` at commit `cadc3aeb` (`npm ci`)
 with this directory as committed.
 
 | Step | What it does | Last result here |
@@ -225,6 +225,11 @@ Notifications capability registered, a push (APNs) key configured on the backend
   - Intermittent: in some runs the audit reports one "Contrast failed" on Today or Wardrobe that names no
     element (run 37076476521; absent in 37073725189 on the same app sources). It cannot be located from a
     hosted run. The tests record it as an expected failure with its text instead of failing or hiding it.
+    Only that case is expected: a finding without an element on Studio or Conversation, or of any kind
+    other than contrast, fails the test (changed after run 37076476521 and not yet run on macOS).
+  - The audit covers the four tab destinations only. Settings and its screens (Notifications, Requests to
+    confirm, My style), the item page, Laundry, Trips and Returns are opened by other UI tests but are not
+    audited; item 7 of the list above covers them by hand.
   - The Today audit sometimes ends with "Audit failed to complete in time" and passes on the one retry.
 - A day record can have garments removed but not replaced in place.
 - A day brief set somewhere else can be cleared once the style context lists it (it does for today's date).
@@ -242,5 +247,20 @@ Notifications capability registered, a push (APNs) key configured on the backend
   authenticated image routes, which the app can call directly.
 - The stale-request recording is a typed `garment.retire` from a connected assistant, made against a
   garment version the owner then changed; the backend refuses the confirmation with 409 and applies
-  nothing. A retire, move or receive request made in conversation carries no garment version, so the
-  backend does not refuse it as stale (the assistant thread's side).
+  nothing. Since the assistant's change of 2026-10-03, a conversation request that rewrites, moves, receives
+  or removes a piece carries that piece's record version too; that path has the assistant thread's own
+  tests and is not in an iOS recording.
+- Open points from the change review of 2026-10-03, none fixed yet:
+  - Notifications: turning them off never calls `unregisterForRemoteNotifications`; the removal is sent
+    even when this phone was never registered; the switch stays on after iOS denies permission; signing
+    out does not remove the registration; the APNs environment follows the build configuration, not the
+    signing entitlement.
+  - Requests to confirm: any 409 on confirming is shown as "no longer applicable", whatever its reason.
+    The "waits for your confirmation" line under a reply stays until the next turn even after the owner
+    has decided.
+  - Studio picture: a repeated request draws a new request identifier, a second tap while one is queued
+    starts a second request, and the check for a finished picture needs a loaded composition.
+  - Capture sends a photo role chosen from the capture purpose (What I wore sends "selfie").
+  - No recording holds a conversation turn that ends with requests to confirm; that line is tested with a
+    hand-written run only. The Studio picture journey accepts a recording caught while still queued.
+  - The full-size photo is not cleared when the garment's image changes, until the new one has loaded.

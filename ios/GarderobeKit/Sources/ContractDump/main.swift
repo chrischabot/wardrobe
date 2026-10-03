@@ -242,6 +242,10 @@ func collect() async throws -> [Sample] {
     _ = try? await api.availability(date: env.today)
     _ = try? await api.resolve(phrase: "dark jeans")
     // Notifications, the rendered Studio preview, signed image delivery, and a photo turn with its role.
+    // Nothing here is answered (the transport records and fails), so the identifiers are examples:
+    // only the encoded request is checked against the schemas. The turn deliberately carries a role
+    // for `ast_absent`, which is not attached: `PendingTurn.request` sends roles for attached
+    // assets only (MediaTests checks that).
     _ = try? await api.devices()
     _ = try? await api.registerDevice(DeviceRegistration(deviceId: env.ids.next("device"), token: String(repeating: "ab", count: 32), environment: .production))
     _ = try? await api.removeDevice(id: "device-example-000001")
