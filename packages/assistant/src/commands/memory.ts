@@ -1,7 +1,7 @@
 import { ASSISTANT_COMMANDS as C } from "@garderobe/contracts/ext/assistant";
 import { CommandError, SCRUBBED_TEXT, all, define, first, json, planLedgerScrub, stmt, type CommandContext, type Stmt } from "@garderobe/domain";
 import { NO_UNDO, plural } from "./common.ts";
-import { canonicalTerm, termsOfText } from "../recall/index.ts";
+import { CURRENT_INDEX_VERSION, canonicalTerm, termsOfText } from "../recall/index.ts";
 
 /**
  * A source-linked conclusion. A model extraction can only ever be a candidate: it becomes active by the
@@ -167,17 +167,24 @@ const EVERYDAY_WORDS = new Set(
  * (attachments), at least five letters long, that no earlier message had and that are not words of the
  * wardrobe's own records (names, makers, colours).
  */
-async function introducedTerms(ctx: CommandContext, messageId: string, withData: boolean): Promise<{ terms: Set<string>; position: number; conversationId: string } | null> {
-  const row = await first<{ position: number; terms: string; data_terms: string; conversation_id: string }>(ctx.db, "SELECT position, terms, data_terms, conversation_id FROM conversation_index WHERE user_id = ? AND message_id = ?", ctx.userId, messageId);
+/**
+ * A token that is an identifier rather than a word: a record ID, a hash, a long number. Tool calls and
+ * attachments are full of them, and one such token would "find" every record that merely refers to the
+ * same garment or order (pull request 25 review, finding 21). They are never words a message introduced.
+ */
+const identifierLike = (t: string): boolean => t.includes("_") || (/^[0-9a-f]{8,}$/.test(t) && /\d/.test(t)) || (/\d/.test(t) && t.length >= 12) || /^\d{5,}$/.test(t);
+
+async function introducedTerms(ctx: CommandContext, messageId: string, withData: boolean): Promise<{ terms: Set<string>; position: number; conversationId: string; dataIndexed: boolean } | null> {
+  const row = await first<{ position: number; terms: string; data_terms: string; conversation_id: string; index_version: number }>(ctx.db, "SELECT position, terms, data_terms, conversation_id, index_version FROM conversation_index WHERE user_id = ? AND message_id = ?", ctx.userId, messageId);
   if (!row) return null;
-  const mine = new Set(`${row.terms} ${withData ? row.data_terms : ""}`.split(" ").filter((t) => t.length >= 5 && !t.startsWith("topic:") && !EVERYDAY_WORDS.has(t)));
+  const mine = new Set(`${row.terms} ${withData ? row.data_terms : ""}`.split(" ").filter((t) => t.length >= 5 && !t.startsWith("topic:") && !EVERYDAY_WORDS.has(t) && !identifierLike(t)));
   if (mine.size > 0) {
     const earlier = await all<{ terms: string; data_terms: string }>(ctx.db, "SELECT terms, data_terms FROM conversation_index WHERE user_id = ? AND conversation_id = ? AND position < ? ORDER BY position DESC LIMIT 4000", ctx.userId, row.conversation_id, row.position);
     for (const o of earlier) for (const t of `${o.terms} ${o.data_terms}`.split(" ")) mine.delete(t);
     const records = await all<{ words: string }>(ctx.db, "SELECT lower(name || ' ' || coalesce(maker, '') || ' ' || coalesce(colour, '') || ' ' || coalesce(fabric, '') || ' ' || category) AS words FROM garments WHERE user_id = ?", ctx.userId);
     for (const r of records) for (const t of r.words.split(/[^\p{L}\p{N}]+/u)) for (const m of [...mine]) if (m === t || (t.length > 4 && (m.startsWith(t) || t.startsWith(m)))) mine.delete(m);
   }
-  return { terms: mine, position: row.position, conversationId: row.conversation_id };
+  return { terms: mine, position: row.position, conversationId: row.conversation_id, dataIndexed: Number(row.index_version) >= CURRENT_INDEX_VERSION };
 }
 
 /**
@@ -228,17 +235,33 @@ interface Copies {
  * the same test as a repeating reply, over every turn's records, every conversation command and intent,
  * and the assistant's own tables, whoever wrote the row.
  *
- * Only rows written or changed at or after the earliest named message are looked at (`sinceMs`): a note,
- * candidate or request that was there before the message was sent and has not been touched since cannot
- * hold its words, and such an earlier record that merely shares them is never removed by forgetting a
- * later message. A record changed after the message, for whatever reason, is searched like a new one.
+ * Only rows written or changed at or after a named message are searched for THAT message's words (each
+ * named message is a `trace`: the words it introduced and when it was sent): a note, candidate or
+ * request that was there before the message was sent and has not been touched since cannot hold its
+ * words, and such an earlier record that merely shares them is never removed by forgetting a later
+ * message. When several messages are forgotten at once each is searched with its own words and its own
+ * time: a record written between two of them is not removed for sharing the later one's words, and one
+ * word of each message is not two words of either (change review, 2026-10-03). A record changed after
+ * the message, for whatever reason, is searched like a new one.
+ *
+ * A record the OWNER made directly in the app, outside any conversation (a note, a reminder, a comfort
+ * note typed by the owner), is the owner's own and is never removed for sharing words with a forgotten
+ * message, like the owner's own later messages (pull request 25 review, finding 20).
  */
-async function copiesOf(ctx: CommandContext, introduced: Set<string>, skipTurnIds: Set<string>, sinceMs: number): Promise<Copies> {
+async function copiesOf(ctx: CommandContext, traces: { introduced: Set<string>; sinceMs: number }[], skipTurnIds: Set<string>): Promise<Copies> {
   const out: Copies = { statements: [], commandIds: [], replyMessageIds: [], withdrawnRequests: 0, records: 0 };
-  if (introduced.size === 0) return out;
-  const hit = repeatsOf(introduced);
-  /** Written before the earliest named message (instants are compared as instants, never as text). */
-  const earlier = (instant: string | null | undefined) => typeof instant === "string" && Date.parse(instant) < sinceMs;
+  const matchers = traces.filter((t) => t.introduced.size > 0).map((t) => ({ repeats: repeatsOf(t.introduced), sinceMs: t.sinceMs }));
+  if (matchers.length === 0) return out;
+  /** Written before a bound (instants are compared as instants, never as text). */
+  const before = (instant: string | null | undefined, sinceMs: number) => typeof instant === "string" && Date.parse(instant) < sinceMs;
+  // The row being looked at: `earlier` notes when it was written, and `hit` then asks only the named
+  // messages that row could have copied from. Every use below calls `earlier` for the row first.
+  let writtenAt: string | null | undefined = null;
+  const earlier = (instant: string | null | undefined) => {
+    writtenAt = instant;
+    return matchers.every((m) => before(instant, m.sinceMs));
+  };
+  const hit = (text: string | null | undefined) => matchers.some((m) => !before(writtenAt, m.sinceMs) && m.repeats(text));
   const touched = new Set<string>();
 
   const commands = await all<{ command_id: string; turn_id: string | null; payload_json: string; receipt_json: string; written_at: string }>(
@@ -260,8 +283,14 @@ async function copiesOf(ctx: CommandContext, introduced: Set<string>, skipTurnId
 
   // The assistant's own records, by their text (a background job writes these outside any turn).
   const creator = async (kind: string, id: string) => (await all<{ command_id: string }>(ctx.db, "SELECT command_id FROM command_entities WHERE user_id = ? AND kind = ? AND entity_id = ?", ctx.userId, kind, id)).map((r) => r.command_id);
+  /** Made by the owner directly in the app, not from a conversation turn. */
+  const ownersOwn = async (commandId: string | null | undefined): Promise<boolean> => {
+    if (!commandId) return false;
+    const made = await first<{ actor: string; parent: string | null }>(ctx.db, "SELECT actor, json_extract(source_json, '$.parentKind') AS parent FROM commands WHERE user_id = ? AND command_id = ?", ctx.userId, commandId);
+    return made?.actor === "owner" && made.parent !== "turn";
+  };
   for (const n of await all<{ note_id: string; command_id: string; text: string; written_at: string }>(ctx.db, "SELECT note_id, command_id, topic || ' ' || body || ' ' || claims_json AS text, updated_at AS written_at FROM research_notes WHERE user_id = ? AND status != 'forgotten'", ctx.userId)) {
-    if (earlier(n.written_at) || !hit(n.text)) continue;
+    if (earlier(n.written_at) || !hit(n.text) || (await ownersOwn(n.command_id))) continue;
     out.statements.push(stmt("UPDATE research_notes SET status = 'forgotten', topic = ?, body = ?, claims_json = '[]', version = version + 1, updated_at = ? WHERE user_id = ? AND note_id = ?", FORGOTTEN, FORGOTTEN, ctx.now, ctx.userId, n.note_id));
     out.commandIds.push(n.command_id, ...(await creator("research_note", n.note_id)));
     out.records++;
@@ -285,12 +314,12 @@ async function copiesOf(ctx: CommandContext, introduced: Set<string>, skipTurnId
     out.records++;
   }
   for (const f of await all<{ command_id: string; text: string; written_at: string }>(ctx.db, "SELECT command_id, text || ' ' || coalesce(activity, '') || ' ' || coalesce(layer, '') || ' ' || coalesce(scope, '') AS text, created_at AS written_at FROM comfort_feedback WHERE user_id = ? AND status != 'forgotten'", ctx.userId)) {
-    if (earlier(f.written_at) || !hit(f.text)) continue;
+    if (earlier(f.written_at) || !hit(f.text) || (await ownersOwn(f.command_id))) continue;
     out.commandIds.push(f.command_id);
     out.records++;
   }
   for (const r of await all<{ command_id: string; text: string; written_at: string }>(ctx.db, "SELECT command_id, title || ' ' || coalesce(note, '') || ' ' || coalesce(url, '') AS text, updated_at AS written_at FROM reminders WHERE user_id = ? AND title != ?", ctx.userId, FORGOTTEN)) {
-    if (earlier(r.written_at) || !hit(r.text)) continue;
+    if (earlier(r.written_at) || !hit(r.text) || (await ownersOwn(r.command_id))) continue;
     out.commandIds.push(r.command_id);
     out.records++;
   }
@@ -303,7 +332,7 @@ async function copiesOf(ctx: CommandContext, introduced: Set<string>, skipTurnId
   );
   const scrubbing = new Set(out.commandIds);
   for (const t of turns) {
-    if (skipTurnIds.has(t.turn_id) || earlier(t.written_at)) continue;
+    if (earlier(t.written_at) || skipTurnIds.has(t.turn_id)) continue;
     const proposals = json<Record<string, unknown>[]>(t.proposals_json, []);
     const keptProposals = proposals.filter((p) => !hit(JSON.stringify(p)));
     const receipts = json<{ commandId: string; summary?: string }[]>(t.receipts_json, []);
@@ -375,6 +404,8 @@ export const conversationForgetSource = define({
     const echoes: string[] = [];
     let withdrawnRequests = 0;
     let reusedRecords = 0;
+    let notSearched = 0;
+    let partlySearched = 0;
     /** The assistant's own records: applied after the ledger scrub, so a queued effect cancelled here stays cancelled and scrubbed. */
     const ownStatements: Stmt[] = [];
     const cancelledTargets: string[] = [];
@@ -438,24 +469,28 @@ export const conversationForgetSource = define({
       await drain();
       // Where else the named messages' words went: other turns' tool calls, requests and questions, and the
       // assistant's own records. The turns of messages already on the list are handled above.
-      const introduced = new Set<string>();
-      for (const id of named) for (const t of (await introducedTerms(ctx, id, true))?.terms ?? []) introduced.add(t);
       const listed = [...seen];
       const ownTurns = new Set<string>();
       for (let n = 0; n < listed.length; n += 50) {
         const part = listed.slice(n, n + 50);
         for (const r of await all<{ turn_id: string }>(ctx.db, `SELECT turn_id FROM assistant_turns WHERE user_id = ? AND user_message_id IN (${part.map(() => "?").join(",")})`, ctx.userId, ...part)) ownTurns.add(r.turn_id);
       }
-      // Nothing written before the earliest named message can hold its words. A named message whose
-      // sending time is not on record sets no bound, and neither does an empty list.
-      let sinceMs = Number.POSITIVE_INFINITY;
+      // Each named message is searched for with its own words and from its own time on: nothing written
+      // before a message can hold its words. A message whose sending time is not on record sets no bound.
+      const traces: { introduced: Set<string>; sinceMs: number }[] = [];
       for (const id of named) {
+        const index = await introducedTerms(ctx, id, true);
+        // Not in the index at all: there are no words to search with. Indexed by an earlier version: its
+        // attachments and tool calls were not indexed. Either way the receipt says so (finding 22).
+        if (!index) notSearched++;
+        else if (!index.dataIndexed) partlySearched++;
+        const introduced = index?.terms ?? new Set<string>();
+        if (introduced.size === 0) continue;
         const sent = await first<{ created_at: string }>(ctx.db, "SELECT created_at FROM assistant_turns WHERE user_id = ? AND (user_message_id = ? OR reply_message_id = ?) ORDER BY created_at LIMIT 1", ctx.userId, id, id);
         const at = sent ? Date.parse(sent.created_at) : Number.NaN;
-        sinceMs = Number.isNaN(at) ? Number.NEGATIVE_INFINITY : Math.min(sinceMs, at);
+        traces.push({ introduced, sinceMs: Number.isNaN(at) ? Number.NEGATIVE_INFINITY : at });
       }
-      if (sinceMs === Number.POSITIVE_INFINITY) sinceMs = Number.NEGATIVE_INFINITY;
-      const copies = await copiesOf(ctx, introduced, ownTurns, sinceMs);
+      const copies = await copiesOf(ctx, traces, ownTurns);
       statements.push(...copies.statements);
       for (const c of copies.commandIds) if (c !== ctx.commandId) commandIds.add(c);
       withdrawnRequests = copies.withdrawnRequests;
@@ -521,6 +556,8 @@ export const conversationForgetSource = define({
       `Still being removed from ${pending.join(", ").replace(/_/g, " ")}; hidden there meanwhile, and each is confirmed when it is done`,
       ...(kept.length > 0 ? [`Kept, because you confirmed them as records of your own: ${[...keptCounts].map(([label, n]) => plural(n, label)).join(", ")}. Remove them in the app if they should go too`] : []),
       ...(invalidatedSummaries ? [`${plural(invalidatedSummaries, "summary", "summaries")} will be rebuilt without ${named === 1 ? "it" : "them"}`] : []),
+      ...(notSearched > 0 ? [`${plural(notSearched, "message")} had not been indexed yet, so later records that repeat ${notSearched === 1 ? "it" : "them"} could not be searched for; forget those records too if any exist`] : []),
+      ...(partlySearched > 0 ? [`For ${plural(partlySearched, "older message")} only the words of the message itself were searched for, not those of what was attached to ${partlySearched === 1 ? "it" : "them"}`] : []),
       ...(p.sourceKind === "message" ? ["Later messages and records are found by the words they share with what was forgotten; anything that restates it in entirely different words is not found, and your own later messages are never removed unless you forget them too"] : []),
     ];
     return {
@@ -532,7 +569,7 @@ export const conversationForgetSource = define({
         ...(p.sourceKind === "message" ? fresh.map((id) => ({ topic: "conversation.erase", entityKind: "message", entityId: id, revision: 0 })) : []),
         ...(invalidatedSummaries > 0 ? [{ topic: "summary.regenerate", entityKind: "conversation", entityId: ctx.userId, revision: 0 }] : []),
       ],
-      result: { sourceKind: p.sourceKind, newlyForgotten: fresh, alsoForgotten: echoes, erasedStores: erased, pendingStores: pending, invalidatedSummaries, derivedMemories, assistantRecords, reusedRecords, withdrawnRequests, scrubbedCommands: scrub.counts.commands, pendingEffects: stillQueued.length, pendingOutbox: scrub.pendingOutbox, kept },
+      result: { sourceKind: p.sourceKind, newlyForgotten: fresh, alsoForgotten: echoes, erasedStores: erased, pendingStores: pending, invalidatedSummaries, derivedMemories, assistantRecords, reusedRecords, withdrawnRequests, notSearched, partlySearched, scrubbedCommands: scrub.counts.commands, pendingEffects: stillQueued.length, pendingOutbox: scrub.pendingOutbox, kept },
       // Forgetting is deliberately irreversible: an undo would have to resurrect the removed text.
       undo: NO_UNDO("forgetting cannot be undone"),
     };

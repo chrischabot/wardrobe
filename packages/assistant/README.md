@@ -52,12 +52,26 @@ what was read:
   "last night", a weekday of the past week, "N days ago", a written date, within today and the seven days
   before. A sentence with two dates, a date it cannot resolve ("last month", "in 2019", "every day") or
   the same weekday as today gives no date. The command must carry exactly that date.
+- **Nothing else.** Beside its own wording, a report clause may say only which pieces and when
+  (`onlyPiecesAndTime` in `src/policy/report.ts`): every remaining word must be a word of a named piece,
+  a kind of piece, a recognised time or everyday place ("to work", "at lunch"), or a small connecting
+  word. "For years", "at Easter", "in my dream", "when the weather turns", "I doubt ...", "the care
+  label says ..." and commentary such as "and it felt tight" make the clause no report; the model's
+  record then waits for the owner. So does an alternative, a negation, a condition or a contrast ("the
+  coat or the oxford", "not the oxford", "if I can"): "or", "not", "if", "but" and the modal verbs are
+  not small connecting words, and neither is a second report verb ("I wore the coat and washed the
+  oxford" is not one wear report of two pieces). In a spill report ("got curry down ...") what was spilled is at most a
+  "some"/"a bit of" and two plain words, and never "nothing". This is an allow-list on purpose.
 - **Garments.** Each garment of the command must be named in that clause (its alias, or enough words of
   its record to single it out within one noun phrase; "the pink socks" does not name the pink shirt), or
   be attached to the message while the clause points at it ("wore this today"; the Worker's
-  `garment:<id>` reference or a bare ID). "This", "these" and "those" point at what was attached; a bare
-  "it", "them" or "both" does so only in a clause that names no piece itself (in "I wore the oxford today
-  and it felt tight" the "it" is the oxford). A category ("my shirts", "all my socks", every hand-wash piece)
+  `garment:<id>` reference or a bare ID). "This", "these", "those", "it", "them" or "both" points at what
+  was attached only in a clause that names no piece itself (in "I wore this navy oxford today" the "this"
+  is the oxford); a piece attached alongside a named one waits for the owner. A singular word ("this",
+  "it") covers an attached piece only when it is the one piece attached. What a connected assistant says
+  was attached never counts: there a piece must be named in the owner's relayed words. One noun phrase names one
+  piece: when several pieces fit it equally well ("the light blue shirt" with six light blue shirts) it
+  names none, and a piece named exactly by its alias does not also name a sibling sharing its words. A category ("my shirts", "all my socks", every hand-wash piece)
   names no garment.
 - A comfort note stores the owner's own words of the message; its reach is never the model's to set (the
   tool has no scope argument), and it is always a request.
@@ -210,13 +224,21 @@ Known limits, stated on every receipt: a later message or record is found by the
 what was forgotten (two of the words that message introduced, or its only one when that is distinctive).
 Anything that restates it in entirely different words is not found. The owner's own later messages are
 never removed unless the owner forgets them too. The match can also take a later record that shares two
-such words for another reason. Only records written or changed at or after the earliest named message are
-searched: a note, candidate or request that was there before the message was sent and has not been
+such words for another reason. Each named message is searched for with its own words and from its own
+time on: a note, candidate or request that was there before the message was sent and has not been
 touched since cannot hold its words and is never removed, even when it shares them (a record changed
-after the message is searched like a new one). The two-word test counts different words: a word and its
-stem are one. Not yet fixed (change review, 2026-10-03): messages indexed before
-migration 0204 have no `data_terms`, so forgetting an older message does not find where its attachment or
-tool-call words went; tool-call text beyond 60,000 characters of a message is not indexed.
+after the message is searched like a new one). A record the owner made directly in the app, outside any
+conversation, is the owner's own and is never removed either. The two-word test counts different words:
+a word and its stem are one. Record identifiers, hashes and long numbers are never words a message
+introduced, so a tool call that carried a garment's ID does not make every record about that garment a
+copy. A message that is in no index cannot be searched for, and the receipt says so.
+
+Messages indexed before migration 0204 had no `data_terms` (the words of attachments and tool calls).
+Each index entry now carries the indexer's version (`index_version`, migration 0205); the conversation
+actor rebuilds entries of an earlier version from the first message the next time it catches the index
+up (`projectIndex`), and a message forgotten before that happens says on its receipt that only its own
+words were searched for. Not yet fixed: tool-call text beyond 60,000 characters of a message is not
+indexed.
 
 ## Secrets
 
@@ -238,10 +260,12 @@ open reservations only on evidence:
   thirty days after it was taken. Recorded usage settles it at the registry price of that usage; a
   record showing no usage releases it; no record, an unreadable record or no configured lookup leaves it
   uncertain. Each closure is an `inference.settle` command whose source names the provider record.
-- Every abandoned reservation is marked in one sweep. Lookups are limited per sweep (25 by default): a
-  run of consecutive reservations starting at a slice chosen at random, so no reservation is passed over
-  for good. The start is not taken from the clock: sweeps run on a fixed period, and a period sharing a
-  factor with the number of slices would reach the same slices every time. The result reports how many
+- Every abandoned reservation is marked in one sweep. Lookups are limited per sweep (25 by default):
+  those never looked up first, then those looked up longest ago (`looked_up_at`, migration 0205, set
+  for every reservation a sweep takes up). With N uncertain reservations every one is taken up within
+  ceil(N / 25) sweeps, whatever period the sweeps run on. Usage known only as a lower bound (a charged
+  entry beside one that says nothing reliable) settles the reservation at that cost or at the amount
+  reserved, whichever is larger. The result reports how many
   were not reached (`notLookedUp`). `settled` and `released` count only reservations the sweep itself
   closed.
 

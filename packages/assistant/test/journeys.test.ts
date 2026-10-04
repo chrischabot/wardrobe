@@ -3,7 +3,7 @@ import { getAgentByName } from "agents";
 import { beforeAll, describe, expect, it } from "vitest";
 import { all, getGarmentDetail, getStyleContext, listInventory, listRestrictions, resolveAlias } from "@garderobe/domain";
 import { validateOutfit } from "@garderobe/daily";
-import { exportAssistantData, importAssistantData, listComfortFeedback, listJobs, listLifecycleProjects, listMemoryConclusions, listOrders, listProducts, listResearchNotes, listReturnCases, research } from "../src/index.ts";
+import { discardImportedData, exportAssistantData, importAssistantData, listComfortFeedback, listJobs, listLifecycleProjects, listMemoryConclusions, listOrders, listProducts, listResearchNotes, listReturnCases, research } from "../src/index.ts";
 import { setTestPorts } from "../src/testing/index.ts";
 import { confirm, createWorld, runAndConfirm, submission, type World } from "./helpers.ts";
 
@@ -314,7 +314,7 @@ describe("assistant journeys through the conversation (real Durable Object, real
     const call = { toolName: "record_wear", input: { garmentIds: [shoe.garmentId], wearingDate: "2026-09-12" } };
     // First attempt: the command commits, then the model call after it fails as if the actor had been evicted mid-turn.
     w.model.script({ toolCalls: [call] }, { error: new Error("fetch failed: the actor was reset") }, { error: new Error("fetch failed: the actor was reset") });
-    const interrupted = await w.client.runTurn({ submissionId: submission("evict"), text: "I wore the 990v4 on Saturday" });
+    const interrupted = await w.client.runTurn({ submissionId: submission("evict"), text: "I wore the grey 990v4 on Saturday" });
     expect(interrupted.status).toBe("resumable");
     expect(interrupted.receipts).toHaveLength(1);
     expect(await wears()).toBe(before + 1);
@@ -327,11 +327,13 @@ describe("assistant journeys through the conversation (real Durable Object, real
     expect(resumed.receipts).toHaveLength(1);
     expect(resumed.receipts[0]!.commandId).toBe(interrupted.receipts[0]!.commandId);
     expect(await wears()).toBe(before + 1);
-    expect((await w.client.transcript({ limit: 200 })).messages.filter((m) => m.text === "I wore the 990v4 on Saturday")).toHaveLength(1);
+    expect((await w.client.transcript({ limit: 200 })).messages.filter((m) => m.text === "I wore the grey 990v4 on Saturday")).toHaveLength(1);
   });
 
   it("exports the assistant's records and the original conversation without credentials, and imports them into an empty owner with the same IDs and no replayed effects", async () => {
     await w.owner.exec("connection.register", { kind: "tavily", label: "Tavily", endpoint: "https://mcp.tavily.com/mcp/", namespace: "tavily", secretRef: "TAVILY_API_KEY" });
+    // Background work that is still waiting when the export is made (for adversarial D08-4, below).
+    const stillWaiting = await w.owner.exec("job.create", { kind: "email_investigation", title: "Everything bought from Anderson's" }, { actor: "owner", authorization: "owner_tap" });
     const data = await exportAssistantData(w.h.db, p());
     const conversation = await w.client.exportConversation();
     expect(JSON.stringify(data)).not.toContain("TAVILY_API_KEY");
@@ -370,5 +372,30 @@ describe("assistant journeys through the conversation (real Durable Object, real
     expect((await w.clientFor(other.principal()).transcript({})).total).toBe(0);
     expect((await w.clientFor(other.principal()).recallSearch({ text: "Drake's crewneck" })).hits).toHaveLength(0);
     expect(await listOrders(w.h.db, other.principal())).toHaveLength(0);
+
+    // Adversarial D08-4: background work still waiting in the exported account is not started in the new one.
+    const waiting = data.tables["assistant_jobs"]!.filter((j) => j["state"] === "queued" || j["state"] === "running").map((j) => String(j["job_id"]));
+    expect(waiting).toContain(String(stillWaiting.result["jobId"]));
+    const arrived = await all<{ job_id: string; state: string; unresolved_reason: string | null }>(w.h.db, "SELECT job_id, state, unresolved_reason FROM assistant_jobs WHERE user_id = ?", target.userId);
+    expect(arrived.filter((j) => j.state === "queued" || j.state === "running")).toEqual([]);
+    expect(arrived.length).toBe(data.tables["assistant_jobs"]!.length);
+    for (const jobId of waiting) {
+      const row = arrived.find((j) => j.job_id === jobId)!;
+      expect(row.state).toBe("cancelled");
+      expect(row.unresolved_reason).toMatch(/not started here/);
+    }
+
+    // Cleanup after a failed import (adversarial D08-2): the actor first, then the rows; the same
+    // package can then be imported into the same owner again, conversation included.
+    await targetClient.eraseEverything();
+    const gone = await discardImportedData(w.h.db, admin);
+    expect(gone.discarded["orders"]).toBe(1);
+    expect(gone.discarded["conversation_index"]).toBeGreaterThan(0);
+    expect((await listOrders(w.h.db, target.principal())).length).toBe(0);
+    const again = await importAssistantData(w.h.db, admin, data);
+    expect(again.imported).toEqual(imported.imported);
+    const second = w.clientFor(target.principal({ scopes: ["read", "write"] }));
+    expect((await second.importConversation(conversation)).imported).toBe(conversation.messages.length);
+    expect((await second.transcript({ limit: 200 })).messages.length).toBe(conversation.messages.length);
   });
 });

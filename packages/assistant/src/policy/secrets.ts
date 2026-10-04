@@ -31,6 +31,14 @@ const PATTERNS: Pattern[] = [
   { name: "slack_token", re: /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/g },
   { name: "google_api_key", re: /\bAIza[A-Za-z0-9_-]{30,}\b/g },
   { name: "google_oauth", re: /\bya29\.[A-Za-z0-9._-]{20,}\b/g },
+  // Forms the adversarial suite found unredacted (D12-1): Stripe keys written with underscores, an AWS
+  // secret access key after its name, npm, GitLab and Hugging Face tokens, and a Telegram bot token.
+  { name: "provider_key", re: /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{10,}\b/g },
+  { name: "aws_secret_key", re: /\b(aws_secret_access_key|secret_access_key)\b(\s*[=:]\s*)(["']?)([A-Za-z0-9/+=]{20,})\3/gi, group: 4 },
+  { name: "npm_token", re: /\bnpm_[A-Za-z0-9]{20,}\b/g },
+  { name: "gitlab_token", re: /\bglpat-[A-Za-z0-9_-]{16,}\b/g },
+  { name: "huggingface_token", re: /\bhf_[A-Za-z0-9]{20,}\b/g },
+  { name: "telegram_bot_token", re: /\b\d{8,10}:[A-Za-z0-9_-]{30,}\b/g },
   // "password: hunter2", "api key = abc", "token is abc123" - the value after an explicit credential label.
   {
     name: "labelled_credential",

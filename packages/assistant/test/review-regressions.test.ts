@@ -105,8 +105,9 @@ describe("review findings 6 to 13 and the carried items (real owner; FAKE MODEL)
     // End to end, including a secret inside an attachment: nothing stored, indexed, exported or sent to the model holds it.
     w.model.script({ text: "I have not kept that." });
     const turn = await w.client.runTurn({ submissionId: submission("f8"), text: "for the shop account my password is: hunter2secret, my pin is 4471 and creds are chris:Tr0ub4dor3xyz", attachments: [{ kind: "pasted_text", source: "note", text: "the door code is 915274" }] });
-    // Random identifiers (message and record IDs) are taken out first: a UUID can contain the PIN's digits by chance.
-    const everywhere = JSON.stringify([await w.client.transcript({ limit: 100 }), await w.client.exportConversation(), await w.client.backupConversation(), await all(w.h.db, "SELECT * FROM conversation_index WHERE user_id = ?", w.owner.userId), await all(w.h.db, "SELECT * FROM assistant_turns WHERE user_id = ?", w.owner.userId), await w.client.getTurn(turn.turnId), await exportAssistantData(w.h.db, w.owner.principal()), w.model.requests.at(-1)!.messages]).replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{16,}/g, "");
+    // Random identifiers (message and record IDs) are taken out first: a UUID can contain the PIN's digits by chance,
+    // and the index keeps a tool call's UUID as space-separated words (seen once in a whole-repository run).
+    const everywhere = JSON.stringify([await w.client.transcript({ limit: 100 }), await w.client.exportConversation(), await w.client.backupConversation(), await all(w.h.db, "SELECT * FROM conversation_index WHERE user_id = ?", w.owner.userId), await all(w.h.db, "SELECT * FROM assistant_turns WHERE user_id = ?", w.owner.userId), await w.client.getTurn(turn.turnId), await exportAssistantData(w.h.db, w.owner.principal()), w.model.requests.at(-1)!.messages]).replace(/[0-9a-f]{8}[- ][0-9a-f]{4}[- ][0-9a-f]{4}[- ][0-9a-f]{4}[- ][0-9a-f]{12}|[0-9a-f]{12,}/g, "");
     for (const secret of ["hunter2secret", "4471", "Tr0ub4dor", "915274"]) expect(everywhere).not.toContain(secret);
   });
 

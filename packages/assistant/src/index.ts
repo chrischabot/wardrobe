@@ -13,7 +13,7 @@ export { GarderobeAssistant, GarderobeAssistantBase, compactionThresholdFor, con
 export { SubmissionReuseError } from "./agent/turns.ts";
 export { assistantClient, AssistantRequestError, type AssistantClient } from "./client.ts";
 export * from "./queries.ts";
-export { exportAssistantData, importAssistantData, type AssistantExport } from "./export.ts";
+export { exportAssistantData, importAssistantData, discardImportedData, type AssistantExport } from "./export.ts";
 
 export { ModelService, BudgetExceededError, NoSelectableProfileError, InferenceFailedError, classifyError, BREAKER_THRESHOLD, type ModelServiceDeps, type RunScope, type ModelCallMeta } from "./inference/service.ts";
 export { PROFILE_SPECS, TASK_SPECS, DEFAULT_DAILY_BUDGETS, profileSpec, selectability, type ProfileSpec, type TaskSpec } from "./inference/registry.ts";

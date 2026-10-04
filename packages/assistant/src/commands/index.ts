@@ -95,11 +95,16 @@ export function registerAssistant(registry: CommandRegistry, options: { typedDir
       if (registry.get(type).class === "system") return;
       let effective: { type: string; payload: Record<string, unknown> } = { type, payload: payload as Record<string, unknown> };
       if (type === "command.undo") {
-        // Undoing is the same change in the other direction: it is judged as the change it undoes.
-        const target = await first<{ type: string; payload_json: string }>(ctx.db, "SELECT type, payload_json FROM commands WHERE user_id = ? AND command_id = ?", ctx.userId, String((payload as { commandId?: unknown }).commandId ?? ""));
+        // Undoing is the same change in the other direction: it is judged as the change it undoes. And an
+        // assistant undoes only what an assistant recorded: a wear or wash the OWNER reported in the app
+        // is the owner's record, and taking it back is the owner's to do (pull request 25 review, finding 5).
+        const target = await first<{ type: string; payload_json: string; actor: string }>(ctx.db, "SELECT type, payload_json, actor FROM commands WHERE user_id = ? AND command_id = ?", ctx.userId, String((payload as { commandId?: unknown }).commandId ?? ""));
         if (!target) return; // the command itself answers not_found
+        if (target.actor !== "assistant") throw refuse("owner_confirmation_required");
         effective = { type: target.type, payload: json<Record<string, unknown>>(target.payload_json, {}) };
       }
+      // A whole care channel names no piece: it is never a report of named pieces, whatever else the command carries.
+      if (OBSERVATION_TYPES.has(effective.type) && effective.type === type && (effective.payload as { allOfChannel?: unknown }).allOfChannel) throw refuse("group_not_named_by_owner");
       if (EVERYDAY_DIRECT_TYPES.has(effective.type) || options.typedDirect?.has(effective.type)) return;
       if (!mayCommitFromConversation(effective.type, effective.payload, ctx.principal.channel)) throw refuse("owner_confirmation_required");
       return;

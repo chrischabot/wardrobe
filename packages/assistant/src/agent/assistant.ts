@@ -50,7 +50,8 @@ import { PROFILE_SPECS, TASK_SPECS, type ProfileSpec } from "../inference/regist
 import { ownerAuthoredText } from "../policy/voice.ts";
 import { redactDeep, redactSecrets } from "../policy/secrets.ts";
 import { tombstonedIds } from "../queries.ts";
-import { indexMessages, indexWatermark, recall, type CanonicalMessage, type RecallInput } from "../recall/index.ts";
+import { ERASED_REASON } from "../client.ts";
+import { indexMessages, indexWatermark, markIndexCurrent, recall, staleIndexEntries, type CanonicalMessage, type RecallInput } from "../recall/index.ts";
 import { extractProductRecord, wrapUntrusted } from "../research/index.ts";
 import { buildReadTools } from "../tools/read.ts";
 import { buildWriteTools } from "../tools/write.ts";
@@ -680,14 +681,21 @@ export abstract class GarderobeAssistantBase extends Think<any> {
   async projectIndex(opts: { fromStart?: boolean } = {}): Promise<{ indexed: number; indexedPosition: number }> {
     const { settings } = await getSettings(this.db, await systemPrincipalFor(this.db, this.userId, "index"));
     const pending: CanonicalMessage[] = [];
-    if (opts.fromStart) {
+    // Entries written by an earlier indexer (before attachments and tool calls were indexed) are rebuilt
+    // once, from the first message: forgetting a message needs those words to find where they went.
+    const backfill = !opts.fromStart && (await staleIndexEntries(this.db, this.userId));
+    if (opts.fromStart || backfill) {
       for (const row of this.ledgerRows("ORDER BY position")) {
         const c = await this.canonical(row);
         if (c) pending.push(c);
       }
     } else pending.push(...(await this.unindexedMessages()));
-    if (pending.length === 0) return { indexed: 0, indexedPosition: (await indexWatermark(this.db, this.userId, this.userId)).indexedPosition };
+    if (pending.length === 0) {
+      if (backfill) await markIndexCurrent(this.db, this.userId);
+      return { indexed: 0, indexedPosition: (await indexWatermark(this.db, this.userId, this.userId)).indexedPosition };
+    }
     const r = await indexMessages(this.db, this.userId, this.userId, pending, { nowMs: this.now(), timezone: settings.timezone });
+    if (backfill) await markIndexCurrent(this.db, this.userId);
     return { indexed: r.indexed, indexedPosition: r.indexedPosition };
   }
 
@@ -1238,7 +1246,7 @@ export abstract class GarderobeAssistantBase extends Think<any> {
     // Retire the instance once this call has returned: the next use (if any) starts from empty storage.
     setTimeout(() => {
       try {
-        this.ctx.abort("erased at the owner's request");
+        this.ctx.abort(ERASED_REASON);
       } catch {
         // already gone
       }

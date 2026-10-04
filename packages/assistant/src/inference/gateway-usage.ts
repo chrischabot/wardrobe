@@ -90,7 +90,8 @@ export function refusedUpstream(status: unknown): boolean {
  *   - an entry whose token counts are not both whole numbers says nothing reliable, and neither does a
  *     successful, uncached entry with no tokens at all, nor a failed entry with no tokens whose status is
  *     not a provider refusal: the finding is `not_found` and the reservation stays uncertain;
- *   - `charged` when any entry used tokens upstream (not served from cache);
+ *   - `charged` when any entry used tokens upstream (not served from cache); when another entry of the
+ *     same call says nothing reliable, the usage is marked a lower bound (`atLeast`);
  *   - `not_charged` only when EVERY entry explicitly shows no upstream usage: served from cache, or failed
  *     (`success: false`) with both token counts exactly 0 AND a status that is a provider refusal.
  */
@@ -100,12 +101,21 @@ export function findingFrom(entries: GatewayLogEntry[]): ProviderUsageFinding {
   let inputTokens = 0;
   let outputTokens = 0;
   let model: string | null = null;
+  // An entry that says nothing reliable. Alone it leaves the call uncertain; beside an entry that shows
+  // usage it makes that usage a lower bound (`atLeast`), so the reservation can still be closed.
+  let unclear = false;
   for (const e of entries) {
     const tin = count(e.tokens_in);
     const tout = count(e.tokens_out);
-    if (typeof e.cached !== "boolean" || typeof e.success !== "boolean") return { status: "not_found" };
+    if (typeof e.cached !== "boolean" || typeof e.success !== "boolean") {
+      unclear = true;
+      continue;
+    }
     if (e.cached) continue; // answered from the Gateway's cache: nothing was used upstream
-    if (tin === null || tout === null) return { status: "not_found" };
+    if (tin === null || tout === null) {
+      unclear = true;
+      continue;
+    }
     if (tin + tout > 0) {
       inputTokens += tin;
       outputTokens += tout;
@@ -114,9 +124,10 @@ export function findingFrom(entries: GatewayLogEntry[]): ProviderUsageFinding {
     }
     // No tokens at all: evidence of no charge only for a call the log itself records as failed because the
     // provider refused it. A timeout, a dropped stream, a stop or a server-side failure may have been billed.
-    if (e.success || !refusedUpstream(e.status_code)) return { status: "not_found" };
+    if (e.success || !refusedUpstream(e.status_code)) unclear = true;
   }
-  if (inputTokens + outputTokens > 0) return { status: "charged", inputTokens, outputTokens, resolvedModel: model, ref };
+  if (inputTokens + outputTokens > 0) return { status: "charged", inputTokens, outputTokens, resolvedModel: model, ref, ...(unclear ? { atLeast: true } : {}) };
+  if (unclear) return { status: "not_found" };
   return { status: "not_charged", ref };
 }
 

@@ -284,8 +284,11 @@ async function unstated(db: Db, userId: string, type: string, payload: Record<st
   // A field holding a record's identifier is named by the record ("garment id" reads "garment"). A key
   // that no schema fixes (inside a patch, a job's parameters, free attributes) is quoted as written.
   const spoken = (s: string) => words(s.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase());
+  // A kind of change this file has neither a sentence nor a label for has no known shape at all: every
+  // one of its keys is shown as written, in quotation marks.
+  const unknownShape = !own(STATED, type) && !own(CHANGE_LABELS, type);
   const label = (path: string[]) => {
-    let free = false;
+    let free = unknownShape;
     const said = path.map((s) => {
       if (/^\d+$/.test(s)) return `${Number(s) + 1}`;
       const word = free && !TRUSTED_KEYS.has(s) ? quoted(s) : spoken(s);

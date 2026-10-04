@@ -139,7 +139,7 @@ describe("third review, pull request 25: the sweep reaches every reservation and
     w = await createWorld({ real: false });
   });
 
-  it("reservations older than the newest 25 are looked up too, also when sweeps run on a fixed period that shares a factor with the number of slices", async () => {
+  it("reservations older than the newest 25 are looked up too: every uncertain reservation is taken up within a bounded number of sweeps, whatever period the sweeps run on", async () => {
     // 60 abandoned calls, one a minute. The oldest three were not charged; the rest have no record.
     for (let n = 0; n < 60; n++) {
       setNow(w, at(n));
@@ -153,22 +153,19 @@ describe("third review, pull request 25: the sweep reaches every reservation and
         return ["run_rsv_00", "run_rsv_01", "run_rsv_02"].includes(call.runId) ? { status: "not_charged", ref: `gateway-log:${call.runId}` } : { status: "not_found" };
       },
     };
-    const first = await reconcileInferenceReservations({ db: w.h.db, service: w.h.service, nowMs: w.h.clock.now(), usageLookup: record, random: () => 0 });
+    const first = await reconcileInferenceReservations({ db: w.h.db, service: w.h.service, nowMs: w.h.clock.now(), usageLookup: record });
     // Every abandoned call is marked, not just 25 of them.
     // (One local database serves this whole file, so another describe's open reservation may be swept too.)
     expect(first.markedUncertain).toBeGreaterThanOrEqual(60);
     expect((await rows(w)).filter((r) => r.state === "reserved")).toEqual([]);
     expect(first.notLookedUp).toBeGreaterThanOrEqual(35);
     expect(asked.size).toBeLessThanOrEqual(25);
-    // Later sweeps reach the rest; none is passed over for good. They run every THREE minutes, and three
-    // slices are left (57 reservations, 25 a sweep): a start derived from the clock would pick the same
-    // slice every time and never ask about the others. The start is chosen by `random` (here a fixed
-    // sequence), not by the time.
-    const picks = [0.99, 0.5, 0, 0.7, 0.34];
-    let turn = 0;
+    // Later sweeps take up the ones never looked up first, then those looked up longest ago. 57 are left
+    // (25 a sweep): exactly two more sweeps reach every one, with no chance involved. They run every
+    // THREE minutes, a period on which a start derived from the clock picked the same slice every time.
     let released = first.released;
-    for (let sweep = 1; sweep <= 10 && asked.size < 60; sweep++) {
-      const r = await reconcileInferenceReservations({ db: w.h.db, service: w.h.service, nowMs: w.h.clock.now() + sweep * 3 * 60_000, usageLookup: record, random: () => picks[turn++ % picks.length]! });
+    for (let sweep = 1; sweep <= 2; sweep++) {
+      const r = await reconcileInferenceReservations({ db: w.h.db, service: w.h.service, nowMs: w.h.clock.now() + sweep * 3 * 60_000, usageLookup: record });
       released += r.released;
     }
     expect(asked.size).toBe(60);
@@ -194,6 +191,23 @@ describe("third review, pull request 25: the sweep reaches every reservation and
     const r = await reconcileInferenceReservations({ db: w.h.db, service: w.h.service, nowMs: w.h.clock.now(), usageLookup: record }, { limit: 500 });
     expect(r).toMatchObject({ markedUncertain: 2, released: 0, settled: 0 });
     expect((await rows(w)).map((x) => [x.reservation_id, x.state, x.actual_microusd])).toEqual([["rsv_a", "settled", 5], ["rsv_b", "settled", 5]]);
+  });
+
+  it("usage known only as a lower bound closes the reservation at no less than what was held for the call, instead of leaving it uncertain for good", async () => {
+    w = await createWorld({ real: false });
+    await reserve("rsv_bound");
+    await reserve("rsv_exact");
+    setNow(w, at(ABANDONED_AFTER_MS / 60_000 + 5));
+    const record = {
+      find: async (call: DispatchedCall): Promise<ProviderUsageFinding> =>
+        call.runId === "run_rsv_bound" ? { status: "charged", inputTokens: 1, outputTokens: 1, resolvedModel: null, ref: "gateway-log:bound", atLeast: true } : call.runId === "run_rsv_exact" ? { status: "charged", inputTokens: 1, outputTokens: 1, resolvedModel: null, ref: "gateway-log:exact" } : { status: "not_found" },
+    };
+    await reconcileInferenceReservations({ db: w.h.db, service: w.h.service, nowMs: w.h.clock.now(), usageLookup: record }, { limit: 500 });
+    const after = Object.fromEntries((await rows(w)).map((x) => [x.reservation_id, x]));
+    // Each was reserved at 10. The exact one costs what two tokens cost; the lower bound is not settled below 10.
+    expect(after["rsv_exact"]).toMatchObject({ state: "settled" });
+    expect(after["rsv_exact"]!.actual_microusd).toBeLessThan(10);
+    expect(after["rsv_bound"]).toMatchObject({ state: "settled", actual_microusd: 10 });
   });
 });
 
@@ -241,7 +255,8 @@ describe("the AI Gateway logs adapter (FAKE fetch in the documented shape of 'Li
     expect([429, 499, 502, "429"].map(refusedUpstream)).toEqual([true, false, false, false]);
     // One such entry among the call's entries leaves the whole call uncertain, whatever the others say.
     expect(await lookupWith(() => list([entry({ id: "log-refused", success: false, status_code: 429, tokens_in: 0, tokens_out: 0 }), entry({ id: "log-dropped", success: false, status_code: 499, tokens_in: 0, tokens_out: 0 })])).lookup.find(call)).toEqual({ status: "not_found" });
-    expect(await lookupWith(() => list([entry({ id: "log-dropped", success: false, status_code: 502, tokens_in: 0, tokens_out: 0 }), entry({ id: "log-paid" })])).lookup.find(call)).toEqual({ status: "not_found" });
+    // A dropped stream beside a charged retry: the usage is known as a lower bound, and the call can be closed.
+    expect(await lookupWith(() => list([entry({ id: "log-dropped", success: false, status_code: 502, tokens_in: 0, tokens_out: 0 }), entry({ id: "log-paid" })])).lookup.find(call)).toEqual({ status: "charged", inputTokens: 1500, outputTokens: 60, resolvedModel: "deepseek-chat", ref: "gateway-log:log-dropped,log-paid", atLeast: true });
     expect(await lookupWith(() => list([entry({ id: "log-cached", cached: true })])).lookup.find(call)).toEqual({ status: "not_charged", ref: "gateway-log:log-cached" });
     expect(await lookupWith(() => list([])).lookup.find(call)).toEqual({ status: "not_found" });
     expect(await lookupWith(() => list([entry({ metadata: undefined })])).lookup.find(call)).toEqual({ status: "not_found" });

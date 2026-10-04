@@ -135,6 +135,18 @@ const NEEDS_OWNER_WORDS = new Set(["style.add_amendment", "style.add_direction",
 
 const PROPOSED_NOTE = "NOT DONE. This was recorded as a request for the owner to confirm in the Garderobe app (Settings, Requests to confirm). Nothing has changed. Tell the owner exactly that; never say it was done.";
 
+/**
+ * Every piece a request refers to, wherever the command keeps it: the piece itself, a list of pieces, the
+ * two sides of a merge, the pieces a restriction covers and the items of a project or a care report. A
+ * request about a piece that does not exist is never put before the owner (adversarial finding I06-1).
+ */
+function garmentRefsIn(payload: Record<string, any>): string[] {
+  const out: unknown[] = [payload["garmentId"], payload["sourceGarmentId"], payload["targetGarmentId"]];
+  for (const list of [payload["garmentIds"], payload["scope"]?.["garmentIds"]]) if (Array.isArray(list)) out.push(...list);
+  if (Array.isArray(payload["items"])) for (const item of payload["items"]) out.push(item?.["garmentId"]);
+  return out.filter((id): id is string => typeof id === "string" && id.length > 0);
+}
+
 function garmentsOf(type: string, payload: Record<string, any>): string[] {
   const itemIds = (): string[] => ((payload["items"] ?? []) as { garmentId: string }[]).map((i) => i.garmentId);
   switch (type) {
@@ -178,7 +190,9 @@ async function observationGate(rt: TurnRuntime, type: string, payload: Record<st
   rt.reports ??= resolveOwnerReports(rt.db, rt.principal.userId, rt.ownerTexts, rt.localDate);
   const date = kind === "wear" ? ((payload["wearingDate"] as string | null | undefined) ?? null) : null;
   if (kind === "wear" && !date) return no;
-  const cover = coverOf(await rt.reports, kind, date, ids, attachedGarmentIds(rt.attachedRefs));
+  // What a connected assistant says the owner attached is that assistant's word, not the owner's act in
+  // the app: on that channel a piece counts only when the owner's relayed words name it.
+  const cover = coverOf(await rt.reports, kind, date, ids, attachedGarmentIds(rt.principal.channel === "mcp" ? [] : rt.attachedRefs));
   if (!cover) return no;
   // Words relayed by a connected assistant never record the wear of a piece under an active restriction.
   if (rt.principal.channel === "mcp" && type === "wear.record" && ids.some((id) => (rt.restrictedGarmentIds ?? []).includes(id))) return no;
@@ -206,7 +220,7 @@ async function propose(rt: TurnRuntime, req: CommitRequest): Promise<CommitResul
     await rt.onRefusal(refusal);
     return { status: "refused", code: refusal.code, message: `Nothing was changed. ${refusal.message}` };
   }
-  const referenced = [...new Set([...garmentsOf(req.type, req.payload), ...(typeof req.payload["garmentId"] === "string" ? [req.payload["garmentId"] as string] : [])])];
+  const referenced = [...new Set([...garmentsOf(req.type, req.payload), ...garmentRefsIn(req.payload)])];
   if (referenced.length > 0) {
     const known = new Set((await all<{ garment_id: string }>(rt.db, `SELECT garment_id FROM garments WHERE user_id = ? AND garment_id IN (${referenced.map(() => "?").join(",")})`, rt.principal.userId, ...referenced)).map((r) => r.garment_id));
     const missing = referenced.filter((id) => !known.has(id));

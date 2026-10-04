@@ -395,6 +395,15 @@ describe("purchase investigation as a durable job (REAL Gmail adapter over the F
     const orphan = await w.owner.exec("job.create", { kind: "email_investigation", title: "No mailbox", params: { from: "2026-08-01", to: "2026-09-01" } }, { actor: "owner", authorization: "owner_tap" });
     const failed = await runAssistantJob({ ...deps, mailFor: async () => null }, w.owner.userId, String(orphan.result["jobId"]));
     expect(failed).toMatchObject({ handled: true, state: "failed", detail: "the mailbox could not be opened in this environment" });
+    // Adversarial I05-4: an error that is not a connection error must not leave the job unfinished for
+    // ever. It settles as failed with a fixed reason, and the error's own text is not stored.
+    const broken = await w.owner.exec("job.create", { kind: "email_investigation", title: "Breaks", params: { from: "2026-08-01", to: "2026-09-01" } }, { actor: "owner", authorization: "owner_tap" });
+    const brokenId = String(broken.result["jobId"]);
+    const outcome = await runAssistantJob({ ...deps, mailFor: async () => Promise.reject(new Error("SYNTHETIC failure: no language model is reachable (token=SYNTHETIC-NOT-A-SECRET-1234)")) }, w.owner.userId, brokenId);
+    expect(outcome).toMatchObject({ handled: true, state: "failed" });
+    const settled = (await listJobs(w.h.db, w.owner.principal())).find((j) => j.jobId === brokenId)!;
+    expect(settled.state).toBe("failed");
+    expect(JSON.stringify(settled)).not.toContain("SYNTHETIC failure");
     // Other kinds are left to their own runners.
     const other = await w.owner.exec("job.create", { kind: "image_backfill", title: "Not mine" }, { actor: "owner", authorization: "owner_tap" });
     expect(await runAssistantJob(deps, w.owner.userId, String(other.result["jobId"]))).toMatchObject({ handled: false });

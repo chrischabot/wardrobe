@@ -46,18 +46,33 @@ export interface AssistantClient {
   eraseEverything(): Promise<{ messages: number; compactionOverlays: number; taskActors: number }>;
 }
 
+/** Why an erased conversation actor retires its instance (see GarderobeAssistant.eraseEverything). */
+export const ERASED_REASON = "erased at the owner's request";
+
 export function assistantClient(env: { ASSISTANT: DurableObjectNamespace<any> }, principal: Principal): AssistantClient {
   assertPrincipal(principal);
   requireScope(principal, "read");
   const channel = principal.channel === "mcp" || principal.channel === "web" ? principal.channel : "ios";
   const grant: TurnGrant = { channel, scopes: [...principal.scopes], authRef: principal.authRef };
-  /** Each call takes a fresh stub and releases it, so the actor can hibernate or be evicted between calls. */
+  /**
+   * Each call takes a fresh stub and releases it, so the actor can hibernate or be evicted between calls.
+   * An instance that `eraseEverything` has just retired refuses the call that meets it; the next instance
+   * starts from empty storage, so that one refusal is waited out and the call is made again. The account
+   * can therefore be used (or imported into) straight after an erase.
+   */
   const call = async <T>(fn: (actor: any) => Promise<T>): Promise<T> => {
-    const actor: any = await getAgentByName(env.ASSISTANT as never, principal.userId);
-    try {
-      return await fn(actor);
-    } finally {
-      actor[Symbol.dispose]?.();
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const actor: any = await getAgentByName(env.ASSISTANT as never, principal.userId);
+        try {
+          return await fn(actor);
+        } finally {
+          actor[Symbol.dispose]?.();
+        }
+      } catch (e) {
+        if (attempt >= 4 || !String((e as Error)?.message ?? e).includes(ERASED_REASON)) throw e;
+        await new Promise((resolve) => setTimeout(resolve, 25 * (attempt + 1)));
+      }
     }
   };
   const unwrap = <T>(value: T): T => {

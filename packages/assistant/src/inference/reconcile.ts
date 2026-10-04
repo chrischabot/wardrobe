@@ -31,8 +31,13 @@ export interface DispatchedCall {
 }
 
 export type ProviderUsageFinding =
-  /** The provider's record shows the call used tokens: it is settled at the cost of that usage. */
-  | { status: "charged"; inputTokens: number; outputTokens: number; resolvedModel: string | null; ref: string }
+  /**
+   * The provider's record shows the call used tokens: it is settled at the cost of that usage. `atLeast`
+   * marks a record that also holds an entry of this call that says nothing reliable (a dropped stream
+   * beside a charged retry): the recorded usage is then a lower bound, and the reservation is settled
+   * at that cost or at the amount reserved, whichever is larger, instead of staying uncertain for good.
+   */
+  | { status: "charged"; inputTokens: number; outputTokens: number; resolvedModel: string | null; ref: string; atLeast?: boolean }
   /** The provider's record shows the call failed or was served without usage: nothing was charged. */
   | { status: "not_charged"; ref: string }
   /** The provider has no record that can be tied to this call. Not proof that nothing was charged. */
@@ -59,11 +64,6 @@ export interface ReconcileDeps {
   nowMs: number;
   /** Absent: abandoned reservations are still marked uncertain, and nothing uncertain is closed. */
   usageLookup?: ProviderUsageLookup | null;
-  /**
-   * Chooses where among the uncertain reservations a sweep starts (a number in [0, 1)); `Math.random`
-   * when absent. Tests pass a fixed sequence.
-   */
-  random?: () => number;
 }
 
 export interface ReconcileResult {
@@ -92,11 +92,12 @@ interface OpenRow {
   state: string;
   error_class: string | null;
   created_at: string;
+  reserved_microusd: number;
 }
 
 const SYSTEM = { authorization: "system_schedule" as const, source: { channel: "system" as const } };
 
-const COLUMNS = "user_id, reservation_id, run_id, task, profile_id, attempt, gateway_id, state, error_class, created_at";
+const COLUMNS = "user_id, reservation_id, run_id, task, profile_id, attempt, gateway_id, state, error_class, created_at, reserved_microusd";
 
 export async function reconcileInferenceReservations(deps: ReconcileDeps, opts: { limit?: number; maxAbandoned?: number } = {}): Promise<ReconcileResult> {
   const result: ReconcileResult = { markedUncertain: 0, settled: 0, released: 0, stillUncertain: 0, lookupFailures: 0, notLookedUp: 0 };
@@ -138,13 +139,13 @@ export async function reconcileInferenceReservations(deps: ReconcileDeps, opts: 
     }
   }
 
-  // 2. Uncertain reservations, against the provider's record. Each sweep looks up at most `limit` of them,
-  // a run of consecutive ones in (time, ID) order starting at a slice chosen AT RANDOM, so no reservation
-  // is passed over for good because newer or older ones stay unresolved (third review: the newest 25
-  // starved the rest). The start is not derived from the clock: sweeps run on a fixed period, and a
-  // period sharing a factor with the number of slices would pick the same slices every time and never
-  // reach the others (change review, 2026-10-03). No cursor is stored, so nothing is written per sweep;
-  // with S slices a given reservation is reached once in S sweeps on average.
+  // 2. Uncertain reservations, against the provider's record. Each sweep looks up at most `limit` of them:
+  // those never looked up first, then those looked up longest ago (`looked_up_at`, migration 0205, set
+  // for every reservation a sweep takes up whatever the lookup then says). With N uncertain reservations
+  // in the window every one of them is therefore taken up within ceil(N / limit) sweeps, whatever period
+  // the sweeps run on. Earlier versions started at the newest 25 (third review: the rest starved), at a
+  // position derived from the clock (a period sharing a factor with the number of slices never reached
+  // some), and at random (coverage only on average; change reviews, 2026-10-03).
   const window = [toInstant(deps.nowMs - LOOKUP_NOT_BEFORE_MS), toInstant(deps.nowMs - LOOKUP_WINDOW_MS)] as const;
   const WHERE = "state = 'uncertain' AND julianday(created_at) < julianday(?) AND julianday(created_at) > julianday(?)";
   const total = (await all<{ n: number }>(deps.db, `SELECT COUNT(*) AS n FROM inference_reservations WHERE ${WHERE}`, ...window))[0]?.n ?? 0;
@@ -152,13 +153,12 @@ export async function reconcileInferenceReservations(deps: ReconcileDeps, opts: 
     result.stillUncertain = total;
     return result;
   }
-  const slices = Math.max(1, Math.ceil(total / limit));
-  const pick = (deps.random ?? Math.random)();
-  const slice = Number.isFinite(pick) ? Math.min(slices - 1, Math.max(0, Math.floor(pick * slices))) : 0;
-  const offset = total > limit ? slice * limit : 0;
-  const uncertain = await all<OpenRow>(deps.db, `SELECT ${COLUMNS} FROM inference_reservations WHERE ${WHERE} ORDER BY julianday(created_at), reservation_id LIMIT ? OFFSET ?`, ...window, limit, offset);
+  const uncertain = await all<OpenRow>(deps.db, `SELECT ${COLUMNS} FROM inference_reservations WHERE ${WHERE} ORDER BY (looked_up_at IS NOT NULL), julianday(looked_up_at), julianday(created_at), reservation_id LIMIT ?`, ...window, limit);
   result.notLookedUp = Math.max(0, total - uncertain.length);
   for (const row of uncertain) {
+    // Taken up now, whatever follows: the next sweep goes on to the others. This is the sweep's own
+    // bookkeeping about when it last asked, not a change to what the reservation says was spent.
+    await deps.db.prepare("UPDATE inference_reservations SET looked_up_at = ? WHERE user_id = ? AND reservation_id = ?").bind(toInstant(deps.nowMs), row.user_id, row.reservation_id).run();
     const principal = await principalFor(row.user_id);
     if (!principal) {
       result.stillUncertain++;
@@ -190,9 +190,11 @@ export async function reconcileInferenceReservations(deps: ReconcileDeps, opts: 
         result.stillUncertain++;
         continue;
       }
+      const cost = actualCostMicroUsd(spec, finding.inputTokens, finding.outputTokens);
       const receipt = await deps.service.execute(principal, {
         type: "inference.settle",
-        payload: { reservationId: row.reservation_id, outcome: "settled", actualMicroUsd: actualCostMicroUsd(spec, finding.inputTokens, finding.outputTokens), inputTokens: finding.inputTokens, outputTokens: finding.outputTokens, resolvedModel: finding.resolvedModel ?? spec.apiModelId ?? null, errorClass: row.error_class },
+        // A lower bound is never settled below what was held for the call.
+        payload: { reservationId: row.reservation_id, outcome: "settled", actualMicroUsd: finding.atLeast ? Math.max(cost, Number(row.reserved_microusd) || 0) : cost, inputTokens: finding.inputTokens, outputTokens: finding.outputTokens, resolvedModel: finding.resolvedModel ?? spec.apiModelId ?? null, errorClass: row.error_class },
         idempotencyKey: `inference-reconcile:${row.reservation_id}:settled`,
         authorization: "system_schedule",
         source,

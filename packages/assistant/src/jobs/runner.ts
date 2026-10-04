@@ -77,7 +77,12 @@ export async function runAssistantJob(deps: AssistantJobDeps, userId: string, jo
     return { handled: true, state: "completed" };
   } catch (e) {
     if (e instanceof ConnectionError) return fail(e.code === "auth" ? "the connection was rejected; sign in again to continue" : e.message.slice(0, 280));
-    throw e;
+    // Anything else must not leave the job 'running' for ever (adversarial finding I05-4): it settles as
+    // failed with a fixed reason. The error's own text is never stored: it could carry a key-bearing
+    // address. Only when even that cannot be recorded is the error passed on.
+    return fail("the work stopped on an internal error before it finished; nothing more was recorded. It can be asked for again").catch(() => {
+      throw e;
+    });
   }
 }
 

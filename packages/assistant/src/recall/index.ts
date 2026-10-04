@@ -146,8 +146,8 @@ export async function indexMessages(db: Db, userId: string, conversationId: stri
     }
     const dataTerms = m.dataText ? termsOfText(m.dataText.slice(0, 60_000)).join(" ") : "";
     const hash = await sha256Hex(`${m.role}\u001f${m.text}\u001f${dataTerms}`);
-    const existing = await first<{ source_hash: string }>(db, "SELECT source_hash FROM conversation_index WHERE user_id = ? AND message_id = ?", userId, m.messageId);
-    if (existing?.source_hash === hash) {
+    const existing = await first<{ source_hash: string; index_version: number }>(db, "SELECT source_hash, index_version FROM conversation_index WHERE user_id = ? AND message_id = ?", userId, m.messageId);
+    if (existing?.source_hash === hash && Number(existing.index_version) >= CURRENT_INDEX_VERSION) {
       skipped++;
       continue;
     }
@@ -159,9 +159,9 @@ export async function indexMessages(db: Db, userId: string, conversationId: stri
     const batch: Stmt[] = [
       stmt("DELETE FROM conversation_judgements WHERE user_id = ? AND message_id = ?", userId, m.messageId),
       stmt(
-        `INSERT INTO conversation_index (user_id, message_id, conversation_id, position, channel, turn_id, speaker, authored_at, authored_date, entity_ids_json, terms, data_terms, excerpt, source_hash, indexed_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (user_id, message_id) DO UPDATE SET position = excluded.position, entity_ids_json = excluded.entity_ids_json, terms = excluded.terms, data_terms = excluded.data_terms, excerpt = excluded.excerpt, source_hash = excluded.source_hash, indexed_at = excluded.indexed_at`,
+        `INSERT INTO conversation_index (user_id, message_id, conversation_id, position, channel, turn_id, speaker, authored_at, authored_date, entity_ids_json, terms, data_terms, excerpt, source_hash, indexed_at, index_version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${CURRENT_INDEX_VERSION})
+         ON CONFLICT (user_id, message_id) DO UPDATE SET position = excluded.position, entity_ids_json = excluded.entity_ids_json, terms = excluded.terms, data_terms = excluded.data_terms, excerpt = excluded.excerpt, source_hash = excluded.source_hash, indexed_at = excluded.indexed_at, index_version = excluded.index_version`,
         userId, m.messageId, conversationId, m.position, m.channel, m.turnId, speaker, m.authoredAt, authoredDate, JSON.stringify(entityIds), terms, dataTerms, m.text.slice(0, 1200), hash, now,
       ),
     ];
@@ -192,6 +192,22 @@ export async function indexMessages(db: Db, userId: string, conversationId: stri
   ).run();
   const state = await first<{ indexed_position: number }>(db, "SELECT indexed_position FROM conversation_index_state WHERE user_id = ? AND conversation_id = ?", userId, conversationId);
   return { indexed, skipped, indexedPosition: state?.indexed_position ?? 0 };
+}
+
+/**
+ * The version of index entries this indexer writes (2: with `data_terms`, migration 0204). Entries of an
+ * earlier version are re-indexed once by the conversation actor (see `staleIndexEntries`).
+ */
+export const CURRENT_INDEX_VERSION = 2;
+
+/** Whether any of the owner's index entries was written by an earlier version of the indexer. */
+export async function staleIndexEntries(db: Db, userId: string): Promise<boolean> {
+  return (await first(db, `SELECT 1 AS x FROM conversation_index WHERE user_id = ? AND index_version < ${CURRENT_INDEX_VERSION} LIMIT 1`, userId)) != null;
+}
+
+/** After a rebuild from the first message: entries the rebuild had nothing newer to write for are current too. */
+export async function markIndexCurrent(db: Db, userId: string): Promise<void> {
+  await prepare(db, stmt(`UPDATE conversation_index SET index_version = ${CURRENT_INDEX_VERSION} WHERE user_id = ? AND index_version < ${CURRENT_INDEX_VERSION}`, userId)).run();
 }
 
 export async function indexWatermark(db: Db, userId: string, conversationId: string): Promise<{ indexedPosition: number; indexedThrough: string | null }> {

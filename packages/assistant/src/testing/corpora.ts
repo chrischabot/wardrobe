@@ -227,7 +227,10 @@ export const ORDINARY_CASES: OrdinaryCase[] = [
   wear("wear-had-on-yesterday", "I had the navy herringbone Games on yesterday.", ["Navy Herringbone Games"], "yesterday"),
   wear("wear-threw-on", "Threw on the Chasseur this morning.", ["Waxed Chasseur"]),
   wear("wear-todays-outfit", "Today's outfit: camel field games, cream akita, grey 990s.", ["Camel Field Games", "Akita slub 5-pocket — cream", "NB 990v4"]),
-  wear("wear-log-today-as", "Log today as the Grandfather Coat over the slate linen shirt.", ["Grandfather Coat", "Heavy rustic linen — slate"]),
+  // "The slate linen shirt" fits three slate linen shirts equally well, so it names none of them and the
+  // model's choice waits for the owner (adversarial finding I06-3); said precisely, it is recorded at once.
+  { id: "wear-log-today-as-ambiguous", ownerText: "Log today as the Grandfather Coat over the slate linen shirt.", expect: { outcome: "proposed", type: "wear.record" }, calls: async (ctx) => [{ toolName: "record_wear", input: { garmentIds: [(await ctx.garment("Grandfather Coat")).garmentId, (await ctx.garment("Heavy rustic linen — slate")).garmentId], wearingDate: ctx.localDate } }] },
+  wear("wear-log-today-as", "Log today as the Grandfather Coat over the heavy rustic slate linen shirt.", ["Grandfather Coat", "Heavy rustic linen — slate"]),
   proposed("add-turned-up", "A grey Shetland crewneck from Harley turned up today, it's mine now.", "garment.create", () => [{ toolName: "add_garment", input: { name: "Harley Shetland crewneck", category: "knitwear", colour: "grey", maker: "Harley", state: "owned" } }]),
   proposed("add-gift", "My wife gave me a burgundy knitted tie for my birthday.", "garment.create", () => [{ toolName: "add_garment", input: { name: "Burgundy knitted tie", category: "tie", colour: "burgundy", state: "owned" } }]),
   { id: "dirty-curry", ownerText: "Got curry down the white oxford at lunch.", expect: { outcome: "recorded", type: "care.mark_dirty" }, calls: async (ctx) => [{ toolName: "mark_dirty", input: { garmentIds: [(await ctx.garment("Pima oxford — white")).garmentId] } }] },
