@@ -16,9 +16,8 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: backend-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+# No concurrency group on purpose: a run cancelled in favour of a newer one for the same commit leaves
+# cancelled checks on that commit, which read as failures to whoever decides the merge.
 
 jobs:
   verify:
