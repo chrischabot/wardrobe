@@ -120,6 +120,15 @@ function stringsIn(value, out = []) {
   return out;
 }
 
+/**
+ * Names of the expected outcomes, as needles for the isolation checks. A name the corpus itself uses as a
+ * scenario field is left out: the bundle's own candidate packet shows it to the candidate.
+ */
+function assertionKeys(corpus) {
+  const scenarioWords = new Set(corpus.cases.flatMap((c) => stringsIn(c.scenario)));
+  return [...new Set(Object.values(corpus.assertions).flatMap((a) => Object.keys(a)))].filter((key) => !scenarioWords.has(key));
+}
+
 function loadCorpus() {
   const cases = readJson(path.join(bundle, "cases.json"));
   const assertions = readJson(path.join(bundle, "fixtures/state-assertions.json"));
@@ -400,7 +409,7 @@ function isolationAudit(corpus, split, work, registry) {
     if (c.title.length >= 24) needles.push({ kind: "case_title", case: c.id, text: c.title });
     if (c.split !== split) needles.push({ kind: `request_of_${c.split}_case`, case: c.id, text: c.prompt });
   }
-  for (const key of new Set(Object.values(corpus.assertions).flatMap((a) => Object.keys(a)))) needles.push({ kind: "state_assertion_key", case: null, text: key });
+  for (const key of assertionKeys(corpus)) needles.push({ kind: "state_assertion_key", case: null, text: key });
   for (const [id, e] of Object.entries(corpus.evidence)) if (typeof e.quote === "string" && e.quote.length >= 60) needles.push({ kind: "historical_evidence_quote", case: id, text: e.quote });
   const findings = [];
   let requests = 0;
@@ -692,7 +701,7 @@ function selftest() {
       for (const c of input.cases) must(Object.keys(c).sort().join() === "id,request,scenario,world", `${c.id} has fields ${Object.keys(c)}`);
       for (const c of corpus.cases) for (const criterion of c.judge_criteria) must(!text.includes(JSON.stringify(criterion).slice(1, -1)), `a judge criterion of ${c.id} is in the ${split} candidate input`);
       for (const c of other) must(!input.cases.some((x) => x.id === c.id), `${c.id} of the other split is in the ${split} candidate input`);
-      for (const key of new Set(Object.values(corpus.assertions).flatMap((a) => Object.keys(a)))) must(!text.includes(key), `state assertion key ${key} is in the candidate input`);
+      for (const key of assertionKeys(corpus)) must(!text.includes(key), `state assertion key ${key} is in the candidate input`);
       return `${input.cases.length} cases`;
     });
   }
