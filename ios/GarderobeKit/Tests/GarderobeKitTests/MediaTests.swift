@@ -439,7 +439,7 @@ struct MediaBoundaryTests {
         let removals = transport.requests("POST", path)
         #expect(removals.count == 1)
         #expect(sessionAtRemoval.value)                                         // the session still existed when the backend was asked
-        #expect(removals.first?.headers["Authorization"] == "Bearer <redacted>")
+        #expect(removals.first?.headers["Authorization"] == "Bearer session-live-1")
         #expect(tokens.load() == nil && !session.hasSession)                    // and is gone once sign-out has finished
         #expect(app.account.state == .signedOut && !app.notifications.isWaitingToSend)
     }
