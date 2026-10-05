@@ -17,7 +17,15 @@ import { weighEvents } from "./calendar/influence.ts";
 import { dailySettings, latestCalendarSnapshot, loadOwner } from "./context.ts";
 import { execAs, nowOf, type DailyDeps } from "./deps.ts";
 import { CalendarNotConnectedError, type ProviderForecast } from "./ports.ts";
-import { buildWeatherSnapshot, formatAge } from "./weather/assess.ts";
+import { buildWeatherSnapshot, forecastCoversDate, formatAge, implausibleForecast } from "./weather/assess.ts";
+
+/** The provider answered, but with values that cannot be weather; the forecast is refused whole. */
+class ImplausibleForecastError extends Error {
+  constructor(readonly what: string) {
+    super(`implausible forecast: ${what}`);
+    this.name = "ImplausibleForecastError";
+  }
+}
 
 /** A forecast older than this is no longer relevant enough to stand in after a failed fetch. */
 export const MAX_STALE_FORECAST_MINUTES = 12 * 60;
@@ -157,15 +165,23 @@ export async function fetchWeatherSnapshot(deps: DailyDeps, principal: Principal
     } else {
       try {
         // The request itself is made at coarse precision: the provider sees a city-level location.
-        forecast = await provider.forecast({ latitude: Number(coarse(location.latitude)), longitude: Number(coarse(location.longitude)), timezone: location.timezone, startDate: opts.localDate, endDate: opts.localDate });
-        await writeCache(deps.db, key, opts.localDate, forecast);
+        const fetched = await provider.forecast({ latitude: Number(coarse(location.latitude)), longitude: Number(coarse(location.longitude)), timezone: location.timezone, startDate: opts.localDate, endDate: opts.localDate });
+        // A value that cannot be weather (900 degrees, a 5000 % chance of rain) means the answer is corrupt,
+        // in another unit or forged: none of it is used and none of it is kept.
+        const impossible = implausibleForecast(fetched);
+        if (impossible) throw new ImplausibleForecastError(impossible);
+        forecast = fetched;
+        // An answer that says nothing about the day is reported as such but never held: the next request
+        // asks the provider again instead of repeating it for an hour.
+        if (forecastCoversDate(fetched, opts.localDate)) await writeCache(deps.db, key, opts.localDate, fetched);
       } catch (e) {
         const reason = String((e as Error)?.message ?? e).slice(0, 160);
-        if (cached && ageOf(cached) <= MAX_STALE_FORECAST_MINUTES) {
+        const refused = e instanceof ImplausibleForecastError ? `The weather provider sent an implausible forecast (${e.what}), which was not used` : null;
+        if (cached && ageOf(cached) <= MAX_STALE_FORECAST_MINUTES && ageOf(cached) >= 0) {
           forecast = cached;
-          limitation = `The weather provider could not be reached; using the forecast fetched ${formatAge(Math.round(ageOf(cached)))} ago.`;
+          limitation = `${refused ?? "The weather provider could not be reached"}; using the forecast fetched ${formatAge(Math.round(ageOf(cached)))} ago.`;
         } else {
-          limitation = `The weather provider could not be reached and no recent forecast is held (${reason}).`;
+          limitation = refused ? `${refused}; temperature, rain and wind are unknown.` : `The weather provider could not be reached and no recent forecast is held (${reason}).`;
         }
       }
     }
