@@ -222,11 +222,14 @@ describe("the inference budget of a board", () => {
   it("a model that does not answer inside the budget is abandoned and the board is still complete", async () => {
     const { h, owner } = await setup();
     const calls: { userId: string | null }[] = [];
-    h.deps.model = slowModel(5_000, calls);
-    h.deps.modelBudgetMs = 60;
+    // The budget is wall-clock for the whole request and starts before the context is assembled, so it has
+    // to outlast that assembly for the model to be asked at all: 60 ms did not on a loaded machine (the
+    // model was then never called and this test failed on `calls`). The model answers long after the budget.
+    h.deps.model = slowModel(20_000, calls);
+    h.deps.modelBudgetMs = 1_500;
     const started = Date.now();
     const result = await compose(h, owner, DAY);
-    expect(Date.now() - started).toBeLessThan(4_000);
+    expect(Date.now() - started).toBeLessThan(10_000); // abandoned at the budget, not awaited for its 20 s
     expect(calls).toHaveLength(1); // no second attempt once the budget is spent
     expect(result.diagnostics!.modelError).toMatch(/inference budget/);
     expect(result.board!.options).toHaveLength(5);
