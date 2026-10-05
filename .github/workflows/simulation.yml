@@ -1,0 +1,60 @@
+name: Simulation
+
+# The seeded MCP simulation (tests/simulation): for each seed, a fresh local database with the owner's
+# real profile and inventory, the simulation Worker under `wrangler dev`, and four simulated weeks driven
+# through a real MCP client with every invariant checked after every step. Nothing here touches a
+# deployment and no secret is used. The job fails when a seed does not run to its last step or an
+# invariant check fails; the per-seed results and the summary are kept as an artifact either way.
+# The workspace's quick tests (no Worker) run in the Backend workflow with every other workspace.
+on:
+  pull_request:
+    branches: [garderobe-rebuild]
+    paths:
+      - "tests/simulation/**"
+      - ".github/workflows/simulation.yml"
+  workflow_dispatch:
+    inputs:
+      seeds:
+        description: Comma-separated seeds
+        default: "1,2,3,4,5"
+      weeks:
+        description: Simulated weeks per seed (at least 4)
+        default: "4"
+
+permissions:
+  contents: read
+
+jobs:
+  simulate:
+    name: Five seeds, four simulated weeks each
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Run the simulation
+        run: |
+          echo "Started at $(date -u +%Y-%m-%dT%H:%M:%SZ) on commit ${GITHUB_SHA}"
+          npm run sim:local --workspace tests/simulation -- --seeds "${{ inputs.seeds || '1,2,3,4,5' }}" --weeks "${{ inputs.weeks || '4' }}" --parallel 2 --state "${RUNNER_TEMP}/garderobe-simulation" --out "${RUNNER_TEMP}/simulation-results"
+      - name: Summary
+        if: ${{ always() }}
+        run: |
+          if [ -f "${RUNNER_TEMP}/simulation-results/README.md" ]; then cat "${RUNNER_TEMP}/simulation-results/README.md" >> "${GITHUB_STEP_SUMMARY}"; else echo "The simulation wrote no results." >> "${GITHUB_STEP_SUMMARY}"; fi
+      - name: Keep the results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulation-results
+          path: ${{ runner.temp }}/simulation-results
+          if-no-files-found: warn
+      - name: Keep the Worker logs when the run failed
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: simulation-worker-logs
+          path: ${{ runner.temp }}/garderobe-simulation/*/worker.log
+          if-no-files-found: warn
