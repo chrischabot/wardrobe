@@ -61,6 +61,24 @@ async function claim(rt: MediaRuntime, userId: string, jobId: string): Promise<J
   return first<JobRow>(rt.db, "SELECT user_id, job_id, kind, subject_id, state, attempts, max_attempts, payload_json, last_error, updated_at FROM media_jobs WHERE user_id = ? AND job_id = ?", userId, jobId);
 }
 
+/**
+ * A job whose earlier attempts never reported back (the isolate ran out of memory or time while it held
+ * the lease, so neither the retry nor the failure path ran) has still used one attempt each time. Once
+ * the allowance is spent the job is recorded as failed instead of being started again: otherwise every
+ * sweep would start the same crashing work for ever, and take the rest of the sweep down with it.
+ * A removal of deleted files is exempt: it is never given up (see `runMediaJob`).
+ */
+async function abandonIfExhausted(rt: MediaRuntime, userId: string, jobId: string): Promise<boolean> {
+  const stuck = await first<{ attempts: number }>(
+    rt.db,
+    "SELECT attempts FROM media_jobs WHERE user_id = ? AND job_id = ? AND kind != 'purge_objects' AND state = 'running' AND lease_until < ? AND attempts >= max_attempts",
+    userId, jobId, toInstant(rt.clock()),
+  );
+  if (!stuck) return false;
+  await execSystem(rt, userId, "media.fail_job", { jobId, error: `abandoned after ${stuck.attempts} attempts that started and never finished` }, `job-failed:${jobId}`);
+  return true;
+}
+
 async function runPurge(rt: MediaRuntime, job: JobRow, ownerActive: boolean): Promise<void> {
   const payload = json<{ keys?: string[]; cacheShas?: string[] }>(job.payload_json, {});
   const keys = payload.keys ?? [];
@@ -95,6 +113,7 @@ export async function runMediaJob(rt: MediaRuntime, userId: string, jobId: strin
     const kind = await first<{ kind: string }>(rt.db, "SELECT kind FROM media_jobs WHERE user_id = ? AND job_id = ?", userId, jobId);
     if (kind?.kind !== "purge_objects") return "skipped";
   }
+  if (ownerActive && (await abandonIfExhausted(rt, userId, jobId))) return "dead";
   const job = await claim(rt, userId, jobId);
   if (!job) return "skipped";
   try {
@@ -116,9 +135,12 @@ export async function runMediaJob(rt: MediaRuntime, userId: string, jobId: strin
   }
 }
 
+/** An identifier as this service writes them: printable, without spaces, of bounded length. Anything else cannot name a job. */
+const MESSAGE_ID = /^[\x21-\x7e]{1,200}$/;
+
 function isJobMessage(body: unknown): body is MediaQueueMessage {
   const b = body as MediaQueueMessage | null;
-  return !!b && typeof b === "object" && b.kind === "media.job" && typeof b.userId === "string" && typeof b.jobId === "string";
+  return !!b && typeof b === "object" && !Array.isArray(b) && b.kind === "media.job" && typeof b.userId === "string" && typeof b.jobId === "string" && MESSAGE_ID.test(b.userId) && MESSAGE_ID.test(b.jobId);
 }
 
 /** Queue consumer: call from the Worker's `queue(batch, env)` handler. */
@@ -130,7 +152,15 @@ export async function handleMediaQueue(rt: MediaRuntime, batch: MessageBatch<unk
       message.ack(); // an unparseable message can never succeed; do not redeliver it
       continue;
     }
-    const outcome = await runMediaJob(rt, message.body.userId, message.body.jobId);
+    // One message's unexpected failure (storage or database unavailable for that job) is that message's
+    // alone: it is retried by itself, and the rest of the batch is still worked through.
+    let outcome: JobRunResult;
+    try {
+      outcome = await runMediaJob(rt, message.body.userId, message.body.jobId);
+    } catch (e) {
+      console.warn("media job message failed and will be retried", String((e as Error)?.message ?? e).slice(0, 200));
+      outcome = "retry";
+    }
     results[outcome]++;
     if (outcome === "retry") message.retry({ delaySeconds: 5 });
     else message.ack();

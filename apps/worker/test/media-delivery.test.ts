@@ -79,6 +79,27 @@ describe("signed image delivery", () => {
   });
 });
 
+describe("an uploaded photograph", () => {
+  // Regression: completing an upload committed the preparation job but did not put it on the queue, so the
+  // photograph stayed "processing" until the next scheduled sweep or somebody else's command.
+  it("is prepared straight after the upload is completed, without a sweep or any further request", async () => {
+    const app = await testApp();
+    const uploaded = await uploadImage(owner, { intent: "attachment" });
+    const id = uploaded.complete.asset.assetId as string;
+    expect(uploaded.complete.jobId).toBeTruthy();
+    let job: { state: string; attempts: number } | null = null;
+    // Only reads from here on: nothing in this loop dispatches or runs a job.
+    for (let i = 0; i < 400; i++) {
+      job = await app.db.prepare("SELECT state, attempts FROM media_jobs WHERE user_id = ? AND job_id = ?").bind(owner.userId, uploaded.complete.jobId).first<{ state: string; attempts: number }>();
+      if (job && job.state !== "queued" && job.state !== "running") break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(job).toEqual({ state: "succeeded", attempts: 1 });
+    expect((await app.db.prepare("SELECT status FROM media_assets WHERE user_id = ? AND asset_id = ?").bind(owner.userId, id).first<{ status: string }>())!.status).not.toBe("processing");
+    expect((await app.db.prepare("SELECT COUNT(*) AS n FROM outbox WHERE user_id = ? AND topic = 'media.job' AND state != 'acknowledged'").bind(owner.userId).first<{ n: number }>())!.n).toBe(0);
+  });
+});
+
 describe("Studio validation", () => {
   it("is always the daily service's validator with the owner's own rules, never the visual wardrobe's baseline", async () => {
     const studio = await owner.api.json("GET", "/v1/studio?mode=for_today");
