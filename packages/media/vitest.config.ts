@@ -19,6 +19,8 @@ export default defineConfig(async () => ({
       bindings: { MEDIA_SIGNING_KEY: "test-only-media-signing-key-not-a-deployment-secret" },
     }),
   ],
+  // Set only by tools/composite-example.mjs, to have test/composite-example.test.ts print the example files.
+  define: { __EMIT_COMPOSITE_EXAMPLE__: JSON.stringify(process.env.GARDEROBE_EMIT_COMPOSITE_EXAMPLE === "1") },
   test: {
     include: ["test/**/*.test.ts"],
     testTimeout: 60_000,
