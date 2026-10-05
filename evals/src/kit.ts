@@ -157,7 +157,11 @@ export async function buildWorld(c: CandidateCase, fixture: CandidateInput["fixt
   }
   const owner = await provisionOwner({ displayName: "Evaluation fixture owner (SYNTHETIC stock)" });
   const docs = ownerDocuments();
-  const header = docs.inventoryCsv.split(/\r?\n/)[0]!;
+  // The sheet up to and including its header row (it opens with a title row): the same sheet with no stock rows.
+  const sheet = docs.inventoryCsv.split(/\r?\n/);
+  const headerAt = sheet.findIndex((line) => /^"?Category"?\s*,\s*"?Item"?/.test(line.replace(/^\uFEFF/, "").trim()));
+  if (headerAt === -1) throw new Error("the owner's inventory sheet has no header row the synthetic world could keep");
+  const header = sheet.slice(0, headerAt + 1).join("\n");
   await importOwnerData(app.service, createPrincipal({ userId: owner.userId, actor: "system", channel: "import", scopes: ["read", "write", "admin"], authRef: "evals:profile-import" }), { profileText: docs.profileText, inventoryCsv: `${header}\n` });
   const { place, today } = await placeWithWeather(owner, c.id, c.scenario, fixture);
   const map = new Map<string, { garmentId: string; name: string }>();

@@ -632,8 +632,8 @@ async function runSplit(split) {
     for (const x of results) {
       const label = x.adapter_error ? "ADAPTER ERROR" : unsupported(x) ? "unsupported scenario (not run)" : (x.scripted_ledger_check ?? x.status);
       const open = (x.deterministic ?? []).filter((k) => k.status !== "passed");
-      const detail = x.adapter_error ? `${x.reason}\n${String(x.adapter_error.stack ?? "").split("\n").slice(1, 4).join("\n")}` : x.scripted_ledger_check === "passed" ? "" : [x.reason, ...open.map((k) => `${k.name} ${k.status}: ${typeof k.detail === "string" ? k.detail : JSON.stringify(k.detail)}`)].filter(Boolean).join("\n");
-      lines.push(`${x.case_id}: ${label}${detail ? `\n    ${detail.slice(0, 900).split("\n").join("\n    ")}` : ""}`);
+      const detail = x.adapter_error ? `${x.reason}\n${String(x.adapter_error.stack ?? "").split("\n").filter((line) => line.includes("/evals/")).slice(0, 1).join("\n")}` : x.scripted_ledger_check === "passed" ? "" : [x.reason, ...open.map((k) => `${k.name} ${k.status}: ${typeof k.detail === "string" ? k.detail : JSON.stringify(k.detail)}`)].filter(Boolean).join("\n");
+      lines.push(`${x.case_id}: ${label}${detail ? ` :: ${detail.slice(0, 700).split("\n").join(" // ")}` : ""}`);
     }
     console.log(`\n==== adapter check, per case ====\n${lines.join("\n")}`);
     const open = results.filter((x) => x.scripted_ledger_check !== "passed" && !unsupported(x));
