@@ -264,7 +264,10 @@ Notifications capability registered, a push (APNs) key configured on the backend
     for it, not iOS). No removal is sent for a phone that never sent a registration and that the backend
     does not list; "not found" on a removal counts as stopped. The switch is off while iOS refuses
     permission. Signing out first lets a registration that is on its way land, then asks the backend once to
-    forget this phone, and keeps nothing waiting. Whether there is anything to remove is decided by
+    forget this phone, and keeps nothing waiting; no other request starts while it does, and "not found" on
+    that removal counts as removed. Turning the switch off again while a removal waits keeps its retry
+    schedule. A registration left unanswered is described as not confirmed, never as absent. Whether there
+    is anything to remove is decided by
     evidence (a request that left this phone or was waiting to, or the backend's list), never by the
     switch alone. A request
     the backend leaves undecided waits one minute, then double each time up to an hour, and after six such

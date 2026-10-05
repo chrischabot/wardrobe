@@ -310,7 +310,7 @@ struct MediaBoundaryTests {
 
         let first = await model.register(token: token, apns: .development)
         #expect(!first && model.isWaitingToSend && !model.isRegistered)
-        #expect(model.message == "Not registered yet: Too many requests. It will be tried again later.")
+        #expect(model.message == "Registration not confirmed yet: Too many requests. It will be tried again later.")
         #expect(model.statusLine == "Waiting to register this phone. It will be tried again later.")
         // iOS hands the same token over again on the next launch: that is the same request, still waiting its turn.
         let relaunch = await model.register(token: token, apns: .development)
@@ -331,8 +331,8 @@ struct MediaBoundaryTests {
         time.advance(3600)
         let last = await model.retryPending()
         #expect(!last && posts().count == NotificationsModel.retryLimit && model.hasStoppedRetrying && model.isWaitingToSend)
-        #expect(model.message == "Not registered: Something went wrong on the server. It was tried 6 times and will not be tried again by itself.")
-        #expect(model.statusLine == "This phone has not been registered. Try again when you are ready.")
+        #expect(model.message == "Registration not confirmed: Something went wrong on the server. It was tried 6 times and will not be tried again by itself.")
+        #expect(model.statusLine == "The server has not confirmed this phone's registration. Try again when you are ready.")
         time.advance(86_400)
         let later = await model.retryPending()
         #expect(!later && posts().count == NotificationsModel.retryLimit)
@@ -341,8 +341,42 @@ struct MediaBoundaryTests {
         // The owner asks: it is sent at once and starts over.
         router.on("POST", "/v1/devices") { request in TestSupport.json(syntheticDevice(TestSupport.body(request)["deviceId"]?.stringValue ?? "")) }
         listed.value = true
+        // The backend already lists this phone (the unanswered request was a repeat): the line does not deny it.
+        await model.open()
+        #expect(model.isRegistered && model.isWaitingToSend)
+        #expect(model.statusLine == "This phone is registered, but the server has not confirmed its latest notification address. Try again when you are ready.")
         let asked = await model.retryNow()
         #expect(asked && model.isRegistered && !model.isWaitingToSend && !model.hasStoppedRetrying)
+    }
+
+    @Test("Turning notifications off again while the removal waits keeps its retry schedule: not sent early, and not restarted once it is left to Try again")
+    func repeatedTurnOffKeepsSchedule() async throws {
+        let router = Router()
+        let transport = router.transport
+        let time = ManualTimeSource(instant: TestSupport.startInstant)
+        let model = NotificationsModel(environment: TestSupport.environment(transport: transport, time: time))
+        let path = "/v1/devices/\(model.deviceId)/remove"
+        router.json("GET", "/v1/devices", ["deliveryConfigured": true, "devices": [device(model.deviceId)]])
+        router.on("POST", path) { _ in TestSupport.error("internal", "Something went wrong on the server.", status: 500) }
+        await model.open()
+        func removals() -> Int { transport.requests("POST", path).count }
+
+        let first = await model.turnOff()
+        #expect(!first && model.isWaitingToSend && removals() == 1)
+        let again = await model.turnOff()
+        #expect(!again && removals() == 1)                                   // still inside its wait: not sent early
+        for attempt in 2...NotificationsModel.retryLimit {
+            time.advance(NotificationsModel.retryDelay(afterAttempts: attempt - 1))
+            let tried = await model.turnOff()
+            #expect(!tried && removals() == attempt)
+        }
+        #expect(model.hasStoppedRetrying)
+        time.advance(86_400)
+        let exhausted = await model.turnOff()
+        #expect(!exhausted && removals() == NotificationsModel.retryLimit && model.hasStoppedRetrying)   // only Try again sends it now
+        router.json("POST", path, ["removed": true])
+        let asked = await model.retryNow()
+        #expect(asked && !model.isWaitingToSend && removals() == NotificationsModel.retryLimit + 1)
     }
 
     @Test("A phone that was never registered sends no removal; iOS is told to stop; after iOS refuses permission the switch is off")
@@ -456,9 +490,13 @@ struct MediaBoundaryTests {
         for _ in 0..<100 { await Task.yield() }
         #expect(transport.order == ["registration sent"])                       // the removal waits for the registration's answer
         transport.release()
+        // Asked to send again at the very moment the held answer arrives: nothing starts during a sign-out.
+        async let retried = model.retryNow()
         _ = await registering
         await leaving
+        _ = await retried
         // Removed after it landed, never before: a removal sent first would have been undone by the registration.
+        // One registration only: a second one starting behind it could have landed after the removal.
         #expect(transport.order == ["registration sent", "registration answered", "removal sent"])
         #expect(!model.wanted && !model.isWaitingToSend && !model.isWorking && model.message == nil)
 
@@ -467,6 +505,29 @@ struct MediaBoundaryTests {
         #expect(!next.wanted && !next.isWaitingToSend)
         let off = await next.turnOff()
         #expect(off && transport.order.filter { $0 == "removal sent" }.count == 1)
+    }
+
+    @Test("Signing out when the backend no longer holds this phone: 'not found' counts as removed, and nothing more is owed")
+    func signOutNotFoundCountsAsStopped() async throws {
+        let router = Router()
+        let transport = router.transport
+        let store = InMemoryKeyValueStore()
+        let model = NotificationsModel(environment: TestSupport.environment(transport: transport, store: store))
+        let path = "/v1/devices/\(model.deviceId)/remove"
+        router.json("GET", "/v1/devices", ["deliveryConfigured": true, "devices": []])
+        router.on("POST", "/v1/devices") { request in TestSupport.json(syntheticDevice(TestSupport.body(request)["deviceId"]?.stringValue ?? "")) }
+        router.on("POST", path) { _ in TestSupport.error("not_found", "That phone is not registered.", status: 404) }
+        model.turnOn()
+        let registered = await model.register(token: Data(repeating: 4, count: 32), apns: .production)
+        #expect(registered)
+
+        await model.signingOut()
+        #expect(transport.requests("POST", path).count == 1 && !model.isWaitingToSend)
+        // The next launch knows there is nothing left to remove: turning off and signing out send nothing.
+        let next = NotificationsModel(environment: TestSupport.environment(transport: transport, store: store))
+        let off = await next.turnOff()
+        await next.signingOut()
+        #expect(off && transport.requests("POST", path).count == 1)
     }
 
     @Test("An installation from an earlier version: the switch alone is not evidence of a registration; a request that was waiting is")

@@ -50,6 +50,9 @@ public final class NotificationsModel {
     private var inFlight: Task<Bool, Never>?
     /// Counts sign-outs: an answer that arrives for a request sent before one changes nothing.
     private var epoch = 0
+    /// A sign-out is under way: nothing else is sent until it has finished, so no registration
+    /// can start behind the one it waits for and land after the removal.
+    private var isSigningOut = false
 
     /// Set by the platform layer: tells iOS to stop delivering notifications to this app. It is
     /// called when the owner turns notifications off and when they sign out, whatever the
@@ -152,7 +155,11 @@ public final class NotificationsModel {
             message = nil
             return true
         }
-        pending = Pending(token: nil, apns: nil, removal: true)
+        let request = Pending(token: nil, apns: nil, removal: true)
+        // A removal already waiting keeps its place in the retry schedule: turning the switch
+        // off again neither sends it early nor restarts one that is left to the owner's Try again.
+        if let waiting = pending, waiting.sameRequest(as: request) { return await retryPending() }
+        pending = request
         return await sendPending()
     }
 
@@ -181,7 +188,10 @@ public final class NotificationsModel {
     /// asked once to forget this installation while the session still exists, and nothing stays
     /// waiting: a request kept past sign-out could only be sent as whoever signs in next.
     public func signingOut() async {
-        // No new request starts from here (`register` needs `wanted`), and iOS stops delivering.
+        // No new request starts from here (`register` needs `wanted`, and every send is refused
+        // until this has finished), and iOS stops delivering.
+        isSigningOut = true
+        defer { isSigningOut = false }
         wanted = false
         stopReceiving?()
         // A registration on its way is let through first: removing before it lands would leave
@@ -193,13 +203,21 @@ public final class NotificationsModel {
         pending = nil
         message = nil
         guard registered, !environment.isDemo else { return }
-        if (try? await environment.api.removeDevice(id: deviceId)) != nil { mayBeRegistered = false }
+        do {
+            _ = try await environment.api.removeDevice(id: deviceId)
+            mayBeRegistered = false
+        } catch let failure as APIFailure where NotificationsModel.isNotFound(failure) {
+            // The backend holds no registration for this phone: that is what was asked for.
+            mayBeRegistered = false
+        } catch {
+            // Not removed: the evidence that the backend may hold this phone is kept.
+        }
     }
 
     /// Sends the waiting request, one at a time. The send is a task of its own so that signing
     /// out can wait for it to finish.
     private func sendPending() async -> Bool {
-        guard pending != nil, !isWorking else { return false }
+        guard pending != nil, !isWorking, !isSigningOut else { return false }
         isWorking = true
         let sentIn = epoch
         let task = Task { @MainActor [self] in await deliver(sentIn: sentIn) }
@@ -249,11 +267,11 @@ public final class NotificationsModel {
                 let reason = NotificationsModel.sentence(failure.ownerMessage)
                 if attempts >= NotificationsModel.retryLimit {
                     kept.notBefore = nil
-                    message = (current.removal ? "Not stopped: " : "Not registered: ") + reason
+                    message = (current.removal ? "Not stopped: " : "Registration not confirmed: ") + reason
                         + " It was tried \(attempts) times and will not be tried again by itself."
                 } else {
                     kept.notBefore = environment.time.now().addingTimeInterval(NotificationsModel.retryDelay(afterAttempts: attempts))
-                    message = (current.removal ? "Not stopped yet: " : "Not registered yet: ") + reason + " It will be tried again later."
+                    message = (current.removal ? "Not stopped yet: " : "Registration not confirmed yet: ") + reason + " It will be tried again later."
                 }
                 if pending == current { pending = kept }
             } else if current.removal, NotificationsModel.isNotFound(failure) {
@@ -294,12 +312,15 @@ public final class NotificationsModel {
     public var statusLine: String {
         if let pending {
             if hasStoppedRetrying {
-                return pending.removal ? "Notifications to this phone have not been stopped on the server. Try again when you are ready."
-                                       : "This phone has not been registered. Try again when you are ready."
+                if pending.removal { return "Notifications to this phone have not been stopped on the server. Try again when you are ready." }
+                // An unanswered registration says nothing about one the backend already holds.
+                return isRegistered ? "This phone is registered, but the server has not confirmed its latest notification address. Try again when you are ready."
+                                    : "The server has not confirmed this phone's registration. Try again when you are ready."
             }
             if (pending.attempts ?? 0) > 0 {
-                return pending.removal ? "Waiting to stop notifications to this phone. It will be tried again later."
-                                       : "Waiting to register this phone. It will be tried again later."
+                if pending.removal { return "Waiting to stop notifications to this phone. It will be tried again later." }
+                return isRegistered ? "This phone is registered. Its latest notification address is waiting to be confirmed and will be tried again later."
+                                    : "Waiting to register this phone. It will be tried again later."
             }
             return pending.removal ? "Waiting to stop notifications to this phone when there is a connection."
                                    : "Waiting to register this phone when there is a connection."
