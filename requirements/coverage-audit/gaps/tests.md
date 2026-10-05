@@ -34,4 +34,6 @@ Each names the area whose test file should gain the case; details are in that ar
 
 - `apps/worker/test/backup.test.ts:188-189` posts `{ query }` to `/v1/recall/search`; the schema field is `text`, so both recall assertions in the restore test run on an empty search (S15-048).
 - The test cited by S13-055 ("asks first, and executes exactly once when the owner confirms") does not exist; S11-035 quotes a Worker test name that does not exist.
-- Rows citing tests that do not exercise them: S05-025, S05-081, S08-015, S08-033, S08-024, S04-003, S04-045, S16-018, S17-006, S18-002, S18-004, R03, R33, R50, S21-012, S03-020. The tests that do are named in the row verdicts.
+- Rows citing tests that do not exercise them: S05-025, S05-081, S08-015, S08-033, S08-024, S04-003, S04-045, S16-018, S17-006, S18-002, S18-004, S18-017, R03, R33, R50, S21-012, S03-020, AM-030, KO-024. The tests that do are named in the row verdicts.
+- `apps/worker/test/surfaces.test.ts:310` is titled "records comfort feedback and a return case" but its body contains no return case; AM-030, KO-024 and S01-012 cite it for returns.
+- `packages/assistant/test/memory.test.ts:189` carries a comment saying a restore replays the tombstone, but the code beneath performs no restore, so "a restore does not resurrect removed memories" (S06-080) has no test. It closes with a test that backs up, forgets a message, restores and asserts the message is absent.

@@ -28,6 +28,8 @@ What holds: all 16 `/v1/...` endpoints (spec L795-810) and all seven MCP tools (
 | S06-081 | spec L377 | No route lists remembered conclusions for the owner. | `listMemoryConclusions` unreferenced in `apps/worker/src` (C) | A route and screen exist. |
 | S06-060 | spec L360 | No command or route calls `provisionSearchInstance`. | `packages/assistant/src/commands/reminders.ts:72-90` (C) | Provisioning is reachable from an administrative path. |
 | S14-027, S17-069 (open) | spec L916, L1155 | Logs are free text without run or action identifiers; four call sites log a full error stack unredacted; no test asserts what reaches a log. | `apps/worker/src/router.ts:78`; `export/job.ts:417`; `export/import.ts:229`; `mcp/server.ts:100` (F) | Structured redacted logging with a test that personal content cannot reach a log line. |
+| AM-030, KO-024 | amendments L31; start prompt L17 | Citation only: the Worker test titled "records comfort feedback and a return case" records and reads back feedback only; return and exchange deadlines are asserted elsewhere. | `apps/worker/test/surfaces.test.ts:310-322` (A, G) | The rows cite `packages/assistant/test/commands.test.ts:128-185` and `tests/journeys/test/08-returns-exchanges.test.ts:150-192`, or the Worker test opens a return. |
+| S18-017 | spec L1179 | Citation only: the cited recovery test checks response shape; it asserts no last board, pending work or next action. | `apps/worker/test/surfaces.test.ts:426-432` (G) | The row cites journey 10 (`:130-152`) and the recovery test gains real assertions. |
 
 ## Honest partial, open or blocked rows that still need work
 

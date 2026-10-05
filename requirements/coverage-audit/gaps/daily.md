@@ -32,6 +32,8 @@ What holds: automatic repair of a selected future option after a wear without an
 | S10-079 | spec L671 | Return reminders are notification effects only; no calendar effect, so "deduplicated across app and calendar" has only the app half. | `packages/assistant/src/commands/returns.ts:37-44` (C) | A calendar effect exists with a dedup test. |
 | S17-067 | spec L1153 | No code computes the rolling morning success percentage or counts bad recommendations, manual repairs and failed corrections. | search of `packages/daily/src` (F) | The measure is computed from ledger records. |
 | S13-030, S04-009 | spec L835, L166-169 | A long recommendation is not durable work: it lives in `waitUntil` and a lost run is marked failed; the sweep starts no Workflow. | `apps/worker/src/routes/daily.ts:88-99`; `apps/worker/src/index.ts:57-78`; `apps/worker/test/runs.test.ts:90-99` (D) | Long runs execute in a Workflow or resumable job, or the rows become partial. |
+| S06-010 | spec L318 | Tests assert only the top two tiers of the precedence order; that the day's brief outranks a standing direction, and a direction a preference, is only a sentence handed to the model. | `packages/daily/src/context-text.ts:69`; `packages/daily/test/validation.test.ts:81-93,292-330,351-378` (C) | A composition test where a brief, a direction and a preference conflict and the result is asserted, or the row says the lower tiers are model guidance. |
+| S10-070 | spec L663 | No test passes or reads back a trip's laundry field or luggage limit. | `packages/daily/test/trips.test.ts:21-30,197-205`; `packages/daily/src/trips.ts:292-294` (C) | Assertions on the luggage and laundry notes. |
 
 ## Honest partial, open or blocked rows that still need work
 

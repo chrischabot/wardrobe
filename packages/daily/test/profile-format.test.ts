@@ -72,6 +72,35 @@ describe("profile verdicts on the real owner's boards", () => {
     expect(v.violations.map((x) => x.code)).not.toContain("neutral_three_times");
   });
 
+  it("SYNTHETIC: under a navy jacket over a rose shirt the sock takes the navy echo, so the shoe is the grey one and not a second navy piece", async () => {
+    // The real-owner test above met this on a board with the navy jacket over the slate and rose plaid: the
+    // navy sneaker was chosen first for its echo, the navy sock would then have been the third navy piece,
+    // and a sock that echoed nothing was shown. Fixed pieces here, so the outcome does not depend on the seed.
+    const h = await createDailyHarness({ startAt: "2026-09-15T07:30:00Z", isolate: true });
+    const sock = (id: string, name: string, colour: string) => ({ id, name, colour, quantity: 3, category: "socks", roles: ["socks"], careChannel: "handwash", fabric: "Merino wool", attributes: { fabricClass: "merino" } }) as const;
+    const owner = await syntheticOwner(h, {
+      garments: [
+        { id: "shirt-rose", name: "rose oxford", colour: "Rose", fabric: "Cotton oxford", category: "shirt", roles: ["top"], careChannel: "service", attributes: { fabricClass: "lightweight_oxford" } },
+        ...NAVY_OVER_NAVY.filter((g) => g.id === "trouser-beige" || g.id === "jacket-navy" || g.id === "belt-brown"),
+        sock("sock-navy", "navy merino socks", "Navy"),
+        sock("sock-green", "forest green merino socks", "Forest green"),
+        shoe("shoe-navy", "navy sneakers", "Navy"),
+        shoe("shoe-grey", "grey sneakers", "Grey"),
+      ] as never,
+    });
+    await owner.exec("style.upsert_rule", NEUTRAL_RULE);
+    h.weather.setForecast("2026-09-16", MILD_DAY); // 12 C at departure: a jacket is worn
+    const board = (await compose(h, owner, "2026-09-16", { count: 1 })).board!;
+    expect(board.options).toHaveLength(1);
+    const o = board.options[0]!;
+    expect(piece(o, "outer")!.garmentId).toBe("jacket-navy");
+    expect(piece(o, "top")!.garmentId).toBe("shirt-rose");
+    expect(piece(o, "socks")!.garmentId).toBe("sock-navy");
+    expect(piece(o, "footwear")!.garmentId).toBe("shoe-grey");
+    const v = await validateOutfit(h.db, owner.principal(), { forDate: "2026-09-16", nowMs: h.clock.now(), slots: o.garments.map((g) => ({ role: g.role, garmentId: g.garmentId })) as never });
+    expect(v.violations.map((x) => x.code)).not.toContain("neutral_three_times");
+  });
+
   it("SYNTHETIC: when the only eligible shoe is the third navy piece the outfit is still offered, and the validator reports the soft verdict", async () => {
     const h = await createDailyHarness({ startAt: "2026-09-15T07:30:00Z", isolate: true });
     const owner = await syntheticOwner(h, { garments: [...NAVY_OVER_NAVY, shoe("shoe-navy", "navy sneakers", "Navy")] as never });

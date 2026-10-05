@@ -7,7 +7,7 @@ This document records an independent audit of `requirements/CHECKLIST.md` agains
 - Method: the row audit read the files with no test execution; verdicts say what the code and tests contain, not that the tests pass. Test results belong to the integration-health and area threads.
 - Verdicts: `verified` (the row's claim, including its stated status and limitation, is accurate), `weaker` (something exists but does less than the row claims, or the cited test does not really exercise it), `unsupported` (the cited code or test is absent or does not address the requirement).
 - A `verified` verdict on a row whose status is partial, open or blocked means only that the row describes its own state honestly. Such a row is still not implemented and is listed as a gap.
-- Depth: each part read its own area's code and tests in full or nearly so. For rows whose evidence lies in another area's package, some parts confirmed the cited test by title without reading its body; the Evidence cell of each such row says so.
+- Depth: the audit was done in two passes. The first read each area's code and tests. Because some rows had then been confirmed by test title only, a second pass re-read the cited test body for every row whose evidence did not already state what the test asserts (459 rows), rewrote those evidence cells and changed twelve verdicts from verified to weaker. No row is left resting on a test title. Remaining limits: rows whose evidence already described the assertions were not re-read in the second pass, and for some re-read rows the implementation line reference is carried over from the first pass while the verdict rests on the test body.
 
 ## Where everything is
 
@@ -21,18 +21,19 @@ This document records an independent audit of `requirements/CHECKLIST.md` agains
 
 | Part | Checklist rows covered | Rows | Verified | Weaker | Unsupported |
 | --- | --- | --- | --- | --- | --- |
-| A `rows/A-domain.md` | S05, S08, AM, PR | 229 | 205 | 24 | 0 |
+| A `rows/A-domain.md` | S05, S08, AM, PR | 229 | 203 | 26 | 0 |
 | B `rows/B-daily.md` | S01, S02, S07, S09 | 147 | 124 | 22 | 1 |
-| C `rows/C-assistant.md` | S06, S10, S12 | 210 | 169 | 40 | 1 |
-| D `rows/D-api-mcp-identity.md` | S04, S13, S15 | 168 | 144 | 24 | 0 |
+| C `rows/C-assistant.md` | S06, S10, S12 | 210 | 165 | 44 | 1 |
+| D `rows/D-api-mcp-identity.md` | S04, S13, S15 | 168 | 141 | 27 | 0 |
 | E `rows/E-ios-media.md` | S03, S11 | 123 | 109 | 14 | 0 |
 | F `rows/F-deployment-acceptance.md` | S14, S16, S17, S19 | 172 | 157 | 15 | 0 |
-| G `rows/G-coverage-evaluation-research-kickoff.md` | S18, S20, S21, EV, R, KO | 195 | 179 | 15 | 1 |
-| **Total** | | **1,244** | **1,087** | **154** | **3** |
+| G `rows/G-coverage-evaluation-research-kickoff.md` | S18, S20, S21, EV, R, KO | 195 | 176 | 18 | 1 |
+| **Total** | | **1,244** | **1,075** | **166** | **3** |
 
 - The three unsupported rows are S01-005, S06-076 and S21-012. For S21-012 the behaviour (comfort feedback) exists and is tested; only the row's citations are wrong.
-- Most of the 154 weaker rows are marked `implemented`. At least sixteen are citation-only: the behaviour exists and is tested, but not by the files the row cites (listed at the end of `coverage-audit/gaps/tests.md`).
-- The checklist itself marked 552 rows partial (388), open (128) or blocked (36) at this commit; nearly all of those are verified as honest descriptions of unfinished work. So of 1,244 rows, the number that are both marked `implemented` and verified is roughly 540.
+- Most of the 166 weaker rows are marked `implemented`. At least nineteen are citation-only: the behaviour exists and is tested, but not by the files the row cites (listed at the end of `coverage-audit/gaps/tests.md`).
+- The twelve rows the second pass moved from verified to weaker are S05-018, AM-030, S06-010, S06-080, S10-062, S10-070, S13-022, S13-047, S15-031, S18-017, R43 and KO-024.
+- The checklist itself marked 552 rows partial (388), open (128) or blocked (36) at this commit; nearly all of those are verified as honest descriptions of unfinished work. So of 1,244 rows, the number that are both marked `implemented` and verified is roughly 530.
 
 The findings with the widest effect, each detailed in the gap file named:
 

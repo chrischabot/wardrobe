@@ -28,6 +28,7 @@ What holds: receipts, idempotency, expected versions, undo as compensation, effe
 | R02 | research L279; spec L1163 | Expected arrival is not a ledger fact; only free-text `arrivalEstimate` on assistant order lines. | `packages/contracts/src/ext/assistant.ts:229,312` (G) | An expected-arrival date exists on orders or garments and is read by availability. |
 | R37 | research L322, L82, L209 | Colour value, colour temperature, saturation and pattern scale are not stored anywhere. | `packages/contracts/src/garment.ts:94-120`; `packages/daily/src/model.ts:32` (G) | The attributes exist on the garment and the composer reads them, or the row becomes partial. |
 | R53 | research L340, L125 | Location is only the stock bucket; "hallway" or "closet" cannot be recorded. | `packages/contracts/src/inventory.ts:63` (G) | A physical place within home can be recorded and queried. |
+| R43 | research L328; spec L1175 | The colour filter exists in code but no test filters the inventory by colour. | `packages/domain/src/queries.ts:266` (G) | One test of `listInventory` with a colour. |
 
 ## Honest partial or open rows that still need work
 
@@ -38,7 +39,7 @@ What holds: receipts, idempotency, expected versions, undo as compensation, effe
 - **R27** (research L308): `wear.record` takes garment IDs only; no wear by option number. **R48**: no register tags on accessories. **R49**: reconciliation is per garment, not per category.
 - **S16-010, S16-014, S16-017** (spec L1047-L1055): no import of previous conversations and research as reference material, of saved combinations, or of an imported planned recommendation.
 - **S17-049** (spec L1133): two-owner isolation proven for D1 commands and reads only.
-- **S15-014, S15-015** (spec L989): no test enumerates the schema to prove every personal table carries `user_id`.
+- **S15-014, S15-015** (spec L989): the audit read all 119 `CREATE TABLE` statements and found `user_id` on every personal table and on all 63 compound foreign keys, but no test enumerates the schema to keep it so.
 
 ## Checklist bookkeeping to correct
 

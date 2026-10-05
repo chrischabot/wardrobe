@@ -19,6 +19,8 @@ What holds: the app sends typed commands to `POST /v1/commands` with channel `io
 | S04-017 | spec L188 | "Stop and send" has no test. | `ComposerModel.swift:250` (D) | A test covers it. |
 | S12-021, S10-040, S14-060 | spec L753, L610, L969 | `routingLines` and `budgetLines` are referenced by no test. | `SettingsModel.swift:403-413` (C, F) | Tests cover both. |
 | R55 | research L342 | No Swift test covers `TemperaturePreviewModel`. | (G) | A test exists. |
+| S13-022 | spec L816 | Tolerance of unknown events is tested, but no test shows the app using the API schema version; its only use is a request header. | `ios/GarderobeKit/Sources/GarderobeKit/Networking/APIClient.swift:51`; `Tests/ConversationTests.swift:12-33` (D) | A Swift test asserts version-dependent behaviour, or the clause is dropped from the row. |
+| S13-047 | spec L853 | The cited Swift test covers the proposals list; the Connected assistants list has no Swift test (no match for `activeGrants` or `grantLine` in the tests). | `Tests/ProposalTests.swift:11-48` (D) | A Swift test of the grants list and disconnect. |
 
 ## Honest partial or blocked rows that still need work
 
