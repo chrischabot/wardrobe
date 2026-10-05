@@ -1,0 +1,98 @@
+name: Backend
+
+# Typecheck, document and contract checks, and every workspace's test suite (packages, the Worker, and
+# the journey suite that drives the real Worker over HTTP and MCP in workerd) for each pull request into
+# garderobe-rebuild and each push to it. Together the jobs cover what the root `npm run verify` and
+# `npm test` run; the suites run as one job per workspace so they finish sooner and a failure names its
+# workspace. "Backend (required)" is the single result to require: it passes only when all of them passed.
+# The iOS client has its own manually triggered workflow (ios.yml).
+on:
+  pull_request:
+    branches: [garderobe-rebuild]
+  push:
+    branches: [garderobe-rebuild]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    name: Verify and typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      matrix: ${{ steps.workspaces.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Workspaces with a test suite
+        id: workspaces
+        run: node tools/ci-workspaces.mjs --output
+      - run: npm ci
+      - name: Supplied documents, checklist, import report and generated contracts
+        run: npm run verify
+      - name: Typecheck every workspace
+        run: npm run typecheck
+
+  test:
+    name: Test ${{ matrix.name }}
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.verify.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: npm test in ${{ matrix.dir }}
+        run: |
+          echo "Started at $(date -u +%Y-%m-%dT%H:%M:%SZ) (several suites depend on the owner's local day)"
+          npm test --workspace "${{ matrix.dir }}"
+
+  # The owner's day (Europe/London) and several scheduled phases depend on the time of day, and a pull
+  # request's run happens at whatever hour it is pushed. This runs the Worker suite a second time with the
+  # test clock at the next 22:40 UTC (apps/worker/src/testing/clock.ts): late evening for the owner, when
+  # the evening phase is due and the UTC day is about to differ from his.
+  test-evening:
+    name: Test @garderobe/worker with the clock at 22:40 UTC
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: npm test in apps/worker, clock shifted
+        env:
+          GARDEROBE_TEST_CLOCK: "22:40"
+        run: npm test --workspace apps/worker
+
+  backend:
+    name: Backend (required)
+    if: ${{ always() }}
+    needs: [verify, test, test-evening]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every backend job passed
+        run: |
+          echo "verify: ${{ needs.verify.result }}; tests: ${{ needs.test.result }}; evening clock: ${{ needs.test-evening.result }}"
+          test "${{ needs.verify.result }}" = success
+          test "${{ needs.test.result }}" = success
+          test "${{ needs.test-evening.result }}" = success

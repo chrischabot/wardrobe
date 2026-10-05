@@ -73,8 +73,10 @@ describe("D10-1: resuming in the app prepares the next useful board", () => {
   let owner: TestOwner;
   const boardOn = async (offset: number) => (await owner.api.json("GET", `/v1/today?date=${await ownerDay(owner, offset)}`)).board;
   const prepared = async () => [await boardOn(0), await boardOn(1)].filter((b) => b !== null);
-  const boardCommands = async () =>
-    ((await (await testApp()).db.prepare("SELECT COUNT(*) AS n FROM commands WHERE user_id = ? AND type = 'board.publish'").bind(owner.userId).first<{ n: number }>())!.n);
+  const publications = async () =>
+    (await (await testApp()).db.prepare("SELECT idempotency_key AS key FROM commands WHERE user_id = ? AND type = 'board.publish' ORDER BY idempotency_key").bind(owner.userId).all<{ key: string }>()).results.map((r) => r.key);
+  const boardRows = async () =>
+    (await (await testApp()).db.prepare("SELECT board_id, local_date, current_revision FROM boards WHERE user_id = ?").bind(owner.userId).all<{ board_id: string; local_date: string; current_revision: number }>()).results;
 
   beforeAll(async () => {
     owner = await provisionOwner({ real: true });
@@ -100,14 +102,33 @@ describe("D10-1: resuming in the app prepares the next useful board", () => {
     for (const option of boards[0].options) for (const line of option.garments) expect(owned.has(line.garmentId), line.name).toBe(true);
     expect((await owner.api.json("GET", "/v1/service")).paused).toBe(false);
 
-    // The scheduled sweep and further commands find the board there and prepare nothing more for the resume.
-    const published = await boardCommands();
+    // The scheduled sweep and further commands find the board there and prepare nothing more for the resume:
+    // one publication in the resume's name, before and after, and still the one board, the same one.
+    const inResumesName = (keys: string[]) => keys.filter((key) => key.startsWith("resume-board:"));
+    const otherwise = (keys: string[]) => keys.filter((key) => !key.startsWith("resume-board:"));
+    const before = await publications();
+    const rowsBefore = await boardRows();
+    expect(inResumesName(before)).toHaveLength(1);
+    expect(rowsBefore).toHaveLength(1);
+    const row = rowsBefore[0]!;
+    expect(row.board_id).toBe(boards[0].boardId);
     const app = await testApp();
     await app.daily!.scheduled(Date.now());
     expect((await owner.api.command("service.resume", {})).status).toBe(200); // not paused: changes nothing
     await sleep(200);
-    expect(await boardCommands()).toBe(published);
-    expect((await prepared()).map((b) => `${b.boardId}:${b.revision}`)).toEqual(boards.map((b) => `${b.boardId}:${b.revision}`));
+    const after = await publications();
+    expect(inResumesName(after)).toEqual(inResumesName(before));
+    // That sweep is the whole scheduled service, so it also runs the ordinary phases of the board's own day
+    // that are due at this time of day and were not skipped by a sweep during the pause (here the pause
+    // lasted milliseconds). For about fourteen hours of every day one is due: the evening compose from the
+    // evening before, then the morning refresh and the morning's final check. Each brings the board it finds
+    // up to date as a new revision of the same board under the phase's own key. Nothing else may publish, so
+    // at the hours when no phase is due the board is exactly as the resume left it.
+    const phaseOfThatDay = new RegExp(`^phase:(evening_compose|morning_refresh|morning_publish):${owner.userId}:${row.local_date}(:|$)`);
+    for (const key of otherwise(after)) expect(key).toMatch(phaseOfThatDay);
+    const revision = row.current_revision + otherwise(after).length - otherwise(before).length;
+    expect((await boardRows()).map((r) => `${r.board_id}:${r.local_date}:${r.current_revision}`)).toEqual([`${row.board_id}:${row.local_date}:${revision}`]);
+    expect((await prepared()).map((b) => `${b.boardId}:${b.revision}`)).toEqual([`${row.board_id}:${revision}`]);
   });
 
   it("prepares nothing while the pause lasts, and the sweep catches up on a resume whose own follow-up did not run", async () => {
