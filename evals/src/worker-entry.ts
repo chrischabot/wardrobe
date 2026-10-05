@@ -31,7 +31,8 @@ interface EvalEnv extends Env {
 
 export class GarderobeAssistant extends GarderobeAssistantBase {
   constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
+    // The Worker's Env types the AI binding loosely; the actor's own type is narrower. Same object either way.
+    super(ctx, env as never);
     bindEnv(env);
   }
   protected override gatewayId(): string {
