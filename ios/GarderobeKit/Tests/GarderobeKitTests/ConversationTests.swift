@@ -282,6 +282,47 @@ struct ConversationTests {
         #expect(app.composer.awaitingConfirmation.isEmpty && app.composer.confirmationLine == nil)
     }
 
+    @Test("Two requests of one turn that read the same are settled one at a time: deciding one leaves the other waiting")
+    func identicalRequestsSettleByCount() async throws {
+        func held(_ id: String, summary: String, state: String = "pending") -> JSONValue {
+            ["proposalId": .string(id), "turnId": "run_test_p", "type": "garment.create", "summary": .string(summary), "payload": [:],
+             "proposedAt": "2026-09-15T06:00:00Z", "expiresAt": "2026-09-29T06:00:00Z", "source": ["channel": "ios", "assistantName": .null],
+             "state": .string(state), "decidedAt": state == "pending" ? .null : "2026-09-15T06:31:00Z", "commandId": .null]
+        }
+        func list(_ items: [JSONValue]) -> JSONValue { ["proposals": .array(items), "pending": .integer(items.count), "readAt": .string(Synthetic.now)] }
+        // The same command and the same words twice; only the payloads differ (two sizes of one shirt).
+        let add = "Test: add \"Test white T-shirt\" as owned"
+        let router = Router()
+        router.json("POST", "/v1/conversation/turns", accepted("run_test_p"))
+        router.json("GET", "/v1/conversation/messages", Synthetic.page([]))
+        router.json("GET", "/v1/runs/run_test_p", Synthetic.run("run_test_p", reply: ("msg_test_p", "Both need your confirmation."),
+                                                                proposals: [["type": "garment.create", "summary": .string(add), "payload": ["name": "Test white T-shirt", "size": "M"]],
+                                                                            ["type": "garment.create", "summary": .string(add), "payload": ["name": "Test white T-shirt", "size": "L"]]]))
+        router.json("GET", "/v1/proposals", list([held("prp_test_m", summary: add), held("prp_test_l", summary: add)]))
+        let transport = router.transport
+        transport.setStream(path: "/v1/runs/run_test_p/events", chunks: [Synthetic.sse([Synthetic.event(1, run: "run_test_p", type: "run_finished", data: ["state": "completed"])])])
+        let app = AppModel(environment: TestSupport.environment(transport: transport), session: nil)
+        app.composer.draft = "I bought the white T-shirt in two sizes"
+        await app.composer.send()
+        await app.proposals.open()
+        #expect(app.composer.awaitingConfirmation == [add, add])
+
+        // The owner rejects one. It is counted once, although this session's decision and the list read
+        // afterwards both report it; the other still waits and is still said to.
+        router.json("POST", "/v1/proposals/prp_test_m/decision", ["proposal": held("prp_test_m", summary: add, state: "rejected"), "receipt": .null, "replayed": false])
+        router.json("GET", "/v1/proposals", list([held("prp_test_m", summary: add, state: "rejected"), held("prp_test_l", summary: add)]))
+        let rejected = await app.proposals.reject(try #require(app.proposals.pending.first { $0.proposalId == "prp_test_m" }))
+        #expect(rejected)
+        #expect(app.proposals.settledCount(turnId: "run_test_p", type: "garment.create", summary: add) == 1)
+        #expect(app.composer.awaitingConfirmation == [add])
+        #expect(app.composer.confirmationLine == "Not done yet. This waits for your confirmation: \(add).")
+
+        // The second is decided too: nothing is left waiting.
+        router.json("GET", "/v1/proposals", list([held("prp_test_m", summary: add, state: "rejected"), held("prp_test_l", summary: add, state: "confirmed")]))
+        await app.proposals.open()
+        #expect(app.composer.awaitingConfirmation.isEmpty && app.composer.confirmationLine == nil)
+    }
+
     @Test("A final refusal returns the text to the composer instead of losing it")
     func refusalKeepsText() async {
         let router = Router()

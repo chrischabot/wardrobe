@@ -346,7 +346,7 @@ struct OwnerConversationJourney {
         // to confirm, in the backend's words. The owner confirms it in Requests to confirm, the backend
         // runs it once as the owner's own action, and the reply stops saying that it waits.
         let proposals = ProposalsModel(environment: env)
-        composer.isSettled = { turn, type, summary in proposals.isSettled(turnId: turn, type: type, summary: summary) }   // as AppModel wires the two
+        composer.settledCount = { turn, type, summary in proposals.settledCount(turnId: turn, type: type, summary: summary) }   // as AppModel wires the two
         composer.draft = "I bought a navy merino cardigan, add it to my wardrobe"
         await composer.send()
         #expect(composer.follower?.phase == .completed)

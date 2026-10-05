@@ -26,17 +26,23 @@ public final class ProposalsModel {
     /// they were made (the answer was a conflict). They stay open on the backend until rejected;
     /// the phone remembers the refusal so Confirm is not offered again for the same request.
     public private(set) var staleIds: Set<String> { didSet { environment.restoration.save("proposals.stale", staleIds.sorted()) } }
-    /// Requests the owner decided in this session, by the turn that asked, the command and the
-    /// backend's summary: what a finished reply needs to stop saying they are waiting.
-    private var settledKeys: Set<String> = []
+    /// Requests the owner decided in this session: their identifiers, grouped by the turn that
+    /// asked, the command and the backend's summary. A finished reply names its requests only
+    /// by command and summary, so two requests of one turn can read the same; they are told
+    /// apart by how many of them have been decided.
+    private var settledIds: [String: Set<String>] = [:]
 
     static func settledKey(turnId: String, type: String, summary: String) -> String { "\(turnId)\u{0}\(type)\u{0}\(summary)" }
 
-    /// Whether a request a conversation turn left behind has been decided (confirmed, rejected
-    /// or expired), from this session's decisions and the list as last read.
-    public func isSettled(turnId: String, type: String, summary: String) -> Bool {
-        if settledKeys.contains(ProposalsModel.settledKey(turnId: turnId, type: type, summary: summary)) { return true }
-        return (proposals.value?.proposals ?? []).contains { $0.turnId == turnId && $0.type == type && $0.summary == summary && $0.state != .pending }
+    /// How many requests a conversation turn left behind with this command and summary have
+    /// been decided (confirmed, rejected or expired), from this session's decisions and the
+    /// list as last read. Each request is counted once, by its identifier.
+    public func settledCount(turnId: String, type: String, summary: String) -> Int {
+        var ids = settledIds[ProposalsModel.settledKey(turnId: turnId, type: type, summary: summary)] ?? []
+        for p in proposals.value?.proposals ?? [] where p.turnId == turnId && p.type == type && p.summary == summary && p.state != .pending {
+            ids.insert(p.proposalId)
+        }
+        return ids.count
     }
 
     public init(environment: AppEnvironment) {
@@ -151,7 +157,7 @@ public final class ProposalsModel {
             let response = try await environment.api.decideProposal(id: p.proposalId, ProposalDecisionRequest(decision: decision))
             environment.center.noteRead(failure: nil)
             staleIds.remove(p.proposalId)
-            if !p.turnId.isEmpty { settledKeys.insert(ProposalsModel.settledKey(turnId: p.turnId, type: p.type, summary: p.summary)) }
+            if !p.turnId.isEmpty { settledIds[ProposalsModel.settledKey(turnId: p.turnId, type: p.type, summary: p.summary), default: []].insert(p.proposalId) }
             await proposals.refresh()
             return response
         } catch let failure as APIFailure {

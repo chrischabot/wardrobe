@@ -64,9 +64,9 @@ public final class ComposerModel {
     public private(set) var notice: String?
     /// The backend's turn behind the reply now shown, which its requests to confirm are listed under.
     private var followedTurnId: String?
-    /// Set by the app: whether the owner has since decided a request a reply left (by the turn
-    /// that asked, the command and the backend's summary). Without it every request counts as waiting.
-    public var isSettled: (@MainActor (_ turnId: String, _ type: String, _ summary: String) -> Bool)?
+    /// Set by the app: how many of the requests a reply left with this command and summary the
+    /// owner has since decided (by the turn that asked). Without it every request counts as waiting.
+    public var settledCount: (@MainActor (_ turnId: String, _ type: String, _ summary: String) -> Int)?
 
     public init(environment: AppEnvironment, transcript: TranscriptModel, sleep: (@Sendable (TimeInterval) async -> Void)? = nil) {
         self.environment = environment
@@ -89,9 +89,15 @@ public final class ComposerModel {
     /// shown for a request the owner has since confirmed or rejected.
     public var awaitingConfirmation: [String] {
         guard let follower, follower.phase.isTerminal else { return [] }
+        guard let turn = followedTurnId, let settledCount else { return follower.proposals.map(\.summary) }
+        // Requests that read the same are only distinguishable by number: as many are dropped
+        // as have been decided, so deciding one never hides another that still waits.
+        var decided: [String: Int] = [:]
         return follower.proposals.filter { item in
-            guard let turn = followedTurnId, let isSettled else { return true }
-            return !isSettled(turn, item.type, item.summary)
+            let key = ProposalsModel.settledKey(turnId: turn, type: item.type, summary: item.summary)
+            let left = decided[key] ?? settledCount(turn, item.type, item.summary)
+            decided[key] = max(left - 1, 0)
+            return left <= 0
         }.map(\.summary)
     }
     /// One sentence for those requests, or nil when there are none.
