@@ -1,0 +1,29 @@
+{
+  "name": "@garderobe/adversarial-tests",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Adversarial tests against the real local Garderobe Worker and real local D1: domain ledger, API and MCP, assistant authority, daily service and media.",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node scripts/run.mjs",
+    "test:strict": "ADVERSARIAL_STRICT=1 node scripts/run.mjs",
+    "test:harness": "node scripts/run.mjs --area harness",
+    "test:domain": "node scripts/run.mjs --area domain",
+    "test:api-mcp": "node scripts/run.mjs --area api-mcp",
+    "test:assistant": "node scripts/run.mjs --area assistant",
+    "test:daily-media": "node scripts/run.mjs --area daily-media"
+  },
+  "dependencies": {
+    "@garderobe/assistant": "1.0.0",
+    "@garderobe/contracts": "1.0.0",
+    "@garderobe/daily": "1.0.0",
+    "@garderobe/domain": "1.0.0",
+    "@garderobe/media": "1.0.0",
+    "@garderobe/worker": "1.0.0",
+    "@modelcontextprotocol/client": "2.0.0",
+    "fflate": "0.8.3",
+    "jose": "6.2.12",
+    "zod": "4.6.5"
+  }
+}
