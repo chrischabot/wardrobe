@@ -11,7 +11,9 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run && node tools/composite-example.mjs --check",
+    "example:write": "node tools/composite-example.mjs",
+    "example:check": "node tools/composite-example.mjs --check"
   },
   "dependencies": {
     "@garderobe/contracts": "1.0.0",
