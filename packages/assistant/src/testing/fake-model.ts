@@ -22,6 +22,11 @@ export interface FakeToolCall {
 
 export interface FakeResponse {
   text?: string;
+  /**
+   * Raw reasoning the model emits before its answer, as a reasoning model does. Scripted so that a test
+   * of "reasoning never reaches a client" has reasoning to withhold; `reasoningEmitted` counts them.
+   */
+  reasoning?: string;
   toolCalls?: FakeToolCall[];
   /** Throw this error instead of responding (transport failure, timeout...). */
   error?: Error;
@@ -95,6 +100,8 @@ export class FakeModel implements LanguageModelV4 {
   readonly supportedUrls = {};
   /** Every request this model received, in order. */
   readonly requests: FakeRequest[] = [];
+  /** How many responses carried scripted reasoning out of this model (see `FakeResponse.reasoning`). */
+  reasoningEmitted = 0;
   private steps: FakeStep[] = [];
   private fallbackStep: FakeStep = { text: `${FAKE_MODEL_LABEL}: no scripted step.` };
 
@@ -119,6 +126,7 @@ export class FakeModel implements LanguageModelV4 {
   reset(): this {
     this.steps = [];
     this.requests.length = 0;
+    this.reasoningEmitted = 0;
     this.fallbackStep = { text: `${FAKE_MODEL_LABEL}: no scripted step.` };
     return this;
   }
@@ -146,6 +154,10 @@ export class FakeModel implements LanguageModelV4 {
   async doGenerate(options: LanguageModelV4CallOptions): Promise<any> {
     const r = await this.next(options);
     const content: any[] = [];
+    if (r.reasoning) {
+      content.push({ type: "reasoning", text: r.reasoning });
+      this.reasoningEmitted++;
+    }
     if (r.text) content.push({ type: "text", text: r.text });
     for (const c of r.toolCalls ?? []) content.push({ type: "tool-call", toolCallId: c.toolCallId ?? `call_${crypto.randomUUID()}`, toolName: c.toolName, input: JSON.stringify(c.input) });
     return {
@@ -160,6 +172,11 @@ export class FakeModel implements LanguageModelV4 {
   async doStream(options: LanguageModelV4CallOptions): Promise<any> {
     const r = await this.next(options);
     const parts: LanguageModelV4StreamPart[] = [{ type: "stream-start", warnings: [] }];
+    if (r.reasoning) {
+      const id = `rsn_${crypto.randomUUID()}`;
+      parts.push({ type: "reasoning-start", id }, { type: "reasoning-delta", id, delta: r.reasoning }, { type: "reasoning-end", id });
+      this.reasoningEmitted++;
+    }
     if (r.text) {
       const id = `txt_${crypto.randomUUID()}`;
       parts.push({ type: "text-start", id }, { type: "text-delta", id, delta: r.text }, { type: "text-end", id });

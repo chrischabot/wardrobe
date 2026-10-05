@@ -185,8 +185,13 @@ describe("restoring a backup", () => {
     expect(transcript).toContain("Which shirt for the board meeting?");
     // The source forgotten after the backup did not come back, in the transcript or in recall.
     expect(transcript).not.toContain(forgottenText);
-    expect(JSON.stringify(await target.api.json("POST", "/v1/recall/search", { query: "private note" }))).not.toContain(forgottenText);
-    expect(JSON.stringify(await target.api.json("POST", "/v1/recall/search", { query: "board meeting shirt" }))).toContain("board meeting");
+    // The search text goes in `text` (RecallQuery); an unknown field would be dropped and search nothing.
+    const forgottenSearch = await target.api.json("POST", "/v1/recall/search", { text: "private note forgotten" });
+    expect(JSON.stringify(forgottenSearch)).not.toContain(forgottenText);
+    expect(JSON.stringify(await target.api.json("POST", "/v1/recall/search", { text: forgottenText }))).not.toContain(forgottenText);
+    const keptSearch = await target.api.json("POST", "/v1/recall/search", { text: "board meeting shirt" });
+    expect(keptSearch.hits.length).toBeGreaterThan(0);
+    expect(keptSearch.hits.some((h: any) => h.quote.includes("board meeting"))).toBe(true);
 
     // Nothing external is queued for the restored owner.
     const app = await testApp();

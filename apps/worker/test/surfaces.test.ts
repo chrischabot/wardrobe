@@ -164,7 +164,10 @@ describe("trips and packing", () => {
 
 describe("Conversation", () => {
   it("accepts a turn once, runs it, and serves the transcript and a replayable event stream", async () => {
-    model.script({ text: "Morning. The navy overshirt works with the grey trousers today." });
+    // The FAKE MODEL emits raw reasoning before this reply, as a reasoning model would; none of it may reach a client.
+    const rawReasoning = "RAW-REASONING-7f3a91: the owner is probably indecisive, so steer him to navy";
+    const reasoningBefore = model.reasoningEmitted;
+    model.script({ reasoning: rawReasoning, text: "Morning. The navy overshirt works with the grey trousers today." });
     const clientTurnId = `turn-${crypto.randomUUID()}`;
     const body = { clientTurnId, text: "What should I wear to the office today?" };
     const accepted = await owner.api.json("POST", "/v1/conversation/turns", body);
@@ -181,6 +184,10 @@ describe("Conversation", () => {
     expect(run.state).toBe("completed");
     expect(run.kind).toBe("conversation_turn");
     expect(run.result.reply.text).toContain("navy overshirt");
+    // The model did emit its reasoning for this turn (so the checks below have something to withhold) ...
+    expect(model.reasoningEmitted).toBe(reasoningBefore + 1);
+    // ... and the settled run does not carry it.
+    expect(JSON.stringify(run)).not.toContain("RAW-REASONING");
 
     // Retransmission of the same turn returns the same turn; nothing is appended twice.
     const again = await owner.api.json("POST", "/v1/conversation/turns", body);
@@ -194,6 +201,9 @@ describe("Conversation", () => {
     expect(texts.filter((t: string) => t.includes("What should I wear to the office today?"))).toHaveLength(1);
     expect(texts.some((t: string) => t.startsWith("assistant:") && t.includes("navy overshirt"))).toBe(true);
     expect(transcript.messages.find((m: any) => m.role === "user").channel).toBe("ios");
+    // The transcript carries the reply without the reasoning that preceded it, as text or as a part.
+    expect(JSON.stringify(transcript)).not.toContain("RAW-REASONING");
+    expect(transcript.messages.flatMap((m: any) => m.parts ?? []).filter((p: any) => /reasoning/i.test(String(p.type)))).toEqual([]);
 
     // The event stream has ordered IDs and can be resumed after any of them.
     const events = await readSse(await owner.api.get(`/v1/runs/${accepted.runId}/events?follow=false`));
@@ -212,7 +222,8 @@ describe("Conversation", () => {
     expect(events.at(-1)!.data.data).toEqual({ state: "completed" });
     const resumed = await readSse(await owner.api.get(`/v1/runs/${accepted.runId}/events?follow=false`, { "Last-Event-ID": String(ids[1]) }));
     expect(resumed.map((e) => Number(e.id))).toEqual(ids.slice(2));
-    // No raw reasoning or model internals in the stream.
+    // No raw reasoning or model internals in the stream: not the text the model reasoned with, and no reasoning event.
+    expect(JSON.stringify(events)).not.toContain("RAW-REASONING");
     expect(JSON.stringify(events)).not.toMatch(/reasoning|system prompt/i);
 
     // Another owner cannot read the run, its events, or the transcript.

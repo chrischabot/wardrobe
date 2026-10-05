@@ -289,7 +289,19 @@ function buildOutfit(ctx: RecommendationContext, pools: Pools, top: PoolGarment,
   // The shoe echoes a colour from higher up, but never as the third piece in one neutral while another
   // eligible shoe exists (a navy jacket over a navy shirt does not take the navy sneaker as well).
   const worn = [outer, top, bottom, ...fixed];
-  const footwear = locked.get("footwear") ?? pick(withinNeutralLimit(ctx, paired && sneakers.length > 0 ? sneakers : pools.footwear, worn), footwearScore);
+  // The sock carries the echo of a colour from higher up (below), and the neutral limit counts shoe and
+  // sock alike. A shoe that would take the last place that limit leaves in the only colour the sock can
+  // echo is therefore passed over while another shoe leaves the sock its echo: under a navy jacket over a
+  // rose shirt the sock is the navy one, so the shoe is not navy as well.
+  const sockClass = ctx.rules.defaultSockFabricClass;
+  const leavesSockEcho = (shoe: PoolGarment) =>
+    pools.socks.some((s) => (!sockClass || s.attributes.fabricClass === sockClass) && s.colourFamily !== "unknown" && upper.has(s.colourFamily) && s.colourFamily !== bottom.colourFamily && !exceedsNeutralLimit(ctx, s, [...worn, shoe]));
+  const keepingSockEcho = (shoes: PoolGarment[]): PoolGarment[] => {
+    if (locked.has("socks")) return shoes;
+    const kept = shoes.filter(leavesSockEcho);
+    return kept.length > 0 ? kept : shoes;
+  };
+  const footwear = locked.get("footwear") ?? pick(keepingSockEcho(withinNeutralLimit(ctx, paired && sneakers.length > 0 ? sneakers : pools.footwear, worn)), footwearScore);
   if (!footwear) return null;
   const footwearAlternatives: string[] = [];
   if (paired) {
