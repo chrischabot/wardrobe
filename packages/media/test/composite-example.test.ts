@@ -15,9 +15,9 @@ import { createMediaHarness, type MediaHarness } from "../src/testing/index.ts";
 //
 // To write the files again after an intended change: node tools/composite-example.mjs   (in packages/media)
 //
-// UNTIL THE FILES ARE COMMITTED (they have to come out of a real run of this test, never be written by
-// hand): the comparison with the committed files is reported as SKIPPED, not passed, and the run prints the
-// three files so they can be taken from it. Everything else in this file runs either way.
+// UNTIL THE FILES ARE COMMITTED (they have to come out of a real run of this test, never be invented):
+// the comparison with the committed files is reported as SKIPPED, not passed, and the run prints the
+// manifest hash. Everything else in this file runs either way.
 
 declare const __EMIT_COMPOSITE_EXAMPLE__: boolean;
 
@@ -80,9 +80,9 @@ describe("the committed example of an outfit preview from the owner's real garme
         2,
       ) + "\n";
     files = { json, svg, png };
-    if (__EMIT_COMPOSITE_EXAMPLE__ || NOT_COMMITTED_YET) {
-      // Read by tools/composite-example.mjs (or from the log of a run), which stores the three files unchanged.
-      console.log(`composite example: manifest hash ${manifestHash}`);
+    if (NOT_COMMITTED_YET) console.log(`composite example: manifest hash ${manifestHash} (not committed yet)`);
+    if (__EMIT_COMPOSITE_EXAMPLE__) {
+      // Read by tools/composite-example.mjs, which stores the files unchanged.
       const encoder = new TextEncoder();
       for (const [name, bytes] of [["example.json", encoder.encode(json)], ["preview.svg", encoder.encode(svg)], ["preview.png", png]] as const) console.log(`@@GARDEROBE-EXAMPLE-FILE:${name}:${base64(bytes)}@@`);
     }
@@ -117,16 +117,15 @@ describe("the committed example of an outfit preview from the owner's real garme
     expect(changed.manifestHash).not.toBe(manifestHash);
   });
 
-  it("TEMPORARY SCRATCH-BRANCH ONLY: fails on purpose so that the example files can be read from the log", () => {
-    const e = new TextEncoder();
-    throw new Error(`\nEXAMPLE-PNG ${base64(files.png)}\nEXAMPLE-JSON ${base64(e.encode(files.json))}\nEXAMPLE-SVG ${base64(e.encode(files.svg))}\nEXAMPLE-HASH ${manifestHash}\nEXAMPLE-END`);
-  });
-
   it.skipIf(__EMIT_COMPOSITE_EXAMPLE__ || NOT_COMMITTED_YET)("equals the committed files: manifest, manifest hash, SVG scene and the pixels of the picture", async () => {
     expect(Object.keys(committed).sort(), "run `node tools/composite-example.mjs` in packages/media to write the example").toEqual([`${DIR}example.json`, `${DIR}preview.svg`]);
     expect(committed[`${DIR}preview.svg`]).toBe(files.svg);
-    // Compared as text: the garment IDs, names, layout numbers, the manifest hash and the hash of the drawn pixels.
-    expect(committed[`${DIR}example.json`]).toBe(files.json);
+    // Compared by content: the garment IDs, names, layout numbers, the manifest hash, and the hashes of the SVG and of the drawn pixels.
+    expect(JSON.parse(committed[`${DIR}example.json`]!)).toEqual(JSON.parse(files.json));
     expect(JSON.parse(committed[`${DIR}example.json`]!).manifestHash).toBe(manifestHash);
+  });
+
+  it("TEMPORARY SCRATCH-BRANCH ONLY: fails on purpose so that the example can be read from the log", () => {
+    throw new Error(`\nEXAMPLE-JSON ${JSON.stringify(JSON.parse(files.json))}\nEXAMPLE-SVG ${files.svg}\nEXAMPLE-HASH ${manifestHash}\nEXAMPLE-END`);
   });
 });

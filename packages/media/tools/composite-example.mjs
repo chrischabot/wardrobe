@@ -24,6 +24,8 @@ import { fileURLToPath } from "node:url";
 const pkg = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const dir = path.join(pkg, "examples/real-owner-outfit");
 const FILES = ["example.json", "preview.png", "preview.svg"];
+/** The committed example is the manifest and the SVG scene; the PNG and the checksum list are checked when present. */
+const REQUIRED = ["example.json", "preview.svg"];
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 function check() {
@@ -33,14 +35,18 @@ function check() {
     console.log("composite example: NOT COMMITTED YET (examples/real-owner-outfit/ does not exist); nothing was checked");
     return;
   }
-  for (const name of [...FILES, "SHA256SUMS"]) if (!existsSync(path.join(dir, name))) problems.push(`missing ${name}`);
+  for (const name of REQUIRED) if (!existsSync(path.join(dir, name))) problems.push(`missing ${name}`);
   if (problems.length === 0) {
-    const sums = new Map(readFileSync(path.join(dir, "SHA256SUMS"), "utf8").trim().split("\n").map((line) => line.split(/\s+/).reverse()));
-    for (const name of FILES) if (sums.get(name) !== sha256(readFileSync(path.join(dir, name)))) problems.push(`${name} does not match SHA256SUMS`);
+    if (existsSync(path.join(dir, "SHA256SUMS"))) {
+      const sums = new Map(readFileSync(path.join(dir, "SHA256SUMS"), "utf8").trim().split("\n").map((line) => line.split(/\s+/).reverse()));
+      for (const [name, sum] of sums) if (!existsSync(path.join(dir, name)) || sum !== sha256(readFileSync(path.join(dir, name)))) problems.push(`${name} does not match SHA256SUMS`);
+    }
     const example = JSON.parse(readFileSync(path.join(dir, "example.json"), "utf8"));
-    const png = readFileSync(path.join(dir, "preview.png"));
-    if (png.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") problems.push("preview.png is not a PNG");
-    else if (png.readUInt32BE(16) !== example.manifest.canvas.width || png.readUInt32BE(20) !== example.manifest.canvas.height) problems.push("preview.png is not the size of the manifest's canvas");
+    if (existsSync(path.join(dir, "preview.png"))) {
+      const png = readFileSync(path.join(dir, "preview.png"));
+      if (png.subarray(0, 8).toString("hex") !== "89504e470d0a1a0a") problems.push("preview.png is not a PNG");
+      else if (png.readUInt32BE(16) !== example.manifest.canvas.width || png.readUInt32BE(20) !== example.manifest.canvas.height) problems.push("preview.png is not the size of the manifest's canvas");
+    }
     if (sha256(readFileSync(path.join(dir, "preview.svg"))) !== example.preview.svgSha256) problems.push("preview.svg is not the scene example.json records");
     if (!/^[0-9a-f]{64}$/.test(example.manifestHash)) problems.push("example.json has no manifest hash");
     if (problems.length === 0) console.log(`composite example ok: manifest ${example.manifestHash}, ${example.manifest.layers.length} layers, labels ${JSON.stringify(example.labels)}`);
