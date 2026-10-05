@@ -13,7 +13,8 @@ import { createDailyHarness, MILD_DAY, system, TEST_DAILY_SETTINGS } from "./hel
 
 describe("ADV-W1: a physically impossible forecast is refused whole", () => {
   it.each([
-    ["900 degrees", { temperatureByHour: { 0: 400, 12: 900, 23: 400 } }, /temperature of 900/],
+    // The reason names the first impossible value met, hour by hour: midnight's 400 degrees here.
+    ["900 degrees", { temperatureByHour: { 0: 400, 12: 900, 23: 400 } }, /temperature of 400/],
     ["below absolute zero", { temperatureByHour: { 0: -300, 23: -300 } }, /temperature of -300/],
     ["a 5000 % chance of rain", { ...MILD_DAY, rainProbabilityByHour: () => 5000 }, /chance of rain of 5000/],
   ] as const)("%s: the snapshot is unavailable with a plain reason, and nothing is cached", async (_label, spec, reason) => {
