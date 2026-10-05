@@ -263,18 +263,23 @@ Notifications capability registered, a push (APNs) key configured on the backend
     (`unregisterForRemoteNotifications`, called from `PushRegistrar`; the package tests see the request
     for it, not iOS). No removal is sent for a phone that never sent a registration and that the backend
     does not list; "not found" on a removal counts as stopped. The switch is off while iOS refuses
-    permission. Signing out asks the backend once to forget this phone and keeps nothing waiting. A request
+    permission. Signing out first lets a registration that is on its way land, then asks the backend once to
+    forget this phone, and keeps nothing waiting. Whether there is anything to remove is decided by
+    evidence (a request that left this phone or was waiting to, or the backend's list), never by the
+    switch alone. A request
     the backend leaves undecided waits one minute, then double each time up to an hour, and after six such
     answers is sent again only when the owner taps Try again. The notification service is read from the
     provisioning profile's `aps-environment`; without a profile a simulator or debug build is development
     and anything else production.
   - Requests to confirm. Only the backend's `conflict` answer marks a request as out of date; every other
     refusal is shown in the backend's words. The "waits for your confirmation" line drops a request once the
-    owner has decided it, matched by the turn, the command and the backend's summary.
+    owner has decided it, matched by the turn, the command and the backend's summary; requests of one turn
+    that read the same are dropped one per decision, counted by request identifier.
   - Studio picture. A request that got no answer is repeated with the same identifier; while a picture is
     being made a second tap only looks for it; a finished picture is found by the address the backend gave
     when it was asked for.
-  - The full-size photo is cleared as soon as the garment's image changes.
+  - The full-size photo is cleared as soon as the garment's image changes, and a read that finishes after
+    the change is discarded.
 - Still open from that review:
   - Notifications. A removal that fails while signing out is not sent again: iOS has stopped delivering,
     but the backend keeps the registration until this phone registers again or it is removed elsewhere. A

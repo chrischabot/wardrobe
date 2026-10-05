@@ -109,7 +109,7 @@ public final class AppModel {
         } ?? [:]
 
         // A request a reply left stops being shown as waiting once the owner has decided it.
-        composer.isSettled = { [weak proposals] turnId, type, summary in proposals?.isSettled(turnId: turnId, type: type, summary: summary) ?? false }
+        composer.settledCount = { [weak proposals] turnId, type, summary in proposals?.settledCount(turnId: turnId, type: type, summary: summary) ?? 0 }
         // Signing out removes this phone's notification registration while the session still exists.
         account.beforeSignOut = { [weak notifications] in await notifications?.signingOut() }
 

@@ -46,6 +46,10 @@ public final class NotificationsModel {
     /// A registration has left this phone at some point and no removal has been confirmed since,
     /// so the backend may hold this installation even when the list on screen does not show it.
     private var mayBeRegistered: Bool { didSet { environment.restoration.save("notifications.sent", mayBeRegistered) } }
+    /// The request being sent now, so signing out can wait for it instead of racing it.
+    private var inFlight: Task<Bool, Never>?
+    /// Counts sign-outs: an answer that arrives for a request sent before one changes nothing.
+    private var epoch = 0
 
     /// Set by the platform layer: tells iOS to stop delivering notifications to this app. It is
     /// called when the owner turns notifications off and when they sign out, whatever the
@@ -69,11 +73,15 @@ public final class NotificationsModel {
             environment.restoration.save("notifications.deviceId", created)
             deviceId = created
         }
-        let savedWanted: Bool = environment.restoration.load("notifications.wanted") ?? false
-        wanted = savedWanted
-        pending = environment.restoration.load("notifications.pending")
-        // An installation from before this was kept: if the owner had notifications on, it registered.
-        mayBeRegistered = environment.restoration.load("notifications.sent") ?? savedWanted
+        wanted = environment.restoration.load("notifications.wanted") ?? false
+        let waiting: Pending? = environment.restoration.load("notifications.pending")
+        pending = waiting
+        // An installation from before this was kept has no record of it. The owner's switch is
+        // not evidence (it can be on with permission refused and no token ever sent); a request
+        // that was waiting is: a registration may have reached the backend, and a removal was
+        // only ever made for a phone that had registered. Anything else is settled by the
+        // backend's own list (`thisDevice`).
+        mayBeRegistered = environment.restoration.load("notifications.sent") ?? (waiting != nil)
         let api = environment.api
         devices = environment.resource("devices") { try await api.devices() }
     }
@@ -135,6 +143,8 @@ public final class NotificationsModel {
     public func turnOff() async -> Bool {
         wanted = false
         stopReceiving?()
+        // What the backend last listed counts as evidence even when this screen was never opened.
+        if devices.value == nil { devices.loadCached() }
         // Nothing ever left this phone and the backend lists no registration for it: there is
         // nothing to remove, so nothing is sent.
         guard mayBeRegistered || thisDevice != nil else {
@@ -171,19 +181,37 @@ public final class NotificationsModel {
     /// asked once to forget this installation while the session still exists, and nothing stays
     /// waiting: a request kept past sign-out could only be sent as whoever signs in next.
     public func signingOut() async {
-        let registered = mayBeRegistered || thisDevice != nil
+        // No new request starts from here (`register` needs `wanted`), and iOS stops delivering.
         wanted = false
         stopReceiving?()
+        // A registration on its way is let through first: removing before it lands would leave
+        // this phone registered after the sign-out. Its answer no longer changes anything here.
+        epoch += 1
+        if let running = inFlight { _ = await running.value }
+        if devices.value == nil { devices.loadCached() }
+        let registered = mayBeRegistered || thisDevice != nil
         pending = nil
         message = nil
         guard registered, !environment.isDemo else { return }
         if (try? await environment.api.removeDevice(id: deviceId)) != nil { mayBeRegistered = false }
     }
 
+    /// Sends the waiting request, one at a time. The send is a task of its own so that signing
+    /// out can wait for it to finish.
     private func sendPending() async -> Bool {
-        guard let current = pending, !isWorking else { return false }
+        guard pending != nil, !isWorking else { return false }
         isWorking = true
-        defer { isWorking = false }
+        let sentIn = epoch
+        let task = Task { @MainActor [self] in await deliver(sentIn: sentIn) }
+        inFlight = task
+        let result = await task.value
+        inFlight = nil
+        isWorking = false
+        return result
+    }
+
+    private func deliver(sentIn: Int) async -> Bool {
+        guard let current = pending else { return false }
         message = nil
         do {
             if current.removal {
@@ -194,11 +222,15 @@ public final class NotificationsModel {
                 _ = try await environment.api.registerDevice(DeviceRegistration(deviceId: deviceId, token: token, environment: apns))
             }
             mayBeRegistered = !current.removal
+            // The owner signed out while this was on its way: the sign-out removes what this
+            // registered, and nothing else of the answer is kept.
+            guard sentIn == epoch else { return !current.removal }
             if pending == current { pending = nil }
             environment.center.noteRead(failure: nil)
             await devices.refresh()
             return true
         } catch let failure as APIFailure {
+            guard sentIn == epoch else { return false }
             environment.center.noteRead(failure: failure)
             if failure.isTransport {
                 message = current.removal
@@ -237,6 +269,7 @@ public final class NotificationsModel {
             }
             return false
         } catch {
+            guard sentIn == epoch else { return false }
             message = "The request could not be sent."
             return false
         }
