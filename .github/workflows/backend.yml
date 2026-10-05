@@ -57,9 +57,11 @@ jobs:
           cache: npm
       - run: npm ci
       - name: npm test in ${{ matrix.dir }}
+        env:
+          WORKSPACE_DIR: ${{ matrix.dir }}
         run: |
           echo "Started at $(date -u +%Y-%m-%dT%H:%M:%SZ) (several suites depend on the owner's local day)"
-          npm test --workspace "${{ matrix.dir }}"
+          npm test --workspace "$WORKSPACE_DIR"
 
   # The owner's day (Europe/London) and several scheduled phases depend on the time of day, and a pull
   # request's run happens at whatever hour it is pushed. This runs the Worker suite a second time with the
