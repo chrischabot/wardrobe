@@ -62,8 +62,10 @@ export function mediaRoutes(): RouteDef[] {
       return json({ uploadId: params.id!, receivedBytes: result.receivedBytes, sha256: result.sha256 });
     }),
 
-    owner("POST", "/v1/uploads/{id}/complete", "write", async ({ app, session, params }) => {
+    owner("POST", "/v1/uploads/{id}/complete", "write", async ({ app, session, params, exec }) => {
       const result = await requireMedia(app, "uploads").finalizeUpload(session.principal, params.id!);
+      // The photograph's catalogue view is prepared now, not at the next scheduled sweep.
+      if (result.jobId && !result.receipt.replayed) exec.waitUntil(afterCommit(app, session.principal));
       return json({ uploadId: params.id!, state: result.asset ? "finalized" : "rejected", asset: result.asset, rejectionReason: result.rejected, jobId: result.jobId, receipt: result.receipt });
     }),
 

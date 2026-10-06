@@ -206,7 +206,10 @@ export async function readTombstones(app: App, userId: string, nowMs: number): P
 async function writeTombstoneJournal(app: App, userId: string, nowMs: number): Promise<void> {
   const journal = JSON.stringify(await readTombstones(app, userId, nowMs));
   await app.env.EXPORT_BUCKET.put(tombstoneJournalKey(userId), journal, { httpMetadata: { contentType: "application/json" } });
-  await app.env.EXPORT_BUCKET.put(journalByOwnerRefKey(await ownerRefOf(app.env, userId)), journal, { httpMetadata: { contentType: "application/json" } });
+  // The copy named by the owner's reference also records, in the private bucket's own metadata (never in the
+  // journal or in a package), which owner it belongs to: a restore in this deployment can then read the
+  // owner's journal as it is NOW instead of as it was at the last sweep.
+  await app.env.EXPORT_BUCKET.put(journalByOwnerRefKey(await ownerRefOf(app.env, userId)), journal, { httpMetadata: { contentType: "application/json" }, customMetadata: { ownerId: userId } });
 }
 
 /** The journal kept in this deployment for the owner a backup package came from, or null. */
@@ -214,6 +217,17 @@ export async function journalForOwnerRef(app: App, ownerRef: string): Promise<To
   if (!/^[A-Za-z0-9_-]{16,128}$/.test(ownerRef)) return null;
   const object = await app.env.EXPORT_BUCKET.get(journalByOwnerRefKey(ownerRef));
   if (!object) return null;
+  // The stored copy is only as fresh as the last sweep. An image deleted since then would be written back
+  // by a restore that relied on it, so while the owner the backup came from is still in this deployment the
+  // journal is read from the ledger. The stored owner is trusted only if it produces this very reference.
+  const ownerId = object.customMetadata?.ownerId;
+  if (ownerId && (await ownerRefOf(app.env, ownerId)) === ownerRef && (await first(app.db, "SELECT 1 AS x FROM users WHERE user_id = ?", ownerId))) {
+    try {
+      return await readTombstones(app, ownerId, app.now());
+    } catch (error) {
+      console.warn("live deletion journal unavailable; using the stored copy", String((error as Error)?.message ?? error));
+    }
+  }
   const journal = parseJson<TombstoneJournal | null>(await object.text(), null);
   return journal && journal.format === "garderobe-tombstones/1" && journal.ownerRef === ownerRef ? journal : null;
 }

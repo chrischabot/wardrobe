@@ -4,7 +4,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { runScheduledBackups } from "../src/backup/service.ts";
 import { BACKUP_RETENTION_MS } from "../src/export/job.ts";
 import { sweepExpired } from "../src/maintenance.ts";
-import { APP_ORIGIN, enableFakeModel, ownerDay, provisionOwner, publishBoard, testApp, uploadImage, type TestOwner } from "../src/testing/index.ts";
+import { APP_ORIGIN, enableFakeModel, ownerDay, provisionOwner, publishBoard, testApp, testPng, uploadImage, type TestOwner } from "../src/testing/index.ts";
 
 /*
  * Scheduled backups, the restore manifest and a full restore, through the real Worker with the REAL
@@ -240,5 +240,54 @@ describe("retention and deletion", () => {
     expect(attempt.status).toBe(403);
     expect(((await attempt.json()) as any).error.details.reason).toBe("owner_erased");
     expect((await someoneElse.api.json("GET", "/v1/wardrobe")).total).toBe(0);
+  });
+});
+
+describe("a photograph deleted since the last sweep", () => {
+  // Regression: a restore consulted the copy of the deletion journal written beside the backups at the last
+  // sweep, so a photograph deleted after that sweep was written back to storage and shown again.
+  it("is not written back when the backup that holds it is restored straight away", async () => {
+    const app = await testApp();
+    const source = await provisionOwner({ real: true });
+    const settle = async (userId: string) => {
+      for (let i = 0; i < 600; i++) {
+        await app.media!.afterCommit();
+        const open = await app.db.prepare("SELECT COUNT(*) AS n FROM media_jobs WHERE user_id = ? AND state IN ('queued', 'running')").bind(userId).first<{ n: number }>();
+        if ((open?.n ?? 0) === 0) return;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      throw new Error("media jobs did not settle");
+    };
+    const kept = (await uploadImage(source, { intent: "attachment" })).complete.asset.assetId as string;
+    const doomed = (await uploadImage(source, { intent: "attachment", bytes: testPng(120, 88) })).complete.asset.assetId as string;
+    await settle(source.userId);
+    const taken = await source.api.json("POST", "/v1/backups", { clientRequestId: `manual-${crypto.randomUUID()}` });
+    expect(taken.state).toBe("completed");
+    const held = await download(source, taken.backupId);
+    expect(Object.keys(unzipSync(held)).some((p) => p.startsWith("media/") && p.includes(doomed))).toBe(true);
+
+    // Deleted after the backup. No sweep runs from here on, so the journal beside the backup does not know.
+    const deleted = await source.api.command("media.delete_asset", { assetId: doomed });
+    expect(deleted.status, await deleted.clone().text()).toBe(200);
+    await settle(source.userId);
+    const beside = await app.env.EXPORT_BUCKET.get(`backup-journals/${taken.restoreManifest.ownerRef}/tombstones.json`);
+    expect(beside).not.toBeNull();
+    expect(JSON.stringify(await beside!.json())).not.toContain(doomed);
+
+    const target = await provisionOwner();
+    const imported = await target.api.request("POST", "/v1/imports", { raw: held, headers: { "Content-Type": "application/zip" } });
+    expect(imported.status, await imported.clone().text()).toBe(200);
+    await settle(target.userId);
+    // The deleted photograph is neither readable nor in the restored owner's storage; the other one is.
+    expect((await target.api.get(`/v1/media/assets/${doomed}`)).status).toBe(404);
+    const keys = (await app.env.MEDIA_BUCKET!.list({ prefix: `u/${target.userId}/` })).objects.map((o) => o.key);
+    expect(keys.filter((k) => k.includes(doomed))).toEqual([]);
+    expect(keys.some((k) => k.includes(kept))).toBe(true);
+    const served = await target.api.get(`/v1/media/assets/${kept}`);
+    expect(served.status).toBe(200);
+    await served.arrayBuffer();
+    // The restored owner's own journal carries the deletion forward.
+    const carried = await target.api.json("GET", "/v1/backups/tombstones");
+    expect(carried.mediaDeletions.deletedAssets.map((d: any) => d.assetId)).toContain(doomed);
   });
 });
