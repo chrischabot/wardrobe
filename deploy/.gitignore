@@ -1,0 +1,6 @@
+# Local deployment state: generated application secrets, the automation door's signing key, one-time
+# invitation codes. Never committed. (The root .gitignore already ignores .wrangler/.)
+.wrangler/
+*.secrets.json
+# Generated Wrangler configurations (rewritten by every deploy or rehearsal) and the rehearsal's local secrets.
+wrangler/

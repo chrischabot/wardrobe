@@ -1,0 +1,21 @@
+{
+  "what": "`wrangler deploy --dry-run` of the three deployment configurations with placeholder resource identifiers: the bundles build; nothing was uploaded.",
+  "source": "node deploy/rehearse.mjs",
+  "builds": {
+    "garderobe-rebuild-dev": {
+      "builds": true,
+      "ms": 1608,
+      "upload": "11482.89 KiB / gzip: 2344.36 KiB"
+    },
+    "garderobe-rebuild-dev-auto": {
+      "builds": true,
+      "ms": 1614,
+      "upload": "11482.89 KiB / gzip: 2344.36 KiB"
+    },
+    "garderobe-rebuild-dev-ops": {
+      "builds": true,
+      "ms": 1584,
+      "upload": "10294.63 KiB / gzip: 2075.66 KiB"
+    }
+  }
+}
