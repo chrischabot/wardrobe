@@ -299,6 +299,45 @@ export function buildWeatherSnapshot(input: BuildWeatherSnapshotInput): WeatherS
   };
 }
 
+/* ---------------------------- plausibility ----------------------------- */
+
+/**
+ * Bounds outside which a value cannot be a real observation on Earth (the records are about -89 C and
+ * +57 C, 408 km/h for a gust, 305 mm of rain in an hour). They are deliberately wide: their only purpose
+ * is to refuse a forecast that is corrupt, in the wrong unit or forged, never to second-guess weather.
+ */
+export const PLAUSIBLE_RANGES: Record<(typeof NUMERIC_FIELDS)[number], { min: number; max: number; unit: string; label: string }> = {
+  temperatureC: { min: -90, max: 60, unit: "°C", label: "a temperature" },
+  apparentTemperatureC: { min: -120, max: 80, unit: "°C", label: "a felt temperature" },
+  precipitationProbabilityPct: { min: 0, max: 100, unit: "%", label: "a chance of rain" },
+  precipitationMm: { min: 0, max: 500, unit: "mm", label: "an hourly rain amount" },
+  windSpeedKmh: { min: 0, max: 500, unit: "km/h", label: "a wind speed" },
+  windGustKmh: { min: 0, max: 500, unit: "km/h", label: "a gust" },
+  humidityPct: { min: 0, max: 100, unit: "%", label: "a humidity" },
+};
+
+/**
+ * Why a forecast cannot be right, as a short phrase ("a temperature of 900 °C"), or null when every
+ * supplied value is physically possible. A forecast with one impossible value is not used at all: the
+ * same fault may have touched the values that look reasonable.
+ */
+export function implausibleForecast(forecast: ProviderForecast): string | null {
+  for (const hour of forecast.hours) {
+    for (const field of NUMERIC_FIELDS) {
+      const value = hour[field];
+      if (value === null) continue;
+      const range = PLAUSIBLE_RANGES[field];
+      if (!Number.isFinite(value) || value < range.min || value > range.max) return `${range.label} of ${Number.isFinite(value) ? round1(value) : "no finite value"} ${range.unit}`;
+    }
+  }
+  return null;
+}
+
+/** Whether the forecast says anything at all about `localDate` (at least one supplied value in one of its hours). */
+export function forecastCoversDate(forecast: ProviderForecast, localDate: string): boolean {
+  return forecast.hours.some((h) => h.localTime.slice(0, 10) === localDate && hasData(h));
+}
+
 /* ---------------------------- material change -------------------------- */
 
 /** Inclusive 14-16 C band of the owner's jacket rule. */
