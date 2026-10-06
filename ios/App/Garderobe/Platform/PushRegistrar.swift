@@ -11,14 +11,29 @@ final class PushRegistrar: NSObject, UIApplicationDelegate {
     /// The model of the app that is on screen now (the app model changes when demo mode starts or ends).
     static weak var current: NotificationsModel?
 
-    /// Which of Apple's two services issued this build's tokens: development for a debug build
-    /// run from Xcode, production for TestFlight and release builds.
-    static var apnsEnvironment: DeviceRegistration.Environment {
-        #if DEBUG
-        return .development
+    /// Which of Apple's two services issues this build's tokens: what the build was signed for
+    /// (the provisioning profile's `aps-environment`), and only without a profile the kind of
+    /// build (an App Store or TestFlight build carries none and is production).
+    static let apnsEnvironment: DeviceRegistration.Environment = {
+        let profile = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision").flatMap { try? Data(contentsOf: $0) }
+        #if targetEnvironment(simulator)
+        let simulator = true
         #else
-        return .production
+        let simulator = false
         #endif
+        #if DEBUG
+        let debug = true
+        #else
+        let debug = false
+        #endif
+        return PushEnvironment.resolve(profile: profile, isSimulator: simulator, isDebugBuild: debug)
+    }()
+
+    /// Makes this the model iOS reports to, and gives it the one thing only the platform can
+    /// do for it: telling iOS to stop delivering to this app.
+    private static func attach(_ model: NotificationsModel) {
+        current = model
+        model.stopReceiving = { UIApplication.shared.unregisterForRemoteNotifications() }
     }
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
@@ -44,6 +59,7 @@ final class PushRegistrar: NSObject, UIApplicationDelegate {
     static func refresh(_ model: NotificationsModel, isDemo: Bool) {
         current = model
         guard !isDemo else { return }
+        attach(model)
         UNUserNotificationCenter.current().getNotificationSettings { settings in
             let value = PushRegistrar.permission(settings.authorizationStatus)
             Task { @MainActor in
@@ -56,7 +72,7 @@ final class PushRegistrar: NSObject, UIApplicationDelegate {
     /// The owner turned notifications on: ask iOS for permission (the system prompt appears
     /// only the first time), then for a token.
     static func turnOn(_ model: NotificationsModel) {
-        current = model
+        attach(model)
         model.turnOn()
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
             Task { @MainActor in

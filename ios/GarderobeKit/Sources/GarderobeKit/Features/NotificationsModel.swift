@@ -32,9 +32,36 @@ public final class NotificationsModel {
         var token: String?
         var apns: String?
         var removal: Bool
+        /// How many times the backend answered without deciding it (a server fault, a rate limit).
+        /// Absent in a request saved by an earlier version of the app.
+        var attempts: Int?
+        /// It is not sent again automatically before this moment.
+        var notBefore: Date?
+
+        func sameRequest(as other: Pending) -> Bool { token == other.token && apns == other.apns && removal == other.removal }
     }
     private var pending: Pending? {
         didSet { if let pending { environment.restoration.save("notifications.pending", pending) } else { environment.restoration.clear("notifications.pending") } }
+    }
+    /// A registration has left this phone at some point and no removal has been confirmed since,
+    /// so the backend may hold this installation even when the list on screen does not show it.
+    private var mayBeRegistered: Bool { didSet { environment.restoration.save("notifications.sent", mayBeRegistered) } }
+    /// The request being sent now, so signing out can wait for it instead of racing it.
+    private var inFlight: Task<Bool, Never>?
+    /// Counts sign-outs: an answer that arrives for a request sent before one changes nothing.
+    private var epoch = 0
+
+    /// Set by the platform layer: tells iOS to stop delivering notifications to this app. It is
+    /// called when the owner turns notifications off and when they sign out, whatever the
+    /// backend answers.
+    public var stopReceiving: (@MainActor () -> Void)?
+
+    /// After this many answers that decided nothing, a waiting request is no longer sent
+    /// automatically; the owner can send it again from the screen.
+    public static let retryLimit = 6
+    /// The wait before the next automatic try: one minute, doubling, at most an hour.
+    static func retryDelay(afterAttempts attempts: Int) -> TimeInterval {
+        min(60 * pow(2, Double(max(attempts, 1) - 1)), 3600)
     }
 
     public init(environment: AppEnvironment) {
@@ -47,7 +74,14 @@ public final class NotificationsModel {
             deviceId = created
         }
         wanted = environment.restoration.load("notifications.wanted") ?? false
-        pending = environment.restoration.load("notifications.pending")
+        let waiting: Pending? = environment.restoration.load("notifications.pending")
+        pending = waiting
+        // An installation from before this was kept has no record of it. The owner's switch is
+        // not evidence (it can be on with permission refused and no token ever sent); a request
+        // that was waiting is: a registration may have reached the backend, and a removal was
+        // only ever made for a phone that had registered. Anything else is settled by the
+        // backend's own list (`thisDevice`).
+        mayBeRegistered = environment.restoration.load("notifications.sent") ?? (waiting != nil)
         let api = environment.api
         devices = environment.resource("devices") { try await api.devices() }
     }
@@ -62,6 +96,12 @@ public final class NotificationsModel {
     public var thisDevice: Device? { devices.value?.devices.first { $0.deviceId == deviceId } }
     public var isRegistered: Bool { thisDevice?.status == .active }
     public var isWaitingToSend: Bool { pending != nil }
+    /// What the switch shows: the owner asked for notifications and iOS has not refused them.
+    /// After a refusal the switch is off and the status line says where to allow them.
+    public var isOn: Bool { wanted && permission != .denied }
+    /// A waiting request the backend left undecided `retryLimit` times: it is kept, and sent
+    /// again only when the owner asks (`retryNow`).
+    public var hasStoppedRetrying: Bool { (pending?.attempts ?? 0) >= NotificationsModel.retryLimit }
 
     /// The platform reports the current permission (on launch and after the owner answers).
     public func setPermission(_ value: NotificationPermission) { permission = value }
@@ -84,7 +124,11 @@ public final class NotificationsModel {
     public func register(token: Data, apns: DeviceRegistration.Environment) async -> Bool {
         guard wanted else { return false }
         let hex = token.map { String(format: "%02x", $0) }.joined()
-        pending = Pending(token: hex, apns: apns.rawValue, removal: false)
+        let request = Pending(token: hex, apns: apns.rawValue, removal: false)
+        // The same registration already waiting keeps its place in the retry schedule: iOS hands
+        // over the token on every launch, and that must not turn a backoff into a retry per launch.
+        if let waiting = pending, waiting.sameRequest(as: request) { return await retryPending() }
+        pending = request
         return await sendPending()
     }
 
@@ -98,44 +142,126 @@ public final class NotificationsModel {
     @discardableResult
     public func turnOff() async -> Bool {
         wanted = false
+        stopReceiving?()
+        // What the backend last listed counts as evidence even when this screen was never opened.
+        if devices.value == nil { devices.loadCached() }
+        // Nothing ever left this phone and the backend lists no registration for it: there is
+        // nothing to remove, so nothing is sent.
+        guard mayBeRegistered || thisDevice != nil else {
+            pending = nil
+            message = nil
+            return true
+        }
         pending = Pending(token: nil, apns: nil, removal: true)
         return await sendPending()
     }
 
     /// Sends a registration or removal that is still waiting. Called when the app synchronises.
+    /// A request the backend left undecided waits out its delay first, and one that reached
+    /// `retryLimit` is not sent from here at all.
     @discardableResult
     public func retryPending() async -> Bool {
-        guard pending != nil else { return true }
+        guard let current = pending else { return true }
+        if hasStoppedRetrying { return false }
+        if let wait = current.notBefore, environment.time.now() < wait { return false }
         return await sendPending()
     }
 
+    /// The owner asked for a waiting request to be sent now: it starts over.
+    @discardableResult
+    public func retryNow() async -> Bool {
+        guard var current = pending else { return true }
+        current.attempts = nil
+        current.notBefore = nil
+        pending = current
+        return await sendPending()
+    }
+
+    /// The owner is signing out on this phone. iOS is told to stop delivering, the backend is
+    /// asked once to forget this installation while the session still exists, and nothing stays
+    /// waiting: a request kept past sign-out could only be sent as whoever signs in next.
+    public func signingOut() async {
+        // No new request starts from here (`register` needs `wanted`), and iOS stops delivering.
+        wanted = false
+        stopReceiving?()
+        // A registration on its way is let through first: removing before it lands would leave
+        // this phone registered after the sign-out. Its answer no longer changes anything here.
+        epoch += 1
+        if let running = inFlight { _ = await running.value }
+        if devices.value == nil { devices.loadCached() }
+        let registered = mayBeRegistered || thisDevice != nil
+        pending = nil
+        message = nil
+        guard registered, !environment.isDemo else { return }
+        if (try? await environment.api.removeDevice(id: deviceId)) != nil { mayBeRegistered = false }
+    }
+
+    /// Sends the waiting request, one at a time. The send is a task of its own so that signing
+    /// out can wait for it to finish.
     private func sendPending() async -> Bool {
-        guard let current = pending, !isWorking else { return false }
+        guard pending != nil, !isWorking else { return false }
         isWorking = true
-        defer { isWorking = false }
+        let sentIn = epoch
+        let task = Task { @MainActor [self] in await deliver(sentIn: sentIn) }
+        inFlight = task
+        let result = await task.value
+        inFlight = nil
+        isWorking = false
+        return result
+    }
+
+    private func deliver(sentIn: Int) async -> Bool {
+        guard let current = pending else { return false }
         message = nil
         do {
             if current.removal {
                 _ = try await environment.api.removeDevice(id: deviceId)
             } else if let token = current.token, let apns = current.apns.flatMap(DeviceRegistration.Environment.init(rawValue:)) {
+                // From here the backend may hold this installation, whatever comes back.
+                mayBeRegistered = true
                 _ = try await environment.api.registerDevice(DeviceRegistration(deviceId: deviceId, token: token, environment: apns))
             }
+            mayBeRegistered = !current.removal
+            // The owner signed out while this was on its way: the sign-out removes what this
+            // registered, and nothing else of the answer is kept.
+            guard sentIn == epoch else { return !current.removal }
             if pending == current { pending = nil }
             environment.center.noteRead(failure: nil)
             await devices.refresh()
             return true
         } catch let failure as APIFailure {
+            guard sentIn == epoch else { return false }
             environment.center.noteRead(failure: failure)
             if failure.isTransport {
                 message = current.removal
                     ? "Offline. Notifications to this phone will be stopped when there is a connection."
                     : "Offline. This phone will be registered when there is a connection."
-            } else if failure.isRetryable || failure.needsSignIn {
-                // The backend did not decide it (a server fault, a rate limit, an expired sign-in):
-                // it stays waiting and goes again when the app next synchronises.
-                message = current.removal
-                    ? "Not stopped yet: \(failure.ownerMessage) This will be tried again."
-                    : "Not registered yet: \(failure.ownerMessage) This will be tried again."
+            } else if failure.needsSignIn {
+                // Nothing was decided and nothing will be until the owner signs in: it stays waiting.
+                message = current.removal ? "Sign in to finish stopping notifications to this phone."
+                                          : "Sign in to finish registering this phone."
+            } else if failure.isRetryable {
+                // The backend did not decide it (a server fault, a rate limit): it stays waiting
+                // and goes again later, each time after a longer wait, up to `retryLimit` times.
+                let attempts = (current.attempts ?? 0) + 1
+                var kept = current
+                kept.attempts = attempts
+                let reason = NotificationsModel.sentence(failure.ownerMessage)
+                if attempts >= NotificationsModel.retryLimit {
+                    kept.notBefore = nil
+                    message = (current.removal ? "Not stopped: " : "Not registered: ") + reason
+                        + " It was tried \(attempts) times and will not be tried again by itself."
+                } else {
+                    kept.notBefore = environment.time.now().addingTimeInterval(NotificationsModel.retryDelay(afterAttempts: attempts))
+                    message = (current.removal ? "Not stopped yet: " : "Not registered yet: ") + reason + " It will be tried again later."
+                }
+                if pending == current { pending = kept }
+            } else if current.removal, NotificationsModel.isNotFound(failure) {
+                // The backend holds no registration for this phone: that is what was asked for.
+                mayBeRegistered = false
+                if pending == current { pending = nil }
+                await devices.refresh()
+                return true
             } else {
                 // The backend refused it: keeping it would only repeat the refusal.
                 if pending == current { pending = nil }
@@ -143,14 +269,38 @@ public final class NotificationsModel {
             }
             return false
         } catch {
+            guard sentIn == epoch else { return false }
             message = "The request could not be sent."
             return false
+        }
+    }
+
+    /// The backend's message as a sentence, so what follows it reads as the next one.
+    static func sentence(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let last = trimmed.last else { return "The server did not say why." }
+        return ".!?".contains(last) ? trimmed : trimmed + "."
+    }
+
+    static func isNotFound(_ failure: APIFailure) -> Bool {
+        switch failure {
+        case .api(let status, let error): return status == 404 || error.code == .notFound
+        case .status(let status): return status == 404
+        default: return false
         }
     }
 
     /// One sentence on where this phone stands, from what the backend and iOS report.
     public var statusLine: String {
         if let pending {
+            if hasStoppedRetrying {
+                return pending.removal ? "Notifications to this phone have not been stopped on the server. Try again when you are ready."
+                                       : "This phone has not been registered. Try again when you are ready."
+            }
+            if (pending.attempts ?? 0) > 0 {
+                return pending.removal ? "Waiting to stop notifications to this phone. It will be tried again later."
+                                       : "Waiting to register this phone. It will be tried again later."
+            }
             return pending.removal ? "Waiting to stop notifications to this phone when there is a connection."
                                    : "Waiting to register this phone when there is a connection."
         }
@@ -174,6 +324,15 @@ public final class NotificationsModel {
 
     /// Other installations registered for the same owner (an old phone, an iPad).
     public var otherDevices: [Device] { (devices.value?.devices ?? []).filter { $0.deviceId != deviceId } }
+
+    /// One word for another device's registration, as the backend reports it.
+    public func statusWord(_ device: Device) -> String {
+        switch device.status {
+        case .active: return "Registered"
+        case .disabled: return "Stopped"
+        case .unknown: return "Not recognised by this version"
+        }
+    }
 
     public var freshnessLine: String {
         devices.freshness.statement(subject: "registration", now: environment.time.now(), timeZone: environment.timeZone)

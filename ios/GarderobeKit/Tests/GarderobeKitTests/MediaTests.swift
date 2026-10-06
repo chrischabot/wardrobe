@@ -117,6 +117,80 @@ private func syntheticDevice(_ id: String, status: String = "active", reason: JS
     ["deviceId": .string(id), "environment": "production", "status": .string(status), "disabledReason": reason, "updatedAt": .string(Synthetic.now), "lastDeliveryAt": lastDelivery]
 }
 
+/// Counts calls from a main-actor callback (the platform hook a test stands in for).
+private final class CallCounter: @unchecked Sendable {
+    var value = 0
+}
+
+/// A SYNTHETIC backend that holds the answer to a registration back until the test lets it go,
+/// and writes down the order in which requests arrived and were answered.
+private final class HeldRegistrationTransport: HTTPTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [String] = []
+    private var arrived = false
+    private var arrivalWaiter: CheckedContinuation<Void, Never>?
+    private var released = false
+    private var releaseWaiter: CheckedContinuation<Void, Never>?
+
+    var order: [String] { lock.withLock { events } }
+
+    /// Returns once the registration has reached the backend.
+    func registrationArrived() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let already = lock.withLock { () -> Bool in
+                if arrived { return true }
+                arrivalWaiter = continuation
+                return false
+            }
+            if already { continuation.resume() }
+        }
+    }
+
+    /// Lets the held registration be answered.
+    func release() {
+        let waiter = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+            released = true
+            let waiting = releaseWaiter
+            releaseWaiter = nil
+            return waiting
+        }
+        waiter?.resume()
+    }
+
+    func send(_ request: HTTPRequest) async throws -> HTTPResponse {
+        if request.method == "POST", request.path == "/v1/devices" {
+            let waiter = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+                events.append("registration sent")
+                arrived = true
+                let waiting = arrivalWaiter
+                arrivalWaiter = nil
+                return waiting
+            }
+            waiter?.resume()
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let already = lock.withLock { () -> Bool in
+                    if released { return true }
+                    releaseWaiter = continuation
+                    return false
+                }
+                if already { continuation.resume() }
+            }
+            lock.withLock { events.append("registration answered") }
+            return TestSupport.json(syntheticDevice(TestSupport.body(request)["deviceId"]?.stringValue ?? ""))
+        }
+        if request.method == "POST", request.path.hasSuffix("/remove") {
+            lock.withLock { events.append("removal sent") }
+            return TestSupport.json(["removed": true])
+        }
+        if request.method == "GET", request.path == "/v1/devices" { return TestSupport.json(["deliveryConfigured": true, "devices": []]) }
+        return HTTPResponse(status: 404)
+    }
+
+    func stream(_ request: HTTPRequest) -> AsyncThrowingStream<Data, Error> {
+        AsyncThrowingStream { $0.finish(throwing: TransportFailure("no stream in this test")) }
+    }
+}
+
 @MainActor
 @Suite("Notifications, the Studio preview, signed delivery and photo roles: boundaries")
 struct MediaBoundaryTests {
@@ -173,7 +247,8 @@ struct MediaBoundaryTests {
     func removalOfflineAndDisabled() async throws {
         let router = Router()
         let transport = router.transport
-        let env = TestSupport.environment(transport: transport)
+        let time = ManualTimeSource(instant: TestSupport.startInstant)
+        let env = TestSupport.environment(transport: transport, time: time)
         let model = NotificationsModel(environment: env)
         router.json("GET", "/v1/devices", ["deliveryConfigured": true, "devices": [device(model.deviceId, status: "disabled", reason: "Apple reports the app was removed from this phone."), device("device-other-0001")]])
         router.json("POST", "/v1/devices/\(model.deviceId)/remove", ["removed": true])
@@ -192,24 +267,270 @@ struct MediaBoundaryTests {
         #expect(sent && !model.isWaitingToSend)
 
         // A server fault or an expired sign-in decides nothing, so the request to stop stays waiting
-        // and is sent again; only a refusal drops it.
+        // and is sent again, not before its wait is over; a phone the backend does not hold is done.
         let path = "/v1/devices/\(model.deviceId)/remove"
-        router.on("POST", path) { _ in TestSupport.error("internal", "Something went wrong on the server.", status: 500) }
+        router.on("POST", path) { _ in TestSupport.error("internal", "Something went wrong on the server", status: 500) }
         let faulted = await model.turnOff()
         #expect(!faulted && model.isWaitingToSend)
-        #expect(model.message == "Not stopped yet: Something went wrong on the server. This will be tried again.")
+        #expect(model.message == "Not stopped yet: Something went wrong on the server. It will be tried again later.")
+        #expect(model.statusLine == "Waiting to stop notifications to this phone. It will be tried again later.")
+        let sentSoFar = transport.requests("POST", path).count
+        let tooSoon = await model.retryPending()
+        #expect(!tooSoon && transport.requests("POST", path).count == sentSoFar)   // the next synchronisation does not hammer a failing server
+        time.advance(NotificationsModel.retryDelay(afterAttempts: 1))
         router.on("POST", path) { _ in TestSupport.error("unauthenticated", "Sign in again.", status: 401) }
         let expired = await model.retryPending()
-        #expect(!expired && model.isWaitingToSend)
+        #expect(!expired && model.isWaitingToSend && !model.hasStoppedRetrying)
+        #expect(model.message == "Sign in to finish stopping notifications to this phone.")
         router.json("POST", path, ["removed": true])
         let delivered = await model.retryPending()
         #expect(delivered && !model.isWaitingToSend)
         router.on("POST", path) { _ in TestSupport.error("not_found", "That phone is not registered.", status: 404) }
-        let refused = await model.turnOff()
-        #expect(!refused && !model.isWaitingToSend && model.message == "That phone is not registered.")
+        let gone = await model.turnOff()
+        #expect(gone && !model.isWaitingToSend && model.message == nil)   // nothing to stop is not an error
         // Turning on again cancels nothing that was already sent and clears no other device.
         model.turnOn()
         #expect(model.wanted && !model.isWaitingToSend)
+        #expect(model.otherDevices.map { model.statusWord($0) } == ["Registered"])
+    }
+
+    @Test("A registration the backend leaves undecided waits longer each time, stops by itself after six tries, and goes again when the owner asks")
+    func registrationBackoffAndCap() async throws {
+        let router = Router()
+        let transport = router.transport
+        let time = ManualTimeSource(instant: TestSupport.startInstant)
+        let listed = LockedFlag(false)
+        router.on("POST", "/v1/devices") { _ in TestSupport.error("rate_limited", "Too many requests", status: 429) }
+        let model = NotificationsModel(environment: TestSupport.environment(transport: transport, time: time))
+        let installation = model.deviceId
+        router.on("GET", "/v1/devices") { _ in TestSupport.json(["deliveryConfigured": true, "devices": listed.value ? [syntheticDevice(installation)] : []]) }
+        func posts() -> [HTTPRequest] { transport.requests("POST", "/v1/devices") }
+        model.turnOn()
+        let token = Data(repeating: 7, count: 32)
+
+        let first = await model.register(token: token, apns: .development)
+        #expect(!first && model.isWaitingToSend && !model.isRegistered)
+        #expect(model.message == "Not registered yet: Too many requests. It will be tried again later.")
+        #expect(model.statusLine == "Waiting to register this phone. It will be tried again later.")
+        // iOS hands the same token over again on the next launch: that is the same request, still waiting its turn.
+        let relaunch = await model.register(token: token, apns: .development)
+        #expect(!relaunch && posts().count == 1)
+
+        router.on("POST", "/v1/devices") { _ in TestSupport.error("internal", "Something went wrong on the server.", status: 500) }
+        for attempt in 2..<NotificationsModel.retryLimit {
+            time.advance(NotificationsModel.retryDelay(afterAttempts: attempt - 1) - 1)
+            let early = await model.retryPending()
+            #expect(!early && posts().count == attempt - 1)          // not before the wait is over
+            time.advance(1)
+            let tried = await model.retryPending()
+            #expect(!tried && posts().count == attempt && !model.hasStoppedRetrying)
+        }
+        #expect(NotificationsModel.retryDelay(afterAttempts: 1) == 60 && NotificationsModel.retryDelay(afterAttempts: 3) == 240 && NotificationsModel.retryDelay(afterAttempts: 20) == 3600)
+
+        // The sixth answer that decides nothing is the last automatic try.
+        time.advance(3600)
+        let last = await model.retryPending()
+        #expect(!last && posts().count == NotificationsModel.retryLimit && model.hasStoppedRetrying && model.isWaitingToSend)
+        #expect(model.message == "Not registered: Something went wrong on the server. It was tried 6 times and will not be tried again by itself.")
+        #expect(model.statusLine == "This phone has not been registered. Try again when you are ready.")
+        time.advance(86_400)
+        let later = await model.retryPending()
+        #expect(!later && posts().count == NotificationsModel.retryLimit)
+        #expect(Set(posts().map { String(decoding: $0.body ?? Data(), as: UTF8.self) }).count == 1)   // one registration, sent again; never a second one
+
+        // The owner asks: it is sent at once and starts over.
+        router.on("POST", "/v1/devices") { request in TestSupport.json(syntheticDevice(TestSupport.body(request)["deviceId"]?.stringValue ?? "")) }
+        listed.value = true
+        let asked = await model.retryNow()
+        #expect(asked && model.isRegistered && !model.isWaitingToSend && !model.hasStoppedRetrying)
+    }
+
+    @Test("A phone that was never registered sends no removal; iOS is told to stop; after iOS refuses permission the switch is off")
+    func neverRegisteredAndDenied() async throws {
+        let router = Router()
+        let transport = router.transport
+        router.json("GET", "/v1/devices", ["deliveryConfigured": true, "devices": [device("device-other-0001", status: "disabled"), device("device-other-0002", status: "paused")]])
+        let model = NotificationsModel(environment: TestSupport.environment(transport: transport))
+        let stops = CallCounter()
+        model.stopReceiving = { stops.value += 1 }
+        await model.open()
+        #expect(model.otherDevices.map { model.statusWord($0) } == ["Stopped", "Not recognised by this version"])   // an unknown state is not called stopped
+
+        // The owner turns the switch on and iOS refuses: the switch shows off, and the line says where to allow it.
+        model.turnOn()
+        #expect(model.isOn)
+        model.setPermission(.denied)
+        #expect(model.wanted && !model.isOn && !model.shouldRequestToken)
+        #expect(model.statusLine == "Notifications are turned off for Garderobe in iPhone Settings.")
+        // Allowed later in iPhone Settings: what the owner asked for stands.
+        model.setPermission(.authorized)
+        #expect(model.isOn && model.shouldRequestToken)
+
+        // Turned off before any token was ever sent: nothing to remove, so nothing is sent and nothing waits.
+        let off = await model.turnOff()
+        #expect(off && !model.isOn && !model.isWaitingToSend && model.message == nil)
+        #expect(stops.value == 1)                                              // iOS is told to stop delivering either way
+        #expect(!transport.requests.contains { $0.method == "POST" })
+    }
+
+    @Test("Signing out removes this phone's registration, tells iOS to stop, and leaves nothing waiting for the next person")
+    func signOutRemovesRegistration() async throws {
+        let router = Router()
+        let transport = router.transport
+        let store = InMemoryKeyValueStore()
+        let app = AppModel(environment: TestSupport.environment(transport: transport, store: store), session: nil)
+        let installation = app.notifications.deviceId
+        let path = "/v1/devices/\(installation)/remove"
+        router.json("GET", "/v1/devices", ["deliveryConfigured": true, "devices": [device(installation)]])
+        router.on("POST", "/v1/devices") { request in TestSupport.json(syntheticDevice(TestSupport.body(request)["deviceId"]?.stringValue ?? "")) }
+        router.json("POST", path, ["removed": true])
+        let stops = CallCounter()
+        app.notifications.stopReceiving = { stops.value += 1 }
+        app.notifications.turnOn()
+        let registered = await app.notifications.register(token: Data(repeating: 3, count: 32), apns: .production)
+        #expect(registered && app.notifications.isRegistered)
+
+        await app.account.signOut()
+        #expect(transport.requests("POST", path).count == 1)
+        #expect(transport.requests("POST", path).first?.headers["Authorization"] == "Bearer test-token")   // sent as the owner, before the session is dropped
+        #expect(stops.value == 1 && !app.notifications.wanted && !app.notifications.isWaitingToSend)
+
+        // Signing out with a request still waiting (the server was failing): it is asked once more and then dropped.
+        let next = AppModel(environment: TestSupport.environment(transport: transport, store: store), session: nil)
+        #expect(next.notifications.deviceId == installation && !next.notifications.isWaitingToSend)
+        next.notifications.turnOn()
+        _ = await next.notifications.register(token: Data(repeating: 3, count: 32), apns: .production)
+        router.on("POST", path) { _ in TestSupport.error("internal", "Something went wrong on the server.", status: 500) }
+        let off = await next.notifications.turnOff()
+        #expect(!off && next.notifications.isWaitingToSend)
+        await next.account.signOut()
+        #expect(!next.notifications.isWaitingToSend)
+        let afterwards = NotificationsModel(environment: TestSupport.environment(transport: transport, store: store))
+        #expect(!afterwards.isWaitingToSend && !afterwards.wanted)
+        let before = transport.requests("POST", path).count
+        let nothing = await afterwards.retryPending()
+        #expect(nothing && transport.requests("POST", path).count == before)   // nothing is sent under the next sign-in
+    }
+
+    @Test("Signing out sends the removal as the signed-in owner, and only then forgets the session")
+    func signOutRemovesBeforeTheSessionIsDropped() async throws {
+        let router = Router()
+        let transport = router.transport
+        // A real session over a token store, so that signing out really ends it.
+        let tokens = InMemoryTokenStore(StoredTokens(accessToken: "session-live-1", refreshToken: nil, expiresAt: nil))
+        let session = OAuthSession(configuration: OAuthTests.configuration, transport: transport, store: tokens)
+        let env = AppEnvironment(transport: transport, tokens: session, store: InMemoryKeyValueStore(), time: ManualTimeSource(instant: TestSupport.startInstant),
+                                 ids: SequentialIdentifierSource(), timeZone: TimeZone(identifier: "Europe/London")!)
+        let app = AppModel(environment: env, session: session)
+        let installation = app.notifications.deviceId
+        let path = "/v1/devices/\(installation)/remove"
+        router.json("GET", "/v1/devices", ["deliveryConfigured": true, "devices": [device(installation)]])
+        router.on("POST", "/v1/devices") { request in TestSupport.json(syntheticDevice(TestSupport.body(request)["deviceId"]?.stringValue ?? "")) }
+        let sessionAtRemoval = LockedFlag(false)
+        router.on("POST", path) { _ in
+            sessionAtRemoval.value = tokens.load() != nil
+            return TestSupport.json(["removed": true])
+        }
+        app.notifications.turnOn()
+        let registered = await app.notifications.register(token: Data(repeating: 5, count: 32), apns: .production)
+        #expect(registered && session.hasSession)
+
+        await app.account.signOut()
+        let removals = transport.requests("POST", path)
+        #expect(removals.count == 1)
+        #expect(sessionAtRemoval.value)                                         // the session still existed when the backend was asked
+        #expect(removals.first?.headers["Authorization"] == "Bearer session-live-1")
+        #expect(tokens.load() == nil && !session.hasSession)                    // and is gone once sign-out has finished
+        #expect(app.account.state == .signedOut && !app.notifications.isWaitingToSend)
+    }
+
+    @Test("Signing out while a registration is on its way lets it land first and then removes it: the phone is not left registered")
+    func signOutWaitsForRegistrationInFlight() async throws {
+        let transport = HeldRegistrationTransport()
+        let store = InMemoryKeyValueStore()
+        let model = NotificationsModel(environment: TestSupport.environment(transport: transport, store: store))
+        model.turnOn()
+        async let registering = model.register(token: Data(repeating: 9, count: 32), apns: .production)
+        await transport.registrationArrived()
+        async let leaving: Void = model.signingOut()
+        for _ in 0..<100 { await Task.yield() }
+        #expect(transport.order == ["registration sent"])                       // the removal waits for the registration's answer
+        transport.release()
+        _ = await registering
+        await leaving
+        // Removed after it landed, never before: a removal sent first would have been undone by the registration.
+        #expect(transport.order == ["registration sent", "registration answered", "removal sent"])
+        #expect(!model.wanted && !model.isWaitingToSend && !model.isWorking && model.message == nil)
+
+        // Nothing of it is left for the next launch: no request waits and there is nothing more to remove.
+        let next = NotificationsModel(environment: TestSupport.environment(transport: transport, store: store))
+        #expect(!next.wanted && !next.isWaitingToSend)
+        let off = await next.turnOff()
+        #expect(off && transport.order.filter { $0 == "removal sent" }.count == 1)
+    }
+
+    @Test("An installation from an earlier version: the switch alone is not evidence of a registration; a request that was waiting is")
+    func upgradeEvidence() async throws {
+        /// Exactly what an earlier version saved for a waiting request (SYNTHETIC).
+        struct EarlierPending: Codable { var token: String?; var apns: String?; var removal: Bool }
+        let router = Router()
+        let transport = router.transport
+        router.json("GET", "/v1/devices", ["deliveryConfigured": true, "devices": []])
+        func removals() -> Int { transport.requests.filter { $0.method == "POST" && $0.path.hasSuffix("/remove") }.count }
+
+        // The switch was on, iOS had refused permission and no token was ever sent: there is nothing to remove.
+        let switchOnly = InMemoryKeyValueStore()
+        TestSupport.environment(transport: transport, store: switchOnly).restoration.save("notifications.wanted", true)
+        let unregistered = NotificationsModel(environment: TestSupport.environment(transport: transport, store: switchOnly))
+        #expect(unregistered.wanted)
+        let off = await unregistered.turnOff()
+        #expect(off && !unregistered.isWaitingToSend && removals() == 0)
+        let switchOnlyAgain = InMemoryKeyValueStore()
+        TestSupport.environment(transport: transport, store: switchOnlyAgain).restoration.save("notifications.wanted", true)
+        await NotificationsModel(environment: TestSupport.environment(transport: transport, store: switchOnlyAgain)).signingOut()
+        #expect(removals() == 0)
+
+        // A removal was waiting (turned off while offline) and the backend's list cannot be read now:
+        // the removal is still owed, whether the owner turns the switch off again or signs out.
+        router.on("GET", "/v1/devices") { _ in TestSupport.error("internal", "Something went wrong on the server.", status: 500) }
+        router.json("POST", "/v1/devices/device-test-earlier/remove", ["removed": true])
+        for leavesBySigningOut in [false, true] {
+            let store = InMemoryKeyValueStore()
+            let earlier = TestSupport.environment(transport: transport, store: store)
+            earlier.restoration.save("notifications.deviceId", "device-test-earlier")
+            earlier.restoration.save("notifications.pending", EarlierPending(token: nil, apns: nil, removal: true))
+            let model = NotificationsModel(environment: TestSupport.environment(transport: transport, store: store))
+            #expect(model.deviceId == "device-test-earlier" && model.isWaitingToSend && !model.wanted)
+            let before = removals()
+            if leavesBySigningOut {
+                await model.signingOut()
+            } else {
+                let sent = await model.turnOff()
+                #expect(sent)
+            }
+            #expect(removals() == before + 1 && !model.isWaitingToSend)
+        }
+    }
+
+    @Test("The notification service is the one the build was signed for, not the one its build configuration suggests")
+    func pushEnvironmentFromSigning() {
+        func profile(_ aps: String?) -> Data {
+            let entry = aps.map { "<key>aps-environment</key><string>\($0)</string>" } ?? ""
+            let list = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><dict><key>Name</key><string>SYNTHETIC profile</string><key>Entitlements</key><dict>\(entry)<key>get-task-allow</key><true/></dict></dict></plist>"
+            return Data([0x30, 0x82, 0x1f, 0x00, 0xff]) + Data(list.utf8) + Data([0xa0, 0x82, 0x00, 0xfe])   // a signed container around the list
+        }
+        #expect(PushEnvironment.fromProvisioningProfile(profile("development")) == .development)
+        #expect(PushEnvironment.fromProvisioningProfile(profile("production")) == .production)
+        #expect(PushEnvironment.fromProvisioningProfile(profile(nil)) == nil)
+        #expect(PushEnvironment.fromProvisioningProfile(profile("unknown")) == nil)
+        #expect(PushEnvironment.fromProvisioningProfile(Data([1, 2, 3])) == nil)
+        // A release build signed for development gets development tokens; a debug build signed for distribution gets production ones.
+        #expect(PushEnvironment.resolve(profile: profile("development"), isSimulator: false, isDebugBuild: false) == .development)
+        #expect(PushEnvironment.resolve(profile: profile("production"), isSimulator: false, isDebugBuild: true) == .production)
+        // No profile: the App Store and TestFlight strip it; a simulator has none.
+        #expect(PushEnvironment.resolve(profile: nil, isSimulator: false, isDebugBuild: false) == .production)
+        #expect(PushEnvironment.resolve(profile: nil, isSimulator: true, isDebugBuild: false) == .development)
+        #expect(PushEnvironment.resolve(profile: profile(nil), isSimulator: false, isDebugBuild: true) == .development)
     }
 
     /// The recorded composition of the owner's opening outfit, with its preview state replaced.
@@ -242,6 +563,10 @@ struct MediaBoundaryTests {
         #expect(studio.preview == .queued)
         #expect(studio.previewLine == "The picture is being made. It is not ready yet.")
         #expect(transport.requests("GET", "/v1/studio/compositions/\(queued.hash)").count == StudioModel.previewChecks)   // a bounded wait
+        // Asked again while it is being made: it is looked for once more, never requested a second time.
+        await studio.requestPreview()
+        #expect(transport.requests("POST", "/v1/studio/previews").count == 1)
+        #expect(transport.requests("GET", "/v1/studio/compositions/\(queued.hash)").count == StudioModel.previewChecks + 1)
         #expect(transport.requests("GET", "/v1/studio/compositions/\(queued.hash)/preview").isEmpty)                      // not fetched before it exists
         #expect(TestSupport.body(try #require(transport.requests("POST", "/v1/studio/previews").first))["slots"] == [["role": "top", "garmentId": "gmt_test_shirt", "locked": false]])
         #expect(env.center.receipts.isEmpty && env.center.banner == nil)   // asking for a picture is not something to undo
@@ -268,6 +593,36 @@ struct MediaBoundaryTests {
         await studio.requestPreview()
         #expect(studio.preview == .failed("Offline. A picture needs a connection."))
         #expect(env.center.pending.isEmpty)
+
+        // Asking again for the same pieces after a request that got no answer repeats that request,
+        // so one that did reach the backend is not made twice. A request the backend answered is done with.
+        router.offline.value = false
+        await studio.requestPreview()
+        let ids = transport.requests("POST", "/v1/studio/previews").map { TestSupport.body($0)["clientRequestId"]?.stringValue }
+        #expect(ids.count == 4 && !ids.contains(nil))
+        #expect(ids[2] == ids[3])                         // offline, then the retry: one request
+        #expect(ids[0] != ids[1] && ids[1] != ids[2])     // other pieces, and a new try after the backend's own failure: new requests
+    }
+
+    @Test("A picture asked for before any layout was read is still found when it exists")
+    func previewFoundWithoutLayout() async throws {
+        let rendered = try composition(preview: "rendered")
+        let router = Router()
+        let transport = router.transport
+        router.json("GET", "/v1/studio", Synthetic.studio(selectors: [("top", true, [Synthetic.selectorItem("gmt_test_shirt", name: "Test blue oxford shirt")])], opening: [("top", "gmt_test_shirt")]))
+        router.on("POST", "/v1/studio/previews") { _ in
+            TestSupport.json(["receipt": TestSupport.receipt(commandId: "cmd_preview", type: "media.request_composite", summary: "Preview requested", undoAvailable: false), "manifestHash": .string(rendered.hash)])
+        }
+        let studio = StudioModel(environment: TestSupport.environment(transport: transport), sleep: { _ in })
+        await studio.open()
+        // No layout was read, and every look for the picture fails for now.
+        await studio.requestPreview()
+        #expect(studio.preview == .queued && studio.composition == nil)
+        let png = Data([0x89, 0x50, 0x4e, 0x47, 4, 5, 6])
+        router.json("GET", "/v1/studio/compositions/\(rendered.hash)", rendered.value)
+        router.on("GET", "/v1/studio/compositions/\(rendered.hash)/preview") { _ in HTTPResponse(status: 200, headers: ["Content-Type": "image/png"], body: png) }
+        await studio.checkPreview()
+        #expect(studio.preview == .rendered(png))        // found by the address the backend gave when it was asked for
     }
 
     @Test("When a signed address cannot be issued the authenticated read is used; offline, nothing is shown as loaded")

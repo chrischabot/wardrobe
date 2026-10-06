@@ -138,4 +138,34 @@ struct ProposalBoundaryTests {
         #expect(none == nil)
         #expect(transport.requests("POST", "/v1/proposals/prp_test_old/decision").isEmpty)
     }
+
+    @Test("Only the backend's conflict answer marks a request as out of date; any other refusal is shown in its own words")
+    func staleOnlyOnConflict() async throws {
+        let router = Router()
+        let transport = router.transport
+        router.json("GET", "/v1/proposals", list([proposal("prp_test_1")]))
+        let env = TestSupport.environment(transport: transport)
+        let model = ProposalsModel(environment: env)
+        await model.open()
+        let pending = try #require(model.pending.first)
+
+        // Decided on another device in the meantime: a refusal, not a stale request, whatever its status.
+        router.on("POST", "/v1/proposals/prp_test_1/decision") { _ in TestSupport.error("precondition_failed", "this proposal was already rejected", status: 409) }
+        let elsewhere = await model.confirm(pending)
+        #expect(elsewhere == nil && model.message == "this proposal was already rejected")
+        #expect(!model.isStale(pending) && model.staleIds.isEmpty && model.canConfirm(pending))
+
+        // A 409 that is not the contract's answer says nothing about the request.
+        router.on("POST", "/v1/proposals/prp_test_1/decision") { _ in HTTPResponse(status: 409) }
+        let bare = await model.confirm(pending)
+        #expect(bare == nil && model.message == "The server answered with status 409.")
+        #expect(!model.isStale(pending))
+
+        // The command service's conflict: what the request names has changed since it was made.
+        router.on("POST", "/v1/proposals/prp_test_1/decision") { _ in TestSupport.error("conflict", "The garment has changed since this was asked for.", status: 409) }
+        let stale = await model.confirm(pending)
+        #expect(stale == nil && model.isStale(pending) && !model.canConfirm(pending) && model.canReject(pending))
+        #expect(model.message == "That request no longer applies: what it would change has changed since it was asked for. Nothing was changed.")
+        #expect(env.center.receipts.isEmpty)
+    }
 }

@@ -149,7 +149,11 @@ struct GarmentInspectionView: View {
                 }
             }
                 .task(id: image?.renditionId) {
+                    fullSize = nil   // never the previous photograph under a new name
                     guard let image, let data = await app.images.inspectionData(for: image), let decoded = UIImage(data: data) else { return }
+                    // The read can finish after the image changed (cancelling is only a request): a
+                    // task that was replaced never puts its photograph on screen.
+                    guard !Task.isCancelled, image.renditionId == self.image?.renditionId else { return }
                     fullSize = decoded
                 }
                 .scaleEffect(scale)

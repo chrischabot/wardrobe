@@ -108,6 +108,11 @@ public final class AppModel {
             Dictionary(uniqueKeysWithValues: saved.compactMap { key, value in AppTab(rawValue: key).map { ($0, value) } })
         } ?? [:]
 
+        // A request a reply left stops being shown as waiting once the owner has decided it.
+        composer.settledCount = { [weak proposals] turnId, type, summary in proposals?.settledCount(turnId: turnId, type: type, summary: summary) ?? 0 }
+        // Signing out removes this phone's notification registration while the session still exists.
+        account.beforeSignOut = { [weak notifications] in await notifications?.signingOut() }
+
         // Every verified receipt refreshes the reads it may have changed.
         environment.center.onReceipt { [weak self] receipt in
             Task { @MainActor in await self?.receiptArrived(receipt) }

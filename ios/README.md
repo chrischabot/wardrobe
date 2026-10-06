@@ -94,8 +94,10 @@ are signed with the test key; the garment photo in `owner-media` is a generated 
 local run has no Images service, it is stored but never becomes the garment's display image; the
 notification token is a fixture value, not one issued by Apple, and no notification service is contacted.
 Some recorded edits are fixture actions, not the owner's wishes: a rewording of one profile sentence (then
-kept as it was), a `condition` note set on the socks category, a labelled FIXTURE garment, and a labelled
-FIXTURE scarf with a FIXTURE condition note behind the request that had gone stale. They exist in the test
+kept as it was), a `condition` note set on the socks category, a labelled FIXTURE garment, a labelled
+FIXTURE scarf with a FIXTURE condition note behind the request that had gone stale, and a labelled FIXTURE
+cardigan added by the request confirmed at the end of `owner-conversation` (the fake model is scripted to
+ask for it; the request to confirm, its summary and the receipt are the Worker's). They exist in the test
 database only.
 
 Unit tests that need a boundary case use invented data from `Tests/GarderobeKitTests/Synthetic.swift`; every
@@ -145,8 +147,9 @@ committed default stays 27.0.
 | [37071885410](https://github.com/chrischabot/wardrobe/actions/runs/37071885410) | `db59f293` | Build succeeded. The audit is now one test per destination. UI tests: 21 run, 20 passed; the Wardrobe audit failed with 2 contrast findings beside the Laundry button. |
 | [37073725189](https://github.com/chrischabot/wardrobe/actions/runs/37073725189) | `268733ea` | Build succeeded. Package tests: 104 passed. UI tests: 21 run, 21 passed; the Today audit passed on its one retry after "Audit failed to complete in time". 8 findings were excluded and printed (see Known gaps). |
 | [37076476521](https://github.com/chrischabot/wardrobe/actions/runs/37076476521) | `76473229` | Same app sources with the contracts and recordings refreshed. Build succeeded, package tests 104 passed. UI tests: 21 run, 19 passed; the Today and Wardrobe audits each failed with one "Contrast failed" that names no element. |
+| [37144459265](https://github.com/chrischabot/wardrobe/actions/runs/37144459265) | `7069aa75` | Build succeeded. Package tests: 104 passed. UI tests: 21 run, 21 passed; the Today audit passed on its one retry. Today and Wardrobe each reported one contrast finding that names no element, recorded as the expected failure; three findings were excluded as drawn by iOS and printed. |
 
-Runs after `76473229` are recorded in the pull request that carried them, because a commit cannot quote
+A run of a later commit is recorded in the pull request that carried it, because a commit cannot quote
 the run that tested it.
 
 Fixed from these runs: the compile error; the undo banner now lapses on the device's clock in demo mode;
@@ -226,7 +229,7 @@ Notifications capability registered, a push (APNs) key configured on the backend
     element (run 37076476521; absent in 37073725189 on the same app sources). It cannot be located from a
     hosted run. The tests record it as an expected failure with its text instead of failing or hiding it.
     Only that case is expected: a finding without an element on Studio or Conversation, or of any kind
-    other than contrast, fails the test (changed after run 37076476521 and not yet run on macOS).
+    other than contrast, fails the test (as it ran in 37144459265).
   - The audit covers the four tab destinations only. Settings and its screens (Notifications, Requests to
     confirm, My style), the item page, Laundry, Trips and Returns are opened by other UI tests but are not
     audited; item 7 of the list above covers them by hand.
@@ -245,22 +248,43 @@ Notifications capability registered, a push (APNs) key configured on the backend
   backend decides what is sent).
 - Signed delivery is used for the full-size inspection image. Grid and card thumbnails still use the
   authenticated image routes, which the app can call directly.
+- Location data in photographs: the media service is changing the full-size photo to be served without
+  its location data unless the owner asks for it. The app has no "this photo records where it was taken"
+  line and no way to ask for the stored photograph yet; the routes for that were not published when these
+  recordings were made, and the `owner-media` recording predates the change.
 - The stale-request recording is a typed `garment.retire` from a connected assistant, made against a
   garment version the owner then changed; the backend refuses the confirmation with 409 and applies
   nothing. Since the assistant's change of 2026-10-03, a conversation request that rewrites, moves, receives
   or removes a piece carries that piece's record version too; that path has the assistant thread's own
   tests and is not in an iOS recording.
-- Open points from the change review of 2026-10-03, none fixed yet:
-  - Notifications: turning them off never calls `unregisterForRemoteNotifications`; the removal is sent
-    even when this phone was never registered; the switch stays on after iOS denies permission; signing
-    out does not remove the registration; the APNs environment follows the build configuration, not the
-    signing entitlement.
-  - Requests to confirm: any 409 on confirming is shown as "no longer applicable", whatever its reason.
-    The "waits for your confirmation" line under a reply stays until the next turn even after the owner
-    has decided.
-  - Studio picture: a repeated request draws a new request identifier, a second tap while one is queued
-    starts a second request, and the check for a finished picture needs a loaded composition.
+- Changed after the change review of 2026-10-03 (package tests in `MediaTests`, `ProposalTests`,
+  `ConversationTests` and the `owner-conversation` journey; the lines in the app target are named below):
+  - Notifications. Turning them off, and signing out, tell iOS to stop delivering to the app
+    (`unregisterForRemoteNotifications`, called from `PushRegistrar`; the package tests see the request
+    for it, not iOS). No removal is sent for a phone that never sent a registration and that the backend
+    does not list; "not found" on a removal counts as stopped. The switch is off while iOS refuses
+    permission. Signing out first lets a registration that is on its way land, then asks the backend once to
+    forget this phone, and keeps nothing waiting. Whether there is anything to remove is decided by
+    evidence (a request that left this phone or was waiting to, or the backend's list), never by the
+    switch alone. A request
+    the backend leaves undecided waits one minute, then double each time up to an hour, and after six such
+    answers is sent again only when the owner taps Try again. The notification service is read from the
+    provisioning profile's `aps-environment`; without a profile a simulator or debug build is development
+    and anything else production.
+  - Requests to confirm. Only the backend's `conflict` answer marks a request as out of date; every other
+    refusal is shown in the backend's words. The "waits for your confirmation" line drops a request once the
+    owner has decided it, matched by the turn, the command and the backend's summary; requests of one turn
+    that read the same are dropped one per decision, counted by request identifier.
+  - Studio picture. A request that got no answer is repeated with the same identifier; while a picture is
+    being made a second tap only looks for it; a finished picture is found by the address the backend gave
+    when it was asked for.
+  - The full-size photo is cleared as soon as the garment's image changes, and a read that finishes after
+    the change is discarded.
+- Still open from that review:
+  - Notifications. A removal that fails while signing out is not sent again: iOS has stopped delivering,
+    but the backend keeps the registration until this phone registers again or it is removed elsewhere. A
+    request left waiting by an expired sign-in (not a sign-out) is not tied to the account and is sent
+    after the next sign-in. `Retry-After` is not read. The retry tests call the model's retry directly, not
+    the app's synchronisation.
   - Capture sends a photo role chosen from the capture purpose (What I wore sends "selfie").
-  - No recording holds a conversation turn that ends with requests to confirm; that line is tested with a
-    hand-written run only. The Studio picture journey accepts a recording caught while still queued.
-  - The full-size photo is not cleared when the garment's image changes, until the new one has loaded.
+  - The Studio picture journey accepts a recording caught while the picture was still queued.
