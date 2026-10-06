@@ -290,24 +290,38 @@ describe("journey 12: composing, checking and saving outfits in Studio", () => {
     expect(internalCodesIn(asked.receipt.summary)).toEqual([]);
     expect(asked.receipt.result.previewState).toBe("queued");
 
-    const queued = await owner.api.json("GET", `/v1/studio/compositions/${asked.manifestHash}`);
-    expect(queued.preview).toMatchObject({ state: "queued", sha256: null, renderedAt: null });
-    expect((await owner.api.get(`/v1/studio/compositions/${asked.manifestHash}/preview`)).status).toBe(404);
+    // The request is carried out by the real queue in the background, which can render the picture within
+    // milliseconds or not for a while; either is correct. What must hold at every moment is that a picture is
+    // served only once the composition says it is rendered. The state is read before and after the picture
+    // is fetched, so the check does not depend on how fast the queue is.
+    const compositionPath = `/v1/studio/compositions/${asked.manifestHash}`;
+    const previewIsHonest = async () => {
+      const before = (await owner.api.json("GET", compositionPath)).preview;
+      const image = await owner.api.get(`${compositionPath}/preview`);
+      const after = (await owner.api.json("GET", compositionPath)).preview;
+      for (const preview of [before, after]) {
+        expect(["queued", "rendered", "failed"]).toContain(preview.state);
+        if (preview.state === "rendered") {
+          expect(preview.sha256).toMatch(/^[0-9a-f]{64}$/);
+          expect(preview.renderedAt).not.toBeNull();
+        } else {
+          expect(preview).toMatchObject({ sha256: null, renderedAt: null });
+        }
+        if (preview.state === "failed") expect(preview.failure).toBeTruthy();
+      }
+      expect([200, 404]).toContain(image.status);
+      if (before.state === "rendered") expect(image.status).toBe(200); // rendered: the picture is there
+      if (image.status === 200) {
+        expect(after.state).toBe("rendered"); // served: never before it was rendered
+        expect(image.headers.get("Content-Type")).toBe("image/png");
+      }
+      if (after.state !== "rendered") expect(image.status).toBe(404); // not rendered: nothing is served
+    };
+    await previewIsHonest();
 
     // After the scheduled work has had a turn, the state is whatever really happened; an image is served only when rendered.
     await runCron();
-    const later = await owner.api.json("GET", `/v1/studio/compositions/${asked.manifestHash}`);
-    expect(["queued", "rendered", "failed"]).toContain(later.preview.state);
-    const image = await owner.api.get(`/v1/studio/compositions/${asked.manifestHash}/preview`);
-    if (later.preview.state === "rendered") {
-      expect(image.status).toBe(200);
-      expect(image.headers.get("Content-Type")).toBe("image/png");
-      expect(later.preview.sha256).toMatch(/^[0-9a-f]{64}$/);
-    } else {
-      expect(image.status).toBe(404);
-      expect(later.preview.sha256).toBeNull();
-    }
-    if (later.preview.state === "failed") expect(later.preview.failure).toBeTruthy();
+    await previewIsHonest();
     // Another owner can read neither the composition nor its preview.
     expect((await stranger.api.get(`/v1/studio/compositions/${asked.manifestHash}`)).status).toBe(404);
     expect((await stranger.api.get(`/v1/studio/compositions/${asked.manifestHash}/preview`)).status).toBe(404);
