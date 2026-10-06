@@ -12,6 +12,7 @@ Only data and requirements were migrated; no code from any earlier application i
 | Install (normal checkout) | `npm install` |
 | Install (Fabric sandbox, where `node_modules` is redirected) | `bash tools/sandbox-install.sh` |
 | Typecheck and test everything | `npm test` |
+| The Worker suite at another time of day (the owner's day and the scheduled phases depend on the hour) | `GARDEROBE_TEST_CLOCK=22:40 npm test -w @garderobe/worker` |
 | Foundation tests only | `npm run test:foundation` |
 | One workspace | `npm test -w @garderobe/domain` |
 | Verify supplied documents, checklist, import report and generated contracts (checks only, writes nothing) | `npm run verify` |
@@ -22,6 +23,15 @@ Node 22+, TypeScript 7.0.2, zod 4.6.5, vitest 4.1.11 with `@cloudflare/vitest-po
 `npm run test:foundation` currently runs 198 foundation tests (16 contracts, 182 domain). Domain tests run inside workerd
 against a real local D1 database; nothing mocks the ledger. The bundled
 workerd accepts compatibility dates up to 2026-08-22.
+
+### Verifying a change
+
+A change is verified by running, from this directory after the install, `npm run verify` and `npm test`,
+both of which must exit 0, and the Worker suite once more with the test clock in the owner's late evening
+(`GARDEROBE_TEST_CLOCK=22:40 npm test -w @garderobe/worker`; see `apps/worker/README.md`). A pull request
+states those commands with their exit status and test counts. The backend has no GitHub Actions workflow
+and no GitHub check stands in for these runs. The one workflow in `.github/workflows/`, `ios.yml`, is
+started by hand and exists because Xcode cannot run anywhere else (`ios/README.md`).
 
 ## Layout and ownership
 
