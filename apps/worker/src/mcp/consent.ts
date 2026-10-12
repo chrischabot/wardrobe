@@ -3,7 +3,8 @@ import { MCP_SCOPES, type McpScope } from "@garderobe/contracts/ext/api";
 import { prepare, toInstant } from "@garderobe/domain";
 import type { z } from "zod";
 import { auditStatement, rateLimit } from "../auth/session.ts";
-import { randomBytes, toBase64Url } from "../crypto.ts";
+import { codeHash, randomBytes, timingSafeEqual, toBase64Url } from "../crypto.ts";
+import type { App } from "../app.ts";
 import { ApiException } from "../errors.ts";
 import { escapeHtml, html } from "../http.ts";
 import { owner, type OwnerCtx, type RouteDef } from "../router.ts";
@@ -21,6 +22,24 @@ const SCOPE_TEXT: Record<Scope, { title: string; detail: string }> = {
   "wardrobe.read": { title: "Read your wardrobe", detail: "Inventory, availability, daily boards, laundry, style profile, history and conversation answers." },
   "wardrobe.write": { title: "Make changes", detail: "Record what you wore, laundry and arrivals, choose and change outfits, and other wardrobe commands. Every change returns a receipt and most can be undone." },
 };
+
+/**
+ * Ties a consent transaction to the owner whose session began it: the page sets a cookie named for the
+ * transaction whose value is keyed on the transaction and that owner, and the decision is refused unless
+ * the same owner's session presents it. Another signed-in owner cannot finish someone else's consent.
+ */
+async function ownerBinding(app: App, handle: string, userId: string): Promise<{ name: string; value: string }> {
+  const id = (await codeHash(app.env.STATE_SIGNING_KEY, "consent-cookie", handle)).slice(0, 16);
+  return { name: `__Host-consent-owner-${id}`, value: await codeHash(app.env.STATE_SIGNING_KEY, "consent-owner", `${handle}|${userId}`) };
+}
+
+function cookieValue(request: Request, name: string): string | null {
+  for (const part of (request.headers.get("Cookie") ?? "").split(";")) {
+    const at = part.indexOf("=");
+    if (at > 0 && part.slice(0, at).trim() === name) return part.slice(at + 1).trim();
+  }
+  return null;
+}
 
 function helpers(ctx: OwnerCtx): OAuthHelpers {
   const oauth = ctx.app.env.OAUTH_PROVIDER;
@@ -109,7 +128,10 @@ export function consentRoutes(): RouteDef[] {
         const details = await oauth.describeConsent(request); // first: a failed lookup leaves nothing stored
         const consent = await oauth.beginConsent(request); // one-time, browser-bound, ten-minute transaction
         // No form-action restriction here: after Allow or Deny the browser must follow the redirect to the client.
-        if (!consent.headers.has("Content-Security-Policy")) consent.headers.set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'");
+        // Always the strict policy: a header the OAuth helper may have set is replaced, never kept in its place.
+        consent.headers.set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'");
+        const binding = await ownerBinding(ctx.app, consent.handle, ctx.session.userId);
+        consent.headers.append("Set-Cookie", `${binding.name}=${binding.value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600`);
         return html(consentPage(details, requestedScopes(request.scope), consent.handle, ctx.session.displayName), 200, consent.headers);
       } catch (error) {
         return handleError(error);
@@ -123,6 +145,13 @@ export function consentRoutes(): RouteDef[] {
       await rateLimit(app.db, `consent:${session.userId}`, 30, 3600, nowMs);
       const form = await ctx.request.formData();
       const handle = String(form.get("handle") ?? "");
+      const binding = handle ? await ownerBinding(app, handle, session.userId) : null;
+      const presented = binding ? cookieValue(ctx.request, binding.name) : null;
+      if (!binding || presented === null || !timingSafeEqual(presented, binding.value)) {
+        const audit = await auditStatement({ userId: session.userId, kind: "assistant.consent", outcome: "refused", identity: session.identity, channel: session.principal.channel, detail: { reason: "consent_owner_mismatch" }, nowMs });
+        await prepare(app.db, audit.statement).run();
+        return localError("This approval page was opened for a different signed-in account.", 403);
+      }
       try {
         if (form.get("decision") !== "approve") {
           const denied = await oauth.denyConsent(ctx.request, handle);

@@ -17,6 +17,20 @@ export interface CommandServiceOptions {
   maxAttempts?: number;
 }
 
+/**
+ * A receipt summary as the owner reads it. Handlers write summaries as ledger prose that may carry stored
+ * values (a garment's name, an alias); whatever those hold, the summary is one line with no direction
+ * override, isolate or invisible character, so a stored value cannot reorder, hide or break the ledger's
+ * sentence (adversarial defect I05-8). The stored records keep their text exactly as given.
+ */
+export function receiptSummary(text: string): string {
+  return String(text ?? "")
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ")
+    .replace(/[\u00ad\u061c\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g, "")
+    .replace(/ {2,}/g, " ")
+    .trim();
+}
+
 interface CommandRow {
   command_id: string;
   type: string;
@@ -394,7 +408,7 @@ export class CommandService {
       commandId,
       type: envelope.type,
       outcome,
-      summary: plan.summary,
+      summary: receiptSummary(plan.summary),
       affected,
       externalEffectState: effects.length > 0 ? "projection_pending" : "none",
       effects: effects.map((e) => ({ effectId: e.effectId, kind: e.kind, state: "pending" as const })),

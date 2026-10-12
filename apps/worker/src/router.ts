@@ -63,6 +63,11 @@ export class AppRouter {
       const base: Ctx = { app, request, url, params: match.params, exec };
       if (def.trust === "access" || def.trust === "access_identity") {
         if (url.origin !== app.config.appOrigin) throw new ApiException("unauthenticated", "this route is only served on the app hostname", { reason: "wrong_host" });
+      } else if (url.origin !== app.config.appOrigin) {
+        // A ticket or one-time state is handed out for the app hostname only (download, upload target, signed
+        // image, connection callback). The MCP hostname serves the MCP transport and its OAuth endpoints, and
+        // none of these routes exist there.
+        throw new ApiException("not_found", "no such route on this hostname", { reason: "wrong_host" });
       }
       if (def.trust === "access") {
         const session = await authenticateOwner(request, app.env, app.db);

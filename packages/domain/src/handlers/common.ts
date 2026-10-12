@@ -1,8 +1,24 @@
-import type { EntityVersion } from "@garderobe/contracts";
+import type { Channel, EntityVersion } from "@garderobe/contracts";
 import { all, allIn, json, stmt, type Stmt } from "../db.ts";
 import { CommandError } from "../errors.ts";
 import type { GarmentRow, StockBuild, StockPlanner } from "../stock/planner.ts";
 import type { CommandContext, CommandPlan, StoredCommand } from "../commands/types.ts";
+
+/**
+ * The channels on which a request is the owner's own action in the Garderobe app. This is an allow-list:
+ * a conversation turn, a connected client, a schedule, an import, a system job or any channel added later
+ * is somebody or something acting for the owner, whatever actor the principal declares.
+ */
+export const OWNER_APP_CHANNELS: ReadonlySet<Channel> = new Set<Channel>(["ios", "web"]);
+
+/**
+ * True only when the owner himself issued this command in the app: both the principal and the command's
+ * declared source. The command service already refuses a source that differs from the principal's channel;
+ * the source is checked here as well so this guard does not depend on that.
+ */
+export function ownerInApp(ctx: { principal: { actor: string; channel: Channel }; envelope: { source: { channel: Channel } } }): boolean {
+  return ctx.principal.actor === "owner" && OWNER_APP_CHANNELS.has(ctx.principal.channel) && OWNER_APP_CHANNELS.has(ctx.envelope.source.channel);
+}
 
 export const GARMENT_COLS = "garment_id, version, name, category, care_channel, acquisition, planning_policy, merged_into, removed_reason, attributes_json";
 

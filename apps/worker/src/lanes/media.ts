@@ -68,13 +68,13 @@ export function createMediaPort(ctx: LaneContext, deps: MediaDeps): MediaPort {
     garmentMedia: (principal, garmentId) => getGarmentMedia(rt, principal, garmentId),
     garmentImage: async (principal, garmentId) => (await garmentImageRefs(rt, principal, [garmentId])).get(garmentId) ?? null,
     openRendition: (principal, renditionId, width) => openRendition(rt, principal, renditionId, { ...(width ? { width } : {}) }),
-    openAsset: (principal, assetId, opts) => openAssetImage(rt, principal, assetId, { ...(opts.variant ? { variant: opts.variant } : {}), ...(opts.width ? { width: opts.width } : {}) }),
+    openAsset: (principal, assetId, opts) => openAssetImage(rt, principal, assetId, { ...(opts.variant ? { variant: opts.variant } : {}), ...(opts.width ? { width: opts.width } : {}), ...(opts.withLocation ? { withLocation: true } : {}) }),
     signRendition: (principal, renditionId, opts) => signRenditionUrl(rt, principal, renditionId, { ...(opts.width ? { width: opts.width } : {}), ...(opts.ttlSeconds ? { ttlSeconds: opts.ttlSeconds } : {}), audience: "app" }),
     serveSigned: (token, request) => serveSignedMedia(rt, token, request),
     listDeletions: async (principal) => (await listMediaDeletions(rt, principal)) as unknown as Record<string, unknown>,
     replayDeletions: (principal, journal) => replayMediaDeletions(rt, principal, journal as never),
     // Only the caller's own files are ever read into a package; the visual wardrobe resolves the path.
-    readExportAsset: (principal, file) => readExportFile(rt, principal, file),
+    readExportAsset: (principal, file, opts) => readExportFile(rt, principal, file, opts?.originals ? { originals: opts.originals } : {}),
     photosNeeded: (principal) => listPhotosNeeded(rt, principal),
     review: (principal) => listMediaReview(rt, principal),
     studio: (principal, query) => getStudioSelectors(rt, principal, { mode: query.mode, forDate: query.date ?? null }),
@@ -97,8 +97,8 @@ export function createMediaPort(ctx: LaneContext, deps: MediaDeps): MediaPort {
     queue: async (batch) => {
       await handleMediaQueue(rt, batch);
     },
-    exportData: async (principal) => {
-      const data = await exportMediaData(rt, principal);
+    exportData: async (principal, opts) => {
+      const data = await exportMediaData(rt, principal, opts?.originals ? { originals: opts.originals } : {});
       return { records: data, assets: data.assets };
     },
     importData: async (principal, records, readAsset, deletions) => {

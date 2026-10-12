@@ -392,8 +392,10 @@ describe("EXIF and location leakage", () => {
       expect(await rows("SELECT had_location_metadata FROM media_assets WHERE user_id = ? AND asset_id = ?", owner.owner.userId, assetId), what).toEqual([{ had_location_metadata: 1 }]);
       // ...and no served copy carries any of it, including the full-size original and every signed URL.
       expect(await expectOnlySafeCopies(assetId, what), what).toBeGreaterThan(1);
-      // No request parameter turns the release on.
-      for (const query of ["?variant=original&withLocation=true", "?variant=original&withLocation=1", "?variant=original&asSupplied=true", "?variant=original&l=1"]) {
+      // No request parameter turns the release on, except the signed-in owner's own explicit opt-in
+      // (`?variant=original&withLocation=true`), which the coordinator's ruling allows on this authenticated
+      // read and which is therefore not listed here; signed links stay location-free (signed-urls.test.ts).
+      for (const query of ["?variant=original&withLocation=1", "?variant=original&asSupplied=true", "?variant=original&l=1"]) {
         const served = await owner.owner.api.get(`/v1/media/assets/${assetId}${query}`);
         const bytes = new Uint8Array(await served.arrayBuffer());
         if (served.status === 200) {

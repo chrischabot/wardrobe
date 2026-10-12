@@ -1,31 +1,15 @@
-import { DEFAULT_OWNER_SETTINGS, FOUNDATION_COMMANDS as C, OwnerSettings, type Channel } from "@garderobe/contracts";
+import { DEFAULT_OWNER_SETTINGS, FOUNDATION_COMMANDS as C, OwnerSettings } from "@garderobe/contracts";
 import { all, allIn, first, json, stmt, type Stmt } from "../db.ts";
 import { CommandError } from "../errors.ts";
 import { canonicalJson, deepMerge, sha256Hex } from "../util.ts";
 import type { CommandPlan } from "../commands/types.ts";
 import { restrictionCovers } from "../availability/estimator.ts";
-import { attrs, GARMENT_COLS, loadGarments, quoted } from "./common.ts";
+import { attrs, GARMENT_COLS, loadGarments, ownerInApp, quoted } from "./common.ts";
 import { define } from "./garments.ts";
 import { planFactChanges, planFactUndo, styleResolveFactConflict, type FactUndo } from "./style-facts.ts";
 import type { GarmentRow } from "../stock/planner.ts";
 
 const ALREADY_UNDO = { unavailableReason: "this is already an undo" } as const;
-
-/**
- * The channels on which a request is the owner's own action in the Garderobe app. This is an allow-list:
- * a conversation turn, a connected client, a schedule, an import, a system job or any channel added later
- * is somebody or something acting for the owner, whatever actor the principal declares.
- */
-const OWNER_APP_CHANNELS: ReadonlySet<Channel> = new Set<Channel>(["ios", "web"]);
-
-/**
- * True only when the owner himself issued this command in the app: both the principal and the command's
- * declared source. The command service already refuses a source that differs from the principal's channel;
- * the source is checked here as well so this guard does not depend on that.
- */
-function ownerInApp(ctx: { principal: { actor: string; channel: Channel }; envelope: { source: { channel: Channel } } }): boolean {
-  return ctx.principal.actor === "owner" && OWNER_APP_CHANNELS.has(ctx.principal.channel) && OWNER_APP_CHANNELS.has(ctx.envelope.source.channel);
-}
 
 /* ------------------------------------------------------------------ */
 /* Restrictions                                                         */

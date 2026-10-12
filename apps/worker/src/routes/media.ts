@@ -1,4 +1,6 @@
-import { AssetImageQuery, ImageQuery, SignRenditionRequest, StudioComposeRequest, StudioOutfitRequest, StudioPreviewRequest, StudioQuery, UploadRequest } from "@garderobe/contracts/ext/api";
+import { z } from "zod";
+import { AssetImageWithLocationQuery } from "@garderobe/contracts";
+import { ImageQuery, SignRenditionRequest, StudioComposeRequest, StudioOutfitRequest, StudioPreviewRequest, StudioQuery, UploadRequest } from "@garderobe/contracts/ext/api";
 import { afterCommit } from "../app.ts";
 import { MEDIA_THUMBNAIL_WIDTHS } from "@garderobe/contracts/ext/media";
 import { requireMedia } from "../app.ts";
@@ -80,7 +82,11 @@ export function mediaRoutes(): RouteDef[] {
      * disabled account) with the same 404, so a URL reveals nothing about what exists.
      */
     owner("POST", "/v1/media/renditions/{id}/sign", "read", async ({ app, session, params, request }) => {
-      const body = await readJson(request, SignRenditionRequest);
+      // Read with the field visible so that asking for location is refused, not silently dropped: a signed
+      // link is opened without a session, so location leaves the service only in an authenticated owner
+      // request (the owner's own asset read, or an export), never in a link (coordinator ruling).
+      const body = await readJson(request, SignRenditionRequest.extend({ withLocation: z.unknown().optional() }));
+      if (body.withLocation !== undefined) throw new ApiException("invalid_command", "a signed link never carries location data; open the original in the app to see it as supplied", { reason: "signed_link_without_location" });
       const w = width(body.width);
       return json(await requireMedia(app, "images").signRendition(session.principal, params.id!, { ...(w ? { width: w } : {}), ...(body.ttlSeconds ? { ttlSeconds: body.ttlSeconds } : {}) }));
     }),
@@ -93,9 +99,9 @@ export function mediaRoutes(): RouteDef[] {
     }),
 
     owner("GET", "/v1/media/assets/{id}", "read", async ({ app, session, params, url, request }) => {
-      const q = readQuery(url, AssetImageQuery);
+      const q = readQuery(url, AssetImageWithLocationQuery);
       const w = width(q.width);
-      return imageResponse(request, await requireMedia(app, "images").openAsset(session.principal, params.id!, { ...(q.variant ? { variant: q.variant } : {}), ...(w ? { width: w } : {}) }));
+      return imageResponse(request, await requireMedia(app, "images").openAsset(session.principal, params.id!, { ...(q.variant ? { variant: q.variant } : {}), ...(w ? { width: w } : {}), ...(q.withLocation === "true" ? { withLocation: true } : {}) }));
     }),
 
     owner("GET", "/v1/items/{id}/image", "read", async ({ app, session, params, url, request }) => {

@@ -13,6 +13,30 @@ import { RuleKind, RuleStatus, StyleFactRef, StyleFactResolution } from "./style
 
 const Quantity = z.number().int().positive();
 
+/**
+ * Restrictions the owner, in the app, acknowledges this correction takes a piece out of (by ID). Without it
+ * such a correction is refused (`correction_would_release_restriction`, naming the restriction); from anyone
+ * but the owner in the app it is refused (`restriction_acknowledgement_owner_only`). The restriction itself
+ * stays active for every piece it still covers.
+ */
+export const AcknowledgedRestrictionIds = z.array(z.string().min(1).max(64)).min(1).max(20).optional();
+
+export const AssetImageWithLocationQuery = z.object({
+  variant: z.enum(["display", "original", "cutout", "catalogue"]).optional(),
+  width: z.coerce.number().int().optional(),
+  /** `true`: the original as supplied, with its location data, for the signed-in owner in the app only (variant `original`, no width). Absent: without location data. */
+  withLocation: z.enum(["true"]).optional(),
+});
+
+export const ProposalDecisionWithRestrictionsRequest = z.object({
+  decision: z.enum(["confirm", "reject"]),
+  /**
+   * Restrictions the owner has been told this correction takes a piece out of and accepts (confirm only,
+   * garment corrections only). An acknowledgement inside the proposal itself is never used.
+   */
+  acknowledgedRestrictionIds: AcknowledgedRestrictionIds,
+});
+
 export const GarmentCreate = z.object({
   garmentId: GarmentId.optional().describe("Caller-chosen stable ID (importer); otherwise assigned."),
   name: z.string().min(1),
@@ -66,6 +90,7 @@ export const GarmentCorrect = z.object({
     .partial()
     .refine((c) => Object.keys(c).length > 0, "at least one change is required"),
   source: SourceRef,
+  acknowledgedRestrictionIds: AcknowledgedRestrictionIds,
 });
 
 /**
@@ -113,6 +138,7 @@ export const GarmentBulkCorrect = z.object({
     .refine((c) => Object.keys(c).length > 0, "at least one change is required"),
   expectedCount: z.number().int().positive().optional(),
   source: SourceRef,
+  acknowledgedRestrictionIds: AcknowledgedRestrictionIds,
 });
 
 export const GarmentAddAlias = z.object({ garmentId: GarmentId, phrase: z.string().min(1), kind: z.enum(["owner_name", "maker_name", "code"]).default("owner_name") });

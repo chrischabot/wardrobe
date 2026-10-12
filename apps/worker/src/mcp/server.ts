@@ -202,7 +202,10 @@ export function buildMcpServer(app: App, caller: McpCaller): McpServer {
               { nowMs },
             );
             const out = envelope(page as unknown as Record<string, unknown>, { complete: page.complete, total: page.total, nextCursor: page.nextCursor });
-            return ok(out, `${page.items.length} of ${page.total} item(s)${page.complete ? " (complete)" : " (more pages: pass nextCursor)"}; owned ${page.counts.owned}, available ${page.counts.available}, incoming ${page.counts.incoming}, retired ${page.counts.retired}.`);
+            // `complete` says whether this response is the whole result; a later page of a paged read is not,
+            // even when it is the last one. The words follow the cursor, so the last page never announces more.
+            const paging = page.complete ? " (complete)" : page.nextCursor ? " (more pages: pass nextCursor)" : " (last page: nothing follows; this page alone is not the whole result)";
+            return ok(out, `${page.items.length} of ${page.total} item(s)${paging}; owned ${page.counts.owned}, available ${page.counts.available}, incoming ${page.counts.incoming}, retired ${page.counts.retired}.`);
           }
           case "item": {
             const item = await readItem(app, principal, need(args.garmentId, "garmentId"));
@@ -273,6 +276,10 @@ export function buildMcpServer(app: App, caller: McpCaller): McpServer {
       { title: "Change the wardrobe", description: "One typed, constrained change (see view command_types of garderobe_inventory). Returns the verified receipt. Recorded at once: a wear report, a wash or needs-a-wash report, choosing an option on the published board, a laundry pickup or return, packing or unpacking for one of the owner's trips, research records, and the undo of one of these. Every other change (marked consequential in command_types) is not executed from here: it is kept as a proposal that only the owner can confirm in the Garderobe app. Repeat the same call later to learn the outcome.", inputSchema: MCP_TOOL_CONTRACTS.garderobe_command.input, outputSchema: McpCommandOutput, annotations: annotations("garderobe_command", "Change the wardrobe") },
       async (args) => {
         try {
+          const rawAck = (args.payload as Record<string, unknown> | null)?.acknowledgedRestrictionIds;
+          if (Array.isArray(rawAck) && rawAck.length > 0) {
+            throw new ApiException("forbidden", "only the owner, in the Garderobe app, can let a correction take a piece out of an active restriction; nothing was changed", { reason: "restriction_acknowledgement_owner_only" });
+          }
           const envelope = {
             type: args.type,
             payload: args.payload,

@@ -7,7 +7,7 @@ import { explainGarmentStock, type GarmentRow } from "../stock/planner.ts";
 import { restrictionCovers } from "../availability/estimator.ts";
 import { ownedUnits } from "../stock/replay.ts";
 import type { CommandDefinition, CommandPlan } from "../commands/types.ts";
-import { bumpGarment, loadGarment, nameList, quoted, simpleStockUndo, stockParts } from "./common.ts";
+import { bumpGarment, loadGarment, nameList, ownerInApp, quoted, simpleStockUndo, stockParts } from "./common.ts";
 import { selectGarments } from "./selection.ts";
 import type { CommandContext } from "../commands/types.ts";
 
@@ -250,15 +250,35 @@ function factUndoStatements(ctx: CommandContext, factIds: string[] | undefined, 
  * those facts would release the garment while the restriction still reads active and nothing records it
  * (adversarial defects P07-1 and P07-2). Such a change is refused; `rows` are the garments as they are,
  * `after` gives each one's attributes as the change would leave them.
+ *
+ * The one exception is the owner himself in the app, naming the restriction in `acknowledged`
+ * (`acknowledgedRestrictionIds`): he has seen that the corrected piece will no longer be covered and says
+ * so. The restriction stays active for every piece it still covers. Anyone else naming a restriction there
+ * is refused, whatever else the command asks. Returns the restrictions the change takes pieces out of.
  */
-async function assertStaysRestricted(ctx: CommandContext, rows: Record<string, any>[], after: (row: Record<string, any>) => Record<string, unknown>): Promise<void> {
-  if (rows.length === 0) return;
-  const restrictions = await all<{ restriction_id: string; scope_json: string }>(ctx.db, "SELECT restriction_id, scope_json FROM restrictions WHERE user_id = ? AND status = 'active'", ctx.userId);
+async function assertStaysRestricted(
+  ctx: CommandContext,
+  rows: Record<string, any>[],
+  after: (row: Record<string, any>) => Record<string, unknown>,
+  acknowledged: readonly string[] = [],
+): Promise<{ restrictionId: string; reason: string; garmentIds: string[] }[]> {
+  if (acknowledged.length > 0 && !ownerInApp(ctx)) {
+    throw new CommandError("forbidden", "only the owner, in the Garderobe app, can let a correction take a piece out of an active restriction; nothing was written", { reason: "restriction_acknowledgement_owner_only" });
+  }
+  if (rows.length === 0) return [];
+  const restrictions = await all<{ restriction_id: string; scope_json: string; reason: string }>(ctx.db, "SELECT restriction_id, scope_json, reason FROM restrictions WHERE user_id = ? AND status = 'active'", ctx.userId);
+  const released: { restrictionId: string; reason: string; garmentIds: string[] }[] = [];
   for (const r of restrictions) {
     const scope = json<any>(r.scope_json, {});
     for (const row of rows) {
       const g = { garmentId: row.garment_id as string, category: row.category as string };
       if (restrictionCovers(scope, { ...g, attributes: json<Record<string, unknown>>(row.attributes_json, {}) }) && !restrictionCovers(scope, { ...g, attributes: after(row) })) {
+        if (acknowledged.includes(r.restriction_id)) {
+          let entry = released.find((e) => e.restrictionId === r.restriction_id);
+          if (!entry) released.push((entry = { restrictionId: r.restriction_id, reason: r.reason, garmentIds: [] }));
+          entry.garmentIds.push(g.garmentId);
+          continue;
+        }
         throw new CommandError(
           "forbidden",
           `${row.name} is covered by an active restriction, and this change would take it out of it. A restriction ends only when the owner says its condition has ended; nothing was written`,
@@ -267,7 +287,14 @@ async function assertStaysRestricted(ctx: CommandContext, rows: Record<string, a
       }
     }
   }
+  return released;
 }
+
+/** The receipt's words for pieces the owner let out of a restriction (its reason, never an identifier). */
+const releasedNote = (released: { reason: string }[]): string =>
+  released.map((r) => `; no longer covered by the restriction ${quoted(r.reason)}, as the owner acknowledged (it stays active for everything else it covers)`).join("");
+const releasedResult = (released: { restrictionId: string; garmentIds: string[] }[]) =>
+  released.length > 0 ? { releasedFromRestrictions: released.map((r) => ({ restrictionId: r.restrictionId, garmentIds: r.garmentIds })) } : {};
 
 const mergedAttributes = (row: Record<string, any>, changes: Record<string, unknown>): Record<string, unknown> => ({ ...json<Record<string, unknown>>(row.attributes_json, {}), ...((changes.attributes as object | undefined) ?? {}) });
 /** The attributes a stored `previous` column set restores (undo of a correction). */
@@ -283,7 +310,7 @@ export const garmentCorrect = define({
   async plan(ctx, p) {
     const g = await loadGarment(ctx, p.garmentId);
     const full = (await first<Record<string, any>>(ctx.db, "SELECT * FROM garments WHERE user_id = ? AND garment_id = ?", ctx.userId, g.garment_id))!;
-    await assertStaysRestricted(ctx, [full], (row) => mergedAttributes(row, p.changes));
+    const released = await assertStaysRestricted(ctx, [full], (row) => mergedAttributes(row, p.changes), p.acknowledgedRestrictionIds ?? []);
     const { statements, previous, changed, factIds } = planCorrection(ctx, full, p.changes, p.source);
     if (changed.length === 0) return { outcome: "noop", summary: `${g.name}: already as stated`, undo: { unavailableReason: "nothing changed" } };
     const planner = ctx.stock();
@@ -297,12 +324,12 @@ export const garmentCorrect = define({
       statements.push(aliasInsert(ctx, g.garment_id, p.changes.name, "owner_name", aliasId));
     }
     return {
-      summary: `${g.name}: corrected ${changed.join(", ")}${p.changes.name !== undefined && p.changes.name !== g.name ? `; now named ${quoted(p.changes.name)}` : ""}`,
+      summary: `${g.name}: corrected ${changed.join(", ")}${p.changes.name !== undefined && p.changes.name !== g.name ? `; now named ${quoted(p.changes.name)}` : ""}${releasedNote(released)}`,
       statements: [...statements, ...parts.statements],
       preconditions: parts.preconditions,
       affected: parts.affected,
       outbox: [{ topic: "garment", entityKind: "garment", entityId: g.garment_id, revision: g.version + 1 }],
-      result: { garmentId: g.garment_id, changed },
+      result: { garmentId: g.garment_id, changed, ...releasedResult(released) },
       changes: { availabilityChanged: [g.garment_id] },
       bumpWardrobe: true,
       undo: { data: { garmentId: g.garment_id, previous, versionAfter: g.version + 1, factIds, aliasId } },
@@ -361,7 +388,7 @@ export const garmentBulkCorrect = define({
     const planner = ctx.stock();
     const statements: Stmt[] = [];
     const undo: { garmentId: string; previous: Record<string, unknown>; factIds: string[] }[] = [];
-    await assertStaysRestricted(ctx, rows, (row) => mergedAttributes(row, p.changes));
+    const released = await assertStaysRestricted(ctx, rows, (row) => mergedAttributes(row, p.changes), p.acknowledgedRestrictionIds ?? []);
     const changedNames: string[] = [];
     const changedKeys = new Set<string>();
     for (const full of rows) {
@@ -381,12 +408,12 @@ export const garmentBulkCorrect = define({
     const versionAfter = new Map(parts.affected.map((a) => [a.id, a.version]));
     const changedIds = undo.map((u) => u.garmentId);
     return {
-      summary: `Corrected ${[...changedKeys].join(", ")} on ${undo.length} of ${rows.length} selected garment${rows.length === 1 ? "" : "s"}: ${nameList(changedNames)}`,
+      summary: `Corrected ${[...changedKeys].join(", ")} on ${undo.length} of ${rows.length} selected garment${rows.length === 1 ? "" : "s"}: ${nameList(changedNames)}${releasedNote(released)}`,
       statements: [...statements, ...parts.statements],
       preconditions: parts.preconditions,
       affected: parts.affected,
       outbox: changedIds.map((id) => ({ topic: "garment", entityKind: "garment", entityId: id, revision: versionAfter.get(id)! })),
-      result: { matchedCount: rows.length, changedGarmentIds: changedIds, unchangedGarmentIds: matched.map((m) => m.garmentId).filter((id) => !changedIds.includes(id)), changed: [...changedKeys] },
+      result: { matchedCount: rows.length, changedGarmentIds: changedIds, unchangedGarmentIds: matched.map((m) => m.garmentId).filter((id) => !changedIds.includes(id)), changed: [...changedKeys], ...releasedResult(released) },
       changes: { availabilityChanged: changedIds },
       bumpWardrobe: true,
       undo: { data: { garments: undo.map((u) => ({ ...u, versionAfter: versionAfter.get(u.garmentId)! })) } },

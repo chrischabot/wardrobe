@@ -222,6 +222,18 @@ export async function submittedProposalState(app: App, userId: string, proposalI
 }
 
 /** Only the signed-in owner, in the app or on the private web board, decides a proposal. */
+/** The commands that can take a piece out of a restriction, and so accept an acknowledgement of one. */
+const RESTRICTION_ACKNOWLEDGING_TYPES: ReadonlySet<string> = new Set(["garment.correct", "garment.bulk_correct"]);
+
+/**
+ * The payload a confirmation runs: the proposal's own, without any acknowledgement it carried (only the
+ * owner's decision supplies one), plus the owner's acknowledgement when he gave one.
+ */
+export function payloadForConfirmation(payload: Record<string, unknown>, acknowledged: readonly string[]): Record<string, unknown> {
+  const { acknowledgedRestrictionIds: _dropped, ...rest } = payload;
+  return acknowledged.length > 0 ? { ...rest, acknowledgedRestrictionIds: [...acknowledged] } : rest;
+}
+
 function assertOwnerInApp(principal: Principal): void {
   if (principal.actor !== "owner" || (principal.channel !== "ios" && principal.channel !== "web")) {
     throw new ApiException("forbidden", "a proposal is confirmed or rejected by the owner in the Garderobe app", { reason: "owner_in_app_required" });
@@ -240,11 +252,21 @@ export interface DecisionResult {
  * idempotency key), as the owner; if the command is refused (the garment is gone, the state changed),
  * the refusal is returned and the proposal stays pending. A decision is final: a rejected proposal is
  * not confirmed later and a confirmed one is not executed again.
+ *
+ * A restriction acknowledgement (`acknowledgedRestrictionIds`) is the owner's own: one carried inside the
+ * proposal's payload is dropped before the command runs, and only the one in this decision is passed on,
+ * for a garment correction. The command itself decides whether it is needed and accepts it only from the
+ * owner in the app.
  */
-export async function decideProposal(app: App, principal: Principal, proposalId: string, decision: "confirm" | "reject"): Promise<DecisionResult> {
+export async function decideProposal(app: App, principal: Principal, proposalId: string, decision: "confirm" | "reject", opts: { acknowledgedRestrictionIds?: string[] } = {}): Promise<DecisionResult> {
   assertOwnerInApp(principal);
+  const acknowledged = opts.acknowledgedRestrictionIds ?? [];
+  if (acknowledged.length > 0 && decision !== "confirm") throw new ApiException("invalid_command", "a restriction is acknowledged only when confirming", { reason: "acknowledgement_on_reject" });
   const userId = principal.userId;
   const { proposal, decisionRef, expectedVersions, occurredAt, showable } = await findHeld(app, userId, proposalId);
+  if (acknowledged.length > 0 && !RESTRICTION_ACKNOWLEDGING_TYPES.has(proposal.type)) {
+    throw new ApiException("invalid_command", "only a garment correction can take a piece out of a restriction; nothing to acknowledge here", { reason: "acknowledgement_not_applicable", type: proposal.type });
+  }
   const findProposal = async (a: App, u: string, id: string) => (await findHeld(a, u, id)).proposal;
   const receiptOf = async (commandId: string | null) => (commandId ? await app.service.getReceipt(principal, commandId) : null);
 
@@ -267,7 +289,7 @@ export async function decideProposal(app: App, principal: Principal, proposalId:
   // the error propagates, nothing was written and the proposal is still open.
   const receipt = await app.service.execute(principal, {
     type: proposal.type,
-    payload: proposal.payload,
+    payload: payloadForConfirmation(proposal.payload, acknowledged),
     // One execution per proposal, however often the confirmation is sent.
     idempotencyKey: `proposal:${proposalId}`,
     // The versions the request was made against: a proposal that has gone stale is refused, not applied.
