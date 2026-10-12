@@ -49,6 +49,45 @@ describe("registering a device", () => {
     expect((await other.api.json("GET", "/v1/devices")).devices).toEqual([]);
     await owner.api.json("POST", "/v1/devices", { deviceId: "iphone-owner-0001", token, environment: "development" });
   });
+
+  it("removing a device with one account's credentials removes only that account's registration of it", async () => {
+    const app = await testApp();
+    const a = await provisionOwner();
+    const b = await provisionOwner();
+    // Two accounts each registered a phone under the same device identifier (each with its own token).
+    await a.api.json("POST", "/v1/devices", { deviceId: "iphone-shared-id-0001", token: hex("aaaa"), environment: "development" });
+    await b.api.json("POST", "/v1/devices", { deviceId: "iphone-shared-id-0001", token: hex("bbbb"), environment: "development" });
+    await a.api.json("POST", "/v1/devices", { deviceId: "iphone-only-a-0001", token: hex("abab"), environment: "development" });
+    const rowsOf = async (userId: string) => (await app.db.prepare("SELECT device_id, token_hash, updated_at FROM notification_devices WHERE user_id = ? ORDER BY device_id").bind(userId).all()).results;
+    const aBefore = await rowsOf(a.userId);
+    expect(aBefore.map((r) => r.device_id)).toEqual(["iphone-only-a-0001", "iphone-shared-id-0001"]);
+
+    // B removes the shared identifier: only B's registration goes.
+    expect(await b.api.json("POST", "/v1/devices/iphone-shared-id-0001/remove", {})).toEqual({ removed: true });
+    expect(await rowsOf(b.userId)).toEqual([]);
+    expect(await rowsOf(a.userId)).toEqual(aBefore);
+    // B names a device only A registered: nothing is removed, and the answer does not reveal that A has it.
+    expect(await b.api.json("POST", "/v1/devices/iphone-only-a-0001/remove", {})).toEqual({ removed: false });
+    expect(await rowsOf(a.userId)).toEqual(aBefore);
+    expect((await a.api.json("GET", "/v1/devices")).devices.map((d: { deviceId: string }) => d.deviceId).sort()).toEqual(["iphone-only-a-0001", "iphone-shared-id-0001"]);
+  });
+
+  it("account erasure removes the owner's devices, so a deleted account's phone is never sent anything; another owner's device stays", async () => {
+    const app = await testApp();
+    const erased = await provisionOwner();
+    const kept = await provisionOwner();
+    await erased.api.json("POST", "/v1/devices", { deviceId: "iphone-erased-0001", token: hex("e1a5"), environment: "development" });
+    await kept.api.json("POST", "/v1/devices", { deviceId: "iphone-kept-0001", token: hex("c0de"), environment: "development" });
+    const devicesOf = async (userId: string) => (await app.db.prepare("SELECT device_id FROM notification_devices WHERE user_id = ?").bind(userId).all<{ device_id: string }>()).results.map((r) => r.device_id);
+    expect(await devicesOf(erased.userId)).toEqual(["iphone-erased-0001"]);
+    const asked = await erased.api.json("POST", "/v1/account/delete", {});
+    expect((await erased.api.json("POST", "/v1/account/delete", { confirmationToken: asked.confirmationToken })).state).toBe("erased");
+    // Nothing of the device is left: not the row, not the encrypted token.
+    expect(await devicesOf(erased.userId)).toEqual([]);
+    expect((await app.db.prepare("SELECT COUNT(*) AS n FROM notification_devices WHERE device_id = 'iphone-erased-0001'").first<{ n: number }>())!.n).toBe(0);
+    expect(await devicesOf(kept.userId)).toEqual(["iphone-kept-0001"]);
+    expect((await kept.api.json("GET", "/v1/devices")).devices).toHaveLength(1);
+  });
 });
 
 describe("the morning notification", () => {

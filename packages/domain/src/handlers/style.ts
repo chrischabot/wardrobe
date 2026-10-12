@@ -667,13 +667,28 @@ function settingsWrite(ctx: { userId: string; now: string; commandId: string }, 
   ];
 }
 
+/**
+ * The home location's coordinates are optional, not nullable: the daily service treats a coordinate as
+ * known only when it is present. A patch clears one with null (the iOS settings screen does, when the owner
+ * changes the city), so a null coordinate is removed from the merged settings before they are validated and
+ * stored, and the city is then geocoded from its label.
+ */
+function withoutClearedCoordinates(settings: unknown): unknown {
+  if (!settings || typeof settings !== "object") return settings;
+  const home = (settings as { homeLocation?: unknown }).homeLocation;
+  if (!home || typeof home !== "object" || Array.isArray(home)) return settings;
+  const kept = { ...(home as Record<string, unknown>) };
+  for (const key of ["latitude", "longitude"]) if (kept[key] === null) delete kept[key];
+  return { ...(settings as Record<string, unknown>), homeLocation: kept };
+}
+
 export const settingsUpdate = define({
   type: "settings.update",
   schema: C["settings.update"],
   class: "edit",
   requiredScope: "write",
   async plan(ctx, p): Promise<CommandPlan> {
-    const merged = OwnerSettings.safeParse(deepMerge(ctx.settings, p.patch));
+    const merged = OwnerSettings.safeParse(withoutClearedCoordinates(deepMerge(ctx.settings, p.patch)));
     if (!merged.success) throw new CommandError("invalid_command", "those settings are not valid", { issues: merged.error.issues });
     if (JSON.stringify(merged.data) === JSON.stringify(ctx.settings)) return { outcome: "noop", summary: "Settings unchanged", undo: { unavailableReason: "nothing changed" } };
     const version = ctx.settingsVersion + 1;
