@@ -114,18 +114,24 @@ export function linesOf(option) {
  */
 export function homeOnlyItems(sources, inSuitcase) {
   const packed = new Set([...inSuitcase].map(String));
-  const optionsRead = sources.reduce((n, s) => n + (s.options?.length ?? 0), 0);
+  const readableLine = (line) => line && typeof line === "object" && typeof line.garmentId === "string" && line.garmentId.trim().length > 0;
+  // An option counts as read only when it carries garment lines and every one names its garment.
+  const readable = (option) => linesOf(option).length > 0 && linesOf(option).every(readableLine);
+  const all = sources.flatMap((s) => (s.options ?? []).map((option) => ({ s, option })));
+  const optionsRead = all.filter((o) => readable(o.option)).length;
+  const unreadable = all.length - optionsRead;
   const outside = new Map();
-  for (const s of sources) {
-    for (const option of s.options ?? []) {
-      for (const line of linesOf(option)) {
-        const id = String(line.garmentId);
-        if (!packed.has(id) && !outside.has(id)) outside.set(id, { garmentId: id, name: line.name ?? null, seen_in: s.source, date: s.date ?? null });
-      }
+  for (const { s, option } of all) {
+    for (const line of linesOf(option).filter(readableLine)) {
+      const id = String(line.garmentId);
+      if (!packed.has(id) && !outside.has(id)) outside.set(id, { garmentId: id, name: line.name ?? null, seen_in: s.source, date: s.date ?? null });
     }
   }
-  if (optionsRead === 0) return { count: null, optionsRead, outside: [], reason: "the evaluated action produced no outfit option for the days away, so whether only packed pieces are offered could not be observed" };
-  return { count: outside.size, optionsRead, outside: [...outside.values()], reason: null };
+  // A home-only piece found is established whatever else was offered.
+  if (outside.size > 0) return { count: outside.size, optionsRead, unreadable, outside: [...outside.values()], reason: null };
+  if (optionsRead === 0) return { count: null, optionsRead, unreadable, outside: [], reason: "the evaluated action produced no outfit option with readable garments for the days away, so whether only packed pieces are offered could not be observed" };
+  if (unreadable > 0) return { count: null, optionsRead, unreadable, outside: [], reason: `${unreadable} option(s) carried no readable garment selection, so whether only packed pieces are offered is not established` };
+  return { count: 0, optionsRead, unreadable, outside: [], reason: null };
 }
 
 /**
@@ -491,7 +497,39 @@ export function exportOfRequest(listed, idsAtSeed, followedId = null) {
 }
 
 /**
- * The collection `key` of a response body, or null when the body holds no such list. An unreadable list is never
+ * Replaced garment names still listed among an outfit's garment lines. Compared line by line, never by deleting
+ * other names from the text: in each line only the current names that contain the replaced one are masked, so
+ * "Navy Coat" inside "Long Navy Coat" is not a finding, while "Long Navy Coat and Navy Coat" still is, and a
+ * current "Coat" never hides a replaced "Navy Coat".
+ */
+export function replacedNamesListed(lines, currentNames, replacedNames) {
+  const current = [...currentNames].map(String).filter(Boolean);
+  const found = [];
+  for (const name of [...replacedNames].map(String).filter(Boolean)) {
+    if (current.includes(name)) continue;
+    const containing = current.filter((c) => c.includes(name));
+    const listed = lines.some((line) => containing.reduce((masked, c) => masked.split(c).join("\u0000"), String(line)).includes(name));
+    if (listed) found.push(name);
+  }
+  return found;
+}
+
+/**
+ * B020: whether imported work has settled in the import target. Replays are counted only once its pending effects
+ * have drained (a readable zero) within the bounded window; work still pending, or a count that cannot be read,
+ * leaves the outcome null.
+ */
+export function importDrained(pendingCounts) {
+  const last = Array.isArray(pendingCounts) && pendingCounts.length > 0 ? pendingCounts[pendingCounts.length - 1] : undefined;
+  return typeof last === "number" && last === 0;
+}
+
+/** A pending-effect count as the application reports it: a finite number, else NaN (never coerced from "", false or []). */
+export function pendingCount(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : Number.NaN;
+}
+
+/** The collection `key` of a response body, or null when the body holds no such list. An unreadable list is never
  * read as an empty one: an empty list establishes that nothing exists, an unreadable one establishes nothing.
  */
 export function listIn(body, key) {
@@ -534,7 +572,7 @@ export function ownerScenario(scenario) {
  * two, never added; a completed reply that asks with no structured record behind it still counts.
  */
 export function ownerQuestions({ proposals = 0, turnAsked = 0, otherRunsWaiting = 0, replyText = null, runsUncertain = false } = {}) {
-  const replyQuestions = questionsIn(replyText);
+  const replyQuestions = requestsIn(replyText);
   const questions = Math.max(Number(turnAsked), replyQuestions.length) + Number(otherRunsWaiting);
   const total = Number(proposals) + questions;
   // Waiting runs are known only as a count. When some were waiting before, a new one can be hidden by an older

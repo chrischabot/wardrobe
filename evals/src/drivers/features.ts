@@ -20,7 +20,7 @@ import { APP_ORIGIN, ApiClient, connectMcp, newIdentity, provisionOwner, uploadI
 import { addDays, calendarFaults, calendarState, connectOutfitCalendar, eventsOn, exec, newPlace, scriptWeather, sleep } from "../../../tests/journeys/src/world.ts";
 import { rebase, receiptsSince, snapshot, unrebase, UnsupportedScenario, type BehaviourDriver, type DriverContext, type World } from "../kit.ts";
 import evalWorker from "../worker-entry.ts";
-import { anySessionValid, recoveryReuseOutcome, requestsIn, checksumCoverage, comfortObservationMatch, countsAsMorningNotice, credentialOutcome, credentialShapesIn, exportOfRequest, homeOnlyItems, importOutcome, lateDeliveryCoverage, linesOf, listIn, otherWaitingRuns, pendingInputForm, proposalForm, scoredRemoteRevision, newGarmentProhibitions, questionnaireOutcome, questionsIn, repairApprovalQuestions, suitcaseLaundry, wearConfirmationTasks, type OptionSource } from "../rules.mjs";
+import { anySessionValid, recoveryReuseOutcome, requestsIn, checksumCoverage, comfortObservationMatch, countsAsMorningNotice, credentialOutcome, credentialShapesIn, exportOfRequest, homeOnlyItems, importDrained, importOutcome, lateDeliveryCoverage, linesOf, listIn, otherWaitingRuns, pendingCount, pendingInputForm, proposalForm, replacedNamesListed, scoredRemoteRevision, newGarmentProhibitions, questionnaireOutcome, questionsIn, repairApprovalQuestions, suitcaseLaundry, wearConfirmationTasks, type OptionSource } from "../rules.mjs";
 
 type Json = Record<string, any>;
 type Api = World["owner"]["api"];
@@ -101,7 +101,11 @@ async function allReceipts(api: Api): Promise<Json[]> {
 /** Call at the end of a seed: what already exists, so later reads can tell what the request added. */
 async function markSeedEnd(ctx: DriverContext): Promise<void> {
   const api = ctx.world.owner.api;
-  ctx.memo.receiptIdsAtSeed = (await allReceipts(api)).map((r) => String(r.commandId));
+  const atSeed = await allReceipts(api);
+  ctx.memo.receiptIdsAtSeed = atSeed.map((r) => String(r.commandId));
+  // Morning notices already delivered at the seed: a receipt that existed then but whose notification is delivered
+  // later (queued before a pause, sent after the resume) is not a new command, so it is told apart by this.
+  ctx.memo.morningNoticeIdsAtSeed = atSeed.filter((r) => countsAsMorningNotice(r)).map((r) => String(r.commandId));
   ctx.memo.proposalIdsAtSeed = await proposalIds(api);
 }
 
@@ -111,6 +115,19 @@ async function receiptsAfterSeed(ctx: DriverContext): Promise<Json[]> {
   const byId = new Map<string, Json>();
   for (const r of [...(await receiptsSince(ctx.world, ctx.actStartedAt)), ...(await allReceipts(ctx.world.owner.api))]) {
     if (!before.has(String(r.commandId))) byId.set(String(r.commandId), r);
+  }
+  return [...byId.values()];
+}
+
+/**
+ * Receipts that may carry a morning notice delivered after the seed: every receipt recorded since, and every older
+ * one whose notice had not been delivered at the seed (a queued notification can be delivered on an existing receipt).
+ */
+async function receiptsWithLaterNotices(ctx: DriverContext): Promise<Json[]> {
+  const deliveredAtSeed = new Set(memoOf<string[]>(ctx, "morningNoticeIdsAtSeed"));
+  const byId = new Map<string, Json>();
+  for (const r of [...(await receiptsSince(ctx.world, ctx.actStartedAt)), ...(await allReceipts(ctx.world.owner.api))]) {
+    if (!deliveredAtSeed.has(String(r.commandId))) byId.set(String(r.commandId), r);
   }
   return [...byId.values()];
 }
@@ -316,15 +333,14 @@ function olderChoicesIn(description: string, current: Json, history: Json[]): st
     const option = options[index]!;
     const now = linesOf(option);
     // The garment lines of the block only (after the heading and the sentence on why the outfit works).
-    let rest = block.split(/\r?\n/).slice(2).join("\n");
-    for (const line of now) rest = rest.split(String(line.name)).join("");
+    const rest = block.split(/\r?\n/).slice(2);
     const replaced = new Set<string>();
     for (const old of history) {
       if (Number(old.revision) >= Number(current.revision)) continue;
       const earlier = ((old.options ?? []) as Json[]).find((o) => o.optionId === option.optionId);
       for (const line of earlier ? linesOf(earlier) : []) if (!now.some((c) => c.garmentId === line.garmentId)) replaced.add(String(line.name));
     }
-    for (const name of replaced) if (rest.includes(name)) findings.push(`"${heading}" still lists ${name}, which a later revision replaced`);
+    for (const name of replacedNamesListed(rest, now.map((c) => String(c.name)), replaced)) findings.push(`"${heading}" still lists ${name}, which a later revision replaced`);
   }
   return findings;
 }
@@ -1108,7 +1124,7 @@ const B018: BehaviourDriver = {
     const boardDays = new Map<string, string>([...viewsAtSeed, ...views].filter((v) => v.boardId).map((v) => [String(v.boardId), String(v.date)]));
 
     const receipts = await receiptsAfterSeed(ctx);
-    const notices = morningNotices(receipts, boardDays);
+    const notices = morningNotices(await receiptsWithLaterNotices(ctx), boardDays);
     const unreadable = notices.filter((n) => n.boardDay === null);
     if (unreadable.length > 0) throw new Error(`B018: ${unreadable.length} morning notification(s) after the resume do not say which day's board they concern, so they cannot be classed as old or new: ${JSON.stringify(unreadable).slice(0, 600)}`);
     const notifiedBefore = new Set(memoOf<string[]>(ctx, "daysNotifiedAtSeed"));
@@ -1631,8 +1647,16 @@ const B020: BehaviourDriver = {
       };
     } else {
       const doneReport = report as Json;
-      await runScheduled();
-      await runScheduled();
+      // Imported work may wait for a retry or further queue processing: scheduled runs continue (bounded) until
+      // the target has nothing pending. If work is still pending at the end, it could execute later, so the replay
+      // outcome is unobserved rather than zero.
+      const pendingSeen: number[] = [];
+      for (let i = 0; i < 8; i++) {
+        await runScheduled();
+        pendingSeen.push(pendingCount((await target.api.json("GET", "/v1/recovery")).pending?.effects));
+        if (i >= 1 && importDrained(pendingSeen)) break;
+      }
+      const drained = importDrained(pendingSeen);
       const writesAfter = await calendarWrites(calendarId);
       const targetRecovery: Json = await target.api.json("GET", "/v1/recovery");
       const targetPending = Number(targetRecovery.pending?.effects ?? 0);
@@ -1642,17 +1666,18 @@ const B020: BehaviourDriver = {
       // source account was quiet) and the import's own count. Effects merely pending in the target are evidence,
       // not replays (they include the target's own work).
       const measured = importOutcome({ status: imported.status, report: doneReport, sourceQuiet, writesBefore, writesAfter });
-      replayed = measured.replayed;
+      replayed = drained ? measured.replayed : null;
       importEvidence = {
         target: "a fresh SYNTHETIC account with no garments, provisioned for this import",
         target_garments_before: targetGarmentsBefore,
         target_garments_after: Number((await target.api.json("GET", "/v1/wardrobe")).total),
-        replay_unobserved: measured.reason,
+        replay_unobserved: drained ? measured.reason : `the import target still had ${pendingSeen[pendingSeen.length - 1]} pending effect(s) after ${pendingSeen.length} scheduled runs, so imported work could still execute later`,
+        target_pending_effects_per_scheduled_run: pendingSeen,
         report: { importId: doneReport.importId, state: doneReport.state, checksumsVerified: doneReport.checksumsVerified, idsPreserved: doneReport.idsPreserved, externalEffectsReplayed: doneReport.externalEffectsReplayed, error: doneReport.error, components: doneReport.components },
         calendar_writes_before: writesBefore,
         source_account_quiet_before_import: sourceQuiet,
         external_destinations_observed: "the outfit calendar (TEST DOUBLE), the only external destination the seed gave an effect; the import's own externalEffectsReplayed count covers the rest",
-        calendar_writes_after_two_scheduled_runs: writesAfter,
+        calendar_writes_after_the_scheduled_runs: writesAfter,
         calendar_log_since_import: logAfter.slice(logBefore).map((l) => `${l.op} ${l.status}`),
         effects_pending_in_target: targetPending,
         effects_pending_in_target_note: "evidence only: /v1/recovery reports a count of all pending effects of the target account, which cannot be told apart from effects of its own; not counted as replays",

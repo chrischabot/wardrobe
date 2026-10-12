@@ -19,7 +19,7 @@ export interface OptionSource {
   options: any[];
   [key: string]: unknown;
 }
-export declare function homeOnlyItems(sources: OptionSource[], inSuitcase: Iterable<string>): { count: number | null; optionsRead: number; outside: { garmentId: string; name: string | null; seen_in: string; date: string | null }[]; reason: string | null };
+export declare function homeOnlyItems(sources: OptionSource[], inSuitcase: Iterable<string>): { count: number | null; optionsRead: number; unreadable: number; outside: { garmentId: string; name: string | null; seen_in: string; date: string | null }[]; reason: string | null };
 export interface SuitcaseLine {
   garmentId: string;
   name: string | null;
@@ -47,6 +47,9 @@ export declare function lateDeliveryCoverage(input: { olderStatesAtFirstSync?: s
 export declare function requestsInReply(structured: RequestForm[], text: string | null | undefined, topic: RegExp): { count: number | null; matching: string[]; other: string[] };
 export declare function countsAsMorningNotice(receipt: unknown): boolean;
 export declare function listIn(body: unknown, key: string): any[] | null;
+export declare function replacedNamesListed(lines: string[], currentNames: Iterable<string>, replacedNames: Iterable<string>): string[];
+export declare function importDrained(pendingCounts: number[]): boolean;
+export declare function pendingCount(value: unknown): number;
 export declare function ownerQuestions(input: { proposals?: number; turnAsked?: number; otherRunsWaiting?: number; replyText?: string | null; runsUncertain?: boolean }): { questions: number; total: number | null; replyQuestions: string[] };
 export declare function repairApprovalQuestions(structured: RequestForm[], replyText: string | null | undefined): { count: number | null; matching: string[]; other: string[] };
 export declare function wearConfirmationRequests(structured: RequestForm[], replyText: string | null | undefined): { count: number | null; matching: string[]; other: string[] };

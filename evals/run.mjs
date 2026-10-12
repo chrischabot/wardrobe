@@ -47,7 +47,7 @@ function syntheticRegistry() {
   );
 }
 import { judgmentProblem } from "./src/node/judge-format.mjs";
-import { anySessionValid, garmentsCreated, recoveryReuseOutcome, sessionOutcome, candidateRoutes, checksumCoverage, comfortObservationMatch, countsAsMorningNotice, credentialOutcome, credentialShapesIn, distinctRequests, exportOfRequest, homeOnlyItems, importOutcome, judgeAvailability, lateDeliveryCoverage, listIn, otherWaitingRuns, pendingInputForm, proposalForm, scoredRemoteRevision, newGarmentProhibitions, ownerQuestions, ownerScenario, phaseRefusal, questionnaireOutcome, questionsIn, relayModel, repairApprovalQuestions, requestsInReply, reserveJudgeRoute, safeName, selectCases, suitcaseLaundry, wearConfirmationRequests, wearConfirmationTasks } from "./src/rules.mjs";
+import { anySessionValid, garmentsCreated, recoveryReuseOutcome, sessionOutcome, candidateRoutes, checksumCoverage, comfortObservationMatch, countsAsMorningNotice, credentialOutcome, credentialShapesIn, distinctRequests, exportOfRequest, homeOnlyItems, importDrained, importOutcome, judgeAvailability, lateDeliveryCoverage, listIn, otherWaitingRuns, pendingCount, pendingInputForm, proposalForm, replacedNamesListed, scoredRemoteRevision, newGarmentProhibitions, ownerQuestions, ownerScenario, phaseRefusal, questionnaireOutcome, questionsIn, relayModel, repairApprovalQuestions, requestsInReply, reserveJudgeRoute, safeName, selectCases, suitcaseLaundry, wearConfirmationRequests, wearConfirmationTasks } from "./src/rules.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, "..");
@@ -757,6 +757,7 @@ function holdoutRefusal({ ledgerExists, subset, phasesGiven, driver, ready, miss
 
 /** Why a work directory may not be used for this run, or null. */
 function workDirectoryRefusal({ recorded, manifest, phases, hasArtifacts }) {
+  if (recorded?.invalidated) return `a run in it was invalidated because the build changed while it ran (${[].concat(recorded.invalidated).join(", ")}), so its artifacts describe no one build; use a fresh --work directory`;
   if (recorded) return sameJson(recorded, manifest) ? null : "it was produced against a different build, configuration or case set; use a fresh --work directory";
   if (!phases.includes("candidate") || hasArtifacts) return "it holds no record of what its artifacts were made against; a run without the candidate phase needs the work directory of a run of this exact build and configuration";
   return null;
@@ -929,6 +930,9 @@ async function runInWork({ split, corpus, registry, r, adapterCheck, driver, sub
   // starting fingerprints name. It is published as such, fails, and can never be frozen on.
   const printsAfter = fingerprints();
   const buildChanged = changedFingerprints(prints, printsAfter);
+  // Artifacts made while the build changed describe no one build: the work directory is marked so no later run
+  // (a check or judge phase over them, after the tree is restored) can consume them.
+  if (buildChanged.length > 0) writeJson(manifestFile, { ...readJson(manifestFile), invalidated: buildChanged });
   const meta = {
     run_id: runId,
     split,
@@ -1156,6 +1160,8 @@ async function selftest() {
     must(workDirectoryRefusal({ recorded: { ...manifest, inference: { gatewayId: "g", gatewayEndpointSha256: "e2" } }, manifest, phases: ["check", "judge"], hasArtifacts: true }) !== null, "a directory of another gateway account was accepted");
     must(workDirectoryRefusal({ recorded: null, manifest, phases: ["check", "judge"], hasArtifacts: true }) !== null, "an unrecorded directory was accepted without the candidate phase");
     must(workDirectoryRefusal({ recorded: null, manifest, phases: ["candidate"], hasArtifacts: true }) !== null, "an unrecorded directory with artifacts was accepted");
+    must(workDirectoryRefusal({ recorded: { ...manifest, invalidated: ["application"] }, manifest, phases: ["check"], hasArtifacts: true }) !== null, "a work directory whose run saw the build change was reused");
+    must(workDirectoryRefusal({ recorded: { ...manifest, invalidated: ["application"] }, manifest, phases: ["candidate"], hasArtifacts: true }) !== null, "a work directory whose run saw the build change was reused for a new candidate phase");
   });
   check("freeze accepts only a complete, judged, clean development run of this build and configuration", () => {
     const prints = fingerprints();
@@ -1184,6 +1190,7 @@ async function selftest() {
     must(ownerQuestions({ turnAsked: 1, replyText: "Which shirt did you mean?" }).total === 1, "the turn's own question was counted twice with its reply");
     must(ownerQuestions({ proposals: 1, otherRunsWaiting: 1, replyText: "Noted." }).total === 2, "structured requests were not counted");
     must(ownerQuestions({ replyText: "Recorded: the moss shirt was worn yesterday and washed this morning." }).total === 0, "a statement was counted as a question");
+    must(ownerQuestions({ replyText: "Please confirm whether you wore yesterday's outfit." }).total === 1, "a request to confirm without a question mark was not counted");
     must(ownerQuestions({ replyText: "Recorded.", runsUncertain: true }).total === null, "zero questions were reported although an older waiting run could hide a new one");
     must(ownerQuestions({ replyText: "Did you wear it Monday?", runsUncertain: true }).total === 1, "a question in the reply was lost when the run count was uncertain");
   });
@@ -1551,6 +1558,19 @@ async function selftest() {
     must(credentialShapesIn('{"secret": null, "password": "", "accessToken": []}').length === 0, "an empty credential field was taken for a leaked credential");
     must(credentialShapesIn('{"password": true}').length > 0 && credentialShapesIn('{"secret": false}').length > 0, "a credential-named field with a boolean value was exempted");
   });
+  check("B012: a replaced garment is found in an outfit line even when a current name is part of it, and a current name containing it hides nothing else", () => {
+    must(replacedNamesListed(["- Long Navy Coat"], ["Coat"], ["Long Navy Coat"]).join() === "Long Navy Coat", "a replaced name containing a current one was missed");
+    must(replacedNamesListed(["- Long Navy Coat"], ["Long Navy Coat"], ["Navy Coat"]).length === 0, "a current name containing a replaced one was reported as the replaced one");
+    must(replacedNamesListed(["- Long Navy Coat", "- Navy Coat"], ["Long Navy Coat"], ["Navy Coat"]).join() === "Navy Coat", "a replaced name on its own line was missed");
+    must(replacedNamesListed(["- Long Navy Coat and Navy Coat"], ["Long Navy Coat"], ["Navy Coat"]).join() === "Navy Coat", "a replaced name beside a current name containing it, on one line, was missed");
+  });
+  check("B020: replays are counted only once imported work has drained from the target", () => {
+    must(importDrained([2, 0]) === true, "a drained target was not recognised");
+    must(importDrained([2, 1]) === false, "a target with pending imported work was taken as settled");
+    must(importDrained([]) === false && importDrained([Number.NaN]) === false, "an unreadable pending count was taken as settled");
+    must(["", false, [], null, undefined, "0"].every((v) => Number.isNaN(pendingCount(v))) && pendingCount(0) === 0, "an unreadable pending count was coerced to a number");
+    must(importDrained([pendingCount("")]) === false && importDrained([pendingCount([])]) === false, "an unreadable pending count was taken as drained");
+  });
   check("B009: a duplicate garment is counted by identity, even when another garment was removed meanwhile", () => {
     must(garmentsCreated(["g1", "g2"], ["g1", "g3"])?.join() === "g3", "a duplicate created while another garment was removed was not counted");
     must(garmentsCreated(["g1", "g2"], ["g1", "g2"])?.length === 0, "an unchanged wardrobe counted a garment");
@@ -1618,6 +1638,9 @@ async function selftest() {
     const offered = homeOnlyItems([{ source: "reply", date: null, options }], ["g1"]);
     must(offered.count === 1 && offered.outside[0].garmentId === "g9", `a home-only footwear alternative was not counted (${JSON.stringify(offered)})`);
     must(homeOnlyItems([{ source: "reply", date: null, options: [{ garments: [{ garmentId: "g1" }] }] }], ["g1"]).count === 0, "an option of packed pieces only was not counted as zero");
+    must(homeOnlyItems([{ source: "reply", date: null, options: [{}] }], ["g1"]).count === null, "an option with no readable garments was counted as zero home-only pieces");
+    must(homeOnlyItems([{ source: "reply", date: null, options: [{ garments: [{ garmentId: "g1" }] }, { garments: [{ name: "no id" }] }] }], ["g1"]).count === null, "an unreadable option beside a packed one was counted as zero home-only pieces");
+    must(homeOnlyItems([{ source: "reply", date: null, options: [{ garments: [{ garmentId: ["g1"] }] }] }], ["g1"]).count === null && homeOnlyItems([{ source: "reply", date: null, options: [{ garments: [{ garmentId: 1 }] }] }], ["1"]).count === null, "a malformed garment identifier was read as a garment");
     const seed = [{ garmentId: "s", name: "shirt", clean: 1, worn: 1 }, { garmentId: "t", name: "trousers", clean: 1, worn: 0 }];
     must(suitcaseLaundry(seed, [{ garmentId: "s", clean: 2, worn: 0 }, { garmentId: "t", clean: 1, worn: 0 }], { packingRuledOut: true }).applied === true, "a wash in the suitcase during the turn was not caught");
     must(suitcaseLaundry(seed, [{ garmentId: "s", clean: 2, worn: 0 }, { garmentId: "t", clean: 1, worn: 0 }]).applied === null, "worn turning clean was taken for a wash although packing was not ruled out (an unpack and repack reads the same)");
