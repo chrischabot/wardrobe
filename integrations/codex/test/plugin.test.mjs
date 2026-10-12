@@ -60,15 +60,21 @@ test("the skill has a name and description and names only tools the server publi
   assert.deepEqual(named, [...published].sort());
 });
 
-test("the skill's direct routine actions are exactly the server's allow-list", () => {
+test("the skill's routine actions are ones the server runs directly, and it defers every other decision to the server's answer", () => {
   const policy = readFileSync(path.join(REPO, "apps/worker/src/mcp/policy.ts"), "utf8");
-  const allowed = JSON.parse(/TYPED_DIRECT_BY_OWNER_DECISION: ReadonlySet<string> = new Set<string>\((\[[^\]]+\])\)/.exec(policy)[1]).sort();
-  const routineLine = skill.split("\n").find((l) => l.startsWith("- Run directly"));
-  const inSkill = ["board.select", "laundry.collect", "laundry.return", "stock.pack", "stock.unpack"].filter((t) => routineLine.includes(`\`${t}\``));
-  assert.deepEqual(inSkill.sort(), allowed);
-  for (const t of allowed) assert.ok(routineLine.includes(`\`${t}\``), `${t} missing from the skill`);
+  const routineLine = skill.split("\n").find((l) => l.startsWith("- **Applied:**"));
+  assert.ok(routineLine, "the skill describes applied changes");
+  const inSkill = [...routineLine.matchAll(/`([a-z]+\.[a-z_]+)`/g)].map((m) => m[1]).filter((t) => t !== "command.undo").sort();
+  assert.deepEqual(inSkill, ["board.select", "laundry.collect", "laundry.return", "stock.pack", "stock.unpack"]);
+  // While the server keeps an explicit typed-command allow-list, each routine action the skill names must be on it.
+  const listed = /TYPED_DIRECT_BY_OWNER_DECISION: ReadonlySet<string> = new Set<string>\((\[[^\]]+\])\)/.exec(policy);
+  if (listed) for (const t of inSkill) assert.ok(JSON.parse(listed[1]).includes(t), `${t} is not run directly by the server`);
   assert.match(skill, /confirmation_required/);
+  assert.match(skill, /Only ask for a change the owner asked for/);
+  assert.match(skill, /restriction can never be lifted/);
   assert.match(skill, /Never infer one/);
+  // No blanket rule that every other change waits: which changes wait is the server's decision.
+  assert.doesNotMatch(skill, /Everything else/);
 });
 
 test("the package contains no credentials", () => {

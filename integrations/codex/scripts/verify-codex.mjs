@@ -16,8 +16,8 @@
  *   3. `codex app-server` (the protocol the Codex IDE extension and desktop app use): start a thread, list
  *      the wardrobe server's tools, then call them through Codex: a read (`garderobe_today`, the complete
  *      inventory snapshot), a routine write with its receipt (`board.select` on the published board) and its
- *      undo (`command.undo`), and a change that must wait for the owner (`board.swap_slot` answers
- *      `confirmation_required`);
+ *      undo (`command.undo`), a piece swap (`board.swap_slot`) reported as the server handled it (waits for the
+ *      owner, or applied with a receipt and undone at once), and a restriction lift, which is refused;
  *   4. unless --no-model, a model-driven `codex exec` session that is asked to read today's board through
  *      the plugin. It uses the user's existing Codex sign-in (`auth.json` from CODEX_HOME or ~/.codex, copied
  *      into the temporary home) or, when there is none, OPENAI_API_KEY.
@@ -226,16 +226,21 @@ async function toolsThroughCodex() {
 
     const boardNow = (await call("garderobe_today", { date })).data?.board ?? board;
     const swap = await call("garderobe_command", { type: "board.swap_slot", payload: { boardId: boardNow.boardId, optionId: option.optionId, role: "top" }, idempotencyKey: `codex-verify-swap-${Date.now()}` });
-    if (swap.ok && swap.data?.receipt?.commandId) {
-      // It should never run directly; if it did, take it back before reporting the failure.
-      await call("garderobe_command", { type: "command.undo", payload: { commandId: swap.data.receipt.commandId }, idempotencyKey: `codex-verify-undo-swap-${Date.now()}` });
-    }
     const proposalId = swap.error?.details?.proposalId;
-    check("a change outside the routine actions waits for the owner (confirmation_required, nothing changed)", !swap.ok && swap.error?.code === "confirmation_required", swap.ok ? "ran directly" : `${swap.error?.code}: ${swap.error?.details?.summary ?? swap.error?.message}`);
+    if (swap.ok && swap.data?.receipt?.commandId) {
+      // Applied at once (owner decision of 2026-10-05): take it back straight away, and check the undo.
+      const back = await call("garderobe_command", { type: "command.undo", payload: { commandId: swap.data.receipt.commandId }, idempotencyKey: `codex-verify-undo-swap-${Date.now()}` });
+      check("a piece swap is applied with a receipt and undone", back.ok && back.data?.receipt?.commandId, `${swap.data.receipt.summary} / ${back.ok ? back.data.receipt.summary : JSON.stringify(back.error)}`);
+    } else {
+      check("a piece swap waits for the owner (confirmation_required, nothing changed)", swap.error?.code === "confirmation_required" && Boolean(proposalId), `${swap.error?.code}: ${swap.error?.details?.summary ?? swap.error?.message}`);
+    }
     if (local && proposalId) {
       const rejected = await local.api("POST", `/v1/proposals/${proposalId}/decision`, { decision: "reject" });
       check("cleanup (local, as the owner in the app): the proposal is rejected", rejected.ok, rejected.json?.proposal?.state);
     }
+    // Refused on every contract, before the restriction is looked up: the identifier names no real restriction.
+    const lift = await call("garderobe_command", { type: "restriction.resolve", payload: { restrictionId: "rst_codex_verify_not_a_restriction", evidence: { kind: "owner_statement" } }, idempotencyKey: `codex-verify-lift-${Date.now()}` });
+    check("a restriction lift from Codex is refused", !lift.ok && lift.error?.code === "forbidden", lift.ok ? "applied" : `${lift.error?.code}: ${lift.error?.message}`);
     return { date, timeZone, boardId: board.boardId };
   } finally {
     server.close();

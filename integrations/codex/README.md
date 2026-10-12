@@ -50,13 +50,13 @@ In a session, ask for example "Use Wardrobe to show me tomorrow's outfit board" 
 
 ## What Codex may do with the owner's wardrobe
 
-The server decides, on every request, from the grant (`apps/worker/src/mcp/handler.ts`, `apps/worker/src/mcp/policy.ts`). The plugin's skill repeats the rules so that Codex does not try anything else:
+The server decides, on every request, from the grant and the owner's current rules (`apps/worker/src/mcp/handler.ts`, `apps/worker/src/mcp/policy.ts`). The plugin hard-codes no policy of its own. Its skill tells Codex to make only the changes the owner asked for and to report the server's answer as it is:
 
 - **Read-only grant** (`wardrobe.read`): six tools. `garderobe_command` is not listed, and calling it gets an `insufficient_scope` challenge.
 - **Write grant** (`wardrobe.read wardrobe.write`): all seven tools.
-- **Run directly, with a receipt and undo:** choosing from the published board (`board.select`), laundry pickup and return (`laundry.collect`, `laundry.return`) and packing for a planned trip (`stock.pack`, `stock.unpack`). These follow the owner's decision of 2026-10-03. The owner's own wear and wash reports and research records also run directly. The undo is `command.undo`.
-- **Wait for the owner:** every other change answers `confirmation_required` with a proposal identifier and a system-written summary. Only the signed-in owner can confirm it, in the app. Codex cannot list or decide proposals.
-- **Refused:** lifting a restriction, or undoing the command that recorded one, and account-level and system commands.
+- **Applied:** the answer carries a receipt, and `command.undo` takes the change back. Choosing from the published board, laundry pickup and return, packing for a planned trip, and the owner's wear and wash reports are always applied this way.
+- **Waiting for the owner:** the answer is `confirmation_required` with a proposal identifier and a system-written summary. Only the signed-in owner can confirm it, in the app. Codex cannot list or decide proposals. Which changes wait follows the owner's decisions. Under the decision of 2026-10-05 only its named exceptions should wait; the API thread is implementing that decision, and on the tree of 2026-10-12 a piece swap (`board.swap_slot`) still waited.
+- **Refused:** lifting a restriction, undoing the command that recorded one, and account-level and system commands.
 - **Wear and wash** are recorded only as the owner reported them. A board choice is an intention, not a wear.
 
 ## Verify
@@ -81,21 +81,23 @@ The script works in a throw-away `CODEX_HOME` and runs these steps:
    - lists the tools;
    - reads the inventory and the board;
    - chooses a board option, checks the receipt and that no wear was recorded, then undoes the choice;
-   - checks that a piece swap waits for the owner.
+   - swaps a piece on the board and reports what the server did: it waited for the owner (`confirmation_required`), or it was applied with a receipt, in which case the script undoes it at once;
+   - checks that a restriction lift is refused (the request names no real restriction, and nothing is written).
 4. Asks a model-driven `codex exec` session to read the board through the plugin. This step uses your existing Codex sign-in (the `auth.json` in `CODEX_HOME` or `~/.codex`, copied into the throw-away home and deleted with it), or `OPENAI_API_KEY` when there is none; `--no-model` skips it.
 
-Against a local Worker, setup (publishing tomorrow's board) and cleanup (rejecting the proposal) are done as the owner through the app API. Against a deployment the daily service publishes the board. A writing run against real data leaves one undone board choice and one pending proposal, which the owner rejects in the app.
+Against a local Worker, setup (publishing tomorrow's board) and cleanup (rejecting a waiting proposal) are done as the owner through the app API. Against a deployment the daily service publishes the board. A writing run against real data leaves undone changes in the history, and possibly one pending proposal, which the owner rejects in the app.
 
 ### Results
 
-The results below are from a local run, not a hosted check. On 2026-10-12, against the local Worker (Miniflare, with the real owner profile and the 127-garment inventory), with Codex CLI 0.162.1, `verify-codex.mjs` passed 21 of 21 checks, once using an existing Codex sign-in with `OPENAI_API_KEY` unset, and once from no sign-in with `OPENAI_API_KEY`:
+The results below are from a local run, not a hosted check. On 2026-10-12, against the local Worker (Miniflare, with the real owner profile and the 127-garment inventory), with Codex CLI 0.162.1, `verify-codex.mjs` passed every check. The final version passed 22 of 22, signed in from `OPENAI_API_KEY`. The version before it passed 21 of 21 both with an existing Codex sign-in and from `OPENAI_API_KEY`; it lacked only the restriction-lift check, and the sign-in code is unchanged since. The checks covered:
 
 - plugin install and login: marketplace add, plugin add, server configured, login with consent (DCR);
 - tools: server connected over OAuth, all seven tools listed;
 - reads: the complete inventory (127 garments) and the published board;
 - routine write: `board.select` with a receipt (actor `assistant`, channel `mcp`), shown on the app's board, with no wear recorded;
 - undo: `command.undo` with its own receipt, after which the board has no choice;
-- `board.swap_slot` answered `confirmation_required`;
+- `board.swap_slot` waited for the owner (`confirmation_required`), which is the server's current behaviour;
+- a restriction lift was refused (`forbidden`);
 - the model session (signed in) called `wardrobe.garderobe_today` and answered with the board id.
 
 What these results do not cover:

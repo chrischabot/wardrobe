@@ -15,7 +15,7 @@
       "interface": {
         "displayName": "Wardrobe",
         "shortDescription": "Your Garderobe wardrobe in Codex",
-        "longDescription": "Read today's outfit board, ask for validated recommendations, browse the inventory and laundry, and make routine changes (choosing from the board, laundry pickup and return, trip packing, wear and wash reports) with a receipt and undo. Everything else is sent to the owner as a proposal to confirm in the Garderobe app.",
+        "longDescription": "Read today's outfit board, ask for validated recommendations, browse the inventory and laundry, and make the changes you ask for through Garderobe's own commands: each applied change returns a receipt and can be undone, and a change the server keeps for your confirmation waits in the Garderobe app. Restrictions can only be lifted by you in the app.",
         "developerName": "Garderobe",
         "category": "Productivity",
         "capabilities": ["Read", "Write"],

@@ -16,12 +16,11 @@ The Wardrobe MCP server (tools named `garderobe_*`) is the owner's Garderobe acc
 
 ## Changing things (`garderobe_command`, only on a connection granted write)
 
-Every command takes a `type`, a `payload` and a unique `idempotencyKey`, and returns a receipt. Report the receipt's summary and `commandId` to the owner.
+Only ask for a change the owner asked for in this conversation. Every command takes a `type`, a `payload` and a unique `idempotencyKey`. The server decides from the owner's current rules what happens; read its answer, do not assume it:
 
-- Run directly, with a receipt and undo: choosing an option from the published board (`board.select`, pass the board's revision as `expectedVersions`), laundry pickup and return (`laundry.collect`, `laundry.return`), packing and unpacking for one of the owner's planned trips (`stock.pack`, `stock.unpack`), and the owner's own wear and wash reports (`wear.record`, `care.washed` naming its garments, `care.mark_dirty`), plus research records.
-- Undo one of those with `command.undo` and the `commandId` from its receipt.
-- Everything else (corrections, moves, retirements, settings, restrictions, style, measurements, returns, reminders) answers `confirmation_required` with a proposal identifier and a summary. Tell the owner the change waits for them to confirm in the Garderobe app. You cannot confirm it yourself and must not try again to make it happen another way.
-- A restriction can never be lifted from here, and the command that recorded one cannot be undone from here.
+- **Applied:** the answer carries a receipt. Report its summary and `commandId`. The routine actions (choosing from the published board `board.select` with the board's revision as `expectedVersions`, laundry pickup and return `laundry.collect` and `laundry.return`, packing and unpacking for one of the owner's planned trips `stock.pack` and `stock.unpack`) and the owner's own wear and wash reports are applied this way. To take a change back, call `command.undo` with the `commandId` from its receipt.
+- **Waiting for the owner:** the answer is `confirmation_required`, with a proposal identifier and a summary written by the system. Tell the owner the change waits for them to confirm in the Garderobe app. Do not say it is done, do not confirm it yourself, and do not try to make it happen another way.
+- **Refused:** a restriction can never be lifted from here (`forbidden`), and the command that recorded one cannot be undone from here.
 
 ## Wear and wash reports
 
