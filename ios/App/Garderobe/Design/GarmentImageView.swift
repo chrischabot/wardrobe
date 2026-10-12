@@ -32,7 +32,13 @@ struct GarmentImageView: View {
     }
 
     @State private var uiImage: UIImage?
-    @State private var resolved = false
+    @State private var phase: Phase = .loading
+    /// The garment and image the state on screen belongs to; a change resets it at once.
+    @State private var shownIdentity: String?
+    /// Bumped by "Try again" to start a new read.
+    @State private var attempt = 0
+
+    private enum Phase: Equatable { case loading, shown, noImage, unavailable }
 
     var body: some View {
         ZStack {
@@ -43,7 +49,7 @@ struct GarmentImageView: View {
                     GeometryReader { proxy in
                         ZStack {
                             Color.clear // no spinner, no entrance animation
-                            if let uiImage {
+                            if let uiImage = shownImage {
                                 Image(uiImage: uiImage)
                                     .resizable()
                                     .scaledToFit()
@@ -54,12 +60,41 @@ struct GarmentImageView: View {
                         .task(id: taskKey(width: proxy.size.width)) { await load(points: proxy.size.width) }
                     }
                 }
-            if uiImage == nil, resolved { missingTile }
+            if isCurrent, uiImage == nil, phase == .noImage { missingTile }
+            if isCurrent, uiImage == nil, phase == .unavailable { unavailableTile }
         }
         .catalogueCanvas()
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(decorative ? "" : accessibilityText)
-        .accessibilityHidden(decorative)
+        // A decorative tile hides only its picture: when the photograph failed, the failure and
+        // its retry are announced like any other control, so VoiceOver can try again too.
+        .accessibilityLabel(offersRetry ? (decorative ? "Photo could not be loaded" : accessibilityText) : (decorative ? "" : accessibilityText))
+        .accessibilityHidden(decorative && !offersRetry)
+        .accessibilityActions {
+            if offersRetry { Button("Try again") { attempt += 1 } }
+        }
+    }
+
+    private var offersRetry: Bool { isCurrent && phase == .unavailable && uiImage == nil }
+
+    /// The state on screen belongs to the garment and image this tile is for now. When either
+    /// changes, nothing of the previous one is drawn, not even for the frame before the new read starts.
+    private var isCurrent: Bool { shownIdentity == identity }
+    private var shownImage: UIImage? { isCurrent ? uiImage : nil }
+
+    /// The photograph could not be read and none is on the phone: say so, and offer to try again.
+    /// This is not "No photo yet", which is only for garments the backend says have none.
+    @ViewBuilder private var unavailableTile: some View {
+        VStack(spacing: Metrics.unit) {
+            if missing != .symbol { Text("Photo could not be loaded").font(.caption) }
+            Button { attempt += 1 } label: {
+                if missing == .symbol { Image(systemName: "arrow.clockwise") } else { Text("Try again").font(.caption.weight(.semibold)) }
+            }
+            .buttonStyle(.borderless)
+        }
+        .multilineTextAlignment(.center)
+        .foregroundStyle(.black)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(Metrics.unit * 2)
     }
 
     private var missingNote: String { image?.missingImageNote ?? "No photo yet" }
@@ -95,29 +130,55 @@ struct GarmentImageView: View {
     }
 
     private var accessibilityText: String {
+        guard isCurrent else { return "\(name), photo loading" }
         if uiImage != nil {
             if let label = image?.displayLabel, label != .productPhoto, label != .yourPhoto { return "\(name), \(label.rawValue.lowercased())" }
             return "Photo of \(name)"
         }
-        return "\(name), no photo yet"
+        if phase == .unavailable { return "\(name), photo could not be loaded" }
+        // "No photo yet" only when the backend said there is none; never while reading or after a failure.
+        if phase == .noImage { return "\(name), no photo yet" }
+        return "\(name), photo loading"
     }
 
-    private func taskKey(width: CGFloat) -> String { "\(garmentId)|\(image?.renditionId ?? "")|\(Int(width))" }
+    /// Which garment and which image this tile is for. A recorded change to the garment's images
+    /// (a new photograph chosen, one deleted) is part of it, so the tile reads the image again.
+    private var identity: String {
+        "\(garmentId)|\(image?.renditionId ?? "")|\(image.map { $0.hasRealImage ? "real" : "none" } ?? "current")|\(app.images.revision(forGarment: garmentId))"
+    }
+
+    private func taskKey(width: CGFloat) -> String { "\(identity)|\(Int(width))|\(attempt)" }
 
     private func load(points: CGFloat) async {
         guard points > 0 else { return }
+        let mine = identity
+        // Another garment or image: nothing of the previous one stays on screen.
+        if shownIdentity != mine { uiImage = nil; phase = .loading; shownIdentity = mine }
         let width = GarmentImageLoader.width(forPoints: Double(points), scale: Double(displayScale))
-        if uiImage == nil, let cached = app.images.cached(forGarment: garmentId, width: width), let decoded = UIImage(data: cached) { uiImage = decoded }
-        let data: Data?
-        if let image, image.hasRealImage {
-            data = await app.images.data(for: image, width: width)
-        } else if let image, !image.hasRealImage {
-            data = nil
-        } else {
-            data = await app.images.data(forGarment: garmentId, width: width)
+        if uiImage == nil, let cached = app.images.cachedImage(garmentId: garmentId, image: image, width: width) {
+            if let decoded = UIImage(data: cached) { uiImage = decoded; phase = .shown }
+            else { app.images.discardUndecodable(garmentId: garmentId, image: image, width: width) }
         }
-        if let data, let decoded = UIImage(data: data) { uiImage = decoded }
-        resolved = true
+        let outcome = await app.images.image(garmentId: garmentId, image: image, width: width)
+        // A read for an image no longer shown (the tile was reused, or a newer read started)
+        // never changes the tile: cancelling a task is only a request.
+        guard !Task.isCancelled, mine == identity else { return }
+        switch outcome {
+        case .image(let data):
+            // Bytes that cannot be decoded are a failed read, not an absence: the tile says the
+            // photo could not be loaded and offers to try again, which reads it afresh.
+            if let decoded = UIImage(data: data) { uiImage = decoded; phase = .shown }
+            else {
+                app.images.discardUndecodable(garmentId: garmentId, image: image, width: width)
+                if uiImage == nil { phase = .unavailable }
+            }
+        case .noImage:
+            // Only the backend's answer that no real image exists shows "No photo yet".
+            uiImage = nil
+            phase = .noImage
+        case .unavailable:
+            if uiImage == nil { phase = .unavailable }
+        }
     }
 }
 

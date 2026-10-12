@@ -230,6 +230,7 @@ public final class AppModel {
     }
 
     private func receiptArrived(_ receipt: CommandReceipt) async {
+        if let garmentIds = GarmentImageLoader.imageChange(in: receipt) { images.garmentImagesChanged(garmentIds) }
         await today.refresh()
         if wardrobe.snapshot.origin != .none { await wardrobe.refresh() }
         if laundry.state.origin != .none, receipt.type.hasPrefix("laundry.") || receipt.type.hasPrefix("care.") || receipt.type.hasPrefix("wear.") { await laundry.state.refresh() }
@@ -328,11 +329,99 @@ public final class FirstUseModel {
 public final class GarmentImageLoader {
     public static let thumbnailWidths = [160, 320, 640, 1280]
     public let environment: AppEnvironment
-    private var inFlight: [String: Task<Data?, Never>] = [:]
-    private var missing: Set<String> = []
+    private var inFlight: [String: Task<Fetched, Never>] = [:]
+    /// Keys the backend confirmed have no image, with when it said so. An entry expires after
+    /// `missingLifetime`, so a photograph added later is found without relaunching.
+    private var missing: [String: Date] = [:]
     private var refreshedThisSession: Set<String> = []
+    /// Seconds a confirmed absence is trusted before the backend is asked again.
+    public static let missingLifetime: TimeInterval = 600
+
+    /// What a read of an image found.
+    public enum Outcome: Sendable, Equatable {
+        case image(Data)
+        /// The backend says no real image exists: the garment's name is shown on a labelled tile.
+        case noImage
+        /// The image could not be read (offline, a server fault) and nothing is cached: the
+        /// tile says so and offers to try again. Never presented as "No photo yet".
+        case unavailable
+    }
+
+    private enum Fetched: Sendable { case data(Data), notFound, failed }
 
     public init(environment: AppEnvironment) { self.environment = environment }
+
+    /// Counts resets: a read that started for an account that has since ended stores nothing.
+    private var epoch = 0
+
+    /// The account ended: forget what was learnt about its images (the bytes are removed with the media cache).
+    public func reset() {
+        epoch += 1
+        inFlight = [:]
+        missing = [:]
+        refreshedThisSession = []
+        changes = [:]
+    }
+
+    /// Counts media changes per cache key: a read that started before the garment's images
+    /// changed stores nothing, so the old photograph cannot come back after the change.
+    private var changes: [String: Int] = [:]
+
+    /// Counts media changes per garment (and for all garments): tiles read again when it moves.
+    private var revisions: [String: Int] = [:]
+    private var allRevision = 0
+    /// The garment's image revision on this phone; it changes whenever its images may have.
+    public func revision(forGarment garmentId: String) -> Int { allRevision + (revisions[garmentId] ?? 0) }
+
+    /// The backend recorded a change to these garments' images (a new primary photograph, an
+    /// asset deleted, a review decided): what this phone holds for them is no longer evidence.
+    /// Their bytes, their "checked this session" marks and any absence learnt are dropped, and
+    /// a read on its way is not kept. With no garment named, every garment image is re-checked
+    /// (bytes are kept to show until then, as they are offline).
+    public func garmentImagesChanged(_ garmentIds: [String]) {
+        if garmentIds.isEmpty { allRevision += 1 } else { for id in garmentIds { revisions[id, default: 0] += 1 } }
+        if garmentIds.isEmpty {
+            let reading = inFlight.keys.filter { $0.hasPrefix("item:") }
+            for key in refreshedThisSession.union(reading) { changes[key, default: 0] += 1; inFlight[key] = nil }
+            refreshedThisSession = []
+            for key in missing.keys where key.hasPrefix("item:") { missing[key] = nil }
+            return
+        }
+        for garmentId in garmentIds {
+            for key in itemKeys(garmentId) {
+                changes[key, default: 0] += 1
+                inFlight[key] = nil
+                missing[key] = nil
+                refreshedThisSession.remove(key)
+                environment.media.remove(key)
+            }
+        }
+    }
+
+    /// Every key this phone holds for a garment's current image, at any width: cached bytes,
+    /// reads on their way, checked marks and learnt absences, and the served widths.
+    private func itemKeys(_ garmentId: String) -> Set<String> {
+        let prefix = "item:\(garmentId):"
+        var keys = Set(GarmentImageLoader.thumbnailWidths.map { prefix + String($0) })
+        keys.formUnion(environment.media.keys(prefix: prefix))
+        keys.formUnion(inFlight.keys.filter { $0.hasPrefix(prefix) })
+        keys.formUnion(refreshedThisSession.filter { $0.hasPrefix(prefix) })
+        keys.formUnion(missing.keys.filter { $0.hasPrefix(prefix) })
+        return keys
+    }
+
+    /// The garment an `item:` key belongs to.
+    private static func garmentId(ofItemKey key: String) -> String? {
+        guard key.hasPrefix("item:"), let end = key.lastIndex(of: ":"), end > key.index(key.startIndex, offsetBy: 4) else { return nil }
+        return String(key[key.index(key.startIndex, offsetBy: 5)..<end])
+    }
+
+    /// Whether a receipt changed what garment images show, and for which garments.
+    public static func imageChange(in receipt: CommandReceipt) -> [String]? {
+        guard receipt.type.hasPrefix("media."), receipt.type != "media.authorize_upload",
+              receipt.type != "media.request_discovery", receipt.type != "media.request_composite_preview" else { return nil }
+        return receipt.affected.filter { $0.kind == "garment" }.map(\.id)
+    }
 
     /// The smallest served width that covers `points` at `scale`.
     public static func width(forPoints points: Double, scale: Double) -> Int {
@@ -340,28 +429,119 @@ public final class GarmentImageLoader {
         return thumbnailWidths.first { Double($0) >= needed } ?? thumbnailWidths[thumbnailWidths.count - 1]
     }
 
+    private func isMissing(_ key: String) -> Bool {
+        guard let since = missing[key] else { return false }
+        if environment.time.now().timeIntervalSince(since) < GarmentImageLoader.missingLifetime { return true }
+        missing[key] = nil
+        return false
+    }
+
+    /// The backend confirmed the image is gone: earlier bytes for it are no longer shown. For a
+    /// garment's current image that holds at every width: no other resolution kept on this phone
+    /// stays as evidence that the photograph exists, and a read at another width that began
+    /// before the answer is not kept. The garment's revision moves too, so a tile already showing
+    /// the photograph at another width reads again and shows that there is none.
+    private func confirmAbsent(_ key: String) {
+        let now = environment.time.now()
+        var keys: Set<String> = [key]
+        if let garmentId = GarmentImageLoader.garmentId(ofItemKey: key) {
+            keys.formUnion(itemKeys(garmentId))
+            revisions[garmentId, default: 0] += 1
+        }
+        for each in keys {
+            if each != key { changes[each, default: 0] += 1; inFlight[each] = nil }
+            missing[each] = now
+            environment.media.remove(each)
+            refreshedThisSession.remove(each)
+        }
+    }
+
+    /// Bytes a tile could not decode are not a photograph: they are dropped, with the mark that
+    /// the garment's image was checked this session, so trying again reads it from the backend.
+    public func discardUndecodable(garmentId: String, image ref: GarmentImageRef?, width: Int) {
+        if let ref, ref.renditionId != nil || !ref.hasRealImage {
+            guard let renditionId = ref.renditionId else { return }
+            environment.media.remove("rendition:\(renditionId):\(width)")
+            return
+        }
+        let key = "item:\(garmentId):\(width)"
+        environment.media.remove(key)
+        refreshedThisSession.remove(key)
+    }
+
+    /// What a garment tile shows at once, before any read: the exact rendition's bytes when the
+    /// reference names one, nothing when the reference says no real image exists, otherwise the
+    /// garment's current image as last read (also when a reference claims a real image but names
+    /// no rendition: that is an incomplete reference, not a confirmed absence).
+    public func cachedImage(garmentId: String, image ref: GarmentImageRef?, width: Int) -> Data? {
+        if let ref, ref.renditionId != nil || !ref.hasRealImage {
+            guard ref.hasRealImage, let renditionId = ref.renditionId else { return nil }
+            return environment.media.data(for: "rendition:\(renditionId):\(width)")
+        }
+        let key = "item:\(garmentId):\(width)"
+        return isMissing(key) ? nil : environment.media.data(for: key)
+    }
+
+    /// Reads what a garment tile shows: the exact rendition when the reference names one, no
+    /// image when it says none exists, otherwise the garment's current image. A reference that
+    /// claims a real image without naming a rendition is incomplete, not the backend saying no
+    /// photograph exists: the garment's current image is read, so a failure shows as unavailable.
+    public func image(garmentId: String, image ref: GarmentImageRef?, width: Int) async -> Outcome {
+        if let ref, ref.renditionId != nil || !ref.hasRealImage {
+            guard ref.hasRealImage, let renditionId = ref.renditionId else { return .noImage }
+            return await renditionOutcome(renditionId, width: width)
+        }
+        return await garmentOutcome(garmentId, width: width)
+    }
+
+    private func renditionOutcome(_ renditionId: String, width: Int) async -> Outcome {
+        let key = "rendition:\(renditionId):\(width)"
+        if let cached = environment.media.data(for: key) { return .image(cached) }
+        let api = environment.api
+        switch await load(key, { try await api.rendition(id: renditionId, width: width) }) {
+        case .data(let data): return .image(data)
+        case .notFound:
+            // The reference says the garment has a real photograph: a missing rendition is a
+            // broken reference, not "no photo yet". It is shown as unavailable, and trying again
+            // reads it again.
+            missing[key] = nil
+            return .unavailable
+        case .failed: return .unavailable
+        }
+    }
+
+    private func garmentOutcome(_ garmentId: String, width: Int) async -> Outcome {
+        let key = "item:\(garmentId):\(width)"
+        if isMissing(key) { return .noImage }
+        if let cached = environment.media.data(for: key), refreshedThisSession.contains(key) || environment.center.isOffline { return .image(cached) }
+        let api = environment.api
+        switch await load(key, { try await api.itemImage(garmentId: garmentId, width: width) }) {
+        case .data(let data):
+            refreshedThisSession.insert(key)
+            return .image(data)
+        case .notFound:
+            return .noImage
+        case .failed:
+            // Not answered: the bytes last read are still the best evidence of the photograph.
+            return environment.media.data(for: key).map(Outcome.image) ?? .unavailable
+        }
+    }
+
     /// Bytes for an image reference. A rendition is immutable, so its cached bytes never go stale.
     public func data(for ref: GarmentImageRef, width: Int) async -> Data? {
         guard ref.hasRealImage, let renditionId = ref.renditionId else { return nil }
-        let key = "rendition:\(renditionId):\(width)"
-        if let cached = environment.media.data(for: key) { return cached }
-        let api = environment.api
-        return await load(key) { try await api.rendition(id: renditionId, width: width) }
+        if case .image(let data) = await renditionOutcome(renditionId, width: width) { return data }
+        return nil
     }
 
     /// The garment's current display image by garment ID (board cards). Cached bytes are shown
     /// at once and re-checked once per session, because a garment's chosen image can change.
     public func data(forGarment garmentId: String, width: Int) async -> Data? {
-        let key = "item:\(garmentId):\(width)"
-        if missing.contains(key) { return nil }
-        if let cached = environment.media.data(for: key), refreshedThisSession.contains(key) || environment.center.isOffline { return cached }
-        let api = environment.api
-        let fresh = await load(key) { try await api.itemImage(garmentId: garmentId, width: width) }
-        if fresh != nil { refreshedThisSession.insert(key) }
-        return fresh ?? environment.media.data(for: key)
+        if case .image(let data) = await garmentOutcome(garmentId, width: width) { return data }
+        return nil
     }
 
-    public func cached(forGarment garmentId: String, width: Int) -> Data? { environment.media.data(for: "item:\(garmentId):\(width)") }
+    public func cached(forGarment garmentId: String, width: Int) -> Data? { cachedImage(garmentId: garmentId, image: nil, width: width) }
 
     /// The image a review question is about: the candidate asset itself, so the owner decides
     /// on what he sees. An asset's bytes do not change, so cached bytes are used as they are.
@@ -369,10 +549,11 @@ public final class GarmentImageLoader {
     public func data(forCandidate item: MediaReviewItem, width: Int) async -> Data? {
         guard let assetId = item.assetId else { return nil }
         let key = "asset:\(assetId):\(width)"
-        if missing.contains(key) { return nil }
+        if isMissing(key) { return nil }
         if let cached = environment.media.data(for: key) { return cached }
         let api = environment.api
-        return await load(key) { try await api.asset(id: assetId, width: width) }
+        if case .data(let data) = await load(key, { try await api.asset(id: assetId, width: width) }) { return data }
+        return nil
     }
 
     /// A full-size image for close inspection, through signed delivery: the backend issues a
@@ -389,7 +570,7 @@ public final class GarmentImageLoader {
         let key = "rendition:\(renditionId):\(width)"
         if let cached = environment.media.data(for: key) { return cached }
         let api = environment.api
-        return await load(key) {
+        let fetched = await load(key) {
             do {
                 let signed = try await api.signRendition(id: renditionId, SignRenditionRequest(width: width, ttlSeconds: GarmentImageLoader.signedLifetime))
                 return try await api.signedMedia(signed)
@@ -397,29 +578,43 @@ public final class GarmentImageLoader {
                 return try await api.rendition(id: renditionId, width: width)
             }
         }
+        if case .data(let data) = fetched { return data }
+        return nil
     }
     /// Seconds a signed address is asked to live: long enough for one read.
     public static let signedLifetime = 60
 
-    private func load(_ key: String, _ fetch: @escaping @Sendable () async throws -> Data) async -> Data? {
-        if let task = inFlight[key] { return await task.value }
-        let media = environment.media
-        let task = Task<Data?, Never> { () -> Data? in
+    private func load(_ key: String, _ fetch: @escaping @Sendable () async throws -> Data) async -> Fetched {
+        // Every caller, including one that joins a read already on its way, has the answer checked
+        // against the account and the garment's media changes before it is used.
+        let mine = epoch
+        let changedAt = changes[key] ?? 0
+        if let task = inFlight[key] {
+            let result = await task.value
+            guard mine == epoch, changedAt == (changes[key] ?? 0) else { return .failed }
+            return result
+        }
+        let task = Task<Fetched, Never> { () -> Fetched in
             do {
-                let data = try await fetch()
-                media.store(data, for: key)
-                return data
+                return .data(try await fetch())
             } catch let failure as APIFailure {
-                if case .api(_, let error) = failure, error.code == .notFound { return Data() } // sentinel: no real image exists
-                return nil
+                if case .api(_, let error) = failure, error.code == .notFound { return .notFound }
+                return .failed
             } catch {
-                return nil
+                return .failed
             }
         }
         inFlight[key] = task
         let result = await task.value
-        inFlight[key] = nil
-        if let result, result.isEmpty { missing.insert(key); return nil }
+        if inFlight[key] == task { inFlight[key] = nil }
+        // Read for an account that has since ended, or before the garment's images changed:
+        // nothing is kept and nothing is shown.
+        guard mine == epoch, changedAt == (changes[key] ?? 0) else { return .failed }
+        switch result {
+        case .data(let data): environment.media.store(data, for: key)
+        case .notFound: confirmAbsent(key)
+        case .failed: break
+        }
         return result
     }
 }

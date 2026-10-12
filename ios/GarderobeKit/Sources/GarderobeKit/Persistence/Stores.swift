@@ -110,4 +110,7 @@ public final class MediaCache: Sendable {
     public init(store: KeyValueStore) { self.store = store }
     public func data(for key: String) -> Data? { store.read("media." + key) }
     public func store(_ data: Data, for key: String) { try? store.write("media." + key, data) }
+    public func remove(_ key: String) { store.remove("media." + key) }
+    /// The cache keys held that begin with `prefix` (without the store's own namespace).
+    public func keys(prefix: String) -> [String] { store.keys(prefix: "media." + prefix).map { String($0.dropFirst("media.".count)) } }
 }
