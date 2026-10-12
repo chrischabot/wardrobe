@@ -22,6 +22,7 @@ use crate::ledger::{self, CmdError, Ctx, Ledger, Plan, StoredCommand};
 use crate::seed::{catalogue, Catalogue};
 use crate::sha256::{constant_time_eq, hex_digest};
 use crate::time::{instant, parse_instant};
+use crate::{mcp, oauth};
 
 /// `CONTRACT_VERSION` in packages/contracts/src/version.ts.
 pub const CONTRACT_VERSION: &str = "1.1.0";
@@ -59,6 +60,9 @@ impl Store for ApeClusterClient {
 pub struct Tokens {
     pub owner: Option<String>,
     pub assistant: Option<String>,
+    /// The app's public origin (`WARDROBE_PUBLIC_ORIGIN`), for OAuth metadata
+    /// and MCP challenges: the gateway forwards no `Host` header.
+    pub public_origin: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,7 +79,34 @@ pub const ASSISTANT: Principal = Principal { actor: "assistant", channel: "mcp" 
 
 pub struct Reply {
     pub status: u16,
+    /// The JSON body, unless `raw` carries another one.
     pub body: Value,
+    pub headers: Vec<(String, String)>,
+    /// A non-JSON body: content type and bytes.
+    pub raw: Option<(String, Vec<u8>)>,
+}
+
+impl Reply {
+    pub fn json(status: u16, body: Value) -> Reply {
+        Reply { status, body, headers: Vec::new(), raw: None }
+    }
+    pub fn html(status: u16, html: String) -> Reply {
+        Reply { status, body: Value::Null, headers: Vec::new(), raw: Some(("text/html; charset=utf-8".into(), html.into_bytes())) }
+    }
+    pub fn empty(status: u16) -> Reply {
+        Reply { status, body: Value::Null, headers: Vec::new(), raw: Some(("text/plain; charset=utf-8".into(), Vec::new())) }
+    }
+    pub fn with_header(mut self, name: &str, value: &str) -> Reply {
+        self.headers.push((name.to_string(), value.to_string()));
+        self
+    }
+    /// Content type and body bytes as served.
+    pub fn content(&self) -> (String, Vec<u8>) {
+        match &self.raw {
+            Some((t, b)) => (t.clone(), b.clone()),
+            None => ("application/json; charset=utf-8".into(), serde_json::to_vec(&self.body).unwrap_or_default()),
+        }
+    }
 }
 
 fn error_status(code: &str) -> u16 {
@@ -91,11 +122,11 @@ fn error_status(code: &str) -> u16 {
 }
 
 fn error_reply(e: CmdError) -> Reply {
-    Reply { status: error_status(e.code), body: json!({"error": {"code": e.code, "message": e.message, "details": e.details}}) }
+    Reply::json(error_status(e.code), json!({"error": {"code": e.code, "message": e.message, "details": e.details}}))
 }
 
 fn ok(body: Value) -> Reply {
-    Reply { status: 200, body }
+    Reply::json(200, body)
 }
 
 fn internal(message: &str) -> CmdError {
@@ -158,6 +189,29 @@ pub async fn handle<S: Store>(store: &mut S, tokens: &Tokens, now_ms: u64, req: 
     if path == "/health" {
         return ok(json!({"status": "ok", "service": "wardrobe", "host": "ferrite", "contractVersion": CONTRACT_VERSION}));
     }
+    // OAuth and MCP authenticate themselves (an MCP access token, the owner
+    // token on the consent form) and need the public origin.
+    if path.starts_with("/.well-known/") || path.starts_with("/oauth/") || path == "/mcp" {
+        let Some(origin) = tokens.public_origin.as_deref().filter(|o| oauth::valid_origin(o)) else {
+            return error_reply(CmdError::with(
+                "internal",
+                format!("the server has no valid {} secret (https://host, or http on a loopback host, with no path); set it and deploy again", oauth::PUBLIC_ORIGIN_SECRET),
+                json!({"retryable": false}),
+            ));
+        };
+        let raw_query = req.path.split_once('?').map_or("", |(_, q)| q);
+        return match (req.method.as_str(), path) {
+            ("GET", "/.well-known/oauth-protected-resource" | "/.well-known/oauth-protected-resource/mcp") => oauth::protected_resource_metadata(origin),
+            ("GET", "/.well-known/oauth-authorization-server") => oauth::authorization_server_metadata(origin),
+            ("POST", "/oauth/register") => oauth::register(store, now_ms, &req.body).await,
+            ("GET", "/oauth/authorize") => oauth::authorize_page(store, origin, raw_query).await,
+            ("POST", "/oauth/authorize") => oauth::authorize_decision(store, origin, tokens.owner.as_deref(), now_ms, &req.body).await,
+            ("POST", "/oauth/token") => oauth::token_endpoint(store, origin, now_ms, &req.body).await,
+            ("POST", "/oauth/revoke") => oauth::revoke(store, now_ms, &req.body).await,
+            (_, "/mcp") => mcp::handle(store, origin, now_ms, req).await,
+            _ => error_reply(CmdError::new("not_found", "no such route")),
+        };
+    }
     let principal = match authenticate(req, tokens) {
         Ok(p) => p,
         Err(e) => return error_reply(e),
@@ -183,6 +237,19 @@ pub async fn handle<S: Store>(store: &mut S, tokens: &Tokens, now_ms: u64, req: 
             Ok(envelope) => execute(store, principal, now_ms, &envelope).await,
             Err(_) => Err(CmdError::new("invalid_command", "the request body is not valid JSON")),
         },
+        // Settings › Connected assistants: the owner's alone.
+        ("GET", "/v1/connections") | ("POST", _) if path.starts_with("/v1/connections") && principal != OWNER => {
+            Err(CmdError::new("forbidden", "only the owner manages connected assistants"))
+        }
+        ("GET", "/v1/connections") => oauth::list_grants(store, now_ms).await.map_err(fault_error),
+        ("POST", p) if disconnect_target(p).is_some() => {
+            let id = disconnect_target(p).unwrap_or_default();
+            match oauth::disconnect(store, now_ms, id).await {
+                Ok(Some(c)) => Ok(json!({"connection": c})),
+                Ok(None) => Err(CmdError::new("not_found", "that connected assistant was not found")),
+                Err(f) => Err(fault_error(f)),
+            }
+        }
         _ => Err(CmdError::new("not_found", "no such route")),
     };
     match result {
@@ -192,6 +259,19 @@ pub async fn handle<S: Store>(store: &mut S, tokens: &Tokens, now_ms: u64, req: 
 }
 
 // ──────────────────────────────── storage ────────────────────────────────
+
+/// The grant ID of `POST /v1/connections/{id}/disconnect`, if the path is one.
+fn disconnect_target(path: &str) -> Option<&str> {
+    let id = path.strip_prefix("/v1/connections/")?.strip_suffix("/disconnect")?;
+    (!id.is_empty() && !id.contains('/')).then_some(id)
+}
+
+fn fault_error(f: oauth::Fault) -> CmdError {
+    match f {
+        oauth::Fault::Unavailable => internal("the connections could not be read just now; try again"),
+        oauth::Fault::Corrupt => CmdError::with("internal", "a stored connection record is unreadable; nothing was changed", json!({"retryable": false})),
+    }
+}
 
 async fn read_ledger<S: Store>(store: &mut S) -> Result<(Option<Vec<u8>>, Ledger), CmdError> {
     let bytes = store.get(LEDGER_KEY).await.map_err(|_| internal("the wardrobe could not be read just now; try again"))?;
@@ -342,7 +422,7 @@ fn source(cat: &Catalogue) -> Value {
     json!({"name": cat.source_name, "sha256": cat.source_sha256, "importRunId": cat.import_run_id})
 }
 
-async fn read_wardrobe<S: Store>(store: &mut S, now_ms: u64, category: Option<&str>) -> Result<Value, CmdError> {
+pub async fn read_wardrobe<S: Store>(store: &mut S, now_ms: u64, category: Option<&str>) -> Result<Value, CmdError> {
     let cat = catalogue();
     let (_, l) = read_ledger(store).await?;
     let items = ledger::inventory(cat, &l, category);
@@ -357,6 +437,14 @@ async fn read_wardrobe<S: Store>(store: &mut S, now_ms: u64, category: Option<&s
 }
 
 async fn list_receipts<S: Store>(store: &mut S, limit: usize) -> Result<Value, CmdError> {
+    let (receipts, _, _) = receipts_page(store, limit).await?;
+    Ok(json!({"receipts": receipts}))
+}
+
+/// The newest `limit` receipts, whether older ones exist, and the wardrobe
+/// revision read. Every command raises the revision by one, so the revision
+/// is the number of receipts there are.
+pub async fn receipts_page<S: Store>(store: &mut S, limit: usize) -> Result<(Vec<Value>, bool, u64), CmdError> {
     let (_, l) = read_ledger(store).await?;
     let mut receipts = Vec::new();
     for id in l.recent.iter().take(limit) {
@@ -367,7 +455,32 @@ async fn list_receipts<S: Store>(store: &mut S, limit: usize) -> Result<Value, C
             None => return Err(corrupt_record(id)),
         }
     }
-    Ok(json!({"receipts": receipts}))
+    let more = l.revision > receipts.len() as u64;
+    Ok((receipts, more, l.revision))
+}
+
+/// `RESTRICTION_LIFT_TYPES` in packages/assistant/src/policy/classes.ts.
+pub const RESTRICTION_LIFT_TYPES: [&str; 2] = ["assistant.lift_restriction", "restriction.resolve"];
+
+/// `forbiddenForConnectedAssistant` in packages/assistant/src/policy/classes.ts:
+/// why a connected assistant may never carry out this change, whatever it
+/// relays. `undo_target` is the type of the command an undo would take back.
+pub fn connected_refusal(kind: &str, undo_target: Option<&str>) -> Option<&'static str> {
+    if RESTRICTION_LIFT_TYPES.contains(&kind) {
+        return Some("restriction_lift_not_relayed");
+    }
+    if kind == "command.undo" && undo_target == Some("restriction.add") {
+        return Some("restriction_not_lifted_by_undo");
+    }
+    None
+}
+
+fn connected_refusal_error(reason: &'static str) -> CmdError {
+    CmdError::with(
+        "forbidden",
+        "a connected assistant cannot lift a restriction or undo the command that recorded one; nothing was changed. The owner lifts it in the Garderobe app by saying its condition has ended.",
+        json!({"reason": reason}),
+    )
 }
 
 // ─────────────────────────────── commands ─────────────────────────────────
@@ -571,6 +684,12 @@ fn new_command_id(key: &str, now_ms: u64, attempt: u32) -> String {
 /// idempotency marker in one guarded write; re-plan when another command won.
 pub async fn execute<S: Store>(store: &mut S, principal: Principal, now_ms: u64, envelope: &Value) -> Result<Value, CmdError> {
     let env = parse_envelope(envelope)?;
+    // Refused before anything else is looked up: a connected assistant never lifts a restriction.
+    if principal.actor == ASSISTANT.actor {
+        if let Some(reason) = connected_refusal(&env.kind, None) {
+            return Err(connected_refusal_error(reason));
+        }
+    }
     if !ledger::COMMAND_TYPES.contains(&env.kind.as_str()) {
         return Err(CmdError::with("unknown_command", format!("unknown command type '{}'", env.kind), json!({"known": ledger::COMMAND_TYPES})));
     }
@@ -622,6 +741,9 @@ pub async fn execute<S: Store>(store: &mut S, principal: Principal, now_ms: u64,
             Ok(()) => match undo_target.as_deref() {
                 None => ledger::mark_dirty(&ctx, &mut next, &env.payload),
                 Some(target) => match load_command(store, target).await {
+                    Ok(Some(record)) if principal.actor == ASSISTANT.actor && connected_refusal(&env.kind, Some(&record.command.kind)).is_some() => {
+                        Err(connected_refusal_error("restriction_not_lifted_by_undo"))
+                    }
                     Ok(record) => {
                         original_record = record;
                         ledger::command_undo(&ctx, &mut next, original_record.as_ref().map(|r| &r.command), target)
@@ -767,8 +889,17 @@ mod tests {
     }
 
     #[test]
+    fn a_connected_assistant_is_refused_restriction_lifts_and_their_undo() {
+        assert_eq!(connected_refusal("restriction.resolve", None), Some("restriction_lift_not_relayed"));
+        assert_eq!(connected_refusal("assistant.lift_restriction", None), Some("restriction_lift_not_relayed"));
+        assert_eq!(connected_refusal("command.undo", Some("restriction.add")), Some("restriction_not_lifted_by_undo"));
+        assert_eq!(connected_refusal("command.undo", Some("care.mark_dirty")), None);
+        assert_eq!(connected_refusal("care.mark_dirty", None), None);
+    }
+
+    #[test]
     fn bearer_tokens_select_the_principal() {
-        let tokens = Tokens { owner: Some("owner-secret".into()), assistant: Some("assistant-secret".into()) };
+        let tokens = Tokens { owner: Some("owner-secret".into()), assistant: Some("assistant-secret".into()), ..Tokens::default() };
         let mut req = ferrite_app::IngressRequest {
             stream_open: false,
             correlation_id: String::new(),

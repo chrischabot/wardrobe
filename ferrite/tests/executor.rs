@@ -315,7 +315,7 @@ fn get(path: &str) -> ferrite_app::IngressRequest {
 
 #[tokio::test]
 async fn a_report_that_moves_nothing_reads_back_replays_and_undoes() {
-    let tokens = api::Tokens { owner: Some("owner-token".into()), assistant: None };
+    let tokens = api::Tokens { owner: Some("owner-token".into()), assistant: None, ..Default::default() };
     let mut store = FakeStore::default();
     api::execute(&mut store, ASSISTANT, NOW, &dirty("key-zero-0001")).await.unwrap();
     let second = api::execute(&mut store, ASSISTANT, NOW + 1, &dirty("key-zero-0002")).await.unwrap();
@@ -331,7 +331,7 @@ async fn a_report_that_moves_nothing_reads_back_replays_and_undoes() {
 
 #[tokio::test]
 async fn a_corrupt_record_is_an_error_when_read_never_absent_or_partial() {
-    let tokens = api::Tokens { owner: Some("owner-token".into()), assistant: None };
+    let tokens = api::Tokens { owner: Some("owner-token".into()), assistant: None, ..Default::default() };
     let mut store = FakeStore::default();
     let r = api::execute(&mut store, ASSISTANT, NOW, &dirty("key-get-0001")).await.unwrap();
     let id = r["commandId"].as_str().unwrap().to_string();

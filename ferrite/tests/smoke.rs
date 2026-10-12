@@ -8,7 +8,7 @@ use ferrite_app_test::{ingress, TestHarness};
 async fn the_app_boots_answers_health_and_requires_a_token() {
     let env = TestHarness::new().with_queue("requests").with_queue("replies").with_ape("state").build().await;
     env.run_app(|ctx| async move {
-        wardrobe::serve(ctx, wardrobe::Tokens { owner: Some("smoke-owner-token".into()), assistant: None }).await
+        wardrobe::serve(ctx, wardrobe::Tokens { owner: Some("smoke-owner-token".into()), assistant: None, ..Default::default() }).await
     });
 
     let health = env.handle(ingress::get("/health")).await.expect("a reply");

@@ -13,7 +13,7 @@ const ASSISTANT: &str = "test-assistant-token";
 
 async fn start() -> TestEnv {
     let env = TestHarness::new().with_queue("requests").with_queue("replies").with_ape("state").build().await;
-    env.run_app(|ctx| async move { wardrobe::serve(ctx, wardrobe::Tokens { owner: Some(OWNER.into()), assistant: Some(ASSISTANT.into()) }).await });
+    env.run_app(|ctx| async move { wardrobe::serve(ctx, wardrobe::Tokens { owner: Some(OWNER.into()), assistant: Some(ASSISTANT.into()), ..Default::default() }).await });
     env
 }
 

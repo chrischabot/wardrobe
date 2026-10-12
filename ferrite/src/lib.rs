@@ -6,6 +6,9 @@
 pub mod api;
 pub mod canonical;
 pub mod ledger;
+pub mod mcp;
+pub mod oauth;
+pub mod random;
 pub mod seed;
 pub mod sha256;
 pub mod time;
@@ -16,7 +19,11 @@ pub use api::Tokens;
 
 /// The deployed entry point: tokens come from the app's deploy secrets.
 pub async fn run(ctx: AppContext) -> std::io::Result<()> {
-    let tokens = Tokens { owner: ctx.secret(api::OWNER_TOKEN_SECRET), assistant: ctx.secret(api::ASSISTANT_TOKEN_SECRET) };
+    let tokens = Tokens {
+        owner: ctx.secret(api::OWNER_TOKEN_SECRET),
+        assistant: ctx.secret(api::ASSISTANT_TOKEN_SECRET),
+        public_origin: ctx.secret(oauth::PUBLIC_ORIGIN_SECRET),
+    };
     serve(ctx, tokens).await
 }
 
@@ -39,11 +46,13 @@ pub async fn serve(ctx: AppContext, tokens: Tokens) -> std::io::Result<()> {
             continue;
         };
         let reply = api::handle(&mut state, &tokens, ctx.now_ms(), &req).await;
-        let body = serde_json::to_vec(&reply.body).unwrap_or_default();
+        let (content_type, body) = reply.content();
+        let mut headers = vec![vec!["content-type".to_string(), content_type], vec!["cache-control".to_string(), "no-store".to_string()]];
+        headers.extend(reply.headers.iter().map(|(k, v)| vec![k.clone(), v.clone()]));
         let envelope = serde_json::json!({
             "correlation_id": req.correlation_id,
             "status": reply.status,
-            "headers": [["content-type", "application/json; charset=utf-8"], ["cache-control", "no-store"]],
+            "headers": headers,
             "body": body,
         });
         // Reply first, ack only once the reply is published: a lost reply leaves

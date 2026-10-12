@@ -7,12 +7,15 @@ asked for Wardrobe and its Codex plugin to be hosted fully on Ferrite; this
 directory is that port, built flow by flow. The TypeScript backend stays the
 behaviour reference until the port reaches parity.
 
-**Status: first slice.** The owner's real inventory can be read, and one
-undoable command runs end to end: "it is in the wash" (`care.mark_dirty`)
-with its receipt, and `command.undo` to take it back, from the owner's app or
-a connected assistant, through Ferrite's request queue and APE store. Laundry
-collection and return are the next flow (milestone 1). Nothing has been
-deployed: see "Deploying".
+**Status: first slice plus the MCP endpoint (milestone 1a).** The owner's
+real inventory can be read, and one undoable command runs end to end: "it is
+in the wash" (`care.mark_dirty`) with its receipt, and `command.undo` to take
+it back, from the owner's app or a connected assistant, through Ferrite's
+request queue and APE store. A connected assistant such as the Codex plugin
+reaches the same commands through the MCP endpoint (`/mcp`), signing in with
+the app's own OAuth. The board (`garderobe_today`, `board.select` and its
+undo) is next (milestone 1b), then laundry collection and return. Nothing has
+been deployed: see "Deploying".
 
 ## Running it
 
@@ -36,14 +39,14 @@ ferrite dev                      # http://127.0.0.1:8787
 node --experimental-strip-types ferrite/scripts/build-seed.mjs --check
 ```
 
-`ferrite dev` reads the two bearer tokens from `[secrets]` in
-`ferrite.local.toml` (gitignored; create it from the comments in the
-scaffold's copy if missing):
+`ferrite dev` reads its secrets from `[secrets]` in `ferrite.local.toml`
+(gitignored; create it from the comments in the scaffold's copy if missing):
 
 ```toml
 [secrets]
 WARDROBE_OWNER_TOKEN = "local-dev-owner-token"
 WARDROBE_ASSISTANT_TOKEN = "local-dev-assistant-token"
+WARDROBE_PUBLIC_ORIGIN = "http://127.0.0.1:8787"
 ```
 
 ```bash
@@ -61,6 +64,9 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `GET /v1/wardrobe[?category=]` | the inventory: every imported garment with its balances (clean, dirty) and version. A subset of `listInventory`: no availability estimate, aliases, colours or wear counts yet |
 | `POST /v1/commands` | the command envelope of `packages/contracts` (`type`, `payload`, `idempotencyKey`, `authorization`, `source.channel`, optional `occurredAt`, `expectedVersions`) |
 | `GET /v1/commands[?limit=]`, `GET /v1/commands/{id}` | receipts, newest first; an undo already used is no longer offered |
+| `GET /v1/connections`, `POST /v1/connections/{grantId}/disconnect` (owner only) | Settings › Connected assistants: the OAuth grants, and disconnecting one, effective on its next request |
+| `POST /mcp` (OAuth) | the MCP server of `apps/worker/src/mcp`, see below |
+| `/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` | the MCP authorization server, see below |
 
 Commands: `care.mark_dirty` and `command.undo`. Each applies at once and
 answers with the receipt of `CommandReceipt` (contract 1.1.0): summary built
@@ -99,19 +105,108 @@ receipt and undo. An assistant cannot claim an owner tap, and the command's
 channel must match the connection. Neither command ported so far is one
 of the cases that wait for the owner (erasure, authorization towards another
 party, model or connection reach, the profile document, read-only
-connections, turns without owner words), and restrictions are not ported, so
-the rule that an assistant never lifts a restriction or undoes the command
-that recorded one has nothing to apply to yet; it arrives with them.
+connections, turns without owner words). A connected assistant, on the MCP
+endpoint or with the assistant token, is refused a restriction lift
+(`restriction.resolve`, `assistant.lift_restriction`) before anything is
+looked up, and the undo of a command whose type is `restriction.add`
+(`forbiddenForConnectedAssistant` in the assistant package). Restrictions
+themselves are not ported yet, so the second rule has no record to apply to
+until they are; it is covered by a unit test of the rule.
+
+## The MCP endpoint and its OAuth
+
+`POST /mcp` is Streamable HTTP in JSON response mode and stateless: no
+session ID and no server stream, so every request carries its access token
+(Ferrite's api routes have no affinity, and its stream routes get no headers).
+A request whose `Origin` header names another origin than
+`WARDROBE_PUBLIC_ORIGIN` is refused with 403 (DNS-rebinding defence); the
+route forwards `origin` for this.
+It speaks MCP 2025-11-25 and 2025-06-18. 2025-03-26 is not offered because
+its transport allows JSON-RPC batches, which this endpoint refuses. The
+TypeScript server's native 2026-07-28 revision is not offered, because its
+details were not verified for this port; a client asking for an unoffered
+revision is answered with 2025-11-25.
+
+Tools, with the TypeScript server's names, arguments and results:
+
+- `garderobe_inventory`: views `items` (paged, `limit` and `nextCursor`),
+  `snapshot` (complete) and `receipts`. The response says whether it is the
+  whole result (`complete`, `total`). The TypeScript server's other views
+  answer `invalid_command` until the data behind them is ported.
+- `garderobe_command`: the ported commands as the connected assistant
+  (`assistant`, channel `mcp`, authorization `owner_statement`), returning
+  `{receipt}`. Only a grant with `wardrobe.write` is offered it. A read-only
+  grant that calls it gets HTTP 403 with the OAuth `insufficient_scope`
+  challenge.
+
+`garderobe_today`, `garderobe_recommend`, `garderobe_ask`,
+`garderobe_research` and `garderobe_run` are not offered yet: the board comes
+with milestone 1b, the others with the daily service and the conversation
+actor.
+
+The authorization server follows the TypeScript Worker's Workers OAuth
+provider and consent page:
+
+- **Discovery.** A request without a token gets a 401 whose
+  `WWW-Authenticate` names the protected-resource metadata. That metadata
+  names this app as the authorization server.
+- **Registration.** Dynamic client registration accepts public clients only.
+  Redirect URIs must be https, or http on a loopback host. At most 200
+  registrations are kept; registrations over an hour old are dropped to make
+  room.
+- **Consent.** The authorization code flow requires PKCE S256 and checks
+  `resource` (RFC 8707). On the consent page the owner signs in with the owner
+  token and allows or denies "Make changes" (`wardrobe.write`). A wrong token
+  grants nothing and redirects nowhere. The page cannot be framed.
+- **Tokens.** Access tokens live 15 minutes. Refresh tokens rotate: the token
+  just replaced stays usable until one of its successors is used, so a client
+  whose answer was lost can retry, and a retry ends no successor issued
+  before it (up to four unused successors are kept). A superseded refresh
+  token presented again is a replay and ends the grant with every token it
+  issued (the last 32 superseded tokens are remembered). Narrowing the scope
+  on refresh is permanent for the grant. A grant ends after
+  90 idle days. Tokens are
+  opaque, name their grant, and are stored only as SHA-256 hashes. Their
+  entropy comes from `Ed25519SigningKey::generate_pkcs8()` (`src/random.rs`),
+  because the SDK exports no random function.
+- **Replayed codes.** A code is used once. Presenting it again, with or
+  without the verifier, ends the grant and every token it issued; the client
+  connects again.
+- **Ending a grant.** Revocation (RFC 7009) and the owner's disconnect end a
+  grant on its next request. A grant whose code expired unused, or whose
+  refresh token sat idle for 90 days, is shown as expired and no longer
+  counts. At most 100 grants that can still produce tokens are kept.
+- **Bounded storage.** Registrations (at most 200; the oldest over an hour
+  old make room, a faster flood is refused with 429) and grants live in a
+  fixed set of record slots named by the first four hex digits of their IDs.
+  A new record takes over a slot its index no longer names, because the APE
+  binding has no delete; an ID whose slot was reused is not found.
+
+The app needs its public origin (`WARDROBE_PUBLIC_ORIGIN`) for the metadata
+and challenges, because the gateway forwards no `Host` header. Without it,
+these routes answer 500 and name the secret. `tests/mcp.rs` covers the flow
+end to end: discovery, registration, consent, the PKCE and replay rules,
+refresh rotation and scope narrowing, token expiry, the tools, the
+restriction-lift refusal, the read-only step-up, disconnect and revocation.
+Most of those tests run over an in-memory store with a controlled clock.
+One runs through the app's real request queue to show the reply headers.
+
+Not covered yet: a Client ID Metadata Document is not fetched (Codex is
+logged in with `--oauth-client-registration dcr`, as the plugin README
+already says for the local Worker), and a new consent does not supersede an
+earlier grant of the same client.
 
 The inventory is `src/seed/owner-inventory.json`, written by
 `scripts/build-seed.mjs`, which runs the TypeScript importer itself on
 `requirements/wardrobe_inventory_clean.csv` (127 garments, 144 units, CSV
 SHA-256 `ca9a5e06…`). Nothing about the import is re-implemented here.
 
-Authentication is two bearer tokens held as deploy secrets,
+Authentication on `/v1/` is two bearer tokens held as deploy secrets,
 `WARDROBE_OWNER_TOKEN` (the owner) and `WARDROBE_ASSISTANT_TOKEN` (a
-connected assistant). It stands in for sign-in until milestone 1 and is
-refused by name when the owner token is not set. Both routes are declared
+connected assistant without OAuth, kept for tooling). The MCP endpoint takes
+only OAuth access tokens. The owner token stands in for the owner's sign-in
+(the `/v1/` API and the consent page) until `packages/auth` is ported, and
+is refused by name when it is not set. The routes are declared
 `"public": true` in `ferrite.json`: the gateway lets the request through
 with its `authorization` header forwarded, and the application itself
 refuses anything without a valid token (Ferrite's managed route auth would
@@ -135,30 +230,35 @@ From `docs/building-on-upstream-core.md` in `iGentAI/ferrite-labs`.
 | 8 s request deadline (api routes); a late reply is a `504` while the effect still happens | Conversation turns, recommendation runs, research and Calendar sync wait on models or outside services | Slice: a command is a few APE reads and one guarded write; receipt lists are capped at 200 reads (default 50). Later: anything that waits on a model or an outside call runs from a queue and the route answers with a run ID to poll or stream, which the TypeScript API already has as resumable runs. Idempotency keys make a request that timed out safe to send again |
 | 256 KiB request body; chunked bodies refused | Offline replay `POST /v1/commands/batch` (4 MB in TypeScript), photo uploads, portable import | Slice: payload lists are capped at 200 items. Later: the app sends batches in parts under 256 KiB; photos and import packages upload in numbered parts into blob storage and are assembled server-side |
 | Reply about 4 MiB (the reply envelope, not the body) | Portable export, media downloads | Later: export and media are served in parts from blob storage |
-| One `set-cookie` per reply | Web sign-in that needs a session cookie and a CSRF cookie | Slice: bearer tokens, no cookies. Later: the `packages/auth` pattern, one cookie whose value changes phase, and the CSRF token in the body or a header |
+| One `set-cookie` per reply | Web sign-in that needs a session cookie and a CSRF cookie | Slice: bearer tokens, no cookies; the OAuth consent page needs none (the owner token in the form is the proof, so a cross-site form cannot forge it). Later: the `packages/auth` pattern, one cookie whose value changes phase, and the CSRF token in the body or a header |
+| No `Host` header reaches the app (`host` is refused in `forward_headers`) | OAuth issuer, metadata URLs, `WWW-Authenticate` challenges | The public origin is the deploy secret `WARDROBE_PUBLIC_ORIGIN`; the OAuth and MCP routes refuse to answer without it |
+| Stream routes get no headers; no session affinity | MCP Streamable HTTP's optional SSE stream and `Mcp-Session-Id` | The MCP endpoint is stateless with JSON responses: tools answer within one request, and `GET /mcp` is 405 |
 | No response headers on egress, no redirects followed, 1 MiB egress body, 10 s per call | Google Calendar (ETags for versioned replacement, `Retry-After`), owner-added MCP services (`Mcp-Session-Id`), research providers | Later: Calendar versions are read from the event body (`etag` is also a body field in the Calendar API), retries use our own backoff, and only MCP services that work without a session header can be connected; that last one is a real reduction and is listed as an upstream ask. Redirect refusal and bounded responses are what the TypeScript adapters already enforce |
 | No `OPTIONS`; CORS headers from the app dropped; stream routes GET-only without headers | Web client, assistant streaming | Later: the web client is served same-origin from the app; conversation streams authenticate with a short-lived ticket in the query string |
-| No randomness API; clock is `ctx.now_ms()` | IDs, tokens | Slice: IDs derive from the idempotency key and time (SHA-256 in `src/sha256.rs`). Later: secret tokens come from `Ed25519SigningKey::generate_pkcs8()` entropy as `packages/auth` does |
+| No randomness API; clock is `ctx.now_ms()` | IDs, tokens | Command IDs derive from the idempotency key and time (SHA-256 in `src/sha256.rs`). OAuth codes, tokens and client and grant IDs come from `Ed25519SigningKey::generate_pkcs8()` entropy (`src/random.rs`), as `packages/auth` does |
 | APE commits 1 to 64 keys and guards one key | The ledger | Slice: one guarded ledger record per owner, committed with the receipt and idempotency marker. Its event journal grows with use, so milestone 1 folds undo-expired events into the baseline and shards by garment |
 
 ## Milestones
 
-Ordered so the Codex plugin can talk to Ferrite early and each step stands on
-a finished one. Each passes `ferrite check`, `ferrite test` and `ferrite dev`
-before the next starts.
+Ordered so the hosted demo, the Codex plugin and the seeded simulation can
+reach Ferrite as early as possible; each step stands on a finished one, is a
+small change of its own, and passes `ferrite check`, `ferrite test` and
+`ferrite dev` before the next starts.
 
-1. **Ledger.** The rest of the command service in `packages/domain`:
-   the laundry flow (collection, return, still-away pieces, exceptions),
-   garments (create, correct, aliases, merge, move, retire), wear records with
-   per-garment daily deduplication, washes, the weekly laundry reset, laundry
-   exceptions, restrictions, owner settings, the availability estimator,
-   expected versions, and multi-owner storage with a compacted, sharded
-   journal. Sign-in with `packages/auth`, account recovery, and portable export
-   and import in parts.
-2. **MCP for the Codex plugin.** The MCP server (`apps/worker/src/mcp`) on its
-   own api route, its OAuth authorization for connected assistants, and the
-   tools over the same commands. The Codex plugin (`integrations/codex`) is then
-   pointed at this app.
+1. **MCP for the Codex plugin.** (a) Done: the MCP endpoint, its OAuth, the
+   inventory and command tools, and the restriction-lift refusals. (b) The
+   board: `board.publish` (the owner's app, until the recommender is ported),
+   `board.select` with its undo, `board.swap_slot`, and `garderobe_today`. (c)
+   Batch laundry collection and return, with pickup events, still-away pieces
+   and exceptions. Then the Codex plugin (`integrations/codex`) is pointed at
+   this app.
+2. **Ledger.** The rest of the command service in `packages/domain`, one
+   command at a time: garments (create, correct, aliases, merge, move,
+   retire), wear records with per-garment daily deduplication, washes, the
+   weekly laundry reset, restrictions, owner settings, the availability
+   estimator, and multi-owner storage with a compacted, sharded journal.
+   Sign-in with `packages/auth`, account recovery, and portable export and
+   import in parts.
 3. **Queues and schedules.** Effects and outbox on Ferrite queues;
    cron work (daily sweep, backups, maintenance) as self-rescheduling delayed
    messages (`publish_at`), since Ferrite has no cron trigger; Calendar
@@ -178,9 +278,10 @@ before the next starts.
 Not done. `ferrite deploy` needs a Ferrite account: a credential document
 (endpoint, account ID and token) imported with
 `ferrite login --credentials-file`, which only the owner can supply. Before the
-first deploy, set both bearer tokens with `ferrite secrets set
-WARDROBE_OWNER_TOKEN` and `ferrite secrets set WARDROBE_ASSISTANT_TOKEN`
-(values on stdin, never in source).
+first deploy, set the secrets with `ferrite secrets set <name>` (values on
+stdin, never in source): `WARDROBE_OWNER_TOKEN`, `WARDROBE_ASSISTANT_TOKEN`
+(the deploy tooling generates both) and `WARDROBE_PUBLIC_ORIGIN` (the hosted
+origin, known after the first deploy; deploy again once it is set).
 
 `AGENTS.md` is the Ferrite CLI's brief for coding agents; `vendor/` is the
 CLI's local SDK twin, which a deploy never submits (the platform compiles

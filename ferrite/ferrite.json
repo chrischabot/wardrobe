@@ -15,7 +15,10 @@
     ],
     "routes": [
       { "prefix": "/health", "binding": "requests", "kind": "api", "public": true },
-      { "prefix": "/v1/", "binding": "requests", "kind": "api", "public": true, "forward_headers": ["authorization"] }
+      { "prefix": "/v1/", "binding": "requests", "kind": "api", "public": true, "forward_headers": ["authorization"] },
+      { "prefix": "/.well-known/", "binding": "requests", "kind": "api", "public": true },
+      { "prefix": "/oauth/", "binding": "requests", "kind": "api", "public": true },
+      { "prefix": "/mcp", "binding": "requests", "kind": "api", "public": true, "forward_headers": ["authorization", "mcp-protocol-version", "origin"] }
     ],
     "compute": { "memory_mb": 256, "cpu_percent": 50 }
   }]
