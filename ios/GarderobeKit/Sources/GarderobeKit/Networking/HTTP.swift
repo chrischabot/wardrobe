@@ -164,6 +164,18 @@ public enum APIFailure: Error, Sendable, Equatable {
         }
     }
 
+    /// How long the backend asked to be left alone before the same request is sent again, from
+    /// the contract error's `details.retryAfterSeconds` (the API client copies a `Retry-After`
+    /// header given in seconds there when the body does not say). Nil when it did not say.
+    public var retryAfter: TimeInterval? {
+        guard case .api(_, let error) = self, let value = error.details["retryAfterSeconds"] else { return nil }
+        switch value {
+        case .integer(let seconds) where seconds > 0: return TimeInterval(seconds)
+        case .number(let seconds) where seconds > 0 && seconds.isFinite: return seconds
+        default: return nil
+        }
+    }
+
     /// A sentence for the owner. Backend messages are factual and are shown as written.
     public var ownerMessage: String {
         switch self {

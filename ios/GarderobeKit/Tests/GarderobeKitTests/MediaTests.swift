@@ -122,6 +122,16 @@ private final class CallCounter: @unchecked Sendable {
     var value = 0
 }
 
+/// The account a test has signed in (SYNTHETIC identifiers), as the app's hook reports it.
+private final class AccountBox: @unchecked Sendable {
+    var id: String?
+}
+
+/// A scripted transport failure: the request never reached the backend.
+private enum TransportFailureResponse {
+    static func offline() throws -> HTTPResponse { throw TransportFailure("offline") }
+}
+
 /// A SYNTHETIC backend that holds the answer to a registration back until the test lets it go,
 /// and writes down the order in which requests arrived and were answered.
 private final class HeldRegistrationTransport: HTTPTransport, @unchecked Sendable {
@@ -131,6 +141,10 @@ private final class HeldRegistrationTransport: HTTPTransport, @unchecked Sendabl
     private var arrivalWaiter: CheckedContinuation<Void, Never>?
     private var released = false
     private var releaseWaiter: CheckedContinuation<Void, Never>?
+    /// What a registration is answered with; by default the backend accepts it.
+    private let registrationAnswer: HTTPResponse?
+
+    init(registrationAnswer: HTTPResponse? = nil) { self.registrationAnswer = registrationAnswer }
 
     var order: [String] { lock.withLock { events } }
 
@@ -176,6 +190,7 @@ private final class HeldRegistrationTransport: HTTPTransport, @unchecked Sendabl
                 if already { continuation.resume() }
             }
             lock.withLock { events.append("registration answered") }
+            if let registrationAnswer { return registrationAnswer }
             return TestSupport.json(syntheticDevice(TestSupport.body(request)["deviceId"]?.stringValue ?? ""))
         }
         if request.method == "POST", request.path.hasSuffix("/remove") {
@@ -386,6 +401,7 @@ struct MediaBoundaryTests {
         router.json("POST", path, ["removed": true])
         let stops = CallCounter()
         app.notifications.stopReceiving = { stops.value += 1 }
+        app.notifications.currentAccount = { "usr_synthetic_owner" }   // stands in for the verified sign-in this test does not load
         app.notifications.turnOn()
         let registered = await app.notifications.register(token: Data(repeating: 3, count: 32), apns: .production)
         #expect(registered && app.notifications.isRegistered)
@@ -395,21 +411,28 @@ struct MediaBoundaryTests {
         #expect(transport.requests("POST", path).first?.headers["Authorization"] == "Bearer test-token")   // sent as the owner, before the session is dropped
         #expect(stops.value == 1 && !app.notifications.wanted && !app.notifications.isWaitingToSend)
 
-        // Signing out with a request still waiting (the server was failing): it is asked once more and then dropped.
+        // Signing out with a request still waiting (the server was failing): it is asked once more
+        // and, still undecided, kept for the account the registration was made for; the next person
+        // to sign in never sends it.
         let next = AppModel(environment: TestSupport.environment(transport: transport, store: store), session: nil)
         #expect(next.notifications.deviceId == installation && !next.notifications.isWaitingToSend)
+        let nextAccount = AccountBox()
+        nextAccount.id = "usr_synthetic_owner"
+        next.notifications.currentAccount = { nextAccount.id }   // verified while registering
         next.notifications.turnOn()
         _ = await next.notifications.register(token: Data(repeating: 3, count: 32), apns: .production)
         router.on("POST", path) { _ in TestSupport.error("internal", "Something went wrong on the server.", status: 500) }
         let off = await next.notifications.turnOff()
         #expect(!off && next.notifications.isWaitingToSend)
+        let sentBeforeSignOut = transport.requests("POST", path).count
         await next.account.signOut()
-        #expect(!next.notifications.isWaitingToSend)
+        #expect(transport.requests("POST", path).count == sentBeforeSignOut + 1 && next.notifications.isWaitingToSend)
         let afterwards = NotificationsModel(environment: TestSupport.environment(transport: transport, store: store))
-        #expect(!afterwards.isWaitingToSend && !afterwards.wanted)
+        afterwards.currentAccount = { "usr_synthetic_someone_else" }
+        #expect(afterwards.isWaitingToSend && !afterwards.wanted)
         let before = transport.requests("POST", path).count
         let nothing = await afterwards.retryPending()
-        #expect(nothing && transport.requests("POST", path).count == before)   // nothing is sent under the next sign-in
+        #expect(nothing && !afterwards.isWaitingToSend && transport.requests("POST", path).count == before)   // nothing is sent under the next sign-in
     }
 
     @Test("Signing out sends the removal as the signed-in owner, and only then forgets the session")
@@ -431,6 +454,7 @@ struct MediaBoundaryTests {
             sessionAtRemoval.value = tokens.load() != nil
             return TestSupport.json(["removed": true])
         }
+        app.notifications.currentAccount = { "usr_synthetic_owner" }   // stands in for the verified sign-in this test does not load
         app.notifications.turnOn()
         let registered = await app.notifications.register(token: Data(repeating: 5, count: 32), apns: .production)
         #expect(registered && session.hasSession)
@@ -467,6 +491,291 @@ struct MediaBoundaryTests {
         #expect(!next.wanted && !next.isWaitingToSend)
         let off = await next.turnOff()
         #expect(off && transport.order.filter { $0 == "removal sent" }.count == 1)
+    }
+
+    @Test("A removal that gets no answer while signing out is kept for that account: sent when it signs in again, never as another account")
+    func signOutRemovalKeptForTheSameAccount() async throws {
+        let router = Router()
+        let transport = router.transport
+        let store = InMemoryKeyValueStore()
+        let time = ManualTimeSource(instant: TestSupport.startInstant)
+        let signedIn = AccountBox()
+        func model() -> NotificationsModel {
+            let m = NotificationsModel(environment: TestSupport.environment(transport: transport, store: store, time: time))
+            m.currentAccount = { signedIn.id }
+            return m
+        }
+        let first = model()
+        let installation = first.deviceId
+        let path = "/v1/devices/\(installation)/remove"
+        router.json("GET", "/v1/devices", ["deliveryConfigured": true, "devices": [device(installation)]])
+        router.on("POST", "/v1/devices") { request in TestSupport.json(syntheticDevice(TestSupport.body(request)["deviceId"]?.stringValue ?? "")) }
+        signedIn.id = "usr_synthetic_a"
+        first.turnOn()
+        let registered = await first.register(token: Data(repeating: 4, count: 32), apns: .production)
+        #expect(registered)
+
+        // The server is failing when the owner signs out: the removal is kept for him.
+        router.on("POST", path) { _ in TestSupport.error("internal", "Something went wrong on the server.", status: 500) }
+        await first.signingOut()
+        signedIn.id = nil
+        #expect(transport.requests("POST", path).count == 1 && first.isWaitingToSend && !first.wanted)
+
+        // Relaunched while nobody is signed in: it is still kept, and nothing is sent.
+        let relaunched = model()
+        #expect(relaunched.isWaitingToSend)
+        time.advance(3600)
+        let nobody = await relaunched.retryPending()
+        #expect(!nobody && relaunched.isWaitingToSend && transport.requests("POST", path).count == 1)
+
+        // The same account signs in again: the removal is sent, as that account, and is done.
+        router.json("POST", path, ["removed": true])
+        signedIn.id = "usr_synthetic_a"
+        let sent = await relaunched.retryPending()
+        #expect(sent && !relaunched.isWaitingToSend && transport.requests("POST", path).count == 2)
+
+        // Again, but another account signs in next: the kept removal is dropped, never sent.
+        relaunched.turnOn()
+        _ = await relaunched.register(token: Data(repeating: 4, count: 32), apns: .production)
+        router.on("POST", path) { _ in try TransportFailureResponse.offline() }
+        await relaunched.signingOut()
+        #expect(relaunched.isWaitingToSend && transport.requests("POST", path).count == 3)
+        router.json("POST", path, ["removed": true])
+        signedIn.id = "usr_synthetic_b"
+        let other = await relaunched.retryPending()
+        #expect(other && !relaunched.isWaitingToSend && relaunched.message == nil)
+        #expect(transport.requests("POST", path).count == 3)
+
+        // That registration was the first account's. Signing out while the other account is signed in
+        // asks nothing as that account; with no account verified, the removal is kept for its own account.
+        let beforeOtherSignOut = transport.requests("POST", path).count
+        await relaunched.signingOut()
+        #expect(transport.requests("POST", path).count == beforeOtherSignOut && !relaunched.isWaitingToSend)
+        signedIn.id = nil
+        await relaunched.signingOut()
+        #expect(transport.requests("POST", path).count == beforeOtherSignOut && relaunched.isWaitingToSend)
+        signedIn.id = "usr_synthetic_a"
+        let owners = await relaunched.retryPending()
+        #expect(owners && !relaunched.isWaitingToSend && transport.requests("POST", path).count == beforeOtherSignOut + 1)
+
+        // Without a known account at sign-out (unset hook), nothing is kept, as before.
+        let unbound = NotificationsModel(environment: TestSupport.environment(transport: transport, store: InMemoryKeyValueStore(), time: time))
+        router.json("GET", "/v1/devices", ["deliveryConfigured": true, "devices": [device(unbound.deviceId)]])
+        router.on("POST", "/v1/devices/\(unbound.deviceId)/remove") { _ in TestSupport.error("internal", "Something went wrong on the server.", status: 500) }
+        await unbound.open()
+        await unbound.signingOut()
+        #expect(!unbound.isWaitingToSend)
+    }
+
+    @Test("A request left waiting by an expired sign-in is sent only while the same account is signed in; another account's own registration is not held up by it")
+    func waitingRequestBelongsToItsAccount() async throws {
+        let router = Router()
+        let transport = router.transport
+        let signedIn = AccountBox()
+        let model = NotificationsModel(environment: TestSupport.environment(transport: transport))
+        model.currentAccount = { signedIn.id }
+        func posts() -> Int { transport.requests("POST", "/v1/devices").count }
+        router.json("GET", "/v1/devices", ["deliveryConfigured": true, "devices": []])
+        router.on("POST", "/v1/devices") { _ in TestSupport.error("unauthenticated", "Sign in again.", status: 401) }
+        signedIn.id = "usr_synthetic_a"
+        model.turnOn()
+        let token = Data(repeating: 6, count: 32)
+        let expired = await model.register(token: token, apns: .production)
+        #expect(!expired && model.isWaitingToSend && model.message == "Sign in to finish registering this phone.")
+        let sentWhileExpired = posts()   // the client tries a refreshed token once on a 401
+
+        // The session has lapsed and no account is verified yet: it waits and nothing is sent.
+        signedIn.id = nil
+        let unknown = await model.retryPending()
+        #expect(!unknown && model.isWaitingToSend && posts() == sentWhileExpired)
+
+        // A different account signs in: the first account's registration is dropped unsent.
+        signedIn.id = "usr_synthetic_b"
+        router.on("POST", "/v1/devices") { request in TestSupport.json(syntheticDevice(TestSupport.body(request)["deviceId"]?.stringValue ?? "")) }
+        let dropped = await model.retryPending()
+        #expect(dropped && !model.isWaitingToSend && posts() == sentWhileExpired)
+        // The new account registers the same token itself, at once.
+        let own = await model.register(token: token, apns: .production)
+        #expect(own && !model.isWaitingToSend && posts() == sentWhileExpired + 1)
+    }
+
+    @Test("Before the account has loaded, a new token takes over the waiting registration's schedule, and turning off waits for the account the registration was made for")
+    func changedTokenAndTurnOffBeforeTheAccountIsKnown() async throws {
+        let router = Router()
+        let transport = router.transport
+        let store = InMemoryKeyValueStore()
+        let time = ManualTimeSource(instant: TestSupport.startInstant)
+        let signedIn = AccountBox()
+        func posts() -> [HTTPRequest] { transport.requests("POST", "/v1/devices") }
+        func hex(_ data: Data) -> String { data.map { String(format: "%02x", $0) }.joined() }
+        router.json("GET", "/v1/devices", ["deliveryConfigured": true, "devices": []])
+        router.on("POST", "/v1/devices") { _ in TestSupport.error("internal", "Something went wrong on the server.", status: 500) }
+        let first = NotificationsModel(environment: TestSupport.environment(transport: transport, store: store, time: time))
+        first.currentAccount = { signedIn.id }
+        signedIn.id = "usr_synthetic_a"
+        first.turnOn()
+        _ = await first.register(token: Data(repeating: 1, count: 32), apns: .production)
+        #expect(first.isWaitingToSend && posts().count == 1)
+
+        // Relaunch: iOS hands over a different token before the account has loaded.
+        signedIn.id = nil
+        let model = NotificationsModel(environment: TestSupport.environment(transport: transport, store: store, time: time))
+        model.currentAccount = { signedIn.id }
+        let newToken = Data(repeating: 9, count: 32)
+        _ = await model.register(token: newToken, apns: .production)
+        #expect(model.isWaitingToSend && posts().count == 1)
+        #expect(model.statusLine == "This phone will be registered once you are signed in.")
+        // The account loads: the new token replaces the old one but keeps its wait, so nothing goes early.
+        signedIn.id = "usr_synthetic_a"
+        let early = await model.retryPending()
+        #expect(!early && model.isWaitingToSend && posts().count == 1)
+        time.advance(NotificationsModel.retryDelay(afterAttempts: 1))
+        router.on("POST", "/v1/devices") { request in TestSupport.json(syntheticDevice(TestSupport.body(request)["deviceId"]?.stringValue ?? "")) }
+        let sent = await model.retryPending()
+        #expect(sent && !model.isWaitingToSend && posts().count == 2)
+        #expect(posts().last.map { TestSupport.body($0)["token"]?.stringValue } == hex(newToken))   // the current token, once
+
+        // Turned off on the next launch before the account has loaded: the removal waits for the account
+        // the registration was made for, and nothing is sent meanwhile.
+        let path = "/v1/devices/\(model.deviceId)/remove"
+        router.json("POST", path, ["removed": true])
+        signedIn.id = nil
+        let later = NotificationsModel(environment: TestSupport.environment(transport: transport, store: store, time: time))
+        later.currentAccount = { signedIn.id }
+        let off = await later.turnOff()
+        #expect(!off && later.isWaitingToSend && transport.requests("POST", path).isEmpty)
+        #expect(later.statusLine == "Notifications to this phone will be stopped on the server once you are signed in.")
+        signedIn.id = "usr_synthetic_a"
+        let stopped = await later.retryPending()
+        #expect(stopped && !later.isWaitingToSend && transport.requests("POST", path).count == 1)
+    }
+
+    @Test("A token handed over before the account has loaded never replaces a waiting request; it is registered once an account is verified, and a request without an account is not sent as anyone")
+    func tokenBeforeTheAccountIsKnown() async throws {
+        let router = Router()
+        let transport = router.transport
+        let store = InMemoryKeyValueStore()
+        let time = ManualTimeSource(instant: TestSupport.startInstant)
+        let signedIn = AccountBox()
+        func posts() -> [HTTPRequest] { transport.requests("POST", "/v1/devices") }
+        router.json("GET", "/v1/devices", ["deliveryConfigured": true, "devices": []])
+        router.on("POST", "/v1/devices") { _ in TestSupport.error("internal", "Something went wrong on the server.", status: 500) }
+        let model = NotificationsModel(environment: TestSupport.environment(transport: transport, store: store, time: time))
+        model.currentAccount = { signedIn.id }
+        let token = Data(repeating: 2, count: 32)
+        signedIn.id = "usr_synthetic_a"
+        model.turnOn()
+        _ = await model.register(token: token, apns: .production)
+        #expect(model.isWaitingToSend && posts().count == 1)
+
+        // Relaunch: iOS hands the token over before the account has loaded. The waiting request keeps
+        // its owner and its schedule; nothing is sent.
+        signedIn.id = nil
+        let relaunched = NotificationsModel(environment: TestSupport.environment(transport: transport, store: store, time: time))
+        relaunched.currentAccount = { signedIn.id }
+        let atLaunch = await relaunched.register(token: token, apns: .production)
+        #expect(!atLaunch && relaunched.isWaitingToSend && posts().count == 1)
+        // The account loads: the same request, still within its wait, is not sent early...
+        signedIn.id = "usr_synthetic_a"
+        let tooSoon = await relaunched.retryPending()
+        #expect(!tooSoon && posts().count == 1)
+        // ...and goes when its wait is over, as that account's one registration.
+        time.advance(NotificationsModel.retryDelay(afterAttempts: 1))
+        router.on("POST", "/v1/devices") { request in TestSupport.json(syntheticDevice(TestSupport.body(request)["deviceId"]?.stringValue ?? "")) }
+        let sent = await relaunched.retryPending()
+        #expect(sent && !relaunched.isWaitingToSend && posts().count == 2)
+
+        // A token with no request waiting and no account yet: held, and registered once one is verified.
+        let fresh = NotificationsModel(environment: TestSupport.environment(transport: transport, store: InMemoryKeyValueStore(), time: time))
+        fresh.currentAccount = { signedIn.id }
+        signedIn.id = nil
+        fresh.turnOn()
+        let held = await fresh.register(token: token, apns: .production)
+        #expect(!held && !fresh.isWaitingToSend && posts().count == 2)
+        signedIn.id = "usr_synthetic_b"
+        let afterSignIn = await fresh.retryPending()
+        #expect(afterSignIn && posts().count == 3)
+
+        // A waiting request that records no account (an earlier version saved it) is dropped, unsent,
+        // once an account is verified.
+        struct EarlierPending: Codable { var token: String?; var apns: String?; var removal: Bool }
+        let legacyStore = InMemoryKeyValueStore()
+        let legacyEnv = TestSupport.environment(transport: transport, store: legacyStore, time: time)
+        legacyEnv.restoration.save("notifications.pending", EarlierPending(token: "ab", apns: "production", removal: false))
+        let legacy = NotificationsModel(environment: legacyEnv)
+        legacy.currentAccount = { signedIn.id }
+        #expect(legacy.isWaitingToSend)
+        let dropped = await legacy.retryPending()
+        #expect(dropped && !legacy.isWaitingToSend && posts().count == 3)
+    }
+
+    @Test("A rate limit with Retry-After is waited out for as long as the backend asked, not only the backoff")
+    func retryAfterIsFollowed() async throws {
+        // How the wait is read from an answer (SYNTHETIC responses).
+        func failure(_ body: HTTPResponse, header: String?) -> APIFailure {
+            var response = HTTPResponse(status: 429, headers: body.headers, body: body.body)
+            if let header { response.headers["Retry-After"] = header }
+            return APIClient.failure(from: response)
+        }
+        let plain = TestSupport.error("rate_limited", "Too many requests", status: 429)
+        let detailed = TestSupport.json(.object(["error": .object(["code": "rate_limited", "message": "Too many requests", "details": .object(["retryAfterSeconds": .integer(120)])])]), status: 429)
+        #expect(failure(plain, header: "900").retryAfter == 900)
+        #expect(failure(plain, header: nil).retryAfter == nil)
+        #expect(failure(plain, header: "Wed, 21 Oct 2026 07:28:00 GMT").retryAfter == nil)   // the date form is not read
+        #expect(failure(detailed, header: "900").retryAfter == 120)                         // the body's own value wins
+        #expect(APIClient.failure(from: HTTPResponse(status: 503, headers: ["Retry-After": "30"])).retryAfter == nil)
+        #expect(NotificationsModel.wait(afterAttempts: 1, failure: failure(plain, header: "10")) == 60)   // never shorter than the backoff
+        #expect(NotificationsModel.wait(afterAttempts: 1, failure: failure(plain, header: "999999")) == NotificationsModel.longestRetryAfter)
+
+        // The model follows it.
+        let router = Router()
+        let transport = router.transport
+        let time = ManualTimeSource(instant: TestSupport.startInstant)
+        let model = NotificationsModel(environment: TestSupport.environment(transport: transport, time: time))
+        func posts() -> Int { transport.requests("POST", "/v1/devices").count }
+        router.json("GET", "/v1/devices", ["deliveryConfigured": true, "devices": []])
+        router.on("POST", "/v1/devices") { _ in
+            var limited = TestSupport.error("rate_limited", "Too many requests", status: 429)
+            limited.headers["Retry-After"] = "900"
+            return limited
+        }
+        model.turnOn()
+        let first = await model.register(token: Data(repeating: 8, count: 32), apns: .production)
+        #expect(!first && model.isWaitingToSend && posts() == 1)
+        time.advance(NotificationsModel.retryDelay(afterAttempts: 1))
+        let atBackoff = await model.retryPending()
+        #expect(!atBackoff && posts() == 1)                                    // the backoff alone is not enough
+        time.advance(900 - NotificationsModel.retryDelay(afterAttempts: 1))
+        router.on("POST", "/v1/devices") { request in TestSupport.json(syntheticDevice(TestSupport.body(request)["deviceId"]?.stringValue ?? "")) }
+        let afterWait = await model.retryPending()
+        #expect(afterWait && !model.isWaitingToSend && posts() == 2)
+    }
+
+    @Test("A new token while a registration is on its way takes over that request's answer: its attempt count and its wait")
+    func replacementDuringFlightInheritsTheSchedule() async throws {
+        var limited = TestSupport.error("rate_limited", "Too many requests", status: 429)
+        limited.headers["Retry-After"] = "900"
+        let transport = HeldRegistrationTransport(registrationAnswer: limited)
+        let time = ManualTimeSource(instant: TestSupport.startInstant)
+        let model = NotificationsModel(environment: TestSupport.environment(transport: transport, time: time))
+        func sent() -> Int { transport.order.filter { $0 == "registration sent" }.count }
+        model.turnOn()
+        async let first = model.register(token: Data(repeating: 1, count: 32), apns: .production)
+        await transport.registrationArrived()
+        let replaced = await model.register(token: Data(repeating: 2, count: 32), apns: .production)
+        #expect(!replaced && sent() == 1)                                      // not sent while the first is on its way
+        transport.release()
+        _ = await first
+        #expect(model.isWaitingToSend && model.statusLine == "Waiting to register this phone. It will be tried again later.")
+        time.advance(NotificationsModel.retryDelay(afterAttempts: 1))
+        let early = await model.retryPending()
+        #expect(!early && sent() == 1)                                         // the backend's 900 seconds hold for the new token too
+        time.advance(900 - NotificationsModel.retryDelay(afterAttempts: 1))
+        let due = await model.retryPending()
+        #expect(!due && sent() == 2)
+        time.advance(NotificationsModel.retryDelay(afterAttempts: 2) - 1)
+        let tooSoon = await model.retryPending()
+        #expect(!tooSoon && sent() == 2)                                       // the second answer counted as the second attempt
     }
 
     @Test("An installation from an earlier version: the switch alone is not evidence of a registration; a request that was waiting is")

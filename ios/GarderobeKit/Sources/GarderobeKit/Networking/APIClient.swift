@@ -72,7 +72,16 @@ public final class APIClient: Sendable {
     }
 
     static func failure(from response: HTTPResponse) -> APIFailure {
-        if let body = try? GarderobeJSON.decode(ApiErrorResponse.self, from: response.body) { return .api(status: response.status, error: body.error) }
+        if var body = try? GarderobeJSON.decode(ApiErrorResponse.self, from: response.body) {
+            // `Retry-After` in seconds is kept with the error when the body does not say it itself.
+            // The HTTP-date form is not read; a bare status without a contract body keeps no wait.
+            if body.error.details["retryAfterSeconds"] == nil,
+               let header = response.header("Retry-After"),
+               let seconds = Int(header.trimmingCharacters(in: .whitespaces)), seconds > 0 {
+                body.error.details["retryAfterSeconds"] = .integer(seconds)
+            }
+            return .api(status: response.status, error: body.error)
+        }
         return .status(response.status)
     }
 

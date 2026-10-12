@@ -284,11 +284,21 @@ configured on the backend, and an app icon for
     when it was asked for.
   - The full-size photo is cleared as soon as the garment's image changes, and a read that finishes after
     the change is discarded.
+  - Notifications, closed later: a waiting registration or removal records the account that made it
+    (`MeResponse.userId`) and is sent only while that account is signed in; it waits while no account is
+    verified and is dropped, unsent, when a different account signs in. A request that records no account
+    (saved by an earlier version) is likewise dropped once an account is verified. A token iOS hands over
+    before the account has loaded is held in memory and registered once an account is verified; a new
+    token for a registration that waits for the same account takes over its place in the retry schedule.
+    The phone records which account its registration was made for, and a removal (turning notifications
+    off) belongs to that account: it waits while no account is verified. A removal that gets no decision
+    while signing out (offline, a server fault, an expired session) is kept for the departing account and
+    sent when it signs in again; without a known account nothing is kept. `Retry-After` is followed: the
+    contract error's `details.retryAfterSeconds`, or a `Retry-After` header in seconds that the API client
+    copies there; the next try waits for the longer of that and the backoff, at most a day.
 - Still open from that review:
-  - Notifications. A removal that fails while signing out is not sent again: iOS has stopped delivering,
-    but the backend keeps the registration until this phone registers again or it is removed elsewhere. A
-    request left waiting by an expired sign-in (not a sign-out) is not tied to the account and is sent
-    after the next sign-in. `Retry-After` is not read. The retry tests call the model's retry directly, not
-    the app's synchronisation.
+  - Notifications. The HTTP-date form of `Retry-After`, and a `Retry-After` on an answer without a
+    contract error body, are not read (the Worker sends both the header and `retryAfterSeconds`). The retry tests
+    call the model's retry directly, not the app's synchronisation.
   - Capture sends a photo role chosen from the capture purpose (What I wore sends "selfie").
   - The Studio picture journey accepts a recording caught while the picture was still queued.

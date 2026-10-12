@@ -37,15 +37,29 @@ public final class NotificationsModel {
         var attempts: Int?
         /// It is not sent again automatically before this moment.
         var notBefore: Date?
+        /// The account that was signed in when the request was made (`MeResponse.userId`). It is
+        /// only ever sent while that same account is signed in. Absent in a request saved by an
+        /// earlier version of the app, or made before the account was known.
+        var account: String?
 
-        func sameRequest(as other: Pending) -> Bool { token == other.token && apns == other.apns && removal == other.removal }
+        func sameRequest(as other: Pending) -> Bool { token == other.token && apns == other.apns && removal == other.removal && account == other.account }
     }
     private var pending: Pending? {
         didSet { if let pending { environment.restoration.save("notifications.pending", pending) } else { environment.restoration.clear("notifications.pending") } }
     }
     /// A registration has left this phone at some point and no removal has been confirmed since,
     /// so the backend may hold this installation even when the list on screen does not show it.
-    private var mayBeRegistered: Bool { didSet { environment.restoration.save("notifications.sent", mayBeRegistered) } }
+    private var mayBeRegistered: Bool {
+        didSet {
+            environment.restoration.save("notifications.sent", mayBeRegistered)
+            if !mayBeRegistered { registeredAccount = nil }
+        }
+    }
+    /// The account the last registration that left this phone was made for. A removal belongs
+    /// to that account: only it can ask the backend to forget its registration.
+    private var registeredAccount: String? {
+        didSet { if let registeredAccount { environment.restoration.save("notifications.sentAccount", registeredAccount) } else { environment.restoration.clear("notifications.sentAccount") } }
+    }
     /// The request being sent now, so signing out can wait for it instead of racing it.
     private var inFlight: Task<Bool, Never>?
     /// Counts sign-outs: an answer that arrives for a request sent before one changes nothing.
@@ -55,6 +69,50 @@ public final class NotificationsModel {
     /// called when the owner turns notifications off and when they sign out, whatever the
     /// backend answers.
     public var stopReceiving: (@MainActor () -> Void)?
+
+    /// Set by the app: the account signed in now (`MeResponse.userId`), or nil while none is
+    /// verified (signed out, still loading, offline). A waiting request made by one account is
+    /// never sent under another: it waits while no account is known and is dropped when a
+    /// different one signs in. Unset, requests are not tied to an account.
+    public var currentAccount: (@MainActor () -> String?)?
+
+    /// The longest wait a backend's `Retry-After` is followed for.
+    public static let longestRetryAfter: TimeInterval = 86_400
+
+    /// Who may send a waiting request now.
+    private enum Sender { case thisAccount, unknownYet, otherAccount }
+    private func sender(for request: Pending) -> Sender {
+        guard let currentAccount else { return .thisAccount }
+        guard let now = currentAccount() else { return .unknownYet }
+        // Made before any account was known (or by an earlier version): whose it was cannot be
+        // shown, so it is not sent as whoever is signed in now.
+        guard let owner = request.account else { return .otherAccount }
+        return now == owner ? .thisAccount : .otherAccount
+    }
+
+    /// A token iOS handed over while no account was verified yet (at launch, before the account
+    /// has loaded). Held in memory only, never in place of a waiting request, and registered once
+    /// an account is verified, as the next launch would. Cleared by turning off and signing out.
+    private var deferredToken: (hex: String, apns: DeviceRegistration.Environment)?
+
+    /// Whether a waiting request may be sent now. One that belongs to another account is
+    /// dropped: a registration must not be made, nor a removal asked for, as someone else.
+    private func mayBeSentNow(_ request: Pending) -> Bool {
+        switch sender(for: request) {
+        case .thisAccount: return true
+        case .unknownYet: return false
+        case .otherAccount:
+            pending = nil
+            message = nil
+            return false
+        }
+    }
+
+    /// The wait before the next automatic try after an answer that decided nothing: the backoff,
+    /// or longer when the backend said how long to wait (`Retry-After`), up to a day.
+    static func wait(afterAttempts attempts: Int, failure: APIFailure) -> TimeInterval {
+        max(retryDelay(afterAttempts: attempts), min(failure.retryAfter ?? 0, longestRetryAfter))
+    }
 
     /// After this many answers that decided nothing, a waiting request is no longer sent
     /// automatically; the owner can send it again from the screen.
@@ -82,6 +140,7 @@ public final class NotificationsModel {
         // only ever made for a phone that had registered. Anything else is settled by the
         // backend's own list (`thisDevice`).
         mayBeRegistered = environment.restoration.load("notifications.sent") ?? (waiting != nil)
+        registeredAccount = environment.restoration.load("notifications.sentAccount")
         let api = environment.api
         devices = environment.resource("devices") { try await api.devices() }
     }
@@ -124,10 +183,28 @@ public final class NotificationsModel {
     public func register(token: Data, apns: DeviceRegistration.Environment) async -> Bool {
         guard wanted else { return false }
         let hex = token.map { String(format: "%02x", $0) }.joined()
-        let request = Pending(token: hex, apns: apns.rawValue, removal: false)
-        // The same registration already waiting keeps its place in the retry schedule: iOS hands
-        // over the token on every launch, and that must not turn a backoff into a retry per launch.
-        if let waiting = pending, waiting.sameRequest(as: request) { return await retryPending() }
+        return await register(hex: hex, apns: apns)
+    }
+
+    private func register(hex: String, apns: DeviceRegistration.Environment) async -> Bool {
+        guard wanted else { return false }
+        // No verified account yet: the token waits in memory for one, and a request already
+        // waiting for an account keeps its owner and its place in the retry schedule.
+        if let currentAccount, currentAccount() == nil {
+            deferredToken = (hex, apns)
+            return false
+        }
+        deferredToken = nil
+        let request = Pending(token: hex, apns: apns.rawValue, removal: false, account: currentAccount?())
+        // A registration replacing one that waits for the same account (iOS handed over a new
+        // token or service) takes over its place in the retry schedule instead of starting over.
+        if let waiting = pending, !waiting.removal, waiting.account == request.account {
+            var replacement = request
+            replacement.attempts = waiting.attempts
+            replacement.notBefore = waiting.notBefore
+            pending = replacement
+            return await retryPending()
+        }
         pending = request
         return await sendPending()
     }
@@ -142,6 +219,7 @@ public final class NotificationsModel {
     @discardableResult
     public func turnOff() async -> Bool {
         wanted = false
+        deferredToken = nil
         stopReceiving?()
         // What the backend last listed counts as evidence even when this screen was never opened.
         if devices.value == nil { devices.loadCached() }
@@ -152,16 +230,27 @@ public final class NotificationsModel {
             message = nil
             return true
         }
-        pending = Pending(token: nil, apns: nil, removal: true)
+        // The removal belongs to the account the registration was made for (or, when that is not
+        // recorded, the one signed in). It goes now only when that account is signed in; while no
+        // account is verified it waits, and one that belongs to another account is not asked for.
+        let removal = Pending(token: nil, apns: nil, removal: true, account: registeredAccount ?? currentAccount?())
+        pending = removal
+        guard mayBeSentNow(removal) else { return pending == nil }
         return await sendPending()
     }
 
     /// Sends a registration or removal that is still waiting. Called when the app synchronises.
     /// A request the backend left undecided waits out its delay first, and one that reached
-    /// `retryLimit` is not sent from here at all.
+    /// `retryLimit` is not sent from here at all. A request made by another account is dropped
+    /// unsent (and true is returned, as nothing waits any more); while no account is known it waits.
     @discardableResult
     public func retryPending() async -> Bool {
+        // A token that arrived before the account was known is registered now that it is.
+        if let deferred = deferredToken, wanted, let currentAccount, currentAccount() != nil {
+            return await register(hex: deferred.hex, apns: deferred.apns)
+        }
         guard let current = pending else { return true }
+        guard mayBeSentNow(current) else { return pending == nil }
         if hasStoppedRetrying { return false }
         if let wait = current.notBefore, environment.time.now() < wait { return false }
         return await sendPending()
@@ -171,29 +260,61 @@ public final class NotificationsModel {
     @discardableResult
     public func retryNow() async -> Bool {
         guard var current = pending else { return true }
+        guard mayBeSentNow(current) else { return pending == nil }
         current.attempts = nil
         current.notBefore = nil
         pending = current
         return await sendPending()
     }
 
-    /// The owner is signing out on this phone. iOS is told to stop delivering, the backend is
-    /// asked once to forget this installation while the session still exists, and nothing stays
-    /// waiting: a request kept past sign-out could only be sent as whoever signs in next.
+    /// The owner is signing out on this phone. iOS is told to stop delivering, and the backend is
+    /// asked to forget this installation while the session still exists. When that request gets
+    /// no decision (offline, a server fault, an expired session) it is kept for the account that
+    /// is signing out and sent when that account signs in again; it is never sent as anyone else,
+    /// and without a known account nothing is kept.
     public func signingOut() async {
         // No new request starts from here (`register` needs `wanted`), and iOS stops delivering.
         wanted = false
+        deferredToken = nil
         stopReceiving?()
+        let leaving = currentAccount?()
         // A registration on its way is let through first: removing before it lands would leave
         // this phone registered after the sign-out. Its answer no longer changes anything here.
         epoch += 1
         if let running = inFlight { _ = await running.value }
         if devices.value == nil { devices.loadCached() }
         let registered = mayBeRegistered || thisDevice != nil
+        let owner = registeredAccount ?? leaving
         pending = nil
         message = nil
         guard registered, !environment.isDemo else { return }
-        if (try? await environment.api.removeDevice(id: deviceId)) != nil { mayBeRegistered = false }
+        // The same gate as every other request: only the account the registration belongs to asks
+        // the backend to forget it. Another account's registration is not asked for as this one;
+        // with no account verified, it is kept for its account and sent when that account signs in.
+        let removal = Pending(token: nil, apns: nil, removal: true, account: owner)
+        switch sender(for: removal) {
+        case .otherAccount: return
+        case .unknownYet:
+            if owner != nil { pending = removal }
+            return
+        case .thisAccount: break
+        }
+        do {
+            _ = try await environment.api.removeDevice(id: deviceId)
+            mayBeRegistered = false
+        } catch let failure as APIFailure {
+            if NotificationsModel.isNotFound(failure) { mayBeRegistered = false; return }
+            // A refusal is an answer; only an undecided request is kept, and only for its account.
+            guard let owner, failure.isRetryable || failure.needsSignIn else { return }
+            var kept = Pending(token: nil, apns: nil, removal: true, account: owner)
+            if failure.isRetryable && !failure.isTransport {
+                kept.attempts = 1
+                kept.notBefore = environment.time.now().addingTimeInterval(NotificationsModel.wait(afterAttempts: 1, failure: failure))
+            }
+            pending = kept
+        } catch {
+            return
+        }
     }
 
     /// Sends the waiting request, one at a time. The send is a task of its own so that signing
@@ -219,6 +340,7 @@ public final class NotificationsModel {
             } else if let token = current.token, let apns = current.apns.flatMap(DeviceRegistration.Environment.init(rawValue:)) {
                 // From here the backend may hold this installation, whatever comes back.
                 mayBeRegistered = true
+                registeredAccount = current.account
                 _ = try await environment.api.registerDevice(DeviceRegistration(deviceId: deviceId, token: token, environment: apns))
             }
             mayBeRegistered = !current.removal
@@ -252,10 +374,18 @@ public final class NotificationsModel {
                     message = (current.removal ? "Not stopped: " : "Not registered: ") + reason
                         + " It was tried \(attempts) times and will not be tried again by itself."
                 } else {
-                    kept.notBefore = environment.time.now().addingTimeInterval(NotificationsModel.retryDelay(afterAttempts: attempts))
+                    kept.notBefore = environment.time.now().addingTimeInterval(NotificationsModel.wait(afterAttempts: attempts, failure: failure))
                     message = (current.removal ? "Not stopped yet: " : "Not registered yet: ") + reason + " It will be tried again later."
                 }
-                if pending == current { pending = kept }
+                if pending == current {
+                    pending = kept
+                } else if var replacement = pending, !replacement.removal, !current.removal, replacement.account == current.account {
+                    // iOS handed over a new token while this was on its way: the registration that
+                    // replaced it inherits this answer's attempt count and wait.
+                    replacement.attempts = kept.attempts
+                    replacement.notBefore = kept.notBefore
+                    pending = replacement
+                }
             } else if current.removal, NotificationsModel.isNotFound(failure) {
                 // The backend holds no registration for this phone: that is what was asked for.
                 mayBeRegistered = false
@@ -293,6 +423,10 @@ public final class NotificationsModel {
     /// One sentence on where this phone stands, from what the backend and iOS report.
     public var statusLine: String {
         if let pending {
+            if sender(for: pending) == .unknownYet {
+                return pending.removal ? "Notifications to this phone will be stopped on the server once you are signed in."
+                                       : "This phone will be registered once you are signed in."
+            }
             if hasStoppedRetrying {
                 return pending.removal ? "Notifications to this phone have not been stopped on the server. Try again when you are ready."
                                        : "This phone has not been registered. Try again when you are ready."

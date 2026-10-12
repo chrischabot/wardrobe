@@ -112,6 +112,11 @@ public final class AppModel {
         composer.settledCount = { [weak proposals] turnId, type, summary in proposals?.settledCount(turnId: turnId, type: type, summary: summary) ?? 0 }
         // Signing out removes this phone's notification registration while the session still exists.
         account.beforeSignOut = { [weak notifications] in await notifications?.signingOut() }
+        // A waiting notification request is only ever sent as the account that made it.
+        notifications.currentAccount = { [weak account] in
+            if case .signedIn(let me)? = account?.state { return me.userId }
+            return nil
+        }
 
         // Every verified receipt refreshes the reads it may have changed.
         environment.center.onReceipt { [weak self] receipt in
