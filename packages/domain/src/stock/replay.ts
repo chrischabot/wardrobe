@@ -14,7 +14,8 @@
  *   - quantities cannot go negative: every movement is clamped to what exists;
  *   - observed and inferred movements stay distinguishable (each movement carries its basis);
  *   - undo/amend voids an event and replays; pickups keep their recorded membership, so a corrected
- *     garment is never placed in a bag it did not enter;
+ *     garment is never placed in a bag it did not enter; but a unit the owner reported still away when
+ *     the bag came back stays at the service through such a replay (his observation outranks the voided one);
  *   - the stock a garment was recorded with when its record was created as already owned (`opening`) is
  *     there for every event of that garment, however early the event is dated: the record was made
  *     later than the garment was acquired, so "I wore it the day before the import" finds its unit;
@@ -398,6 +399,26 @@ export function replayGarment(careChannel: CareChannel, events: StockEvent[]): R
           const away = Number(e.payload.stillAway ?? 0);
           if (h.quantity === 0) s.service.delete(batchId);
           else if (away > 0) h.held = true; // named exception: stays away until the owner reports it back
+        }
+        // The owner said these units are still at the service when the bag came back. That observation
+        // stands even if a record that put them in the bag (an earlier wear report) has since been undone:
+        // the unit the ledger now believes is at home is the one that is away.
+        const observed = Number(e.payload.awayObserved ?? 0);
+        let short = observed - (s.service.get(batchId)?.quantity ?? 0);
+        while (short > 0 && laundered) {
+          let from: Bucket | null = null;
+          if (s.clean > 0) {
+            s.clean -= 1;
+            from = "clean";
+          } else if (oldestDirty(1) === 1) from = "dirty";
+          if (!from) break;
+          const held = s.service.get(batchId) ?? { quantity: 0, held: true, pickedUpAtMs: e.occurredAtMs };
+          held.quantity += 1;
+          held.held = true;
+          s.service.set(batchId, held);
+          short -= 1;
+          move(from, "service", 1, "owner observation: reported still away when the bag came back");
+          repair(`ledger had this item in '${from}'; the owner reported it still away at the laundry service`);
         }
         break;
       }

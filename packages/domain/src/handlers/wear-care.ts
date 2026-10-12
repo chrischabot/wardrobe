@@ -672,8 +672,13 @@ export const laundryReturn = define({
       const outstanding = item.quantity - item.returned_quantity;
       if (outstanding <= 0) continue;
       const away = Math.min(awayRequested.get(item.garment_id) ?? 0, outstanding);
-      const back = Math.max(0, Math.min(outstanding, holding.get(item.garment_id) ?? 0) - away);
-      planned.push({ item, outstanding, away, eventId: planner.add(item.garment_id, "return", { batchId: batch.batch_id, quantity: back, stillAway: away }, "observed", ctx.occurredAt) });
+      const held = holding.get(item.garment_id) ?? 0;
+      const back = Math.max(0, Math.min(outstanding, held) - away);
+      // `awayObserved`: the units the owner says are still at the service and the batch holds now. It is his
+      // observation, so a later replay keeps them there even when an earlier record that put them in the
+      // bag (a wear report) is undone (simulation seed-2 defect).
+      const awayObserved = Math.min(away, held);
+      planned.push({ item, outstanding, away, eventId: planner.add(item.garment_id, "return", { batchId: batch.batch_id, quantity: back, stillAway: away, ...(awayObserved > 0 ? { awayObserved } : {}) }, "observed", ctx.occurredAt) });
       eventIds.push(planned[planned.length - 1]!.eventId);
     }
     const build = await planner.build();

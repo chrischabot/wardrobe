@@ -42,6 +42,42 @@ describe("service laundry: pickup membership, returns and exceptions", () => {
     expect((await getLaundryState(h.db, owner.principal())).exceptions).toHaveLength(0);
   });
 
+  it("undoing an earlier wear report leaves a piece the owner later reported still away at the service (seed-2 simulation defect)", async () => {
+    // Simulation seed 2: worn on Monday, collected with the bag, reported still away when the bag came
+    // back, then Monday's wear report was undone. The undo withdraws the wear and nothing else: the
+    // owner's later word that the piece is at the laundry service stands.
+    const h = await createHarness({ startAt: "2026-09-14T09:00:00Z" });
+    const owner = await h.createSyntheticOwner();
+    const wear = await wearOn(h, owner, "2026-09-14", ["shirt-moss", "trouser-olive"]);
+    h.clock.set("2026-09-15T12:00:00Z");
+    await owner.exec("laundry.collect", {});
+    h.clock.set("2026-09-17T10:00:00Z");
+    const back = await owner.exec("laundry.return", { stillAway: [{ garmentId: "trouser-olive" }] });
+    expect(back.result).toMatchObject({ returned: 1, stillAway: 1 });
+    expect(await balances(h, owner, "trouser-olive")).toMatchObject({ clean: 0, service: 1 });
+
+    h.clock.set("2026-09-17T19:00:00Z");
+    const undo = await owner.exec("command.undo", { commandId: wear.commandId });
+    expect(undo.outcome).toBe("committed");
+    expect(await countedWears(h, owner)).toHaveLength(0);
+    // Still away, exactly as the owner reported; not clean at home.
+    expect(await balances(h, owner, "trouser-olive")).toMatchObject({ clean: 0, dirty: 0, service: 1 });
+    expect((await getGarmentDetail(h.db, owner.principal(), "trouser-olive")).totalOwnedUnits).toBe(1);
+    // The shirt that came back clean is clean either way.
+    expect(await balances(h, owner, "shirt-moss")).toMatchObject({ clean: 1, service: 0 });
+    const sheet = await getLaundryState(h.db, owner.principal());
+    expect(sheet.exceptions.map((e) => [e.kind, e.garmentId])).toEqual([["still_away", "trouser-olive"]]);
+    const snapshot = await getAvailability(h.db, owner.principal(), { forDate: "2026-09-18", nowMs: h.clock.now() });
+    expect(snapshot.garments.find((g) => g.garmentId === "trouser-olive")!.hardExcluded).toBe(true);
+
+    // A weekly baseline does not release it either; only the owner's word brings it back.
+    h.clock.set("2026-09-20T06:00:00Z");
+    await owner.exec("laundry.apply_weekly_reset", {}, SCHEDULED);
+    expect(await balances(h, owner, "trouser-olive")).toMatchObject({ clean: 0, service: 1 });
+    await owner.exec("care.washed", { items: [{ garmentId: "trouser-olive" }] });
+    expect(await balances(h, owner, "trouser-olive")).toMatchObject({ clean: 1, service: 0 });
+  });
+
   it("naming a still-away item that was not in the batch fails the whole return", async () => {
     const h = await createHarness({ startAt: "2026-09-14T09:00:00Z" });
     const owner = await h.createSyntheticOwner();
