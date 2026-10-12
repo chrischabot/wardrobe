@@ -146,6 +146,51 @@ describe("a missing event is fenced before anything is concluded from its absenc
     expect(row).toEqual({ suppression_reason: "pause", uncertain_calendars: null });
   });
 
+  it("SYNTHETIC: a pause whose fence could not be removed is settled by the next run as the pause, not as the owner's deletion", async () => {
+    const { h, owner } = await setup();
+    await compose(h, owner, DAY);
+    expect(await run(h)).toEqual(["projected"]);
+    const event = live(h, owner)[0]!;
+    // TEST-WRITTEN row state: a write of ours may still land; TEST FAKE: the event is gone from Google.
+    await markUncertain(h, owner, event.eventId);
+    h.calendar.externalDelete(owner.userId, OUTFIT_CALENDAR, event.eventId, { purge: true });
+    h.clock.advanceMinutes(2);
+    await owner.exec("service.pause", { from: DAY, resumeOn: null });
+    // The fence is claimed; its removal gets no answer it can trust (TEST FAKE).
+    h.calendar.failNext("deleteEvent", 1, new CalendarApiError("TEST FAKE: backend error", { status: 503, retryable: true }));
+    expect(await run(h)).toEqual(["retry"]);
+    expect(live(h, owner)).toHaveLength(1); // the fence stands for now
+    h.clock.advanceMinutes(31);
+    expect(await run(h)).toEqual(["removed"]);
+    expect(live(h, owner)).toHaveLength(0);
+    const row = await first<{ state: string; suppression_reason: string; removing_event_id: string | null }>(h.db, "SELECT state, suppression_reason, removing_event_id FROM calendar_projections WHERE user_id = ?", owner.userId);
+    expect(row).toEqual({ state: "suppressed", suppression_reason: "pause", removing_event_id: null });
+  });
+
+  it("SYNTHETIC: after a pause whose fence could not be removed, the end of the pause delivers the outfit again instead of reading the absence as the owner's deletion", async () => {
+    const { h, owner } = await setup();
+    await compose(h, owner, DAY);
+    expect(await run(h)).toEqual(["projected"]);
+    const event = live(h, owner)[0]!;
+    await markUncertain(h, owner, event.eventId);
+    h.calendar.externalDelete(owner.userId, OUTFIT_CALENDAR, event.eventId, { purge: true });
+    h.clock.advanceMinutes(2);
+    await owner.exec("service.pause", { from: DAY, resumeOn: null });
+    h.calendar.failNext("deleteEvent", 1, new CalendarApiError("TEST FAKE: backend error", { status: 503, retryable: true }));
+    expect(await run(h)).toEqual(["retry"]);
+    expect(live(h, owner)).toHaveLength(1);
+    h.clock.advanceMinutes(31);
+    await owner.exec("service.resume", {});
+    const outcomes = await run(h);
+    expect(outcomes).not.toContain("suppressed_deleted_externally");
+    expect(outcomes).toContain("projected");
+    const events = live(h, owner);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.privateProperties.garderobeTombstone ?? "0").not.toBe("1");
+    const row = await first<{ state: string; suppression_reason: string | null }>(h.db, "SELECT state, suppression_reason FROM calendar_projections WHERE user_id = ?", owner.userId);
+    expect(row).toEqual({ state: "projected", suppression_reason: null });
+  });
+
   it("SYNTHETIC: an ID taken although no event can be read under it counts as fenced, so the removal completes instead of retrying forever", async () => {
     const { h, owner } = await setup();
     await compose(h, owner, DAY);

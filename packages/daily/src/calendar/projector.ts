@@ -951,7 +951,13 @@ async function projectOne(deps: DailyDeps, effect: EffectRecord, nowMs: number):
       if (want.absent) {
         if (missingUnfenced) {
           // Fence it without bringing the event back into view, then decide anew. Its absence was observed
-          // before the fence, so it is not taken as the owner's deletion.
+          // before the fence, so it is not taken as the owner's deletion. That is recorded first, as a removal
+          // intent of ours: if the fence's own removal fails and a later run has to clean it up, the absence
+          // still reads as ours (a pause settles as a pause, a resume delivers again), never as the owner's.
+          if (row.removing_event_id !== eventId) {
+            await lease.markIntent(eventId);
+            row = { ...row, removing_event_id: eventId };
+          }
           await fenceMissing(w, calendarId, eventId, remote);
           fencedMissing = true;
           continue;
