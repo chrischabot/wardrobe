@@ -309,6 +309,8 @@ public struct AccountDeleteResponse: Codable, Sendable, Equatable {
     }
 }
 
+public typealias AcknowledgedRestrictionIds = [String]
+
 public enum Acquisition: String, Codable, Sendable, CaseIterable {
     case incoming
     case owned
@@ -567,6 +569,33 @@ public struct ApiErrorResponse: Codable, Sendable, Equatable {
 }
 
 public struct AssetImageQuery: Codable, Sendable, Equatable {
+    public var variant: Variant?
+    public var width: Int?
+
+    public init(
+        variant: Variant? = nil,
+        width: Int? = nil
+    ) {
+        self.variant = variant
+        self.width = width
+    }
+
+    public enum Variant: String, Codable, Sendable, CaseIterable {
+        case display
+        case original
+        case cutout
+        case catalogue
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+}
+
+public struct AssetImageWithLocationQuery: Codable, Sendable, Equatable {
     public var variant: Variant?
     public var width: Int?
     public var withLocation: WithLocation?
@@ -2763,14 +2792,14 @@ public struct CommandGarmentBulkCorrect: Codable, Sendable, Equatable, Garderobe
     public var changes: Changes
     public var expectedCount: Int?
     public var source: SourceRef
-    public var acknowledgedRestrictionIds: [String]?
+    public var acknowledgedRestrictionIds: AcknowledgedRestrictionIds?
 
     public init(
         selector: GarmentSelector,
         changes: Changes,
         expectedCount: Int? = nil,
         source: SourceRef,
-        acknowledgedRestrictionIds: [String]? = nil
+        acknowledgedRestrictionIds: AcknowledgedRestrictionIds? = nil
     ) {
         self.selector = selector
         self.changes = changes
@@ -2865,13 +2894,13 @@ public struct CommandGarmentCorrect: Codable, Sendable, Equatable, GarderobeComm
     public var garmentId: GarmentId
     public var changes: Changes
     public var source: SourceRef
-    public var acknowledgedRestrictionIds: [String]?
+    public var acknowledgedRestrictionIds: AcknowledgedRestrictionIds?
 
     public init(
         garmentId: GarmentId,
         changes: Changes,
         source: SourceRef,
-        acknowledgedRestrictionIds: [String]? = nil
+        acknowledgedRestrictionIds: AcknowledgedRestrictionIds? = nil
     ) {
         self.garmentId = garmentId
         self.changes = changes
@@ -7701,7 +7730,6 @@ public struct ExportJob: Codable, Sendable, Equatable {
     public var state: State
     public var complete: Bool
     public var encrypted: Bool
-    public var includesLocation: Bool?
     public var formatVersion: String
     public var requestedAt: Instant
     public var finishedAt: Instant?
@@ -7717,7 +7745,6 @@ public struct ExportJob: Codable, Sendable, Equatable {
         state: State,
         complete: Bool,
         encrypted: Bool,
-        includesLocation: Bool? = nil,
         formatVersion: String,
         requestedAt: Instant,
         finishedAt: Instant? = nil,
@@ -7732,7 +7759,6 @@ public struct ExportJob: Codable, Sendable, Equatable {
         self.state = state
         self.complete = complete
         self.encrypted = encrypted
-        self.includesLocation = includesLocation
         self.formatVersion = formatVersion
         self.requestedAt = requestedAt
         self.finishedAt = finishedAt
@@ -7792,16 +7818,13 @@ public struct ExportList: Codable, Sendable, Equatable {
 public struct ExportRequest: Codable, Sendable, Equatable {
     public var clientRequestId: String
     public var passphrase: String?
-    public var includeLocation: Bool?
 
     public init(
         clientRequestId: String,
-        passphrase: String? = nil,
-        includeLocation: Bool? = nil
+        passphrase: String? = nil
     ) {
         self.clientRequestId = clientRequestId
         self.passphrase = passphrase
-        self.includeLocation = includeLocation
     }
 }
 
@@ -8483,14 +8506,14 @@ public struct GarmentBulkCorrect: Codable, Sendable, Equatable {
     public var changes: Changes
     public var expectedCount: Int?
     public var source: SourceRef
-    public var acknowledgedRestrictionIds: [String]?
+    public var acknowledgedRestrictionIds: AcknowledgedRestrictionIds?
 
     public init(
         selector: GarmentSelector,
         changes: Changes,
         expectedCount: Int? = nil,
         source: SourceRef,
-        acknowledgedRestrictionIds: [String]? = nil
+        acknowledgedRestrictionIds: AcknowledgedRestrictionIds? = nil
     ) {
         self.selector = selector
         self.changes = changes
@@ -8546,13 +8569,13 @@ public struct GarmentCorrect: Codable, Sendable, Equatable {
     public var garmentId: GarmentId
     public var changes: Changes
     public var source: SourceRef
-    public var acknowledgedRestrictionIds: [String]?
+    public var acknowledgedRestrictionIds: AcknowledgedRestrictionIds?
 
     public init(
         garmentId: GarmentId,
         changes: Changes,
         source: SourceRef,
-        acknowledgedRestrictionIds: [String]? = nil
+        acknowledgedRestrictionIds: AcknowledgedRestrictionIds? = nil
     ) {
         self.garmentId = garmentId
         self.changes = changes
@@ -13662,14 +13685,11 @@ public struct Proposal: Codable, Sendable, Equatable {
 
 public struct ProposalDecisionRequest: Codable, Sendable, Equatable {
     public var decision: Decision
-    public var acknowledgedRestrictionIds: [String]?
 
     public init(
-        decision: Decision,
-        acknowledgedRestrictionIds: [String]? = nil
+        decision: Decision
     ) {
         self.decision = decision
-        self.acknowledgedRestrictionIds = acknowledgedRestrictionIds
     }
 
     public enum Decision: String, Codable, Sendable, CaseIterable {
@@ -13698,6 +13718,31 @@ public struct ProposalDecisionResponse: Codable, Sendable, Equatable {
         self.proposal = proposal
         self.receipt = receipt
         self.replayed = replayed
+    }
+}
+
+public struct ProposalDecisionWithRestrictionsRequest: Codable, Sendable, Equatable {
+    public var decision: Decision
+    public var acknowledgedRestrictionIds: AcknowledgedRestrictionIds?
+
+    public init(
+        decision: Decision,
+        acknowledgedRestrictionIds: AcknowledgedRestrictionIds? = nil
+    ) {
+        self.decision = decision
+        self.acknowledgedRestrictionIds = acknowledgedRestrictionIds
+    }
+
+    public enum Decision: String, Codable, Sendable, CaseIterable {
+        case confirm
+        case reject
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
     }
 }
 
