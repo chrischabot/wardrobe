@@ -153,8 +153,9 @@ export function httpClient(origin) {
         signal: AbortSignal.timeout(15_000),
       });
       const text = await res.text();
-      // Answered only once the whole body arrived: headers alone carry no usable receipt.
-      answered = true;
+      // Answered only once the whole body arrived, and only by the app itself: headers alone carry no usable receipt,
+      // and a server error or gateway answer (5xx, 408) says nothing about whether the write committed.
+      answered = !(res.status >= 500 || res.status === 408);
       let json = null;
       try {
         json = JSON.parse(text);
@@ -399,7 +400,7 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
       if (needDirty()) return { notRun: needDirty() };
       const one = await owner("GET", `/v1/commands/${dirty.commandId}`);
       const list = await owner("GET", "/v1/commands?limit=5");
-      return { pass: one.status === 200 && one.json?.commandId === dirty.commandId && one.json?.summary === dirty.summary && (list.json?.receipts ?? [])[0]?.commandId === dirty.commandId, httpStatus: one.status, listed: (list.json?.receipts ?? []).length };
+      return { pass: one.status === 200 && list.status === 200 && one.json?.commandId === dirty.commandId && one.json?.summary === dirty.summary && (list.json?.receipts ?? [])[0]?.commandId === dirty.commandId, httpStatus: one.status, listed: (list.json?.receipts ?? []).length };
     });
     await check("idempotency", "the same request again is answered from its receipt; nothing runs twice", async () => {
       if (needDirty()) return { notRun: needDirty() };
@@ -458,7 +459,7 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
       const top = await newestReceipt();
       const again = await mutate(assistant, command("command.undo", { commandId: dirty.commandId }, `verify-${runId}-undo2`, "owner_statement", "mcp"));
       const now = await page();
-      return { pass: one.json?.undo?.available === false && refusal(again, 409, "not_undoable") && exactlyChanged(before, now) && now.wardrobeRevision === before.wardrobeRevision && (await newestReceipt()) === top, receiptUndoAvailable: one.json?.undo?.available ?? null, secondUndoStatus: again.status, code: again.json?.error?.code ?? null };
+      return { pass: one.status === 200 && one.json?.undo?.available === false && refusal(again, 409, "not_undoable") && exactlyChanged(before, now) && now.wardrobeRevision === before.wardrobeRevision && (await newestReceipt()) === top, receiptUndoAvailable: one.json?.undo?.available ?? null, secondUndoStatus: again.status, code: again.json?.error?.code ?? null };
     });
 
     await check("idempotency", "two identical requests sent at once commit once and share one receipt", async () => {
@@ -610,21 +611,27 @@ export function portFree(port) {
 }
 
 /**
- * Output lines of a child process, each redacted as it completes, keeping a bounded tail of redacted lines only. A
- * partial line waits for the rest of its chunk, so a token split across chunks is redacted whole.
+ * The tail of a child process's output for diagnostics. The raw output is held and redacted AS A WHOLE when the tail
+ * is read, so a credential split across chunks or lines keeps its context; only then are the last `maxLines` lines and
+ * `maxChars` characters kept. The whole output is held up to `maxUnits` UTF-16 code units (a bound on memory, about
+ * 2 MiB at most); output that exceeds it is not shown at all, only a notice, since any cut could separate a credential
+ * from the context that identifies it.
  */
-export function lineTail(known, maxLines = 40) {
-  const lines = [];
-  let partial = "";
+export function lineTail(known, maxLines = 40, maxUnits = 1 << 20) {
+  let raw = "";
+  let overflow = false;
   return {
     push(chunk) {
-      const parts = (partial + String(chunk)).split("\n");
-      partial = parts.pop() ?? "";
-      for (const line of parts) lines.push(redactText(line, known, Number.MAX_SAFE_INTEGER));
-      lines.splice(0, Math.max(0, lines.length - maxLines));
+      if (overflow) return;
+      raw += String(chunk);
+      if (raw.length > maxUnits) {
+        raw = "";
+        overflow = true;
+      }
     },
     text(maxChars = 1500) {
-      const all = [...lines, ...(partial ? [redactText(partial, known, Number.MAX_SAFE_INTEGER)] : [])].join("\n");
+      if (overflow) return "[the output exceeded the diagnostic limit and is not shown]";
+      const all = redactText(raw, known, Number.MAX_SAFE_INTEGER).split("\n").slice(-maxLines).join("\n");
       return all.length > maxChars ? `…${all.slice(all.length - maxChars)}` : all;
     },
   };

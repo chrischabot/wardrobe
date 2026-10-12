@@ -25,6 +25,46 @@ test("dev output: lines are redacted whole before a tail is kept, even when a to
   const text = t.text();
   assert.equal(text.includes("tok-split") || text.includes("across-chunks"), false, text);
   assert.ok(text.includes("filler 9"));
+  // A quoted credential with a line break inside it keeps its context, and a huge line without newlines stays bounded.
+  const pw = "pass" + "word";
+  const m = lineTail([], 10, 4096);
+  m.push(`${pw}="alphaQ\nbet`);
+  m.push(`aZZ" rest\n`);
+  assert.equal(/alphaQ|betaZZ/.test(m.text()), false, m.text());
+  const big = lineTail([], 10, 4096);
+  for (let i = 0; i < 100; i++) big.push("x".repeat(1000));
+  assert.ok(big.text().length <= 1501);
+  // Output past the bound is not shown at all: no cut can separate a credential (quoted value, URL userinfo, known
+  // secret) from the context that identifies it.
+  const known = "knownSecretValue" + "Z9";
+  for (const tail of [`${pw}="alphaQ\n`, "url http://u:abcQ", `token ${known.slice(0, 8)}`]) {
+    const edge = lineTail([known], 50, 64);
+    edge.push("y".repeat(64 - tail.length));
+    edge.push(tail);
+    edge.push(`\ndefZZ@host.example ${known.slice(8)} betaZZ" more\n`);
+    assert.equal(/alphaQ|betaZZ|abcQ|defZZ|knownSec|Z9/.test(edge.text()), false, edge.text());
+    assert.match(edge.text(), /not shown/);
+  }
+});
+
+test("a write answered with a server or gateway error counts as unanswered", async () => {
+  const server = createServer((req, res) => {
+    res.writeHead(req.url === "/504" ? 504 : 400, { "content-type": "application/json" });
+    res.end("{}");
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const call = httpClient(`http://127.0.0.1:${server.address().port}`);
+  try {
+    const before = writesUnanswered();
+    await call("t", "POST", "/400", { a: 1 });
+    assert.equal(writesUnanswered(), before, "an app refusal is an answer");
+    await call("t", "POST", "/504", { a: 1 });
+    assert.equal(writesUnanswered(), before + 1, "a gateway timeout is not");
+    assert.equal(keepLocksForWritesInFlight(false), true);
+  } finally {
+    exitPolicy.keepLocks = false;
+    server.close();
+  }
 });
 
 test("verification gate: a skipped required check fails it; only not-applicable checks may be skipped", () => {

@@ -79,26 +79,31 @@ export function abortChildren() {
 }
 
 /**
- * A console echo of a command's output that is redacted line by line: each complete line goes through redactText
- * before it is written, and a trailing partial line is held until it completes or the command ends. `known` is an
- * array of secrets or a function returning one (read at each line, so secrets created meanwhile are covered).
+ * A console echo of a command's output that is safe across line breaks: output is held and the WHOLE of it is
+ * redacted once, when the command ends, so a credential spanning lines or chunks (a quoted value with a newline, URL
+ * userinfo split across lines) keeps its context. Nothing is written before the command ends. `known` is an array of
+ * secrets or a function returning one (read at the end, so secrets created meanwhile are covered). The whole output
+ * is held up to `maxUnits` UTF-16 code units (a bound on memory, about 8 MiB at most); output that exceeds it is not
+ * shown at all, only a notice, since any cut could separate a credential from the context that identifies it.
  */
-function lineEcho(stream, known) {
-  let pending = "";
+function lineEcho(stream, known, maxUnits = 4 << 20) {
+  let held = "";
+  let overflow = false;
   const secrets = () => (typeof known === "function" ? known() : known) ?? [];
-  const emit = (line) => stream.write(redactText(line, secrets(), Number.MAX_SAFE_INTEGER));
   return {
     push(chunk) {
-      pending += chunk;
-      let at;
-      while ((at = pending.indexOf("\n")) !== -1) {
-        emit(pending.slice(0, at + 1));
-        pending = pending.slice(at + 1);
+      if (overflow) return;
+      held += chunk;
+      if (held.length > maxUnits) {
+        held = "";
+        overflow = true;
       }
     },
     flush() {
-      if (pending) emit(pending);
-      pending = "";
+      if (overflow) stream.write("[the command's output exceeded the echo limit and is not shown]\n");
+      else if (held) stream.write(redactText(held, secrets(), Number.MAX_SAFE_INTEGER));
+      held = "";
+      overflow = false;
     },
   };
 }
@@ -106,7 +111,8 @@ function lineEcho(stream, known) {
 /**
  * Run a command without blocking the event loop, so signal handlers run while it does. Resolves (never rejects);
  * output is returned raw for parsing and must be redacted before it is shown. `echo` (an array of secrets, or a
- * function returning one) also shows the output on the console, redacted line by line; output is never passed
+ * function returning one) also shows the output on the console when the command ends, redacted as a whole; output is
+ * never passed
  * through unredacted (`echoTo` names the two console streams). `onChild` receives the child process, e.g. to forward signals to it.
  */
 export function spawnAsync(command, args, { cwd = APP_DIR, input, timeoutMs = 600_000, env = process.env, echo = null, echoTo = [process.stdout, process.stderr], detached = true, onChild } = {}) {

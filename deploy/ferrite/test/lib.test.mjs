@@ -215,6 +215,20 @@ test("an abort keeps only the lock of the target whose command it killed", async
   assert.equal(existsSync(`${tokensFile("other/wardrobe", dir)}.lock`), true, "the target whose command was killed keeps its lock");
 });
 
+test("echoed command output is redacted as a whole: credentials split across writes or lines never show", async () => {
+  const pw = "pass" + "word";
+  const sink2 = [];
+  const multi = `process.stdout.write(${JSON.stringify(`${pw}="alphaQ\nbetaZZ" next\nurl http://u:abcQ\ndefZZ@host.example/x\nline two\n`)})`;
+  await spawnAsync(process.execPath, ["-e", multi], { cwd: DIR, echo: [], echoTo: [{ write: (c) => sink2.push(String(c)) }, { write: () => {} }] });
+  const shown2 = sink2.join("");
+  for (const part of ["alphaQ", "betaZZ", "abcQ", "defZZ"]) assert.equal(shown2.includes(part), false, `${part} hidden: ${shown2}`);
+  assert.ok(shown2.includes("line two"));
+  // Output over the echo limit is not shown at all (no cut can split a credential from its context).
+  const sink3 = [];
+  await spawnAsync(process.execPath, ["-e", `process.stdout.write("x".repeat(${(4 << 20) + 10}) + "http://u:abcQ")`], { cwd: DIR, echo: [], echoTo: [{ write: (c) => sink3.push(String(c)) }, { write: () => {} }] });
+  assert.deepEqual(sink3, ["[the command's output exceeded the echo limit and is not shown]\n"]);
+});
+
 test("echoed command output is redacted line by line, even when a secret is split across writes", async () => {
   const secret = "s3cr" + "etValue" + "X".repeat(12);
   const half = secret.length >> 1;

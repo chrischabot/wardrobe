@@ -20,9 +20,14 @@ test("the public origin: from --public-origin or the platform's report, a bare h
   assert.throws(() => publicOriginFrom({ hostStdout: "{}" }), /not known before its first deploy/);
   for (const bad of ["http://w.example", "https://w.example/path", "https://u@w.example"]) assert.throws(() => publicOriginFrom({ argv: [`--public-origin=${bad}`] }), /bare https origin/, bad);
   const src = readFileSync(path.join(DIR, "deploy.mjs"), "utf8");
-  assert.ok(src.indexOf("publicOriginFrom({ argv, hostStdout })") < src.indexOf("ensureTokens(target)"), "settled before any remote write");
-  assert.ok(src.indexOf("secrets\", \"set\", PUBLIC_ORIGIN_SECRET") < src.indexOf('ferriteAsync(["deploy"]'), "set before the deploy");
-  assert.ok(src.includes("if (origin !== publicOrigin)"), "the deployed origin must equal it");
+  const at = (fragment) => {
+    const i = src.indexOf(fragment);
+    assert.ok(i >= 0, `deploy.mjs contains ${fragment}`);
+    return i;
+  };
+  assert.ok(at("publicOriginFrom({ argv, hostStdout })") < at("ensureTokens(target)"), "settled before any remote write");
+  assert.ok(at("secrets\", \"set\", PUBLIC_ORIGIN_SECRET") < at('ferriteAsync(["deploy"]'), "set before the deploy");
+  assert.ok(at("if (origin !== publicOrigin)") > at('ferriteAsync(["deploy"]'), "the deployed origin must equal it");
 });
 
 test("teardown: the plan deletes the app's secrets, scales to zero and removes only this target's state", () => {

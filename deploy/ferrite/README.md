@@ -28,7 +28,7 @@ exactly `wardrobe`, with a signed-in account, and with
 `--confirm=<account>/<app>` naming exactly that account and app. A deploy is a
 charged build and is never retried by the script (`ferrite deploy resume`
 reattaches). Deploy and teardown of one target hold an exclusive lock
-(`.state/<account>__<app>.lock`), published atomically with its owner record; a live
+(`.state/<account>__<app>.tokens.json.lock`), published atomically with its owner record; a live
 holder refuses the second run, and a lock left by a dead process is never taken over
 automatically (the command names the file for the operator to remove). A command
 still running at release, one that timed out, or one killed by an abort keeps its own
@@ -86,13 +86,15 @@ credential-name pattern for object keys and strings (any case or separator, quot
 or not, JSON inside strings, header lines), bearer tokens, JWTs and long token-like
 runs. The known secrets (one collector, `knownSecrets()` in `lib/state.mjs`) are the
 local tokens, every stored target's tokens, `FERRITE_OWNER_TOKEN` and
-`FERRITE_PREVIEW_TOKEN`. Dev-server output is redacted line by line, one assembler per
+`FERRITE_PREVIEW_TOKEN`. Dev-server output is held (up to 2^20 UTF-16 code units; beyond that none of it is shown) and redacted as a whole, one buffer per
 stream, before its tail is kept. CLI evidence holds the command, exit status, signal,
 time and output sizes only, never output text; the endpoint probe records the status, a
 short error code and a fixed classification; failure evidence records the failed step
 and the steps so far, never a message. Verification evidence keeps only an explicit
 list of field paths (statuses, ids, counts and timings); origins are recorded as scheme,
-host and port. Console echo of a command's output is redacted line by line.
+host and port. Console echo of a command's output is held and redacted as a whole when the command ends, so a
+credential split across lines keeps its context; output over the limit is not shown at all. A write answered with a 5xx or 408 counts as unanswered: its
+effect may still commit, so the lock is kept unless cleanup confirms every receipt of the run's own.
 
 ## Reused from the Cloudflare tooling
 
