@@ -223,6 +223,9 @@ export async function main(argv) {
         throw new GuardRefusal(`the signed-in account or the app changed since ${target} was confirmed; no further remote command was sent`);
       }
     };
+    // `ferrite host` and `ferrite secrets` take the app explicitly (`--app <account>/<app>`), so they never read the
+    // mutable spec. `ferrite deploy` has no app selector (only `--dir`): the spec is checked immediately before it
+    // spawns and again after it returns, and a change is reported as a failure naming the risk.
     const remote = async (args, opts) => {
       if (appSpec().name !== target.split("/")[1]) {
         progress.failedStep = "target revalidation";
@@ -230,6 +233,10 @@ export async function main(argv) {
       }
       await confirmedTarget();
       checkpoint(`before ferrite ${args.join(" ")}`);
+      if (appSpec().name !== target.split("/")[1]) {
+        progress.failedStep = "target revalidation";
+        throw new GuardRefusal(`ferrite/ferrite.json no longer names the confirmed app ${target}; no further remote command was sent`);
+      }
       return ferriteAsync(args, { ...opts, env });
     };
     await confirmedTarget();
@@ -240,7 +247,7 @@ export async function main(argv) {
       let hostStdout = null;
       if (!argv.some((a) => a.startsWith("--public-origin="))) {
         checkpoint("before ferrite host");
-        const pre = await remote(["host", "--json"], { timeoutMs: 60_000 });
+        const pre = await remote(["host", "--json", "--app", target], { timeoutMs: 60_000 });
         steps.push({ name: "ferrite host --json (before deploy)", ...cliEvidence(pre) });
         hostStdout = pre.status === 0 ? pre.stdout : null;
       }
@@ -251,14 +258,30 @@ export async function main(argv) {
     }
     const t = ensureTokens(target);
     created = t.created;
-    await step(`ferrite secrets set ${SECRET_NAMES[0]}`, () => remote(["secrets", "set", SECRET_NAMES[0]], { input: t.tokens.owner, timeoutMs: 120_000 }));
-    await step(`ferrite secrets set ${SECRET_NAMES[1]}`, () => remote(["secrets", "set", SECRET_NAMES[1]], { input: t.tokens.assistant, timeoutMs: 120_000 }));
-    await step(`ferrite secrets set ${PUBLIC_ORIGIN_SECRET}`, () => remote(["secrets", "set", PUBLIC_ORIGIN_SECRET], { input: publicOrigin, timeoutMs: 120_000 }));
+    await step(`ferrite secrets set ${SECRET_NAMES[0]}`, () => remote(["secrets", "set", "--app", target, SECRET_NAMES[0]], { input: t.tokens.owner, timeoutMs: 120_000 }));
+    await step(`ferrite secrets set ${SECRET_NAMES[1]}`, () => remote(["secrets", "set", "--app", target, SECRET_NAMES[1]], { input: t.tokens.assistant, timeoutMs: 120_000 }));
+    await step(`ferrite secrets set ${PUBLIC_ORIGIN_SECRET}`, () => remote(["secrets", "set", "--app", target, PUBLIC_ORIGIN_SECRET], { input: publicOrigin, timeoutMs: 120_000 }));
     // One charged build: never retried here. An interrupted deploy is reattached with `ferrite deploy resume`.
     checkpoint("before ferrite deploy");
-    progress.chargedDeployAttempted = true;
-    await step("ferrite deploy", () => remote(["deploy"], { timeoutMs: 3_600_000 }));
-    const host = await step("ferrite host --json", () => remote(["host", "--json"], { timeoutMs: 60_000 }));
+    // Marked only once the deploy process has actually started (its `spawn` event), after every check passed.
+    // The spec is checked again once the command returns, however it ended (a failure, timeout or interrupt may follow
+    // remote writes): a change is reported first, as it is the more serious failure.
+    try {
+      await step("ferrite deploy", () => remote(["deploy"], { timeoutMs: 3_600_000, onChild: (child) => child.once("spawn", () => (progress.chargedDeployAttempted = true)) }));
+    } finally {
+      let specApp = null;
+      try {
+        specApp = appSpec().name;
+      } catch {
+        specApp = null;
+      }
+      if (progress.chargedDeployAttempted && specApp !== target.split("/")[1]) {
+        progress.failedStep = "spec changed during deploy";
+        // biome-ignore lint/correctness/noUnsafeFinally: the changed spec must override the step's own error
+        throw new GuardRefusal(`ferrite/ferrite.json stopped naming ${target} while ferrite deploy ran; check \`ferrite status\` for both apps before anything else`);
+      }
+    }
+    const host = await step("ferrite host --json", () => remote(["host", "--json", "--app", target], { timeoutMs: 60_000 }));
     try {
       origin = deployedOrigin(JSON.parse(host.stdout || "{}").origin);
     } catch (error) {

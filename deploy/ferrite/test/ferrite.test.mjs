@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { exitPolicy } from "../lib/cli.mjs";
 import { redact } from "../lib/redact.mjs";
-import { balancesOf, committedWithUndo, csvSha256, evidenceValue, exactlyChanged, gatePasses, hiddenFields, authParams, pkcePair, httpClient, installInterruptHandlers, keepLocksForWritesInFlight, launderableClean, lineTail, portFree, refusal, runVerification, sameInventory, verifyLocal, writesInFlight, writesUnanswered } from "../verify.mjs";
+import { balancesOf, cleanupUnresolved, committedWithUndo, csvSha256, evidenceValue, exactlyChanged, gatePasses, hiddenFields, authParams, invalidTokenRefusal, pkcePair, httpClient, installInterruptHandlers, keepLocksForWritesInFlight, launderableClean, lineTail, portFree, refusal, runVerification, sameInventory, verifyLocal, writesInFlight, writesUnanswered } from "../verify.mjs";
 import { createHash } from "node:crypto";
 import { tokensFile, withTargetLock } from "../lib/state.mjs";
 
@@ -115,8 +115,18 @@ test("inventory comparisons: exact balance changes and identical reads", () => {
   assert.equal(sameInventory(before, { ...before, wardrobeRevision: 1 }), false);
   assert.equal(sameInventory(before, { ...before, source: { sha256: "t" } }), false);
   // Two readers that serialise the same balances and counts in another key order see the same inventory.
-  const reordered = { ...before, counts: Object.fromEntries(Object.entries(before.counts ?? { garments: 3, ownedUnits: 3 }).reverse()), items: before.items.map((i) => ({ ...i, balances: Object.fromEntries(Object.entries(i.balances).reverse()) })) };
-  assert.ok(sameInventory({ ...before, counts: before.counts ?? { garments: 3, ownedUnits: 3 } }, reordered), "key order does not matter");
+  const ka = { items: [{ garmentId: "a", category: "Shirt", careChannel: "service", quantity: 1, version: 1, balances: { clean: 1, dirty: 0 } }], counts: { garments: 1, ownedUnits: 1 }, source: { sha256: "s" }, wardrobeRevision: 2 };
+  const kb = { ...ka, counts: { ownedUnits: 1, garments: 1 }, items: [{ ...ka.items[0], balances: { dirty: 0, clean: 1 } }] };
+  assert.ok(sameInventory(ka, kb), "key order of counts and balances does not matter");
+  assert.equal(sameInventory(ka, { ...kb, counts: { ownedUnits: 2, garments: 1 } }), false, "values still do");
+  // An ended grant's token counts as refused only with the documented invalid_token body and nothing else.
+  assert.ok(invalidTokenRefusal({ status: 401, json: { error: "invalid_token", error_description: "x" } }));
+  for (const bad of [{ status: 401, json: { error: "invalid_token", result: { tools: [] } } }, { status: 401, json: { error: "invalid_token", error_description: { result: { tools: [] } } } }, { status: 401, json: { jsonrpc: "2.0", id: 1, result: {} } }, { status: 401, json: null }, { status: 403, json: { error: "invalid_token" } }]) {
+    assert.equal(invalidTokenRefusal(bad), false, JSON.stringify(bad));
+  }
+  // A grant whose end could not be confirmed keeps the target lock even when every OAuth write was answered.
+  assert.equal(cleanupUnresolved([{ group: "oauth", unansweredOauth: 0, grantsUnconfirmed: true }]), true);
+  assert.equal(cleanupUnresolved([{ group: "oauth", unansweredOauth: 0, grantsUnconfirmed: false }]), false);
 });
 
 test("verification judgements and the verify run's structure", () => {

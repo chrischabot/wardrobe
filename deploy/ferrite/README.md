@@ -8,7 +8,7 @@ belongs to the port and is only read here). Node 22, no dependencies.
 | `node deploy/ferrite/verify.mjs --local --start-dev` | no | starts `ferrite dev --fresh` on port 8790, runs every check over HTTP, stops it; evidence `evidence/verify-local.json` |
 | `node deploy/ferrite/verify.mjs --local [--origin URL]` | no | the same against a `ferrite dev` already running (default `http://127.0.0.1:8790`) |
 | `node deploy/ferrite/deploy.mjs --dry-run` | no | `ferrite check`, the plan and the account state; `evidence/deploy-dry-run.json` |
-| `node deploy/ferrite/deploy.mjs --confirm=<account>/wardrobe [--public-origin=https://…]` | yes | `ferrite check`, `ferrite test`, the local verification, then under the target's lock the public origin (`--public-origin=`, else `ferrite host --json`; refused before any remote write when neither gives a bare https origin), the tokens into git-ignored `.state/<account>__<app>.tokens.json` (one file per target, created once, 0600, validated), `ferrite secrets set` for both tokens and `WARDROBE_PUBLIC_ORIGIN` (stdin), one `ferrite deploy`, `ferrite host` (must equal the origin set), then `verify.mjs --deployed`; `evidence/deploy.json` |
+| `node deploy/ferrite/deploy.mjs --confirm=<account>/wardrobe [--public-origin=https://…]` | yes | `ferrite check`, `ferrite test`, the local verification, then under the target's lock the public origin (`--public-origin=`, else `ferrite host --json`; refused before any remote write when neither gives a bare https origin), the tokens into git-ignored `.state/<account>__<app>.tokens.json` (one file per target, created once, 0600, validated), `ferrite secrets set --app <account>/wardrobe` for both tokens and `WARDROBE_PUBLIC_ORIGIN` (stdin), one `ferrite deploy`, `ferrite host --app <account>/wardrobe` (must equal the origin set), then `verify.mjs --deployed`; `evidence/deploy.json` |
 | `node deploy/ferrite/verify.mjs --deployed` | yes | the checks against the deployed origin; `evidence/verify-deployed.json` |
 | `node deploy/ferrite/teardown.mjs` | no | the teardown plan only (default); `evidence/teardown-plan.json` |
 | `node deploy/ferrite/teardown.mjs --execute --confirm=<account>/wardrobe` | yes | deletes the app's three secrets (both tokens and `WARDROBE_PUBLIC_ORIGIN`), deploys with zero instances, removes only that target's token file; `evidence/teardown.json` |
@@ -32,9 +32,16 @@ reattaches). Deploy and teardown of one target hold an exclusive lock
 holder refuses the second run, and a lock left by a dead process is never taken over
 automatically (the command names the file for the operator to remove). A command
 still running at release, one that timed out, or one killed by an abort keeps its own
-target's lock only; local verification holds a separate lock of its own. Before the first
-remote write the signed-in account and the spec are read again and must still be the
-confirmed target. The deployed origin must be a bare `https` origin. Deployed
+target's lock only; local verification holds a separate lock of its own. Each run copies the
+Ferrite credential document once into a private 0700 home (`.state/cred-*`, removed at the end)
+and runs every remote command with it, so a login elsewhere cannot redirect the run. Before
+every remote command the account (read through that copy) and the spec's app must still be
+the confirmed target, and an interrupt received meanwhile stops it. `ferrite host` and
+`ferrite secrets set|delete` name the app explicitly (`--app <account>/wardrobe`), so they
+never depend on the spec; `ferrite deploy` has no app selector, so the spec is checked right
+before it spawns and again after it returns, and a change fails the run (check
+`ferrite status`). That `--app` form is taken from the CLI's help and is unproven until the
+first live deploy. The deployed origin must be a bare `https` origin. Deployed
 verification (from `deploy.mjs`, in the same process, or `verify.mjs --deployed`) runs
 inside the target's lock, so no teardown or second deploy can come between its commands
 and its cleanup. Every CLI step runs asynchronously, so signals are handled while it

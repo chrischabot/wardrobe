@@ -5,7 +5,7 @@
  * generate different tokens for the same target; a teardown removes only its own target's file.
  */
 import { randomBytes } from "node:crypto";
-import { chmodSync, closeSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { STATE_DIR, exitPolicy, killTree, localTokens, lockScope } from "./cli.mjs";

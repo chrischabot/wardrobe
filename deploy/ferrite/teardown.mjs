@@ -24,7 +24,7 @@ const SECRET_NAMES = Object.freeze(["WARDROBE_OWNER_TOKEN", "WARDROBE_ASSISTANT_
 /** What a teardown removes, in order. */
 export function teardownPlan(appName) {
   return [
-    ...SECRET_NAMES.map((name) => ({ action: "delete secret", target: name, command: `ferrite secrets delete ${name}` })),
+    ...SECRET_NAMES.map((name) => ({ action: "delete secret", target: name, command: `ferrite secrets delete --app <account>/${appName} ${name}` })),
     { action: "scale to zero", target: appName, command: "ferrite deploy --instances 0 --force" },
     { action: "remove local state", target: `deploy/ferrite/.state/<account>__${appName}.tokens.json`, command: "rm" },
   ];
@@ -85,6 +85,10 @@ export async function main(argv) {
         stopped ??= `ferrite ${args.join(" ")}`;
         return;
       }
+      if (appSpec().name !== app) {
+        stopped ??= `ferrite/ferrite.json no longer names ${app}`;
+        return;
+      }
       const r = await ferriteAsync(args, { timeoutMs, env });
       if (r.status !== 0 || r.error) console.error(cliDiagnostics(r, known()));
       done.push(cliEvidence(r));
@@ -94,8 +98,21 @@ export async function main(argv) {
         stopped ??= `timeout of ferrite ${args.join(" ")}`;
       }
     };
-    for (const name of SECRET_NAMES) await run(["secrets", "delete", name], 120_000);
-    await run(["deploy", "--instances", "0", "--force"], 3_600_000);
+    for (const name of SECRET_NAMES) await run(["secrets", "delete", "--app", target, name], 120_000);
+    // `ferrite deploy` has no app selector: the spec is checked right before (in run) and again right after it.
+    // The spec is checked again once the scale command returns, however it ended; a changed or unreadable spec takes
+    // precedence over any earlier reason for stopping.
+    try {
+      await run(["deploy", "--instances", "0", "--force"], 3_600_000);
+    } finally {
+      let specApp = null;
+      try {
+        specApp = appSpec().name;
+      } catch {
+        specApp = null;
+      }
+      if (specApp !== app) stopped = `ferrite/ferrite.json stopped naming ${app} while ferrite deploy ran`;
+    }
     const ok = !stopped && !interrupted() && done.length === SECRET_NAMES.length + 1 && done.every((d) => d.exit === 0 && d.spawnFailed === false);
     if (ok) removeTokens(target);
     evidence("teardown.json", { at: new Date().toISOString(), target, steps: done, interruptedBefore: stopped, localStateRemoved: ok });

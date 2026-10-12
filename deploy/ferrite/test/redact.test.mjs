@@ -6,13 +6,23 @@ import { isCredentialKey, redact, redactError, redactText } from "../lib/redact.
 // Credential-like literals are built by concatenation so no tool or scanner mistakes a fixture for a real secret.
 const PW = "pass" + "word";
 
-test("redaction: URL-credential scanning stays linear on long colon-free runs and many scheme-like words", () => {
-  const cases = ["a".repeat(4 << 20), "a:".repeat(1 << 20), `${"ab:".repeat(300_000)}x@y`, `${"https:".repeat(200_000)}u@h`];
-  for (const text of cases) {
-    const t0 = Date.now();
+test("redaction stays linear: long colon-free runs, many scheme-like words and long dot runs", () => {
+  // Linear work grows about 4x when the input grows 4x; the quadratic paths this guards against grow about 16x.
+  // Measured with a monotonic clock; the bound tolerates scheduling noise (10x plus a fixed allowance).
+  const time = (text) => {
+    const t0 = performance.now();
     redactText(text, [], 50);
-    assert.ok(Date.now() - t0 < 4000, `took ${Date.now() - t0} ms for ${text.slice(0, 12)}… (${text.length} chars)`);
+    return performance.now() - t0;
+  };
+  const shapes = [(n) => "a".repeat(n), (n) => "a:".repeat(n / 2), (n) => `${"ab:".repeat(n / 3)}x@y`, (n) => ".".repeat(n), (n) => "a.".repeat(n / 2), (n) => `x${".".repeat(n)}password=v`];
+  for (const shape of shapes) {
+    const n = 1 << 18;
+    time(shape(n)); // warm up
+    const small = time(shape(n));
+    const large = time(shape(4 * n));
+    assert.ok(large < 10 * small + 250, `${shape(12).slice(0, 12)}…: ${small.toFixed(0)} ms at ${n}, ${large.toFixed(0)} ms at ${4 * n}`);
   }
+  assert.equal(redactText(`x${".".repeat(1000)}password=hunter2`).includes("hunter2"), false, "a name after a dot run is still found");
   // Behaviour is unchanged: userinfo is still removed, ordinary URLs and times are kept.
   assert.equal(redactText("see https://user:pw-value@host.example/x").includes("pw-value"), false);
   assert.equal(redactText("at 10:30 see https://host.example/a"), "at 10:30 see https://host.example/a");

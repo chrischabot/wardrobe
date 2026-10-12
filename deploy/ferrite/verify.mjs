@@ -60,6 +60,18 @@ export function refusal(res, status, code) {
 }
 
 /** The documented refusals a replayed request may get; with them nothing was written. */
+
+/**
+ * An MCP request refused for its bearer token (RFC 6750): 401 with an OAuth error body whose error is `invalid_token`
+ * and which holds nothing but the OAuth error fields (no JSON-RPC result, no data of any kind).
+ */
+export function invalidTokenRefusal(res) {
+  const body = res?.json;
+  if (res?.status !== 401 || !body || typeof body !== "object" || Array.isArray(body)) return false;
+  if (body.error !== "invalid_token") return false;
+  // Only the OAuth error fields, each a string: nothing else can ride along under an allowed name.
+  return Object.entries(body).every(([k, v]) => ["error", "error_description", "error_uri"].includes(k) && typeof v === "string");
+}
 const REPLAY_REFUSALS = [[400, "invalid_command"], [400, "unknown_command"], [403, "forbidden"], [404, "not_found"], [409, "precondition_failed"], [409, "idempotency_key_reuse"]];
 
 /** Laundered single garments that are clean now, from an inventory page. */
@@ -307,7 +319,7 @@ export const EVIDENCE_PATHS = new Set([
   "outcomes", "outcomes[].what", "outcomes[].httpStatus", "outcomes[].code", "outcomes[].expected", "outcomes[].ok",
   "ownReceipts", "ownReceiptsStillOpen", "undoneByCleanup", "undoneByCleanup[].commandId", "undoneByCleanup[].httpStatus",
   "failedAttempts", "failedAttempts[].commandId", "failedAttempts[].httpStatus", "unresolvedReplays", "keyCollisions", "balancesRestored",
-  "protocolVersion", "tools", "scopes", "step", "grants", "grants[].grantId", "grants[].endedBy", "grants[].httpStatus", "grants[].fallbackStatus", "grants[].tokenRefused", "grants[].retryRefused", "unansweredOauth", "grants[].refreshRefused", "grants[].listedAs",
+  "protocolVersion", "tools", "scopes", "step", "grants", "grants[].grantId", "grants[].endedBy", "grants[].httpStatus", "grants[].fallbackStatus", "grants[].tokenRefused", "grants[].retryRefused", "unansweredOauth", "grantsUnconfirmed", "grants[].refreshRefused", "grants[].listedAs",
 ]);
 export function evidenceValue(value, at = "") {
   if (value === null || value === undefined || typeof value === "boolean") return value ?? null;
@@ -810,7 +822,7 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
       await check("isolation", "the owner's API token is not an MCP access token (401 invalid_token)", async () => {
         if (noMeta()) return { notRun: noMeta() };
         const r = await mcp({ access: tokens.owner }, "tools/list", {});
-        return { pass: r.status === 401 && r.json?.error === "invalid_token" && r.json?.result === undefined, httpStatus: r.status };
+        return { pass: invalidTokenRefusal(r), httpStatus: r.status };
       });
     } finally {
       await endGrants(grants, client, meta, oauthUnanswered);
@@ -881,7 +893,7 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
       let retryRefused = null;
       const probeAccess = async () => {
         const after = await safe(() => call(g.access, "POST", "/mcp", { jsonrpc: "2.0", id: 1, method: "tools/list" }, "Bearer", { headers: { accept: "application/json, text/event-stream", "mcp-protocol-version": MCP_VERSION } }));
-        return after.status === 401;
+        return invalidTokenRefusal(after);
       };
       if (typeof g.access === "string") {
         refused = await probeAccess();
@@ -920,7 +932,10 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
     for (const o of out) o.listedAs = status.get(o.grantId) ?? null;
     const othersOfClient = (end.rows ?? []).filter((c) => client && c?.clientId === client && c?.status !== "revoked").length;
     const pass = unanswered === 0 && end.rows !== null && othersOfClient === 0 && out.every((o) => o.httpStatus === 200 && o.tokenRefused !== false && o.refreshRefused !== false && o.listedAs === "revoked");
-    record("oauth", name, pass ? "pass" : "fail", { grants: out, unansweredOauth: unanswered, httpStatus: end.status }, Date.now() - started);
+    // Whether a credential this run created may still work after every attempt to end it: the target lock is then kept
+    // for the operator (see cleanupUnresolved), exactly as for an unanswered write.
+    const grantsUnconfirmed = end.rows === null || othersOfClient > 0 || out.some((o) => (o.tokenRefused === false && o.retryRefused !== true) || o.refreshRefused === false || o.listedAs !== "revoked");
+    record("oauth", name, pass ? "pass" : "fail", { grants: out, unansweredOauth: unanswered, grantsUnconfirmed, httpStatus: end.status }, Date.now() - started);
   }
 
   /**
@@ -1019,10 +1034,11 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
 /**
  * Whether cleanup left a write of the run unsettled: a replay without a receipt or documented refusal, an own receipt
  * still open, or cleanup raising an error. A foreign change that only made the balances differ does not count. An
- * OAuth request that went unanswered counts too: wardrobe cleanup cannot confirm it.
+ * OAuth request that went unanswered counts too: wardrobe cleanup cannot confirm it; so does a grant of the run whose
+ * end could not be confirmed (a token still accepted, a refresh still minting, or a grant not listed as revoked).
  */
 export function cleanupUnresolved(results) {
-  if (results.some((r) => Number(r.unansweredOauth ?? 0) > 0)) return true;
+  if (results.some((r) => Number(r.unansweredOauth ?? 0) > 0 || r.grantsUnconfirmed === true)) return true;
   const c = results.find((r) => r.group === "cleanup");
   if (!c || c.status !== "fail") return false;
   return Number(c.unresolvedReplays ?? 0) > 0 || Number(c.ownReceiptsStillOpen ?? 0) > 0 || typeof c.reason === "string";

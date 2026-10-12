@@ -26,15 +26,18 @@ const QUOTED = String.raw`(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')`;
 // A quoted value that may be cut off before its closing quote (a truncated diagnostic): redacted to the end.
 const QUOTED_OR_OPEN = String.raw`(?:"(?:[^"\\]|\\.)*(?:"|\\?$)|'(?:[^'\\]|\\.)*(?:'|\\?$))`;
 // Every rule below names the part it redacts as the group `v`; `d` gives its indices (see scrub).
+// The rules built on CREDENTIAL_NAME (whose prefix `[a-z0-9_.-]*` is unbounded) may only start where a run of name
+// characters starts: their boundary excludes every name character, the dot included, so each run is scanned from one
+// position only and the scan stays linear (a boundary that admitted `.` re-scanned a long dot run from every dot).
 const HEADER_LINE = new RegExp(String.raw`(^|[^A-Za-z0-9_-])(${HEADER_NAME})(\s*:\s*)(?<v>[^\r\n]*)`, "gid");
-const NAMED_QUOTED = new RegExp(String.raw`(^|[^A-Za-z0-9_-])(${CREDENTIAL_NAME})(["']?\s*[:=]\s*)(?<v>${QUOTED_OR_OPEN})`, "gid");
+const NAMED_QUOTED = new RegExp(String.raw`(^|[^A-Za-z0-9_.-])(${CREDENTIAL_NAME})(["']?\s*[:=]\s*)(?<v>${QUOTED_OR_OPEN})`, "gid");
 // JSON inside a string, at any escaping depth: `{\"password\":\"v\"}` or `{\\\"password\\\":\\\"v\\\"}`. The value
 // opens with N backslashes and a quote and closes only at a quote preceded by EXACTLY N backslashes; a quote escaped
 // inside the value carries more (2N+1), so it does not close it. A value that never closes is redacted to the end.
-const NAMED_ESCAPED = new RegExp(String.raw`(^|[^A-Za-z0-9_-])(${CREDENTIAL_NAME})(\\+["']\s*[:=]\s*)(?<v>(\\+)["'](?:(?!(?<!\\)\5["'])[\s\S])*(?:(?<!\\)\5["']|$))`, "gid");
+const NAMED_ESCAPED = new RegExp(String.raw`(^|[^A-Za-z0-9_.-])(${CREDENTIAL_NAME})(\\+["']\s*[:=]\s*)(?<v>(\\+)["'](?:(?!(?<!\\)\5["'])[\s\S])*(?:(?<!\\)\5["']|$))`, "gid");
 // An unquoted value: anything up to whitespace or punctuation, backslashes included (`password=\hunter2`); only an
 // escaped quote (`\"`) is left to NAMED_ESCAPED.
-const NAMED_UNQUOTED = new RegExp(String.raw`(^|[^A-Za-z0-9_-])(${CREDENTIAL_NAME})(\\*["']?\s*[:=]\s*)(?!\\*["'])(?<v>[^\s"',;&)}\]]+)`, "gid");
+const NAMED_UNQUOTED = new RegExp(String.raw`(^|[^A-Za-z0-9_.-])(${CREDENTIAL_NAME})(\\*["']?\s*[:=]\s*)(?!\\*["'])(?<v>[^\s"',;&)}\]]+)`, "gid");
 const BEARER = /\b(Bearer|Basic)\s+(?<v>[^\s"',;]+)/gid;
 const JWT = /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/g;
 // Any three dot-separated base64url segments: a JWT whatever its header's spelling. It is redacted when its first
@@ -84,6 +87,13 @@ function markUrlCredentials(text, mark) {
   const lastAt = new Int32Array(n + 1);
   lastAt[0] = -1;
   for (let k = 0; k < n; k++) lastAt[k + 1] = view[k] === "@" ? k : lastAt[k];
+  // Letter-bearing runs before a ':' found so far; overlapping candidates (many `word:` before one distant `@`) are
+  // merged before marking, so every character is marked at most once and the whole scan stays linear.
+  let spanFrom = -1;
+  let spanTo = -1;
+  const flush = () => {
+    if (spanFrom >= 0) mark(map[spanFrom], map[spanTo - 1] + 1);
+  };
   // Whether the current run of scheme characters holds a letter yet.
   let letterInRun = false;
   for (let c = 0; c < n; c++) {
@@ -100,8 +110,16 @@ function markUrlCredentials(text, mark) {
     while (i < n && (view[i] === "/" || view[i] === "\\" || view[i] === " ")) i++;
     // The last `@` before the authority ends (at index < end[i]), if it is at or after i.
     const at = lastAt[end[i]];
-    if (at >= i && at > start) mark(map[start], map[at - 1] + 1);
+    if (at >= i && at > start) {
+      if (spanFrom >= 0 && start <= spanTo) spanTo = Math.max(spanTo, at);
+      else {
+        flush();
+        spanFrom = start;
+        spanTo = at;
+      }
+    }
   }
+  flush();
 }
 const VALUE_RULES = [HEADER_LINE, NAMED_ESCAPED, NAMED_QUOTED, NAMED_UNQUOTED, BEARER];
 

@@ -1,22 +1,22 @@
 {
   "mode": "dry run: nothing was changed",
-  "at": "2026-10-12T13:14:27.096Z",
+  "at": "2026-10-12T15:14:26.072Z",
   "app": "wardrobe",
   "plan": [
     {
       "action": "delete secret",
       "target": "WARDROBE_OWNER_TOKEN",
-      "command": "ferrite secrets delete WARDROBE_OWNER_TOKEN"
+      "command": "ferrite secrets delete --app <account>/wardrobe WARDROBE_OWNER_TOKEN"
     },
     {
       "action": "delete secret",
       "target": "WARDROBE_ASSISTANT_TOKEN",
-      "command": "ferrite secrets delete WARDROBE_ASSISTANT_TOKEN"
+      "command": "ferrite secrets delete --app <account>/wardrobe WARDROBE_ASSISTANT_TOKEN"
     },
     {
       "action": "delete secret",
       "target": "WARDROBE_PUBLIC_ORIGIN",
-      "command": "ferrite secrets delete WARDROBE_PUBLIC_ORIGIN"
+      "command": "ferrite secrets delete --app <account>/wardrobe WARDROBE_PUBLIC_ORIGIN"
     },
     {
       "action": "scale to zero",
