@@ -1,0 +1,36 @@
+{
+  "mode": "dry run: nothing was changed",
+  "at": "2026-10-12T13:14:27.096Z",
+  "app": "wardrobe",
+  "plan": [
+    {
+      "action": "delete secret",
+      "target": "WARDROBE_OWNER_TOKEN",
+      "command": "ferrite secrets delete WARDROBE_OWNER_TOKEN"
+    },
+    {
+      "action": "delete secret",
+      "target": "WARDROBE_ASSISTANT_TOKEN",
+      "command": "ferrite secrets delete WARDROBE_ASSISTANT_TOKEN"
+    },
+    {
+      "action": "delete secret",
+      "target": "WARDROBE_PUBLIC_ORIGIN",
+      "command": "ferrite secrets delete WARDROBE_PUBLIC_ORIGIN"
+    },
+    {
+      "action": "scale to zero",
+      "target": "wardrobe",
+      "command": "ferrite deploy --instances 0 --force"
+    },
+    {
+      "action": "remove local state",
+      "target": "deploy/ferrite/.state/<account>__wardrobe.tokens.json",
+      "command": "rm"
+    }
+  ],
+  "notRemoved": [
+    "APE state",
+    "request queue"
+  ]
+}
