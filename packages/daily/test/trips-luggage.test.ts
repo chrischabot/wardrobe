@@ -30,26 +30,47 @@ async function propose(maxPieces: number | null, tripId: string) {
   for (const d of DAYS) h.weather.setForecast(d, MILD_DAY);
   await owner.exec("trip.create", { tripId, name: "Synthetic four days", departsOn: DAYS[0], returnsOn: DAYS[3], destinations: [PARIS], luggage: maxPieces === null ? null : { label: "the cabin bag", maxPieces }, source: { kind: "owner_statement", note: "synthetic trip for a boundary test" } });
   const proposal = await proposePacking(h.deps, owner.principal(), { tripId, clientRequestId: tripId, nowMs: h.clock.now() });
-  return { proposal, pieces: proposal.items.reduce((n, i) => n + i.quantity, 0) };
+  // Pieces packed: every unit the trip needs, less one of each garment worn on the travel day (coordinator decision on D07-5).
+  return { proposal, pieces: packed(proposal, DAYS[0]!) };
+}
+
+/** Pieces in the bag, computed here independently of the product: one unit of each travel-day garment is worn. */
+function packed(proposal: Awaited<ReturnType<typeof proposePacking>>, travelDate: string): number {
+  const travel = proposal.days.find((d) => d.localDate === travelDate && d.segment === "day");
+  const worn = new Set(travel?.slots.map((s) => s.garmentId) ?? []);
+  return proposal.items.reduce((n, i) => n + i.quantity - (worn.has(i.garmentId) ? 1 : 0), 0);
 }
 
 describe("the packing proposal and the luggage limit", () => {
   it("SYNTHETIC: a set that does not fit the bag is planned again with more reuse until it fits, and says so", async () => {
     const free = await propose(null, "luggage-free");
-    expect(free.pieces, "without a limit the set is larger than the bag below").toBeGreaterThan(9);
-    const fitted = await propose(9, "luggage-nine");
-    expect(fitted.pieces).toBeLessThanOrEqual(9);
+    expect(free.pieces, "without a limit the packed set is larger than the bag below").toBeGreaterThan(5);
+    const fitted = await propose(5, "luggage-five");
+    expect(fitted.pieces).toBeLessThanOrEqual(5);
     expect(fitted.proposal.days).toHaveLength(4);
     for (const day of fitted.proposal.days) for (const role of ["top", "bottom", "socks", "footwear"]) expect(day.slots.some((s) => s.role === role), `${day.localDate} ${role}`).toBe(true);
     const notes = fitted.proposal.notes.join(" ");
-    expect(notes).toMatch(/To fit the cabin bag \(9 pieces\)/);
+    expect(notes).toMatch(/To fit the cabin bag \(5 pieces\)/);
     expect(notes).not.toMatch(/against a limit/);
   });
 
   it("SYNTHETIC: a limit no reuse can meet proposes the smallest set and states the shortfall", async () => {
-    const tight = await propose(4, "luggage-four");
-    expect(tight.pieces).toBeGreaterThan(4);
-    expect(tight.proposal.notes.join(" ")).toMatch(new RegExp(`This is ${tight.pieces} pieces against a limit of 4 for the cabin bag`));
+    const tight = await propose(3, "luggage-three");
+    expect(tight.pieces).toBeGreaterThan(3);
+    expect(tight.proposal.notes.join(" ")).toMatch(new RegExp(`This is ${tight.pieces} pieces against a limit of 3 for the cabin bag`));
+  });
+
+  it("SYNTHETIC: the outfit worn on the travel day is not packed: a bag that holds the rest fits, and the notes say so", async () => {
+    const free = await propose(null, "luggage-free-count");
+    const needed = free.proposal.items.reduce((n, i) => n + i.quantity, 0);
+    const worn = free.proposal.days[0]!.slots.length;
+    expect(free.pieces).toBe(needed - worn);
+    // A limit equal to the packed count fits at the first level: no retry, no shortfall.
+    const exact = await propose(free.pieces, "luggage-exact");
+    expect(exact.pieces).toBe(free.pieces);
+    const notes = exact.proposal.notes.join(" ");
+    expect(notes).not.toMatch(/against a limit|To fit the cabin bag/);
+    expect(notes).toContain(`The outfit worn on ${DAYS[0]} for the journey is not packed, so it does not count against the cabin bag: ${free.pieces} pieces are packed.`);
   });
 
   it("SYNTHETIC: with the weather alternating, an earlier shirt still under its limit is worn again rather than packing another", async () => {
@@ -72,14 +93,14 @@ describe("the packing proposal and the luggage limit", () => {
     h.weather.setForecast(days[0]!, MILD_DAY);
     h.weather.setForecast(days[1]!, WARM_DAY);
     h.weather.setForecast(days[2]!, MILD_DAY);
-    await owner.exec("trip.create", { tripId: "luggage-weather", name: "Synthetic three days", departsOn: days[0], returnsOn: days[2], destinations: [{ ...PARIS, from: days[0], to: days[2] }], luggage: { label: "the cabin bag", maxPieces: 7 }, source: { kind: "owner_statement", note: "synthetic trip for a boundary test" } });
+    await owner.exec("trip.create", { tripId: "luggage-weather", name: "Synthetic three days", departsOn: days[0], returnsOn: days[2], destinations: [{ ...PARIS, from: days[0], to: days[2] }], luggage: { label: "the cabin bag", maxPieces: 3 }, source: { kind: "owner_statement", note: "synthetic trip for a boundary test" } });
     const proposal = await proposePacking(h.deps, owner.principal(), { tripId: "luggage-weather", clientRequestId: "luggage-weather", nowMs: h.clock.now() });
     const top = (i: number) => proposal.days[i]!.slots.find((s) => s.role === "top")?.garmentId;
     expect(proposal.days).toHaveLength(3);
     expect(top(1)).toBe("warm-a");
     expect(top(2), "the cool day after the warm one wears the first cool shirt again").toBe(top(0));
     expect(proposal.items.filter((i) => i.role === "top")).toHaveLength(2);
-    expect(proposal.items.reduce((n, i) => n + i.quantity, 0)).toBeLessThanOrEqual(7);
+    expect(packed(proposal, days[0]!)).toBeLessThanOrEqual(3);
     expect(proposal.notes.join(" ")).not.toMatch(/against a limit/);
   });
 
@@ -99,13 +120,13 @@ describe("the packing proposal and the luggage limit", () => {
     const days = ["2026-09-24", "2026-09-25"];
     h.weather.setForecast(days[0]!, MILD_DAY);
     h.weather.setForecast(days[1]!, WARM_DAY);
-    await owner.exec("trip.create", { tripId: "luggage-relax", name: "Synthetic two days", departsOn: days[0], returnsOn: days[1], destinations: [{ ...PARIS, from: days[0], to: days[1] }], luggage: { label: "the cabin bag", maxPieces: 6 }, source: { kind: "owner_statement", note: "synthetic trip for a boundary test" } });
+    await owner.exec("trip.create", { tripId: "luggage-relax", name: "Synthetic two days", departsOn: days[0], returnsOn: days[1], destinations: [{ ...PARIS, from: days[0], to: days[1] }], luggage: { label: "the cabin bag", maxPieces: 2 }, source: { kind: "owner_statement", note: "synthetic trip for a boundary test" } });
     const proposal = await proposePacking(h.deps, owner.principal(), { tripId: "luggage-relax", clientRequestId: "luggage-relax", nowMs: h.clock.now() });
     const slot = (i: number, role: string) => proposal.days[i]!.slots.find((s) => s.role === role)?.garmentId;
     expect(proposal.days).toHaveLength(2);
     expect([slot(0, "bottom"), slot(1, "bottom")]).toEqual(["cord", "linen"]);
     expect(slot(1, "top")).toBe(slot(0, "top"));
-    expect(proposal.items.reduce((n, i) => n + i.quantity, 0)).toBeLessThanOrEqual(6);
+    expect(packed(proposal, days[0]!)).toBeLessThanOrEqual(2);
     expect(proposal.notes.join(" ")).not.toMatch(/against a limit/);
   });
 });

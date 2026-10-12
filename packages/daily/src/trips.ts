@@ -135,13 +135,13 @@ export const tripRecordPackingProposal = define({
   requiredScope: "write",
   allowedAuthorizations: ["standing_policy", "system_schedule", "owner_tap", "owner_statement"],
   async plan(ctx, p): Promise<CommandPlan> {
-    const trip = await first<{ status: string; name: string }>(ctx.db, "SELECT status, name FROM trips WHERE user_id = ? AND trip_id = ?", ctx.userId, p.tripId);
+    const trip = await first<{ status: string; name: string; departs_on: string }>(ctx.db, "SELECT status, name, departs_on FROM trips WHERE user_id = ? AND trip_id = ?", ctx.userId, p.tripId);
     if (!trip || trip.status !== "planned") throw new CommandError("not_found", `no active trip '${p.tripId}'`);
     const last = await first<{ revision: number | null }>(ctx.db, "SELECT MAX(revision) AS revision FROM trip_packing_proposals WHERE user_id = ? AND trip_id = ?", ctx.userId, p.tripId);
     const revision = (last?.revision ?? 0) + 1;
     const proposal: PackingProposal = { tripId: p.tripId, revision, createdAt: ctx.now, items: p.items, days: p.days, repeatExceptionForTrip: true, weather: p.weather, notes: p.notes };
     return {
-      summary: `Packing proposed for “${trip.name}”: ${p.items.reduce((n, i) => n + i.quantity, 0)} pieces for ${p.days.length} outfits. This is a proposal; nothing is packed until you say so`,
+      summary: `Packing proposed for “${trip.name}”: ${packedPieces(p.items, p.days, trip.departs_on)} pieces to pack for ${p.days.length} outfits${wornOnTravelDay(p.days, trip.departs_on).size > 0 ? ", with the travel-day outfit worn" : ""}. This is a proposal; nothing is packed until you say so`,
       statements: [stmt("INSERT INTO trip_packing_proposals (user_id, trip_id, revision, proposal_json, command_id, created_at) VALUES (?, ?, ?, ?, ?, ?)", ctx.userId, p.tripId, revision, JSON.stringify(proposal), ctx.commandId, ctx.now)],
       preconditions: [{ label: "proposal revision is next", sql: "(SELECT COALESCE(MAX(revision), 0) FROM trip_packing_proposals WHERE user_id = ? AND trip_id = ?) = ?", params: [ctx.userId, p.tripId, revision - 1], class: "internal" }],
       affected: [{ kind: "trip_packing_proposal", id: p.tripId, version: revision }],
@@ -261,13 +261,15 @@ export async function proposePacking(deps: DailyDeps, principal: Principal, inpu
     { top: 3, bottom: 99, outer: 99, footwear: 99, belt: 99 },
   ];
   const limit = trip.luggage?.maxPieces ?? null;
-  const chosen = await choosePackingPlan(LEVELS.length, limit, async (i) => withoutOptionalFlourishes(await planPacking(deps, principal, trip, nowMs, forecast, LEVELS[i]!), limit));
+  const chosen = await choosePackingPlan(LEVELS.length, limit, async (i) => withoutOptionalFlourishes({ ...(await planPacking(deps, principal, trip, nowMs, forecast, LEVELS[i]!)), travelDate: trip.departsOn }, limit));
   const plan = chosen.plan;
   const level = chosen.level;
   const { items, days } = plan;
   const notes = [...plan.notes];
   if (plan.leftOut.length > 0) notes.push(`To save space in ${trip.luggage!.label}, the optional ${plan.leftOut.join(" and ")} ${plan.leftOut.length === 1 ? "is" : "are"} left out.`);
-  if (limit !== null && plan.pieces > limit) notes.push(`This is ${plan.pieces} pieces against a limit of ${limit} for ${trip.luggage!.label}, even with trousers and shirts reused across days; wearing the travel-day outfit rather than packing it closes part of the gap.`);
+  const worn = wornOnTravelDay(days, trip.departsOn);
+  if (limit !== null && worn.size > 0) notes.push(`The outfit worn on ${trip.departsOn} for the journey is not packed, so it does not count against ${trip.luggage!.label}: ${plan.pieces} ${plan.pieces === 1 ? "piece is" : "pieces are"} packed.`);
+  if (limit !== null && plan.pieces > limit) notes.push(`This is ${plan.pieces} pieces against a limit of ${limit} for ${trip.luggage!.label}, even with trousers and shirts reused across days and the travel-day outfit worn rather than packed.`);
   else if (level >= 1) notes.push(`To fit ${trip.luggage!.label} (${limit} pieces), ${level === 1 ? "trousers are worn on more days" : `a shirt is worn on up to ${LEVELS[level]!.top} days`} than usual.`);
   if (weather.some((w) => w.freshness !== "fresh")) notes.push("Some destination forecasts are stale or unavailable; those days were proposed without a verified forecast.");
   if (trip.laundry.length > 0) notes.push("Laundry opportunities on the trip are estimates until a wash is reported; the proposal does not count on them.");
@@ -278,6 +280,24 @@ export async function proposePacking(deps: DailyDeps, principal: Principal, inpu
   return { tripId: trip.tripId, revision: Number((receipt.result as any).revision), createdAt: receipt.recordedAt, items: payload.items, days, repeatExceptionForTrip: true, weather, notes };
 }
 
+/** Garments of the departure day's daytime outfit: worn for the journey, so one unit of each is not packed. */
+export function wornOnTravelDay(days: PackingProposal["days"], travelDate: string | null | undefined): Set<string> {
+  if (!travelDate) return new Set();
+  return new Set(days.find((d) => d.localDate === travelDate && d.segment === "day")?.slots.map((s) => s.garmentId) ?? []);
+}
+
+/**
+ * Pieces that go in the bag, the measure a luggage limit is judged by (coordinator decision on journey D07-5):
+ * every unit the trip needs, less the one unit of each garment worn on the travel day. An alternative shoe of
+ * the paired format is carried, not worn, so it is packed.
+ */
+export function packedPieces(items: Iterable<{ garmentId: string; quantity: number }>, days: PackingProposal["days"], travelDate: string | null | undefined): number {
+  const worn = wornOnTravelDay(days, travelDate);
+  let n = 0;
+  for (const i of items) n += Math.max(0, i.quantity - (worn.has(i.garmentId) ? 1 : 0));
+  return n;
+}
+
 /** Roles that only carry the belt line's optional flourish (profile section 5: "often ignored, always welcome"). */
 const OPTIONAL_FLOURISH_ROLES: ReadonlySet<Role> = new Set<Role>(["neckwear", "accessory"]);
 
@@ -286,7 +306,7 @@ const OPTIONAL_FLOURISH_ROLES: ReadonlySet<Role> = new Set<Role>(["neckwear", "a
  * time, before it is judged against the limit: a piece the owner often ignores never costs the bag a
  * place it does not have. Nothing a hard rule needs is removed, and a plan within the limit keeps them.
  */
-export function withoutOptionalFlourishes<P extends { items: Map<string, { garmentId: string; name: string; role: Role; quantity: number }>; days: PackingProposal["days"]; pieces: number }>(plan: P, limit: number | null): P & { leftOut: string[] } {
+export function withoutOptionalFlourishes<P extends { items: Map<string, { garmentId: string; name: string; role: Role; quantity: number }>; days: PackingProposal["days"]; pieces: number; travelDate?: string | null }>(plan: P, limit: number | null): P & { leftOut: string[] } {
   if (limit === null || plan.pieces <= limit) return { ...plan, leftOut: [] };
   const items = new Map(plan.items);
   let days = plan.days;
@@ -296,7 +316,7 @@ export function withoutOptionalFlourishes<P extends { items: Map<string, { garme
     if (pieces <= limit) break;
     items.delete(item.garmentId);
     days = days.map((d) => ({ ...d, slots: d.slots.filter((s) => s.garmentId !== item.garmentId) }));
-    pieces -= item.quantity;
+    pieces = packedPieces(items.values(), days, plan.travelDate);
     leftOut.push(item.name);
   }
   return { ...plan, items, days, pieces, leftOut };
@@ -461,8 +481,7 @@ async function planPacking(
       }
     }
   }
-  const pieces = [...items.values()].reduce((n, i) => n + i.quantity, 0);
-  return { items, days, notes, pieces, covered: days.length };
+  return { items, days, notes, pieces: packedPieces(items.values(), days, trip.departsOn), covered: days.length };
 }
 
 /** A trip-day board: destination weather, the trip's occasions, and ONLY the physically packed subset. */

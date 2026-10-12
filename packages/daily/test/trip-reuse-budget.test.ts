@@ -64,7 +64,7 @@ describe("the days a proposal plans a reusable piece are a budget for the trip, 
     const owner = await h.createSyntheticOwner({ settings: { homeLocation: { label: "London", latitude: 51.5085, longitude: -0.1257 } } as never, garments: WARDROBE as never });
     for (const d of DAYS) h.weather.setForecast(d, PARIS_DAY);
     const tripId = "synthetic-shirt-order";
-    await owner.exec("trip.create", { tripId, name: "Synthetic three days", departsOn: DAYS[0], returnsOn: DAYS[2], destinations: [PARIS], luggage: { label: "the cabin bag", maxPieces: 7 }, source: { kind: "owner_statement", note: "synthetic trip for a boundary test" } });
+    await owner.exec("trip.create", { tripId, name: "Synthetic three days", departsOn: DAYS[0], returnsOn: DAYS[2], destinations: [PARIS], luggage: { label: "the cabin bag", maxPieces: 3 }, source: { kind: "owner_statement", note: "synthetic trip for a boundary test" } });
     const proposal = await proposePacking(h.deps, owner.principal(), { tripId, clientRequestId: "shirt-order-1", nowMs: h.clock.now() });
     const tops = proposal.days.map((d) => d.slots.find((s) => s.role === "top")!.garmentId);
     const twice = tops.find((id) => tops.filter((t) => t === id).length === 2)!;
