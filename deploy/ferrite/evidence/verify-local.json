@@ -1,0 +1,279 @@
+{
+  "checkedAt": "2026-10-12T13:11:41.078Z",
+  "target": "local",
+  "origin": {
+    "scheme": "http",
+    "host": "127.0.0.1",
+    "port": 8790
+  },
+  "runId": "mv59tpk4-5b81b62f83c4692f",
+  "results": [
+    {
+      "group": "health",
+      "name": "the public health route answers without a token",
+      "status": "pass",
+      "required": true,
+      "ms": 4,
+      "httpStatus": 200,
+      "contractVersion": "1.1.0"
+    },
+    {
+      "group": "sign-in",
+      "name": "no token is refused with 401 unauthenticated and an error-only body",
+      "status": "pass",
+      "required": true,
+      "ms": 2,
+      "httpStatus": 401,
+      "code": "unauthenticated"
+    },
+    {
+      "group": "sign-in",
+      "name": "a wrong token is refused with 401 unauthenticated and an error-only body",
+      "status": "pass",
+      "required": true,
+      "ms": 2,
+      "httpStatus": 401,
+      "code": "unauthenticated"
+    },
+    {
+      "group": "inventory",
+      "name": "the owner reads the imported inventory: 127 garments, 144 owned units, from the supplied CSV",
+      "status": "pass",
+      "required": true,
+      "ms": 16,
+      "httpStatus": 200,
+      "items": 127,
+      "distinctIds": 127,
+      "unitsCounted": 144,
+      "counts": {
+        "garments": 127,
+        "ownedUnits": 144
+      },
+      "sourceSha256": "ca9a5e06edbb2646ad91f102cb242a81b1776bd39e86e99300c0eb387254c946",
+      "expectedSourceSha256": "ca9a5e06edbb2646ad91f102cb242a81b1776bd39e86e99300c0eb387254c946",
+      "wardrobeRevision": 0
+    },
+    {
+      "group": "inventory",
+      "name": "the receipts that existed before this run are listed (for reconciliation)",
+      "status": "pass",
+      "required": true,
+      "ms": 4,
+      "httpStatus": 200,
+      "receipts": 0
+    },
+    {
+      "group": "sign-in",
+      "name": "a lowercase bearer scheme with the owner's token reads the same inventory",
+      "status": "pass",
+      "required": true,
+      "ms": 25,
+      "httpStatus": 200
+    },
+    {
+      "group": "inventory",
+      "name": "the connected assistant reads the same inventory: garments, balances, versions, counts, source and revision",
+      "status": "pass",
+      "required": true,
+      "ms": 17,
+      "httpStatus": 200,
+      "items": 127
+    },
+    {
+      "group": "inventory",
+      "name": "a category filter returns exactly that category's garments",
+      "status": "pass",
+      "required": true,
+      "ms": 4,
+      "httpStatus": 200,
+      "items": 7,
+      "expected": 7
+    },
+    {
+      "group": "command",
+      "name": "the assistant relays \"both in the wash\": applied at once, a receipt that offers undo, exactly those balances moved",
+      "status": "pass",
+      "required": true,
+      "ms": 22,
+      "httpStatus": 200,
+      "commandId": "cmd_fb01940535a70ef3897001e12509b838",
+      "ownedByRun": true,
+      "units": 2,
+      "revisionBefore": 0,
+      "revisionAfter": 1
+    },
+    {
+      "group": "command",
+      "name": "the receipt is stored and listed newest first",
+      "status": "pass",
+      "required": true,
+      "ms": 4,
+      "httpStatus": 200,
+      "listed": 1
+    },
+    {
+      "group": "idempotency",
+      "name": "the same request again is answered from its receipt; nothing runs twice",
+      "status": "pass",
+      "required": true,
+      "ms": 39,
+      "httpStatus": 200,
+      "replayed": true
+    },
+    {
+      "group": "idempotency",
+      "name": "the same key with another body is refused with 409 idempotency_key_reuse and writes nothing",
+      "status": "pass",
+      "required": true,
+      "ms": 4445,
+      "httpStatus": 409,
+      "code": "idempotency_key_reuse"
+    },
+    {
+      "group": "isolation",
+      "name": "the assistant cannot claim an owner tap (403 forbidden, nothing written)",
+      "status": "pass",
+      "required": true,
+      "ms": 44,
+      "httpStatus": 403,
+      "code": "forbidden"
+    },
+    {
+      "group": "isolation",
+      "name": "the owner's token cannot send on the assistant's channel (403 forbidden, nothing written)",
+      "status": "pass",
+      "required": true,
+      "ms": 49,
+      "httpStatus": 403,
+      "code": "forbidden"
+    },
+    {
+      "group": "isolation",
+      "name": "a receipt cannot be read without a token",
+      "status": "pass",
+      "required": true,
+      "ms": 4,
+      "httpStatus": 401
+    },
+    {
+      "group": "isolation",
+      "name": "one owner's data is invisible to another owner",
+      "status": "not_run",
+      "required": false,
+      "ms": null,
+      "reason": "not applicable to the first slice, which serves one owner per deployment (ferrite/README.md); multi-owner storage arrives in milestone 1"
+    },
+    {
+      "group": "command",
+      "name": "the owner taps undo: every balance back as before, the undo receipt names the original",
+      "status": "pass",
+      "required": true,
+      "ms": 23,
+      "httpStatus": 200,
+      "undoCommandId": "cmd_c4711552cf2a721c2ff75374131593df",
+      "revisionAfter": 2
+    },
+    {
+      "group": "command",
+      "name": "the original receipt no longer offers undo, and a second undo is refused (409 not_undoable)",
+      "status": "pass",
+      "required": true,
+      "ms": 53,
+      "receiptUndoAvailable": false,
+      "secondUndoStatus": 409,
+      "code": "not_undoable"
+    },
+    {
+      "group": "idempotency",
+      "name": "two identical requests sent at once commit once and share one receipt",
+      "status": "pass",
+      "required": true,
+      "ms": 40,
+      "statuses": [
+        200,
+        200
+      ],
+      "replayed": [
+        false,
+        true
+      ],
+      "revisionDelta": 1
+    },
+    {
+      "group": "refusals",
+      "name": "invalid, unknown and impossible commands are refused with their codes and write nothing",
+      "status": "pass",
+      "required": true,
+      "ms": 46,
+      "outcomes": [
+        {
+          "what": "fraction",
+          "httpStatus": 400,
+          "code": "invalid_command",
+          "expected": "400 invalid_command",
+          "ok": true
+        },
+        {
+          "what": "unknown type",
+          "httpStatus": 400,
+          "code": "unknown_command",
+          "expected": "400 unknown_command",
+          "ok": true
+        },
+        {
+          "what": "digits-only field name",
+          "httpStatus": 400,
+          "code": "invalid_command",
+          "expected": "400 invalid_command",
+          "ok": true
+        },
+        {
+          "what": "missing undo target",
+          "httpStatus": 404,
+          "code": "not_found",
+          "expected": "404 not_found",
+          "ok": true
+        },
+        {
+          "what": "unlaunderable",
+          "httpStatus": 409,
+          "code": "precondition_failed",
+          "expected": "409 precondition_failed",
+          "ok": true
+        },
+        {
+          "what": "no such route",
+          "httpStatus": 404,
+          "code": "not_found",
+          "expected": "404 not_found",
+          "ok": true
+        }
+      ]
+    },
+    {
+      "group": "cleanup",
+      "name": "the wardrobe is left exactly as it began (only this run's own receipts undone, found by replaying its requests)",
+      "status": "pass",
+      "required": true,
+      "ms": 131,
+      "ownReceipts": 2,
+      "ownReceiptsStillOpen": 0,
+      "undoneByCleanup": [
+        {
+          "commandId": "cmd_9ff73cec71ebabb48e63ae9451714b45",
+          "httpStatus": 200
+        }
+      ],
+      "failedAttempts": [],
+      "unresolvedReplays": 0,
+      "keyCollisions": 0,
+      "balancesRestored": true
+    }
+  ],
+  "counts": {
+    "pass": 20,
+    "not_run": 1
+  },
+  "skippedRequired": 0,
+  "passed": true
+}
