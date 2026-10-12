@@ -58,4 +58,37 @@ describe("the days a proposal plans a reusable piece are a budget for the trip, 
     // The pair planned twice and worn once has a day of its budget left; the pair planned once and worn has none.
     expect(new Set(options.map((o) => piece(o, "bottom")))).toEqual(new Set([twice]));
   });
+
+  it("SYNTHETIC: a shirt the proposal reuses to fit the luggage limit is still offered on its second planned wear when the shirts are worn in another order", async () => {
+    const h = await createDailyHarness({ startAt: "2026-09-21T18:00:00Z", isolate: true });
+    const owner = await h.createSyntheticOwner({ settings: { homeLocation: { label: "London", latitude: 51.5085, longitude: -0.1257 } } as never, garments: WARDROBE as never });
+    for (const d of DAYS) h.weather.setForecast(d, PARIS_DAY);
+    const tripId = "synthetic-shirt-order";
+    await owner.exec("trip.create", { tripId, name: "Synthetic three days", departsOn: DAYS[0], returnsOn: DAYS[2], destinations: [PARIS], luggage: { label: "the cabin bag", maxPieces: 7 }, source: { kind: "owner_statement", note: "synthetic trip for a boundary test" } });
+    const proposal = await proposePacking(h.deps, owner.principal(), { tripId, clientRequestId: "shirt-order-1", nowMs: h.clock.now() });
+    const tops = proposal.days.map((d) => d.slots.find((s) => s.role === "top")!.garmentId);
+    const twice = tops.find((id) => tops.filter((t) => t === id).length === 2)!;
+    const once = tops.find((id) => id !== twice)!;
+    expect(twice, `the proposal reuses one shirt to fit the bag: ${tops.join(", ")}`).toBeTruthy();
+    expect(once).toBeTruthy();
+    expect(proposal.items.find((i) => i.garmentId === twice)?.quantity).toBe(1);
+    await owner.exec("stock.pack", { tripId, items: proposal.items.map((i) => ({ garmentId: i.garmentId, quantity: i.quantity })) });
+
+    // He wears the shirt planned once on day one and the shirt planned twice on day two.
+    const wear = async (index: number, top: string) => {
+      h.clock.set(`${DAYS[index]}T08:00:00Z`);
+      const slots = proposal.days[index]!.slots.map((s) => (s.role === "top" ? { ...s, garmentId: top } : s));
+      await owner.exec("wear.record", { wearingDate: DAYS[index], tripId, garmentIds: slots.map((s) => s.garmentId) });
+    };
+    await wear(0, once);
+    await wear(1, twice);
+
+    h.clock.set(`${DAYS[2]}T06:00:00Z`);
+    const day3 = await prepareTripDayBoard(h.deps, owner.principal(), { tripId, date: DAYS[2], clientRequestId: "shirt-order-board", nowMs: h.clock.now() });
+    expect(day3.note ?? "").not.toMatch(/0 eligible shirts/);
+    const options = day3.board?.options ?? [];
+    expect(options.length).toBeGreaterThan(0);
+    // The shirt planned twice and worn once has a wear left; the shirt planned once and worn has none.
+    expect(new Set(options.map((o) => piece(o, "top")))).toEqual(new Set([twice]));
+  });
 });

@@ -54,8 +54,12 @@ export async function packedTripOn(db: Db, userId: string, localDate: string): P
   return { tripId: row.trip_id, destinations, occasions: json(row.occasions_json, []) };
 }
 
-/** Roles the packing proposal reuses deliberately across days (see `proposePacking`). Socks and shirts are worn once. */
-export const PLANNED_REUSE_ROLES: ReadonlySet<string> = new Set(["bottom", "outer", "footwear", "belt"]);
+/**
+ * Roles the packing proposal can reuse deliberately across days (see `proposePacking`). Shirts are reused
+ * only when a luggage limit asks for it; then, as for trousers, the days planned are the shirt's wear budget
+ * for the trip. Socks are never reused.
+ */
+export const PLANNED_REUSE_ROLES: ReadonlySet<string> = new Set(["top", "bottom", "outer", "footwear", "belt"]);
 
 /**
  * Pieces the packing proposal THE OWNER PACKED TO plans on more days than it packs units of, with the
