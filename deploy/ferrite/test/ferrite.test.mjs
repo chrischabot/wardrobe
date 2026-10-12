@@ -450,6 +450,9 @@ test("a failed disconnect falls back to revocation so the grant still ends, but 
   assert.ok([...app.oauth.grants.values()].every((g) => !g.active), "both grants ended");
   const end = report.results.find((r) => r.name.startsWith("the run's OAuth grants end"));
   assert.equal(end.status, "fail", "a fallback never turns a failed primary into a pass");
+  assert.ok(end.unansweredOauth > 0, "the 503 disconnect is an unanswered OAuth write");
+  const { cleanupUnresolved } = await import("../verify.mjs");
+  assert.equal(cleanupUnresolved(report.results), true, "the target lock is kept");
   assert.equal(end.grants[0].endedBy, "owner_disconnect");
   assert.equal(end.grants[0].httpStatus, 503);
   assert.equal(end.grants[0].fallbackStatus, 200);

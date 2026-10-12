@@ -133,6 +133,8 @@ export function spawnAsync(command, args, { cwd = APP_DIR, input, timeoutMs = 60
       settled = true;
       // Ended by a signal (from us or from outside): its remote step may still be settling, so its lock is kept.
       if (signal && scope) scope.keep = true;
+      outEcho?.push(outDecoder.decode());
+      errEcho?.push(errDecoder.decode());
       outEcho?.flush();
       errEcho?.flush();
       stdout = Buffer.concat(raw.out).toString("utf8");
@@ -172,13 +174,16 @@ export function spawnAsync(command, args, { cwd = APP_DIR, input, timeoutMs = 60
         raw[`${which}Bytes`] += part.length;
       }
     };
+    // Echo decodes each stream with its own streaming decoder, so a multi-byte character split across chunks is kept.
+    const outDecoder = new TextDecoder();
+    const errDecoder = new TextDecoder();
     child.stdout?.on("data", (c) => {
       keep("out", c);
-      outEcho?.push(String(c));
+      outEcho?.push(outDecoder.decode(Buffer.isBuffer(c) ? c : Buffer.from(String(c)), { stream: true }));
     });
     child.stderr?.on("data", (c) => {
       keep("err", c);
-      errEcho?.push(String(c));
+      errEcho?.push(errDecoder.decode(Buffer.isBuffer(c) ? c : Buffer.from(String(c)), { stream: true }));
     });
     child.once("error", (e) => {
       error = String(e.message);

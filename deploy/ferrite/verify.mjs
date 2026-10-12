@@ -853,8 +853,15 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
       return;
     }
     const out = [];
-    const disconnect = (g) => safe(() => call(tokens.owner, "POST", `/v1/connections/${encodeURIComponent(g.grantId)}/disconnect`));
-    const revokeToken = (t) => safe(() => call(null, "POST", meta.revoke, undefined, "Bearer", { form: new URLSearchParams({ token: t, client_id: client ?? "" }).toString() }));
+    // Every OAuth cleanup write (disconnect, revocation) is counted when it throws or answers 5xx/408: its effect is
+    // unknown, so it fails the check and keeps the lock even when another way of ending the grant then succeeds.
+    const counted = async (send) => {
+      const r = await safe(send);
+      if (r.status === null || r.status >= 500 || r.status === 408) unanswered += 1;
+      return r;
+    };
+    const disconnect = (g) => counted(() => call(tokens.owner, "POST", `/v1/connections/${encodeURIComponent(g.grantId)}/disconnect`));
+    const revokeToken = (t) => counted(() => call(null, "POST", meta.revoke, undefined, "Bearer", { form: new URLSearchParams({ token: t, client_id: client ?? "" }).toString() }));
     for (const [i, g] of all.entries()) {
       const byRevocation = i > 0 && meta && typeof g.refresh === "string";
       const ended = byRevocation ? await revokeToken(g.refresh) : await disconnect(g);
@@ -892,8 +899,8 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
         if (again.status === null || again.status >= 500 || again.status === 408) unanswered += 1;
         remember(again.json?.access_token, again.json?.refresh_token);
         refreshRefused = again.status === 400 && again.json?.error === "invalid_grant" && again.json?.access_token === undefined;
-        if (typeof again.json?.refresh_token === "string") await safe(() => call(null, "POST", meta.revoke, undefined, "Bearer", { form: new URLSearchParams({ token: again.json.refresh_token, client_id: client ?? "" }).toString() }));
-        if (typeof again.json?.access_token === "string") await safe(() => call(null, "POST", meta.revoke, undefined, "Bearer", { form: new URLSearchParams({ token: again.json.access_token, client_id: client ?? "" }).toString() }));
+        if (typeof again.json?.refresh_token === "string") await revokeToken(again.json.refresh_token);
+        if (typeof again.json?.access_token === "string") await revokeToken(again.json.access_token);
       }
       out.push({ grantId: g.grantId, endedBy: byRevocation ? "revocation" : "owner_disconnect", httpStatus: ended.status, fallbackStatus, tokenRefused: refused, retryRefused, refreshRefused });
     }
