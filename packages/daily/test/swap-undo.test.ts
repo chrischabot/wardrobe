@@ -51,6 +51,20 @@ describe("undoing a swap", () => {
     expect(undo.summary).toMatch(new RegExp(`outfits of revision ${made.revision} are back`));
   });
 
+  it("SYNTHETIC: two swaps are undone in reverse order, back to the board as first published", async () => {
+    const { h, owner, made } = await syntheticBoard(1);
+    const optionId = made.options[0]!.optionId;
+    const first = await owner.exec("board.swap_slot", { boardId: made.boardId, optionId, role: "top" });
+    const afterFirst = (await getBoard(h.db, owner.principal(), { boardId: made.boardId }))!;
+    const second = await owner.exec("board.swap_slot", { boardId: made.boardId, optionId, role: "bottom" });
+    await owner.exec("command.undo", { commandId: second.commandId });
+    expect(shape((await getBoard(h.db, owner.principal(), { boardId: made.boardId }))!)).toEqual(shape(afterFirst));
+    await owner.exec("command.undo", { commandId: first.commandId });
+    const after = (await getBoard(h.db, owner.principal(), { boardId: made.boardId }))!;
+    expect(shape(after)).toEqual(shape(made));
+    expect(after.revision).toBe(afterFirst.revision + 3);
+  });
+
   it("SYNTHETIC: after a newer change to the board, undoing the older swap conflicts and changes nothing", async () => {
     const { h, owner, made } = await syntheticBoard(1);
     const optionId = made.options[0]!.optionId;

@@ -709,8 +709,9 @@ export const boardSwapSlot = define({
   },
   /**
    * Undoing a swap publishes the board as it was before the swap as a NEW revision (history keeps both).
-   * Only while the swap's revision is still the board's current one - a later swap, repair or rebuild is
-   * undone first - and only when every earlier outfit, reserves included, is still valid now. The earlier
+   * Only while the board still shows the swap's revision - directly, or through undos that restored it (a
+   * newer swap undone first brings back exactly this swap's revision, so swaps unwind in reverse order) -
+   * and only when every earlier outfit, reserves included, is still valid now. The earlier
    * outfits are judged as the forward swap is: a forecast recorded since the swap governs and is carried
    * into the new revision, a stale one is stated and rechecked. The board's lines (which outfits suit the
    * day's event, the notice) are recomputed from that current context, never copied from the old revision.
@@ -718,7 +719,17 @@ export const boardSwapSlot = define({
   async planUndo(ctx, _original, data): Promise<CommandPlan> {
     const board = await requireBoard(ctx, data.boardId as string);
     if (board.status !== "active") throw new CommandError("precondition_failed", board.status === "worn" ? "the day's outfit is already recorded; the swap is history" : "this day's board was removed; restore it first");
-    if (board.current_revision !== data.revisionAfter) throw new CommandError("conflict", "the board changed after this swap; undo the newer change first, or swap the piece back", { revision: board.current_revision, swapRevision: data.revisionAfter });
+    // The revision the board shows, seen through undo revisions: an undo of a swap restores that swap's
+    // earlier revision exactly, so it stands for that revision. The write below is pinned to the current
+    // revision, so a change landing after this read makes the undo plan again. An undo always restores an
+    // earlier revision, so the walk strictly descends and ends, however long the chain of swaps and undos.
+    let shown = board.current_revision;
+    while (shown !== data.revisionAfter) {
+      const restored = (await loadRevision(ctx.db, ctx.userId, board.board_id, shown))?.context?.undoOfSwap as { restoredRevision?: unknown } | undefined;
+      if (typeof restored?.restoredRevision !== "number" || restored.restoredRevision >= shown) break;
+      shown = restored.restoredRevision;
+    }
+    if (shown !== data.revisionAfter) throw new CommandError("conflict", "the board changed after this swap; undo the newer change first, or swap the piece back", { revision: board.current_revision, swapRevision: data.revisionAfter });
     const beforeOptions = await loadOptions(ctx.db, ctx.userId, board.board_id, data.revisionBefore as number);
     const before = beforeOptions.find((o) => o.optionId === data.optionId);
     if (!before) throw new CommandError("precondition_failed", "the option as it was before the swap is not recorded");

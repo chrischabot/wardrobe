@@ -261,21 +261,9 @@ export async function proposePacking(deps: DailyDeps, principal: Principal, inpu
     { top: 3, bottom: 99, outer: 99, footwear: 99, belt: 99 },
   ];
   const limit = trip.luggage?.maxPieces ?? null;
-  let plan = await planPacking(deps, principal, trip, nowMs, forecast, LEVELS[0]!);
-  let smallest = plan;
-  let level = 0;
-  if (limit !== null) {
-    for (let i = 1; i < LEVELS.length && plan.pieces > limit; i++) {
-      const next = await planPacking(deps, principal, trip, nowMs, forecast, LEVELS[i]!);
-      if (next.pieces < smallest.pieces) smallest = next;
-      plan = next;
-      level = i;
-    }
-    if (plan.pieces > limit) {
-      plan = smallest;
-      level = -1;
-    }
-  }
+  const chosen = await choosePackingPlan(LEVELS.length, limit, (i) => planPacking(deps, principal, trip, nowMs, forecast, LEVELS[i]!));
+  const plan = chosen.plan;
+  const level = chosen.level;
   const { items, days } = plan;
   const notes = [...plan.notes];
   if (limit !== null && plan.pieces > limit) notes.push(`This is ${plan.pieces} pieces against a limit of ${limit} for ${trip.luggage!.label}, even with trousers and shirts reused across days; wearing the travel-day outfit rather than packing it closes part of the gap.`);
@@ -289,6 +277,27 @@ export async function proposePacking(deps: DailyDeps, principal: Principal, inpu
   return { tripId: trip.tripId, revision: Number((receipt.result as any).revision), createdAt: receipt.recordedAt, items: payload.items, days, repeatExceptionForTrip: true, weather, notes };
 }
 
+/**
+ * Which packing plan is proposed against a luggage limit. Plans are made level by level (more reuse at each)
+ * until one fits. A day or evening left without an outfit is never a saving: a retry fits only when it still
+ * covers as many days and evenings as any plan tried so far. When none fits, the smallest of the plans with
+ * the best coverage is proposed (level -1).
+ */
+export async function choosePackingPlan<T extends { pieces: number; covered: number }>(levels: number, limit: number | null, planAt: (level: number) => Promise<T>): Promise<{ plan: T; level: number }> {
+  const first = await planAt(0);
+  if (limit === null || first.pieces <= limit) return { plan: first, level: 0 };
+  const tried = [first];
+  let bestCoverage = first.covered;
+  for (let i = 1; i < levels; i++) {
+    const next = await planAt(i);
+    tried.push(next);
+    bestCoverage = Math.max(bestCoverage, next.covered);
+    if (next.pieces <= limit && next.covered >= bestCoverage) return { plan: next, level: i };
+  }
+  const best = tried.filter((p) => p.covered === bestCoverage).reduce((a, b) => (b.pieces < a.pieces ? b : a));
+  return { plan: best, level: -1 };
+}
+
 /** One packing plan for the whole trip, reusing each role up to `REUSE_LIMIT` days (a role without a limit is not reused). */
 async function planPacking(
   deps: DailyDeps,
@@ -297,15 +306,16 @@ async function planPacking(
   nowMs: number,
   forecast: (date: string, segment: "day" | "evening") => ReturnType<typeof fetchWeatherSnapshot>,
   REUSE_LIMIT: Partial<Record<Role, number>>,
-): Promise<{ items: Map<string, { garmentId: string; name: string; role: Role; quantity: number }>; days: PackingProposal["days"]; notes: string[]; pieces: number }> {
+): Promise<{ items: Map<string, { garmentId: string; name: string; role: Role; quantity: number }>; days: PackingProposal["days"]; notes: string[]; pieces: number; covered: number }> {
   const items = new Map<string, { garmentId: string; name: string; role: Role; quantity: number }>();
   const days: PackingProposal["days"] = [];
   const notes: string[] = [];
   const reuse = new Map<Role, { garmentId: string; uses: number }>();
   const usedTops: string[] = [];
+  /** Days each shirt in the proposal is worn on (a shirt is reused while under its limit, not only the last one). */
+  const topUses = new Map<string, number>();
   /** Clean pairs at home of each sock already in the proposal. */
   const sockUnits = new Map<string, number>();
-  const reuseOrder: Role[] = [...(REUSE_LIMIT.top !== undefined ? ["top" as Role] : []), "bottom", "outer", "footwear", "belt"];
 
   for (let date = trip.departsOn; date <= trip.returnsOn; date = addDays(date, 1)) {
     const segments: ("day" | "evening")[] = ["day", ...(trip.occasions.some((o) => o.localDate === date && o.segment === "evening") ? ["evening" as const] : [])];
@@ -328,7 +338,7 @@ async function planPacking(
       let rc = await contextFor(allocatedSocks);
       // Deliberate reuse: lock pieces already in the bag while they still validate for this day.
       const attempt = async (lockedRoles: Role[]) => {
-        const locked: OutfitSlot[] = lockedRoles.flatMap((role) => {
+        const locked: OutfitSlot[] = lockedRoles.filter((role) => role !== "top").flatMap((role) => {
           const r = reuse.get(role);
           return r && r.uses < (REUSE_LIMIT[role] ?? 1) ? [{ role, garmentId: r.garmentId }] : [];
         });
@@ -337,10 +347,31 @@ async function planPacking(
           const id = evening.slots.find((s) => s.role === role)?.garmentId;
           if (id && !locked.some((l) => l.role === role)) locked.push({ role, garmentId: id });
         }
-        const composed = await composeBoard(rc, { count: 1, reserveCount: 0, locked, avoidTops: usedTops.filter((id) => !locked.some((l) => l.garmentId === id)), everydayFlourish: false, validate: { allowRepeat: true, ignoreBriefInclusions: true } });
-        return composed.options[0] ?? null;
+        const composeWith = async (slots: OutfitSlot[]) => (await composeBoard(rc, { count: 1, reserveCount: 0, locked: slots, avoidTops: usedTops.filter((id) => !slots.some((l) => l.garmentId === id)), everydayFlourish: false, validate: { allowRepeat: true, ignoreBriefInclusions: true } })).options[0] ?? null;
+        if (!lockedRoles.includes("top")) return composeWith(locked);
+        // Shirt reuse: every shirt already in the bag and still under its limit is tried, the most recent
+        // first, before a new shirt is considered (by the next, shirt-free attempt of the cascade).
+        for (const top of [...usedTops].reverse()) {
+          if ((topUses.get(top) ?? 0) >= (REUSE_LIMIT.top ?? 1)) continue;
+          const option = await composeWith([...locked, { role: "top", garmentId: top }]);
+          if (option) return option;
+        }
+        return null;
       };
-      const cascade = async () => (await attempt(reuseOrder)) ?? (await attempt(["bottom", "outer", "footwear", "belt"])) ?? (await attempt(["outer", "footwear", "belt"])) ?? (await attempt(["footwear"])) ?? (await attempt([]));
+      // Locks are relaxed step by step. When shirts may be reused, every relaxation is first tried with a
+      // shirt already in the bag; only when no relaxation admits one is a new shirt considered.
+      const relaxations: Role[][] = [["bottom", "outer", "footwear", "belt"], ["outer", "footwear", "belt"], ["footwear"], []];
+      const cascade = async () => {
+        if (REUSE_LIMIT.top !== undefined) for (const roles of relaxations) {
+          const option = await attempt(["top", ...roles]);
+          if (option) return option;
+        }
+        for (const roles of relaxations) {
+          const option = await attempt(roles);
+          if (option) return option;
+        }
+        return null;
+      };
       let option = await cascade();
       let socksRanOut = false;
       // Clean pairs at home that are not yet planned for an earlier day (they may still not suit this day).
@@ -388,7 +419,8 @@ async function planPacking(
         } else entry.quantity = 1;
         items.set(s.garmentId, entry);
         if (s.role === "top" && !usedTops.includes(s.garmentId)) usedTops.push(s.garmentId);
-        if (REUSE_LIMIT[s.role] !== undefined) {
+        if (s.role === "top" && !sameDayReuse) topUses.set(s.garmentId, (topUses.get(s.garmentId) ?? 0) + 1);
+        if (REUSE_LIMIT[s.role] !== undefined && s.role !== "top") {
           const r = reuse.get(s.role);
           if (r && r.garmentId === s.garmentId) r.uses += sameDayReuse ? 0 : 1;
           else reuse.set(s.role, { garmentId: s.garmentId, uses: 1 });
@@ -397,7 +429,7 @@ async function planPacking(
     }
   }
   const pieces = [...items.values()].reduce((n, i) => n + i.quantity, 0);
-  return { items, days, notes, pieces };
+  return { items, days, notes, pieces, covered: days.length };
 }
 
 /** A trip-day board: destination weather, the trip's occasions, and ONLY the physically packed subset. */
