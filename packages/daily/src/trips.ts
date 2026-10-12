@@ -261,11 +261,12 @@ export async function proposePacking(deps: DailyDeps, principal: Principal, inpu
     { top: 3, bottom: 99, outer: 99, footwear: 99, belt: 99 },
   ];
   const limit = trip.luggage?.maxPieces ?? null;
-  const chosen = await choosePackingPlan(LEVELS.length, limit, (i) => planPacking(deps, principal, trip, nowMs, forecast, LEVELS[i]!));
+  const chosen = await choosePackingPlan(LEVELS.length, limit, async (i) => withoutOptionalFlourishes(await planPacking(deps, principal, trip, nowMs, forecast, LEVELS[i]!), limit));
   const plan = chosen.plan;
   const level = chosen.level;
   const { items, days } = plan;
   const notes = [...plan.notes];
+  if (plan.leftOut.length > 0) notes.push(`To save space in ${trip.luggage!.label}, the optional ${plan.leftOut.join(" and ")} ${plan.leftOut.length === 1 ? "is" : "are"} left out.`);
   if (limit !== null && plan.pieces > limit) notes.push(`This is ${plan.pieces} pieces against a limit of ${limit} for ${trip.luggage!.label}, even with trousers and shirts reused across days; wearing the travel-day outfit rather than packing it closes part of the gap.`);
   else if (level >= 1) notes.push(`To fit ${trip.luggage!.label} (${limit} pieces), ${level === 1 ? "trousers are worn on more days" : `a shirt is worn on up to ${LEVELS[level]!.top} days`} than usual.`);
   if (weather.some((w) => w.freshness !== "fresh")) notes.push("Some destination forecasts are stale or unavailable; those days were proposed without a verified forecast.");
@@ -275,6 +276,30 @@ export async function proposePacking(deps: DailyDeps, principal: Principal, inpu
   const payload = { tripId: trip.tripId, items: [...items.values()], days, weather, notes };
   const receipt = await execAs(deps, principal, "trip.record_packing_proposal", payload, `packing:${input.clientRequestId}`);
   return { tripId: trip.tripId, revision: Number((receipt.result as any).revision), createdAt: receipt.recordedAt, items: payload.items, days, repeatExceptionForTrip: true, weather, notes };
+}
+
+/** Roles that only carry the belt line's optional flourish (profile section 5: "often ignored, always welcome"). */
+const OPTIONAL_FLOURISH_ROLES: ReadonlySet<Role> = new Set<Role>(["neckwear", "accessory"]);
+
+/**
+ * A plan over the luggage limit leaves out its optional flourishes (tie, scarf, pocket square), one at a
+ * time, before it is judged against the limit: a piece the owner often ignores never costs the bag a
+ * place it does not have. Nothing a hard rule needs is removed, and a plan within the limit keeps them.
+ */
+export function withoutOptionalFlourishes<P extends { items: Map<string, { garmentId: string; name: string; role: Role; quantity: number }>; days: PackingProposal["days"]; pieces: number }>(plan: P, limit: number | null): P & { leftOut: string[] } {
+  if (limit === null || plan.pieces <= limit) return { ...plan, leftOut: [] };
+  const items = new Map(plan.items);
+  let days = plan.days;
+  let pieces = plan.pieces;
+  const leftOut: string[] = [];
+  for (const item of [...items.values()].filter((i) => OPTIONAL_FLOURISH_ROLES.has(i.role))) {
+    if (pieces <= limit) break;
+    items.delete(item.garmentId);
+    days = days.map((d) => ({ ...d, slots: d.slots.filter((s) => s.garmentId !== item.garmentId) }));
+    pieces -= item.quantity;
+    leftOut.push(item.name);
+  }
+  return { ...plan, items, days, pieces, leftOut };
 }
 
 /**
