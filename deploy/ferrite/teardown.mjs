@@ -68,7 +68,7 @@ export async function main(argv) {
         return;
       }
       const r = await ferriteAsync(args, { timeoutMs });
-      if (r.status !== 0) console.error(cliDiagnostics(r, known()));
+      if (r.status !== 0 || r.error) console.error(cliDiagnostics(r, known()));
       done.push(cliEvidence(r));
       if (r.timedOut) {
         // Killed locally, perhaps still running remotely: keep the lock and start nothing further.
@@ -78,7 +78,7 @@ export async function main(argv) {
     };
     for (const name of SECRET_NAMES) await run(["secrets", "delete", name], 120_000);
     await run(["deploy", "--instances", "0", "--force"], 3_600_000);
-    const ok = !stopped && !interrupted() && done.length === SECRET_NAMES.length + 1 && done.every((d) => d.exit === 0);
+    const ok = !stopped && !interrupted() && done.length === SECRET_NAMES.length + 1 && done.every((d) => d.exit === 0 && d.spawnFailed === false);
     if (ok) removeTokens(target);
     evidence("teardown.json", { at: new Date().toISOString(), target, steps: done, interruptedBefore: stopped, localStateRemoved: ok });
     return ok ? 0 : 1;

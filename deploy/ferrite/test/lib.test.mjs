@@ -211,6 +211,8 @@ test("raw command output is capped at 8 MiB in bytes, and a chunk crossing the c
   assert.equal(big.status, 0);
   assert.ok(Buffer.byteLength(big.stdout) <= 8 << 20, "at most 8 MiB kept");
   assert.equal(big.error, "output exceeded 8 MiB and was truncated");
+  assert.equal(big.outputTruncated, true);
+  assert.equal(cliDiagnostics(big, []).includes("é"), false, "truncated output is never shown in diagnostics");
   const exact = await spawnAsync(process.execPath, ["-e", `process.stdout.write("x".repeat(${8 << 20}))`], { cwd: DIR });
   assert.equal(exact.stdout.length, 8 << 20);
   assert.equal(exact.error, null, "exactly 8 MiB is not truncated");

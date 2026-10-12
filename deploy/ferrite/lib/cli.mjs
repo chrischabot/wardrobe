@@ -140,7 +140,7 @@ export function spawnAsync(command, args, { cwd = APP_DIR, input, timeoutMs = 60
       clearTimeout(timer);
       activeChildren.delete(child);
       scope?.children.delete(child);
-      resolve({ args, status: Number.isInteger(status) ? status : null, signal: signal ?? null, stdout, stderr, error: error ?? (outputTruncated ? "output exceeded 8 MiB and was truncated" : null), timedOut, ms: Date.now() - started });
+      resolve({ args, status: Number.isInteger(status) ? status : null, signal: signal ?? null, stdout, stderr, error: error ?? (outputTruncated ? "output exceeded 8 MiB and was truncated" : null), outputTruncated, timedOut, ms: Date.now() - started });
     };
     // Every command runs in its own process group (`detached`, the default): a terminal Ctrl-C reaches only this
     // process, so the running step finishes (a forwarded signal is explicit), and a timeout or forced exit kills the
@@ -216,8 +216,12 @@ export function cliEvidence(result) {
   };
 }
 
-/** The redacted tail of a CLI result's output, for the console only (never evidence). Redacted whole, then cut. */
+/**
+ * The redacted tail of a CLI result's output, for the console only (never evidence). Redacted whole, then cut. Output
+ * that was truncated at capture is not shown at all: a known secret cut at the capture boundary would no longer match.
+ */
 export function cliDiagnostics(result, known = [], max = 1500) {
+  if (result.outputTruncated) return redactText(`output exceeded the capture limit and is not shown${result.error ? `; ${result.error}` : ""}`, known);
   const text = redactText(`${result.stdout ?? ""}\n${result.stderr ?? ""}\n${result.error ?? ""}`.trim(), known, Number.MAX_SAFE_INTEGER);
   return text.length > max ? `…${text.slice(text.length - max)}` : text;
 }

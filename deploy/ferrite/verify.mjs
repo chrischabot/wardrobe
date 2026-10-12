@@ -258,8 +258,9 @@ export const signalListeners = new Set();
 /**
  * Install signal handlers for a run that may have changed the wardrobe. The first SIGINT or SIGTERM stops new checks
  * and commands and lets the run undo its own changes and record that it was interrupted; a second one calls `onForce`
- * (which kills a dev server this run started) and exits with 130 without cleanup; a held target lock is still
- * released by its exit hook.
+ * (which kills a dev server this run started) and exits with 130 without cleanup; a held target lock is then released
+ * by its exit hook only when its target has no possibly unsettled operation (no command still running, timed out or
+ * killed, and no write in flight or unanswered); otherwise it is kept for the operator.
  */
 export function installInterruptHandlers(onForce = () => {}) {
   const handler = (signal) => {
@@ -305,7 +306,7 @@ export const EVIDENCE_PATHS = new Set([
   "outcomes", "outcomes[].what", "outcomes[].httpStatus", "outcomes[].code", "outcomes[].expected", "outcomes[].ok",
   "ownReceipts", "ownReceiptsStillOpen", "undoneByCleanup", "undoneByCleanup[].commandId", "undoneByCleanup[].httpStatus",
   "failedAttempts", "failedAttempts[].commandId", "failedAttempts[].httpStatus", "unresolvedReplays", "keyCollisions", "balancesRestored",
-  "protocolVersion", "tools", "scopes", "step", "grants", "grants[].grantId", "grants[].endedBy", "grants[].httpStatus", "grants[].fallbackStatus", "grants[].tokenRefused", "unansweredOauth", "grants[].refreshRefused", "grants[].listedAs",
+  "protocolVersion", "tools", "scopes", "step", "grants", "grants[].grantId", "grants[].endedBy", "grants[].httpStatus", "grants[].fallbackStatus", "grants[].tokenRefused", "grants[].retryRefused", "unansweredOauth", "grants[].refreshRefused", "grants[].listedAs",
 ]);
 export function evidenceValue(value, at = "") {
   if (value === null || value === undefined || typeof value === "boolean") return value ?? null;
@@ -373,8 +374,21 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
   // Every receipt an original (non-undo) request was answered with (id -> its wardrobe revision), before and apart from
   // any replay: if the app broke idempotency and a replay created another receipt, the original's is still undone.
   const answeredIds = new Map();
-  const track = (who, body) => {
-    if (!mutations.some((m) => m.who === who && JSON.stringify(m.body) === JSON.stringify(body))) mutations.push({ who, body });
+  // Each entry also counts how often it was sent and how many of those sends got a definitive answer from the app
+  // (any status but a 5xx or 408): a send without one may still be executing, and only a receipt can settle it.
+  const track = (who, body, sends = 1) => {
+    let entry = mutations.find((m) => m.who === who && JSON.stringify(m.body) === JSON.stringify(body));
+    if (!entry) {
+      entry = { who, body, sent: 0, answered: 0 };
+      mutations.push(entry);
+    }
+    entry.sent += sends;
+    return entry;
+  };
+  const definitive = (r) => typeof r?.status === "number" && !(r.status >= 500 || r.status === 408);
+  const answered = (entry, r) => {
+    if (definitive(r)) entry.answered += 1;
+    return r;
   };
   const noteAnswer = (body, r) => {
     if (body?.type !== "command.undo" && r?.status === 200 && typeof r.json?.commandId === "string") answeredIds.set(r.json.commandId, r.json.wardrobeRevision);
@@ -382,8 +396,8 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
   };
   const mutate = async (who, body) => {
     if (interruption.requested) throw new Error("the run was interrupted; no further command is sent");
-    track(who, body);
-    return noteAnswer(body, await who("POST", "/v1/commands", body));
+    const entry = track(who, body);
+    return noteAnswer(body, answered(entry, await who("POST", "/v1/commands", body)));
   };
   /** The newest receipt's id: a refusal that "writes nothing" must leave it, and the revision, unchanged. */
   const newestReceipt = async () => {
@@ -550,11 +564,11 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
       if (!ready) return { notRun: unready };
       const start = await page();
       const body = command("care.mark_dirty", { items: [{ garmentId: a }] }, `verify-${runId}-race`, "owner_tap", "ios");
-      track(owner, body);
+      const entry = track(owner, body, 2);
       if (interruption.requested) throw new Error("the run was interrupted; no further command is sent");
       // Both requests settle before anything else runs, so cleanup never starts while one is still in flight.
       const settled = await Promise.allSettled([owner("POST", "/v1/commands", body), owner("POST", "/v1/commands", body)]);
-      const [x, y] = settled.map((s) => (s.status === "fulfilled" ? noteAnswer(body, s.value) : { status: null, json: null }));
+      const [x, y] = settled.map((s) => (s.status === "fulfilled" ? noteAnswer(body, answered(entry, s.value)) : { status: null, json: null }));
       const mid = await page();
       const same = x.status === 200 && y.status === 200 && typeof x.json?.commandId === "string" && x.json.commandId === y.json?.commandId;
       const once = mid.wardrobeRevision === start.wardrobeRevision + 1 && exactlyChanged(start, mid, { [a]: { clean: -1, dirty: 1 } });
@@ -737,9 +751,9 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
         // The same envelope the MCP tool builds (assistant, owner_statement, channel mcp): cleanup can replay it on
         // the assistant's /v1 channel to find its receipt, and the answered receipt is recorded as the run's own too.
         const body = command("care.mark_dirty", { items: [{ garmentId: garment }] }, `verify-${runId}-mcp`, "owner_statement", "mcp");
-        track(assistant, body);
+        const mcpEntry = track(assistant, body);
         if (interruption.requested) throw new Error("the run was interrupted; no further command is sent");
-        const r = await mcp(writer, "tools/call", { name: "garderobe_command", arguments: { type: body.type, payload: body.payload, idempotencyKey: body.idempotencyKey } });
+        const r = answered(mcpEntry, await mcp(writer, "tools/call", { name: "garderobe_command", arguments: { type: body.type, payload: body.payload, idempotencyKey: body.idempotencyKey } }));
         const receipt = r.json?.result?.structuredContent?.receipt ?? null;
         if (r.status === 200 && typeof receipt?.commandId === "string") answeredIds.set(receipt.commandId, receipt.wardrobeRevision);
         const owned = r.status === 200 && ownedByRun(receipt?.commandId, receipt?.wardrobeRevision);
@@ -775,8 +789,8 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
         if (interruption.requested) throw new Error("the run was interrupted; no further command is sent");
         // Tracked before it is sent: a refusal does not prove nothing was written (this check exists because scope
         // enforcement may be broken), so cleanup always replays it and undoes any receipt it names.
-        track(assistant, body);
-        const r = await mcp(reader, "tools/call", { name: "garderobe_command", arguments: { type: body.type, payload: body.payload, idempotencyKey: body.idempotencyKey } });
+        const readOnlyEntry = track(assistant, body);
+        const r = answered(readOnlyEntry, await mcp(reader, "tools/call", { name: "garderobe_command", arguments: { type: body.type, payload: body.payload, idempotencyKey: body.idempotencyKey } }));
         const leaked = r.json?.result?.structuredContent?.receipt;
         if (typeof leaked?.commandId === "string") answeredIds.set(leaked.commandId, leaked.wardrobeRevision);
         const challenge = authParams(r.headers?.["www-authenticate"]);
@@ -853,9 +867,21 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
         if (meta && typeof g.access === "string") await revokeToken(g.access);
       }
       let refused = null;
-      if (typeof g.access === "string") {
+      let retryRefused = null;
+      const probeAccess = async () => {
         const after = await safe(() => call(g.access, "POST", "/mcp", { jsonrpc: "2.0", id: 1, method: "tools/list" }, "Bearer", { headers: { accept: "application/json, text/event-stream", "mcp-protocol-version": MCP_VERSION } }));
-        refused = after.status === 401;
+        return after.status === 401;
+      };
+      if (typeof g.access === "string") {
+        refused = await probeAccess();
+        // The grant was reported ended but its access token still works: end it every other way (owner disconnect,
+        // revocation of both tokens) and probe again. The check still fails on the first probe; the retry only cleans up.
+        if (!refused) {
+          await disconnect(g);
+          if (meta && typeof g.refresh === "string") await revokeToken(g.refresh);
+          if (meta) await revokeToken(g.access);
+          retryRefused = await probeAccess();
+        }
       }
       // An ended grant's refresh token must not mint new tokens either. If it does, whatever it minted is revoked
       // at once (best effort) and the check fails.
@@ -869,7 +895,7 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
         if (typeof again.json?.refresh_token === "string") await safe(() => call(null, "POST", meta.revoke, undefined, "Bearer", { form: new URLSearchParams({ token: again.json.refresh_token, client_id: client ?? "" }).toString() }));
         if (typeof again.json?.access_token === "string") await safe(() => call(null, "POST", meta.revoke, undefined, "Bearer", { form: new URLSearchParams({ token: again.json.access_token, client_id: client ?? "" }).toString() }));
       }
-      out.push({ grantId: g.grantId, endedBy: byRevocation ? "revocation" : "owner_disconnect", httpStatus: ended.status, fallbackStatus, tokenRefused: refused, refreshRefused });
+      out.push({ grantId: g.grantId, endedBy: byRevocation ? "revocation" : "owner_disconnect", httpStatus: ended.status, fallbackStatus, tokenRefused: refused, retryRefused, refreshRefused });
     }
     let end = await listed();
     // Any grant of the client still not revoked gets one more disconnect before the final read.
@@ -914,7 +940,7 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
         if (own(id, revision)) ours.add(id);
         else collisions++;
       }
-      for (const { who, body } of mutations) {
+      for (const { who, body, sent, answered: answeredSends } of mutations) {
         if (body.type === "command.undo") continue;
         let r;
         try {
@@ -927,6 +953,10 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
           else collisions++;
         } else if (!REPLAY_REFUSALS.some(([status, code]) => refusal(r, status, code))) {
           // Anything that is neither a receipt nor a documented refusal leaves the request's outcome unknown.
+          unresolved.push({ httpStatus: r.status });
+        } else if (answeredSends < sent) {
+          // A refused replay proves only that the replay wrote nothing: an original send that got no definitive answer
+          // may still be executing and commit later, so it stays unresolved and the lock is kept.
           unresolved.push({ httpStatus: r.status });
         }
       }

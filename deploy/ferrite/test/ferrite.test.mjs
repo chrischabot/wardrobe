@@ -136,7 +136,7 @@ test("verification judgements and the verify run's structure", () => {
  * client commit a command in the middle of the run; `leakWriteTool` offers and runs the write tool for read-only grants.
  */
 const PUBLIC = "https://wardrobe.example";
-function fakeApp({ failReceiptList = false, foreignAfter = null, brokenIdempotency = false, staleKeySuffix = null, mcp = true, leakWriteTool = false, breakToken = false, failFirstDisconnect = false, refreshAfterEnd = false, refreshUnavailable = false, readOnlyCannotRead = false, grantOnWrongToken = false } = {}) {
+function fakeApp({ failReceiptList = false, foreignAfter = null, brokenIdempotency = false, staleKeySuffix = null, mcp = true, leakWriteTool = false, breakToken = false, failFirstDisconnect = false, refreshAfterEnd = false, refreshUnavailable = false, forbiddenUnanswered = false, accessSurvivesEnd = false, readOnlyCannotRead = false, grantOnWrongToken = false } = {}) {
   const OWNER = "owner-token-for-the-fake-app-0001";
   const ASSISTANT = "assistant-token-for-the-fake-app-01";
   // 127 garments, 144 owned units: seventeen garments are owned twice.
@@ -194,7 +194,14 @@ function fakeApp({ failReceiptList = false, foreignAfter = null, brokenIdempoten
   const runCommand = (who, c) => {
     state.posts++;
     if (who === "assistant" && c.authorization === "owner_tap") return err(403, "forbidden");
-    if (who === "owner" && c.source?.channel === "mcp") return err(403, "forbidden");
+    if (who === "owner" && c.source?.channel === "mcp") {
+      // A gateway that times out the first time: the original send gets no definitive answer.
+      if (forbiddenUnanswered && !state.forbiddenOnce) {
+        state.forbiddenOnce = true;
+        return [503, "<p>gateway timeout</p>"];
+      }
+      return err(403, "forbidden");
+    }
     const { idempotencyKey, ...rest } = c;
     const stale = staleKeySuffix && idempotencyKey.endsWith(staleKeySuffix) ? { body: JSON.stringify(rest), receipt: state.stale } : null;
     const prior = stale ?? (brokenIdempotency ? null : state.keys.get(idempotencyKey));
@@ -237,7 +244,8 @@ function fakeApp({ failReceiptList = false, foreignAfter = null, brokenIdempoten
   };
   const grantOf = (req) => {
     const t = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1];
-    return [...oauth.grants.values()].find((g) => g.active && g.access === t) ?? null;
+    // A broken server (accessSurvivesEnd): an ended grant's access token keeps working until it is revoked itself.
+    return [...oauth.grants.values()].find((g) => (g.active || (accessSurvivesEnd && !g.accessRevoked)) && g.access === t) ?? null;
   };
   const tools = (g) => [{ name: "garderobe_inventory" }, ...(g.scopes.includes("wardrobe.write") || leakWriteTool ? [{ name: "garderobe_command" }] : [])];
   const oauthRoute = (req, url, body) => {
@@ -291,7 +299,14 @@ function fakeApp({ failReceiptList = false, foreignAfter = null, brokenIdempoten
     }
     if (req.method === "POST" && p === "/oauth/revoke") {
       const t = form(body).token;
-      for (const g of oauth.grants.values()) if (g.refresh === t) g.active = false;
+      for (const g of oauth.grants.values()) {
+        if (g.refresh === t) g.active = false;
+        if (g.access && g.access === t) {
+          g.active = false;
+          g.accessRevoked = true;
+          oauth.revokedAccess = (oauth.revokedAccess ?? 0) + 1;
+        }
+      }
       return [200, {}];
     }
     if (p !== "/mcp") return oerr(404, "not_found");
@@ -408,6 +423,25 @@ test("a refresh probe answered with a server error counts as an unanswered OAuth
   assert.equal(end.unansweredOauth, 2);
   const { cleanupUnresolved } = await import("../verify.mjs");
   assert.equal(cleanupUnresolved(report.results), true);
+});
+
+test("a replay refused for a request whose original send got no definitive answer leaves cleanup unresolved and keeps the lock", async () => {
+  const app = fakeApp({ forbiddenUnanswered: true });
+  const report = await runAgainst(app);
+  const c = report.results.find((r) => r.group === "cleanup");
+  assert.equal(c.status, "fail");
+  assert.ok(c.unresolvedReplays >= 1, "the refused replay does not settle the unanswered original");
+  const { cleanupUnresolved } = await import("../verify.mjs");
+  assert.equal(cleanupUnresolved(report.results), true);
+});
+
+test("a grant whose access token still works after it was ended is ended every other way and probed again; the check still fails", async () => {
+  const app = fakeApp({ accessSurvivesEnd: true });
+  const report = await runAgainst(app);
+  const end = report.results.find((r) => r.name.startsWith("the run's OAuth grants end"));
+  assert.equal(end.status, "fail");
+  assert.ok(end.grants.every((g) => g.tokenRefused === false && g.retryRefused === true), "the retry revoked the surviving tokens");
+  assert.ok(app.oauth.revokedAccess >= 1, "the access token itself was revoked");
 });
 
 test("a failed disconnect falls back to revocation so the grant still ends, but the grant-ending check fails", async () => {
