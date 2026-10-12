@@ -645,6 +645,58 @@ outbox; `expectedVersions` is checked for every command except the owner's
 observations (the wash report, the laundry pickup and return, and the wear
 report), which are rebased, as in the TypeScript service.
 
+## Known limits
+
+Recorded rather than fixed, under the owner's P0/P1 direction. Each is either minor or outside
+the lines of the milestone it was found in.
+
+Milestone C, the Wardrobe tab in the contract shape (`GET /v1/wardrobe` as
+`InventoryPage`, `GET /v1/items/{id}` as `ItemResponse`), is parked unlanded.
+Its open findings:
+
+- `availability` would be `null`, with availability filters refused, instead
+  of the probabilistic availability estimate.
+- The batch's initial ledger read aborts before the existing-receipt
+  recovery path, so a retried batch whose first read fails is not recovered
+  from its receipts.
+
+What was tried: three exact-patch review rounds fixed cursor overflow, a
+cursor sent without a limit, and decomposed accents in search; later reviews
+raised the two findings above. The last prepared commit, 81ce6e91, is kept
+unlanded, and `/v1/wardrobe` keeps the subset shape above.
+
+Found by the automatic review of the whole port (2026-10-13), outside the
+lines of milestone C:
+
+- **Board.**
+  - `board.select` undo cannot unwind successive choices (undoing B, then A,
+    conflicts on the selection version).
+  - A swap revalidates only the changed option. The other options and the
+    reserves are copied into the new revision as they were.
+  - A publication has no undo (as in the TypeScript service, which the
+    reviewer counts as a gap under the 2026-10-05 contract).
+- **Laundry.**
+  - A return with no pickup that cleans everything leaves no return record
+    to detect a repeat.
+  - A back-dated laundry report can change another bag's holdings without
+    raising that bag's version.
+- **OAuth.**
+  - Issuing a ninth access token within 15 minutes evicts the oldest one
+    while it is still live.
+  - Loopback redirect URIs must match the registered port exactly. RFC 8252
+    allows any port.
+- **Assistant.**
+  - `garderobe_ask` and `garderobe_research` resolve the inference
+    configuration before reading a saved run. A saved answer is therefore
+    unreachable while the gateway secret is unset.
+  - Applying owner changes from conversation (`garderobe_ask`) stays parked
+    until the owner answers the assistant decision.
+- **Recommender.**
+  - Availability is binary (clean at home).
+  - No weather, Calendar or brief is read.
+  - The neckwear flourish is not counted in the neutral limit, so a tie can
+    sink an otherwise valid candidate.
+
 ## Ferrite limits and what they mean for Wardrobe
 
 From `docs/building-on-upstream-core.md` in `iGentAI/ferrite-labs`.
