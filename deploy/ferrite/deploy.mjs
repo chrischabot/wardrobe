@@ -185,10 +185,10 @@ export async function main(argv) {
       progress.failedStep = `${name} timed out`;
       throw new Error(`${name} timed out; the target lock is kept until \`ferrite status\` shows it settled (then remove the lock file)`);
     }
-    if (result.status !== 0) {
+    if (result.status !== 0 || result.error) {
       progress.failedStep = name;
       console.error(cliDiagnostics(result, known()));
-      throw new Error(`${name} failed (exit ${result.status})`);
+      throw new Error(`${name} failed (exit ${result.status}${result.error ? ", with a command error such as a refused input" : ""})`);
     }
     checkpoint(`after ${name}`);
     return result;

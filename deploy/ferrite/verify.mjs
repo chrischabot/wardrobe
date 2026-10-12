@@ -277,7 +277,7 @@ export const EVIDENCE_PATHS = new Set([
   "outcomes", "outcomes[].what", "outcomes[].httpStatus", "outcomes[].code", "outcomes[].expected", "outcomes[].ok",
   "ownReceipts", "ownReceiptsStillOpen", "undoneByCleanup", "undoneByCleanup[].commandId", "undoneByCleanup[].httpStatus",
   "failedAttempts", "failedAttempts[].commandId", "failedAttempts[].httpStatus", "unresolvedReplays", "keyCollisions", "balancesRestored",
-  "protocolVersion", "tools", "scopes", "step", "grants", "grants[].grantId", "grants[].endedBy", "grants[].httpStatus", "grants[].tokenRefused", "grants[].refreshRefused", "grants[].listedAs",
+  "protocolVersion", "tools", "scopes", "step", "grants", "grants[].grantId", "grants[].endedBy", "grants[].httpStatus", "grants[].fallbackStatus", "grants[].tokenRefused", "unansweredOauth", "grants[].refreshRefused", "grants[].listedAs",
 ]);
 export function evidenceValue(value, at = "") {
   if (value === null || value === undefined || typeof value === "boolean") return value ?? null;
@@ -574,7 +574,24 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
       const r = await call(null, "GET", `${meta.authorize}?${authorizeQuery(scope, pkce, state)}`);
       return { status: r.status, fields: r.status === 200 ? hiddenFields(r.text) : {} };
     };
-    const postForm = (route, fields) => call(null, "POST", route, undefined, "Bearer", { form: new URLSearchParams(fields).toString() });
+    /**
+     * OAuth writes (registration, consent, token exchange) are not wardrobe commands, so wardrobe cleanup cannot
+     * confirm them. One without an answer from the app (no response, a 5xx or 408) may still create a grant or
+     * tokens after the connection list was read: it is counted, fails the grant-ending check and keeps the lock.
+     */
+    let oauthUnanswered = 0;
+    const oauthWrite = async (send) => {
+      let r;
+      try {
+        r = await send();
+      } catch (error) {
+        oauthUnanswered += 1;
+        throw error;
+      }
+      if (r.status >= 500 || r.status === 408) oauthUnanswered += 1;
+      return r;
+    };
+    const postForm = (route, fields) => oauthWrite(() => call(null, "POST", route, undefined, "Bearer", { form: new URLSearchParams(fields).toString() }));
     /** The owner allows the connection on the consent page (with or without "Make changes"); the client exchanges the code. */
     const connect = async (write) => {
       const pkce = pkcePair();
@@ -631,7 +648,7 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
       const noMeta = () => (meta ? null : "OAuth discovery did not succeed");
       await check("oauth", "dynamic client registration accepts a public client", async () => {
         if (noMeta()) return { notRun: noMeta() };
-        const r = await call(null, "POST", meta.register, { client_name: `wardrobe-verify ${runId}`, redirect_uris: [REDIRECT_URI], token_endpoint_auth_method: "none", grant_types: ["authorization_code", "refresh_token"], response_types: ["code"] });
+        const r = await oauthWrite(() => call(null, "POST", meta.register, { client_name: `wardrobe-verify ${runId}`, redirect_uris: [REDIRECT_URI], token_endpoint_auth_method: "none", grant_types: ["authorization_code", "refresh_token"], response_types: ["code"] }));
         client = r.status === 201 && typeof r.json?.client_id === "string" ? r.json.client_id : null;
         return { pass: Boolean(client) && r.json?.token_endpoint_auth_method === "none", httpStatus: r.status };
       });
@@ -749,7 +766,7 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
         return { pass: r.status === 401 && r.json?.error === "invalid_token" && r.json?.result === undefined, httpStatus: r.status };
       });
     } finally {
-      await endGrants(grants, client, meta);
+      await endGrants(grants, client, meta, oauthUnanswered);
     }
   }
 
@@ -759,9 +776,12 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
    * failed; those and every grant whose code arrived are ended. A grant with a refresh token (after the first) is ended
    * by RFC 7009 revocation, any other by the owner's disconnect (Settings › Connected assistants). Each grant is
    * handled on its own, so one failure never leaves the others active. Each token is then probed, and the final list
-   * must show every grant of the client revoked.
+   * must show every grant of the client revoked. A grant passes only when its first way of ending it answered 200: the
+   * other way still runs after a failure (so the grant does not stay active) but never turns the failure into a pass.
+   * An OAuth write of the run that went unanswered fails the check, since it may still create a grant.
    */
-  async function endGrants(grants, client, meta) {
+  async function endGrants(grants, client, meta, unansweredOauth = 0) {
+    let unanswered = unansweredOauth;
     const started = Date.now();
     const name = "the run's OAuth grants end (owner disconnect, RFC 7009 revocation): their access and refresh tokens are refused on the next request and they are listed as revoked";
     const safe = async (fn) => {
@@ -784,7 +804,8 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
     }
     if (all.length === 0) {
       // A list that could not be read cannot show there is nothing to end.
-      if (client && before.rows === null) record("oauth", name, "fail", { reason: "the owner's connection list could not be read, so the run's grants could not be confirmed ended", httpStatus: before.status }, Date.now() - started);
+      if (unanswered > 0) record("oauth", name, "fail", { reason: "an OAuth request of this run went unanswered and may still create a grant", unansweredOauth: unanswered, httpStatus: before.status }, Date.now() - started);
+      else if (client && before.rows === null) record("oauth", name, "fail", { reason: "the owner's connection list could not be read, so the run's grants could not be confirmed ended", httpStatus: before.status }, Date.now() - started);
       else record("oauth", name, "not_run", { reason: "no grant was obtained" }, null, false);
       return;
     }
@@ -793,10 +814,13 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
     const revokeToken = (t) => safe(() => call(null, "POST", meta.revoke, undefined, "Bearer", { form: new URLSearchParams({ token: t, client_id: client ?? "" }).toString() }));
     for (const [i, g] of all.entries()) {
       const byRevocation = i > 0 && meta && typeof g.refresh === "string";
-      let ended = byRevocation ? await revokeToken(g.refresh) : await disconnect(g);
-      // A failed first attempt falls back to the other way of ending it, so a grant is never left on one failure.
+      const ended = byRevocation ? await revokeToken(g.refresh) : await disconnect(g);
+      // A failed first attempt falls back to the other way of ending it, so a grant is never left on one failure;
+      // its status is recorded separately and the grant still fails.
+      let fallbackStatus = null;
       if (ended.status !== 200) {
-        ended = byRevocation ? await disconnect(g) : meta && typeof g.refresh === "string" ? await revokeToken(g.refresh) : await disconnect(g);
+        const fallback = byRevocation ? await disconnect(g) : meta && typeof g.refresh === "string" ? await revokeToken(g.refresh) : await disconnect(g);
+        fallbackStatus = fallback.status;
         if (meta && typeof g.access === "string") await revokeToken(g.access);
       }
       let refused = null;
@@ -809,12 +833,14 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
       let refreshRefused = null;
       if (typeof g.refresh === "string" && meta) {
         const again = await safe(() => call(null, "POST", meta.token, undefined, "Bearer", { form: new URLSearchParams({ grant_type: "refresh_token", refresh_token: g.refresh, client_id: client ?? "", resource: meta.resource }).toString() }));
+        // A token write like any other: one without an answer may still mint tokens after the final list read.
+        if (again.status === null || again.status >= 500 || again.status === 408) unanswered += 1;
         remember(again.json?.access_token, again.json?.refresh_token);
         refreshRefused = again.status === 400 && again.json?.error === "invalid_grant" && again.json?.access_token === undefined;
         if (typeof again.json?.refresh_token === "string") await safe(() => call(null, "POST", meta.revoke, undefined, "Bearer", { form: new URLSearchParams({ token: again.json.refresh_token, client_id: client ?? "" }).toString() }));
         if (typeof again.json?.access_token === "string") await safe(() => call(null, "POST", meta.revoke, undefined, "Bearer", { form: new URLSearchParams({ token: again.json.access_token, client_id: client ?? "" }).toString() }));
       }
-      out.push({ grantId: g.grantId, endedBy: byRevocation ? "revocation" : "owner_disconnect", httpStatus: ended.status, tokenRefused: refused, refreshRefused });
+      out.push({ grantId: g.grantId, endedBy: byRevocation ? "revocation" : "owner_disconnect", httpStatus: ended.status, fallbackStatus, tokenRefused: refused, refreshRefused });
     }
     let end = await listed();
     // Any grant of the client still not revoked gets one more disconnect before the final read.
@@ -827,8 +853,8 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
     const status = new Map((end.rows ?? []).map((c) => [c?.grantId, c?.status]));
     for (const o of out) o.listedAs = status.get(o.grantId) ?? null;
     const othersOfClient = (end.rows ?? []).filter((c) => client && c?.clientId === client && c?.status !== "revoked").length;
-    const pass = end.rows !== null && othersOfClient === 0 && out.every((o) => o.httpStatus === 200 && o.tokenRefused !== false && o.refreshRefused !== false && o.listedAs === "revoked");
-    record("oauth", name, pass ? "pass" : "fail", { grants: out, httpStatus: end.status }, Date.now() - started);
+    const pass = unanswered === 0 && end.rows !== null && othersOfClient === 0 && out.every((o) => o.httpStatus === 200 && o.tokenRefused !== false && o.refreshRefused !== false && o.listedAs === "revoked");
+    record("oauth", name, pass ? "pass" : "fail", { grants: out, unansweredOauth: unanswered, httpStatus: end.status }, Date.now() - started);
   }
 
   /**
@@ -921,9 +947,11 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
 
 /**
  * Whether cleanup left a write of the run unsettled: a replay without a receipt or documented refusal, an own receipt
- * still open, or cleanup raising an error. A foreign change that only made the balances differ does not count.
+ * still open, or cleanup raising an error. A foreign change that only made the balances differ does not count. An
+ * OAuth request that went unanswered counts too: wardrobe cleanup cannot confirm it.
  */
 export function cleanupUnresolved(results) {
+  if (results.some((r) => Number(r.unansweredOauth ?? 0) > 0)) return true;
   const c = results.find((r) => r.group === "cleanup");
   if (!c || c.status !== "fail") return false;
   return Number(c.unresolvedReplays ?? 0) > 0 || Number(c.ownReceiptsStillOpen ?? 0) > 0 || typeof c.reason === "string";
@@ -1064,7 +1092,7 @@ export async function verifyAndRecord({ origin, tokens, target, dev = null, publ
     // receipt still open, or cleanup itself failed): a mutation may still stand, so the lock stays.
     exitPolicy.keepLocks = true;
     report.passed = false;
-    report.lockKept = "cleanup left a write of this run unresolved: the target lock is kept; check the receipts, then remove the lock file";
+    report.lockKept = "cleanup left a write of this run unresolved, or an OAuth request went unanswered: the target lock is kept; check the receipts and the connection list, then remove the lock file";
   }
   if (interruption.requested) {
     report.passed = false;

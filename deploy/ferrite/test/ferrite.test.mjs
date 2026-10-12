@@ -127,7 +127,7 @@ test("verification judgements and the verify run's structure", () => {
  * client commit a command in the middle of the run; `leakWriteTool` offers and runs the write tool for read-only grants.
  */
 const PUBLIC = "https://wardrobe.example";
-function fakeApp({ failReceiptList = false, foreignAfter = null, brokenIdempotency = false, staleKeySuffix = null, mcp = true, leakWriteTool = false, breakToken = false, failFirstDisconnect = false, refreshAfterEnd = false, readOnlyCannotRead = false, grantOnWrongToken = false } = {}) {
+function fakeApp({ failReceiptList = false, foreignAfter = null, brokenIdempotency = false, staleKeySuffix = null, mcp = true, leakWriteTool = false, breakToken = false, failFirstDisconnect = false, refreshAfterEnd = false, refreshUnavailable = false, readOnlyCannotRead = false, grantOnWrongToken = false } = {}) {
   const OWNER = "owner-token-for-the-fake-app-0001";
   const ASSISTANT = "assistant-token-for-the-fake-app-01";
   // 127 garments, 144 owned units: seventeen garments are owned twice.
@@ -266,6 +266,7 @@ function fakeApp({ failReceiptList = false, foreignAfter = null, brokenIdempoten
       const f = form(body);
       if (breakToken) return [500, "<p>upstream error</p>"];
       if (f.grant_type === "refresh_token") {
+        if (refreshUnavailable) return [503, "<p>unavailable</p>"];
         const r = oauth.grants.get(String(f.refresh_token).split(".")[1]);
         if (!r || r.refresh !== f.refresh_token || (!r.active && !refreshAfterEnd)) return oerr(400, "invalid_grant");
         // A broken server: an ended grant's refresh token still mints tokens.
@@ -383,14 +384,33 @@ test("grants the consent created are ended even when the token exchange fails", 
   assert.equal(app.oauth.grants.size, 2);
   assert.ok([...app.oauth.grants.values()].every((g) => !g.active), "every grant the consent created is ended");
   const end = report.results.find((r) => r.name.startsWith("the run's OAuth grants end"));
-  assert.equal(end.status, "pass");
+  // The exchanges were answered with a server error: they may still mint tokens, so the check fails and the lock stays.
+  assert.equal(end.unansweredOauth, 2);
+  assert.equal(end.status, "fail");
+  const { cleanupUnresolved } = await import("../verify.mjs");
+  assert.equal(cleanupUnresolved(report.results), true, "the unanswered OAuth writes keep the target lock");
 });
 
-test("a failed disconnect falls back to revocation, so the grant still ends", async () => {
+test("a refresh probe answered with a server error counts as an unanswered OAuth write and keeps the lock", async () => {
+  const app = fakeApp({ refreshUnavailable: true });
+  const report = await runAgainst(app);
+  const end = report.results.find((r) => r.name.startsWith("the run's OAuth grants end"));
+  assert.equal(end.status, "fail");
+  assert.equal(end.unansweredOauth, 2);
+  const { cleanupUnresolved } = await import("../verify.mjs");
+  assert.equal(cleanupUnresolved(report.results), true);
+});
+
+test("a failed disconnect falls back to revocation so the grant still ends, but the grant-ending check fails", async () => {
   const app = fakeApp({ failFirstDisconnect: true });
   const report = await runAgainst(app);
   assert.ok([...app.oauth.grants.values()].every((g) => !g.active), "both grants ended");
-  assert.equal(report.results.find((r) => r.name.startsWith("the run's OAuth grants end")).status, "pass");
+  const end = report.results.find((r) => r.name.startsWith("the run's OAuth grants end"));
+  assert.equal(end.status, "fail", "a fallback never turns a failed primary into a pass");
+  assert.equal(end.grants[0].endedBy, "owner_disconnect");
+  assert.equal(end.grants[0].httpStatus, 503);
+  assert.equal(end.grants[0].fallbackStatus, 200);
+  assert.equal(end.grants[1].fallbackStatus, null);
 });
 
 test("a consent refused for a wrong owner token that still creates a grant fails the refusal check, and the grant is ended", async () => {
@@ -595,6 +615,7 @@ test("a cleanup that left a write unresolved keeps the target lock even when eve
   assert.equal(cleanupUnresolved([{ group: "cleanup", status: "fail", reason: "cleanup raised an error" }]), true);
   assert.equal(cleanupUnresolved([{ group: "cleanup", status: "fail", unresolvedReplays: 0, ownReceiptsStillOpen: 0, balancesRestored: false }]), false, "only a foreign change: everything of ours is settled");
   assert.equal(cleanupUnresolved([{ group: "cleanup", status: "pass" }]), false);
+  assert.equal(cleanupUnresolved([{ group: "cleanup", status: "pass" }, { group: "oauth", status: "fail", unansweredOauth: 1 }]), true, "an unanswered OAuth write");
   const src = readFileSync(path.join(DIR, "verify.mjs"), "utf8");
   assert.ok(src.includes("} else if (cleanupUnresolved(report.results)) {\n    // Every write was answered") && src.includes("exitPolicy.keepLocks = true;\n    report.passed = false;\n    report.lockKept = \"cleanup left"), "verifyAndRecord keeps the lock for it");
 });

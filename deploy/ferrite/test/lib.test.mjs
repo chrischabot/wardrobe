@@ -187,6 +187,24 @@ test("a command that times out inside the lock keeps that lock, since the remote
   assert.equal(existsSync(`${tokensFile("chris/wardrobe", dir)}.lock`), true, "kept for the operator");
 });
 
+test("a command ended by a signal inside the lock keeps that lock", async () => {
+  const dir = path.join(tmp("ferrite-signal-"), "s");
+  const r = await withTargetLock("chris/wardrobe", () => spawnAsync(process.execPath, ["-e", "process.kill(process.pid, 'SIGKILL')"], { cwd: DIR }), dir);
+  assert.equal(r.signal, "SIGKILL");
+  assert.equal(existsSync(`${tokensFile("chris/wardrobe", dir)}.lock`), true, "kept for the operator");
+});
+
+test("raw command output is capped at 8 MiB in bytes, and a chunk crossing the cap marks the result truncated", async () => {
+  // Two-byte characters: 4 Mi + 8 of them are 8 MiB + 16 bytes, written as one large chunk sequence.
+  const big = await spawnAsync(process.execPath, ["-e", `process.stdout.write("é".repeat(${(4 << 20) + 8}))`], { cwd: DIR });
+  assert.equal(big.status, 0);
+  assert.ok(Buffer.byteLength(big.stdout) <= 8 << 20, "at most 8 MiB kept");
+  assert.equal(big.error, "output exceeded 8 MiB and was truncated");
+  const exact = await spawnAsync(process.execPath, ["-e", `process.stdout.write("x".repeat(${8 << 20}))`], { cwd: DIR });
+  assert.equal(exact.stdout.length, 8 << 20);
+  assert.equal(exact.error, null, "exactly 8 MiB is not truncated");
+});
+
 test("one target's lock release never touches another target's running command or lock", async () => {
   const dir = path.join(tmp("ferrite-two-"), "s");
   let started;

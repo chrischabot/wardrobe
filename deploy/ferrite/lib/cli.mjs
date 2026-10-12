@@ -118,6 +118,9 @@ function lineEcho(stream, known, maxUnits = 4 << 20) {
 export function spawnAsync(command, args, { cwd = APP_DIR, input, timeoutMs = 600_000, env = process.env, echo = null, echoTo = [process.stdout, process.stderr], detached = true, onChild } = {}) {
   const started = Date.now();
   return new Promise((resolve) => {
+    // Raw output for parsing is kept as bytes, bounded at 8 MiB per stream; anything beyond is dropped and the
+    // command's result carries an error. The bytes are decoded once, when the command ends.
+    const raw = { out: [], err: [], outBytes: 0, errBytes: 0 };
     let stdout = "";
     let stderr = "";
     let error = null;
@@ -128,12 +131,16 @@ export function spawnAsync(command, args, { cwd = APP_DIR, input, timeoutMs = 60
     const finish = (status, signal) => {
       if (settled) return;
       settled = true;
+      // Ended by a signal (from us or from outside): its remote step may still be settling, so its lock is kept.
+      if (signal && scope) scope.keep = true;
       outEcho?.flush();
       errEcho?.flush();
+      stdout = Buffer.concat(raw.out).toString("utf8");
+      stderr = Buffer.concat(raw.err).toString("utf8");
       clearTimeout(timer);
       activeChildren.delete(child);
       scope?.children.delete(child);
-      resolve({ args, status: Number.isInteger(status) ? status : null, signal: signal ?? null, stdout, stderr, error, timedOut, ms: Date.now() - started });
+      resolve({ args, status: Number.isInteger(status) ? status : null, signal: signal ?? null, stdout, stderr, error: error ?? (outputTruncated ? "output exceeded 8 MiB and was truncated" : null), timedOut, ms: Date.now() - started });
     };
     // Every command runs in its own process group (`detached`, the default): a terminal Ctrl-C reaches only this
     // process, so the running step finishes (a forwarded signal is explicit), and a timeout or forced exit kills the
@@ -152,12 +159,25 @@ export function spawnAsync(command, args, { cwd = APP_DIR, input, timeoutMs = 60
       killTree(child);
     }, timeoutMs);
     onChild?.(child);
+    // Raw output for parsing is bounded too (8 MiB per stream); beyond it the command's output is marked truncated.
+    const MAX_RAW = 8 << 20;
+    let outputTruncated = false;
+    const keep = (which, chunk) => {
+      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+      const room = MAX_RAW - raw[`${which}Bytes`];
+      if (buf.length > room) outputTruncated = true;
+      if (room > 0) {
+        const part = buf.length > room ? buf.subarray(0, room) : buf;
+        raw[which].push(part);
+        raw[`${which}Bytes`] += part.length;
+      }
+    };
     child.stdout?.on("data", (c) => {
-      stdout += c;
+      keep("out", c);
       outEcho?.push(String(c));
     });
     child.stderr?.on("data", (c) => {
-      stderr += c;
+      keep("err", c);
       errEcho?.push(String(c));
     });
     child.once("error", (e) => {
