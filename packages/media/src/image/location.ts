@@ -55,10 +55,45 @@ function orientationSegment(orientation: number): Uint8Array {
 }
 
 /**
- * JPEG: keeps the tables, frame and scan segments, JFIF (APP0), an ICC profile (APP2 "ICC_PROFILE") and the
- * Adobe colour transform (APP14). Leaves out every other application segment (Exif and XMP in APP1,
- * multi-picture data in APP2, IPTC in APP13, maker segments), comments, and whatever follows the end of the
- * image. The orientation is carried over in an Exif segment of its own.
+ * JFIF (APP0) written again from its density fields only, with no thumbnail and nothing after them; null when
+ * the segment is not a JFIF header (an APP0 under any other identifier is left out).
+ */
+function canonicalJfif(b: Uint8Array, o: number, end: number): Uint8Array | null {
+  // FF E0, length, "JFIF\0", version (2), units (1), X density (2), Y density (2), thumbnail size (2)
+  if (end - o < 18 || ascii(b, o + 4, 5) !== "JFIF\0") return null;
+  const out = new Uint8Array(18);
+  out.set([0xff, 0xe0, 0x00, 0x10]);
+  out.set(b.subarray(o + 4, o + 16), 4);
+  // No embedded thumbnail: it is a second picture, and could show anything.
+  out[16] = 0;
+  out[17] = 0;
+  return out;
+}
+
+/** The Adobe colour-transform segment (APP14) written again from its fixed fields only; null for any other APP14. */
+function canonicalAdobe(b: Uint8Array, o: number, end: number): Uint8Array | null {
+  // FF EE, length 14, "Adobe", version (2), flags0 (2), flags1 (2), transform (1)
+  if (end - o < 16 || ascii(b, o + 4, 5) !== "Adobe") return null;
+  const out = new Uint8Array(16);
+  out.set([0xff, 0xee, 0x00, 0x0e]);
+  out.set(b.subarray(o + 4, o + 16), 4);
+  return out;
+}
+
+/**
+ * Non-application segments needed to decode the picture: frame headers (SOF0 to SOF15, which share the range
+ * with DHT and DAC), quantization tables (DQT), restart interval (DRI) and number of lines (DNL). Any other
+ * marker is left out, including JPG (C8), which is reserved for extensions and could carry anything.
+ */
+const isImageMarker = (marker: number): boolean => (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc8) || marker === 0xdb || marker === 0xdd || marker === 0xdc;
+
+/**
+ * JPEG: keeps the tables, frame and scan segments, a JFIF header (APP0) and the Adobe colour transform
+ * (APP14), each rewritten from its fixed fields only, and an ICC profile (APP2 "ICC_PROFILE"). Leaves out
+ * every other application segment (Exif and XMP in APP1, multi-picture data in APP2, IPTC in APP13, maker
+ * segments, an APP0 or APP14 that is not JFIF or Adobe), comments, any marker that is not needed to decode the
+ * picture, and whatever follows the end of the image. The orientation is carried over in an Exif segment of
+ * its own.
  */
 function jpegWithoutMetadata(b: Uint8Array, orientation: number | null): Uint8Array {
   if (b.length < 4 || b[0] !== 0xff || b[1] !== 0xd8) throw new Error("not a JPEG");
@@ -104,9 +139,17 @@ function jpegWithoutMetadata(b: Uint8Array, orientation: number | null): Uint8Ar
       sawScan = true;
       continue;
     }
-    const application = marker >= 0xe0 && marker <= 0xef;
-    const keep = application ? marker === 0xe0 || marker === 0xee || (marker === 0xe2 && ascii(b, o + 4, 12) === "ICC_PROFILE\0") : marker !== 0xfe;
-    if (keep) kept.push(b.subarray(o, end));
+    if (marker === 0xe0) {
+      const jfif = canonicalJfif(b, o, end);
+      if (jfif) kept.push(jfif);
+    } else if (marker === 0xee) {
+      const adobe = canonicalAdobe(b, o, end);
+      if (adobe) kept.push(adobe);
+    } else if (marker === 0xe2) {
+      if (ascii(b, o + 4, 12) === "ICC_PROFILE\0") kept.push(b.subarray(o, end));
+    } else if (isImageMarker(marker)) {
+      kept.push(b.subarray(o, end));
+    }
     o = end;
   }
   if (!sawScan) throw new Error("the JPEG holds no image data");

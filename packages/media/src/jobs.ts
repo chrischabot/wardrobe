@@ -14,7 +14,7 @@ import type { MediaJobKind } from "./store.ts";
 import { runNormalizeJob } from "./pipeline/normalize.ts";
 import { runDiscoveryJob } from "./pipeline/discovery.ts";
 import { runRenderJob } from "./pipeline/render.ts";
-import { thumbnailCacheUrl } from "./delivery.ts";
+import { legacyThumbnailCacheUrl, thumbnailCacheUrl } from "./delivery.ts";
 import { MEDIA_THUMBNAIL_WIDTHS } from "@garderobe/contracts/ext/media";
 
 export interface JobRow {
@@ -89,7 +89,10 @@ async function runPurge(rt: MediaRuntime, job: JobRow, ownerActive: boolean): Pr
   const cache = (globalThis as { caches?: { default?: Cache } }).caches?.default;
   if (cache) {
     for (const sha of payload.cacheShas ?? []) {
-      for (const width of MEDIA_THUMBNAIL_WIDTHS) if (await cache.delete(thumbnailCacheUrl(job.user_id, sha, width))) cachePurged++;
+      for (const width of MEDIA_THUMBNAIL_WIDTHS) {
+        if (await cache.delete(thumbnailCacheUrl(job.user_id, sha, width))) cachePurged++;
+        if (await cache.delete(legacyThumbnailCacheUrl(job.user_id, sha, width))) cachePurged++;
+      }
     }
   }
   const result = { deletedObjects: keys.length, cacheEntriesPurged: cachePurged };

@@ -3,12 +3,67 @@ import { DEFAULT_MAX_PIXELS, ImageDecodeError } from "./errors.ts";
 import { applyExifOrientation, type Raster } from "./raster.ts";
 import { probeImage } from "./sniff.ts";
 
+/**
+ * How many bytes of entropy-coded image data a JPEG carries across all its scans (0 when it has no scan,
+ * or its scans are empty: headers up to SOS followed directly by the end marker). A header alone is not a
+ * picture; a decoder may still "decode" it into a blank image, so this is checked on its own.
+ */
+export function jpegScanDataBytes(b: Uint8Array): number {
+  if (b.length < 4 || b[0] !== 0xff || b[1] !== 0xd8) return 0;
+  let total = 0;
+  let o = 2;
+  while (o + 1 < b.length) {
+    if (b[o] !== 0xff) return total;
+    const marker = b[o + 1]!;
+    if (marker === 0xff) {
+      o++;
+      continue;
+    }
+    if (marker === 0xd9) break;
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+      o += 2;
+      continue;
+    }
+    if (o + 4 > b.length) break;
+    const len = (b[o + 2]! << 8) | b[o + 3]!;
+    // A segment length counts its own two bytes; anything shorter is malformed, and nothing in it is picture data.
+    if (len < 2) return 0;
+    const end = o + 2 + len;
+    if (end > b.length) break;
+    if (marker === 0xda) {
+      // The scan header: Ls, Ns (1 to 4 components), two bytes per component, then Ss, Se and Ah/Al.
+      const components = len >= 3 ? b[o + 4]! : 0;
+      if (components < 1 || components > 4 || len !== 6 + 2 * components) return 0;
+      let p = end;
+      while (p < b.length) {
+        if (b[p] !== 0xff) {
+          p++;
+          total++;
+          continue;
+        }
+        const next = p + 1 < b.length ? b[p + 1]! : -1;
+        if (next === 0x00) {
+          p += 2;
+          total++; // a stuffed 0xFF data byte
+        } else if (next >= 0xd0 && next <= 0xd7) p += 2;
+        else if (next === 0xff) p++;
+        else break;
+      }
+      o = p;
+      continue;
+    }
+    o = end;
+  }
+  return total;
+}
+
 /** Decode a JPEG (pure JS). The pixel ceiling is checked from the header before any decoding. */
 export function decodeJpeg(bytes: Uint8Array, opts: { maxPixels?: number; applyOrientation?: boolean } = {}): Raster {
   const probe = probeImage(bytes);
   if (!probe || probe.format !== "jpeg" || !probe.width || !probe.height) throw new ImageDecodeError("unrecognized", "not a JPEG");
   const maxPixels = opts.maxPixels ?? DEFAULT_MAX_PIXELS;
   if (probe.width * probe.height > maxPixels) throw new ImageDecodeError("too_large", `JPEG of ${probe.width}x${probe.height} exceeds the pixel limit`);
+  if (jpegScanDataBytes(bytes) === 0) throw new ImageDecodeError("corrupt", "the JPEG holds no image data");
   let decoded: { width: number; height: number; data: Uint8Array };
   try {
     decoded = jpeg.decode(bytes, {

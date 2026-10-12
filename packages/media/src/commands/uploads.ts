@@ -7,6 +7,7 @@ import { CommandError, define, first, loadGarment, sha256Hex, stableId, stmt, to
 import { MEDIA_COMMANDS as C } from "@garderobe/contracts/ext/media";
 import type { MediaAssetKind, MediaSource } from "@garderobe/contracts/ext/media";
 import { probeImage } from "../image/index.ts";
+import { jpegScanDataBytes } from "../image/jpeg.ts";
 import { assertOwnedKey, originalKey, stagingKey } from "../keys.ts";
 import { limitsOf, resolveDeps, type MediaDepsSource } from "../runtime.ts";
 import { enqueueJob, insertRendition, loadGarmentMediaRow, mediaSettings, upsertGarmentMedia } from "../store.ts";
@@ -146,6 +147,8 @@ export function uploadCommands(depsSource: MediaDepsSource): CommandDefinition<a
       if (!probe) return reject("the file is not a recognised image");
       if (probe.contentType !== upload.content_type) return reject(`the file is ${probe.contentType} but ${upload.content_type} was declared`);
       if (probe.animated) return reject("animated images are not accepted");
+      // A JPEG made of headers only (nothing after SOS but the end marker) is not a picture.
+      if (probe.format === "jpeg" && jpegScanDataBytes(bytes) === 0) return reject("the file holds no image data");
       if (probe.width !== null && probe.height !== null) {
         if (probe.width < limits.minDimension || probe.height < limits.minDimension) return reject(`the image is only ${probe.width}x${probe.height} pixels`);
         if (probe.width > limits.maxDimension || probe.height > limits.maxDimension || probe.width * probe.height > limits.maxPixels) {

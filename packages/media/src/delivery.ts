@@ -23,8 +23,17 @@ export interface OpenedImage {
 
 export type ThumbnailWidth = (typeof MEDIA_THUMBNAIL_WIDTHS)[number];
 
-/** Synthetic cache key: only this Worker reads the cache, and only after authorization succeeded. */
+/**
+ * Synthetic cache key: only this Worker reads the cache, and only after authorization succeeded. The `v2`
+ * namespace holds only thumbnails made since originals are thumbnailed without their metadata; a thumbnail
+ * cached under the earlier key is never read again (it lapses with its 24-hour lifetime and is still purged).
+ */
 export function thumbnailCacheUrl(userId: string, sha256: string, width: number): string {
+  return `https://thumbnails.garderobe.internal/v2/${encodeURIComponent(userId)}/${sha256}/${width}`;
+}
+
+/** The key thumbnails were cached under before the `v2` namespace; only purged, never read. */
+export function legacyThumbnailCacheUrl(userId: string, sha256: string, width: number): string {
   return `https://thumbnails.garderobe.internal/${encodeURIComponent(userId)}/${sha256}/${width}`;
 }
 
@@ -40,7 +49,10 @@ export async function purgeOwnerMediaCache(rt: MediaRuntime, userId: string): Pr
   const rows = await all<{ sha256: string }>(rt.db, "SELECT DISTINCT sha256 FROM media_renditions WHERE user_id = ?", userId);
   let purged = 0;
   for (const r of rows) {
-    for (const width of MEDIA_THUMBNAIL_WIDTHS) if (await cache.delete(thumbnailCacheUrl(userId, r.sha256, width))) purged++;
+    for (const width of MEDIA_THUMBNAIL_WIDTHS) {
+      if (await cache.delete(thumbnailCacheUrl(userId, r.sha256, width))) purged++;
+      if (await cache.delete(legacyThumbnailCacheUrl(userId, r.sha256, width))) purged++;
+    }
   }
   return { purged };
 }

@@ -74,13 +74,34 @@ export interface MediaExportOptions {
   originals?: ExportOriginals;
 }
 
+/**
+ * Who may take the photographs as supplied: the owner outside the `mcp` channel, and the service's own
+ * background work (a backup runs as the system actor on the `system` or `scheduled` channel). The system
+ * actor on any other channel (an import, a conversation turn, a connection) cannot.
+ */
+function mayTakeAsSupplied(principal: Principal): boolean {
+  if (principal.actor === "owner") return principal.channel !== "mcp";
+  return principal.actor === "system" && (principal.channel === "system" || principal.channel === "scheduled");
+}
+
 function originalsMode(principal: Principal, opts: MediaExportOptions): ExportOriginals {
   const mode = opts.originals ?? "location_removed";
   if (mode !== "location_removed" && mode !== "as_supplied") throw new CommandError("invalid_command", "originals is either 'location_removed' or 'as_supplied'");
-  if (mode === "as_supplied" && ((principal.actor !== "owner" && principal.actor !== "system") || principal.channel === "mcp")) {
+  if (mode === "as_supplied" && !mayTakeAsSupplied(principal)) {
     throw new CommandError("forbidden", "photographs are exported with their location data only when the owner asks for it in their own app", { reason: "owner_opt_in_required" });
   }
   return mode;
+}
+
+/**
+ * The service's background work builds both portable exports and backups as the system actor. A backup must
+ * keep every photograph, so when such a caller did not say how originals leave and some original cannot be
+ * written without its location data, the package is refused rather than built with that photograph missing
+ * (it would read as deleted, and a restore would lose it). Naming `location_removed` or `as_supplied` settles it.
+ */
+function refuseSilentWithholding(principal: Principal, opts: MediaExportOptions, withheld: number): void {
+  if (withheld === 0 || opts.originals !== undefined || principal.actor !== "system") return;
+  throw new CommandError("precondition_failed", "some photographs cannot be written without their location data; the package must say whether originals leave as supplied (a backup) or without their location (a portable export)", { reason: "originals_choice_required", withheld });
 }
 
 /**
@@ -184,6 +205,7 @@ export async function exportMediaData(rt: MediaRuntime, principal: Principal, op
       else withheld.set(r.rendition_id as string, clean.reason);
     }
   }
+  refuseSilentWithholding(principal, opts, withheld.size);
   const withoutItsLocation = new Set(renditions.filter((r) => rewritten.has(r.rendition_id as string) || withheld.has(r.rendition_id as string)).map((r) => r.asset_id as string));
   const asWritten = (r: Row): Row => {
     const id = r.rendition_id as string;
@@ -408,7 +430,18 @@ export function portabilityCommands(depsSource?: MediaDepsSource): CommandDefini
             );
           }
         } else if (p.part === "garmentMedia") {
-          for (const m of rows("garmentMedia")) {
+          const media = rows("garmentMedia");
+          // An import fills an owner that has no image state yet; a garment that already has some is refused
+          // as a state conflict (a 4xx), never left to fail as a database constraint.
+          const ids = media.map((m) => s(m.garment_id));
+          if (ids.some((id) => id === null)) throw new CommandError("invalid_command", "an imported image-state record names no garment");
+          if (new Set(ids).size !== ids.length) throw new CommandError("invalid_command", "the same garment appears twice in the imported image state");
+          if (ids.length > 0) {
+            const present = await allIn<{ garment_id: string }>(ctx.db, "SELECT garment_id FROM garment_media WHERE user_id = ? AND garment_id IN (:ids)", [u], ids as string[]);
+            if (present.length > 0) throw new CommandError("precondition_failed", `${present.length} garment(s) already have image state; media can only be imported into an owner that has none yet`, { reason: "already_present", garmentIds: present.map((g) => g.garment_id) });
+            preconditions.push({ label: "these garments have no image state yet", sql: `NOT EXISTS (SELECT 1 FROM garment_media WHERE user_id = ? AND garment_id IN (${ids.map(() => "?").join(",")}))`, params: [u, ...ids], class: "state" });
+          }
+          for (const m of media) {
             // A search that was in flight on the old service is not resumed: it becomes "not started" (or resolved when an image exists).
             const state = m.image_state === "searching" ? (m.primary_asset_id ? "resolved" : "not_started") : s(m.image_state);
             statements.push(
@@ -538,7 +571,8 @@ export async function importMediaData(
     // A derived file is written by this service from pixels and carries no metadata. One that does was not made here.
     if (file.kind !== "original") {
       const clean = withoutLocation(bytes);
-      if (clean.ok && clean.changed) {
+      // Delivery serves derived files as stored, so one that cannot be checked clean is refused too.
+      if (!clean.ok || clean.changed) {
         rejected.push(name);
         continue;
       }
