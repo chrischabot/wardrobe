@@ -13,6 +13,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { checkMcpUrl, retarget } from "../scripts/retarget.mjs";
+import { adoptAfterWrite, authorizationUrlFrom, boardState, ownerDay, sameWear, unchangedAfterUnapplied, versionsOf, within, writeDecision } from "../scripts/board-guard.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const REPO = path.resolve(ROOT, "../..");
@@ -61,14 +62,31 @@ test("the skill has a name and description and names only tools the server publi
 });
 
 test("the skill's routine actions are ones the server runs directly, and it defers every other decision to the server's answer", () => {
-  const policy = readFileSync(path.join(REPO, "apps/worker/src/mcp/policy.ts"), "utf8");
   const routineLine = skill.split("\n").find((l) => l.startsWith("- **Applied:**"));
   assert.ok(routineLine, "the skill describes applied changes");
   const inSkill = [...routineLine.matchAll(/`([a-z]+\.[a-z_]+)`/g)].map((m) => m[1]).filter((t) => t !== "command.undo").sort();
   assert.deepEqual(inSkill, ["board.select", "laundry.collect", "laundry.return", "stock.pack", "stock.unpack"]);
-  // While the server keeps an explicit typed-command allow-list, each routine action the skill names must be on it.
-  const listed = /TYPED_DIRECT_BY_OWNER_DECISION: ReadonlySet<string> = new Set<string>\((\[[^\]]+\])\)/.exec(policy);
-  if (listed) for (const t of inSkill) assert.ok(JSON.parse(listed[1]).includes(t), `${t} is not run directly by the server`);
+  // The server's typed-command policy (2026-10-05 contract) classifies every change with the assistant's
+  // classifyChange: only the section 3 types wait for the owner and restriction lifts are refused. Every
+  // parse below must succeed: if the policy's shape changes, this test fails instead of silently passing.
+  const policy = readFileSync(path.join(REPO, "apps/worker/src/mcp/policy.ts"), "utf8");
+  assert.match(policy, /forbiddenForConnectedAssistant\(type, payload\)/, "policy.ts no longer refuses restriction lifts through forbiddenForConnectedAssistant: update this test to the new policy");
+  assert.match(policy, /classifyChange\(type, payload, "mcp"\) === "confirm" \? "owner" : "direct"/, "policy.ts no longer decides through classifyChange: update this test to the new policy");
+  const classes = readFileSync(path.join(REPO, "packages/assistant/src/policy/classes.ts"), "utf8");
+  const setOf = (name) => {
+    const m = new RegExp(`export const ${name}: ReadonlySet<string> = new Set\\(\\[([^\\]]*)\\]\\)`).exec(classes);
+    assert.ok(m, `could not parse ${name} in packages/assistant/src/policy/classes.ts: update this test to the new policy`);
+    const types = [...m[1].matchAll(/"([a-z_]+\.[a-z_]+)"/g)].map((t) => t[1]);
+    assert.ok(types.length > 0, `${name} parsed as empty`);
+    return new Set(types);
+  };
+  const waits = setOf("SECTION3_CONFIRM_TYPES");
+  const refused = setOf("RESTRICTION_LIFT_TYPES");
+  assert.ok(refused.has("restriction.resolve"), "restriction.resolve is refused for a connected assistant");
+  for (const t of inSkill) {
+    assert.ok(!waits.has(t), `${t} waits for the owner on the server, but the skill calls it applied`);
+    assert.ok(!refused.has(t), `${t} is refused on the server, but the skill calls it applied`);
+  }
   assert.match(skill, /confirmation_required/);
   assert.match(skill, /Only ask for a change the owner asked for/);
   assert.match(skill, /restriction can never be lifted/);
@@ -112,5 +130,145 @@ test("retarget refuses unsafe MCP URLs", () => {
   assert.throws(() => checkMcpUrl("https://wardrobe.example.org/mcp?token=x"), /query/);
   assert.throws(() => checkMcpUrl("ftp://wardrobe.example.org/mcp"), /http/);
   assert.throws(() => checkMcpUrl("not a url"), /absolute/);
+  assert.throws(() => checkMcpUrl("https://wardrobe.example.org"), /ending in \/mcp/);
+  assert.throws(() => checkMcpUrl("https://wardrobe.example.org/api"), /ending in \/mcp/);
+  assert.equal(checkMcpUrl("https://wardrobe.example.org/garderobe/mcp"), "https://wardrobe.example.org/garderobe/mcp");
   assert.equal(checkMcpUrl("http://127.0.0.1:8787/mcp"), "http://127.0.0.1:8787/mcp");
+});
+
+// Synthetic boards (labelled test data, not owner data) for the verifier's write guard.
+const syntheticBoard = (overrides = {}) => ({
+  boardId: "brd_synthetic",
+  revision: 3,
+  selection: null,
+  options: [
+    { optionId: "opt_a", garments: [{ role: "top", garmentId: "g_top_1" }, { role: "bottom", garmentId: "g_bottom_1" }] },
+    { optionId: "opt_b", garments: [{ role: "top", garmentId: "g_top_2" }, { role: "bottom", garmentId: "g_bottom_2" }] },
+  ],
+  ...overrides,
+});
+
+test("write guard: an unchanged board without the owner's choice may be written, with its observed version", () => {
+  const seen = syntheticBoard();
+  assert.deepEqual(writeDecision({ hosted: true, lastSeen: seen, current: syntheticBoard() }), { ok: true });
+  assert.deepEqual(versionsOf(seen), { "board:brd_synthetic": 3 });
+});
+
+test("write guard: the verifier refuses to write when the board changed between steps", () => {
+  const seen = syntheticBoard();
+  // The owner chose an option between the verifier's steps (the revision moves with it).
+  const ownerChose = syntheticBoard({ revision: 4, selection: { optionId: "opt_b", footwearGarmentId: null } });
+  const chose = writeDecision({ hosted: true, lastSeen: seen, current: ownerChose });
+  assert.equal(chose.ok, false);
+  assert.match(chose.reason, /changed between steps \(revision 3 -> 4\)/);
+  // The owner edited the board (a piece swapped in the app): refused even on the local Worker.
+  const edited = syntheticBoard({ revision: 4, options: [{ optionId: "opt_a", garments: [{ role: "top", garmentId: "g_top_9" }] }] });
+  assert.equal(writeDecision({ hosted: false, lastSeen: seen, current: edited }).ok, false);
+  // A newly published board replaced the one the verifier was working on.
+  assert.match(writeDecision({ hosted: false, lastSeen: seen, current: syntheticBoard({ boardId: "brd_other" }) }).reason, /different board/);
+  // The board could not be read just before the write.
+  assert.equal(writeDecision({ hosted: false, lastSeen: seen, current: null }).ok, false);
+  // A read without a usable revision cannot protect a write, even when the previous read also lacked one.
+  assert.match(writeDecision({ hosted: false, lastSeen: syntheticBoard({ revision: undefined }), current: syntheticBoard({ revision: undefined }) }).reason, /no usable revision/);
+  assert.throws(() => versionsOf(syntheticBoard({ revision: undefined })), /no usable board version/);
+  // And the undo of the verifier's own change stops too when the owner changed the board after it.
+  assert.equal(writeDecision({ hosted: true, lastSeen: seen, current: syntheticBoard({ revision: 5 }), ownWrite: true }).ok, false);
+});
+
+test("write guard: on the owner's real board a choice the owner made is never written over", () => {
+  const chosen = syntheticBoard({ selection: { optionId: "opt_a", footwearGarmentId: null } });
+  const decision = writeDecision({ hosted: true, lastSeen: chosen, current: chosen });
+  assert.equal(decision.ok, false);
+  assert.match(decision.reason, /owner has chosen option opt_a/);
+  // Locally the board is the run's own; taking back the verifier's own choice is allowed at the same revision.
+  assert.equal(writeDecision({ hosted: false, lastSeen: chosen, current: chosen }).ok, true);
+  assert.equal(writeDecision({ hosted: true, lastSeen: chosen, current: chosen, ownWrite: true }).ok, true);
+});
+
+test("after its own write the verifier adopts the board only when it shows exactly that write", () => {
+  const before = syntheticBoard();
+  const receipt = { commandId: "cmd_synthetic", affected: [{ kind: "board", id: "brd_synthetic", version: 4 }] };
+  const chose = (b) => b.selection?.optionId === "opt_b";
+  const afterOwn = syntheticBoard({ revision: 4, selection: { optionId: "opt_b", footwearGarmentId: null } });
+  assert.deepEqual(adoptAfterWrite({ before, after: afterOwn, receipt, expect: chose }), { ok: true });
+  // The owner changed the board right after the verifier's write: the revision is past the one the receipt names.
+  const ownerAfter = syntheticBoard({ revision: 5, selection: { optionId: "opt_a", footwearGarmentId: null } });
+  assert.match(adoptAfterWrite({ before, after: ownerAfter, receipt, expect: chose }).reason, /revision 5, not 4/);
+  // Right revision but not the expected state, a missing read, a receipt without the board, another board.
+  assert.equal(adoptAfterWrite({ before, after: syntheticBoard({ revision: 4 }), receipt, expect: chose }).ok, false);
+  assert.equal(adoptAfterWrite({ before, after: null, receipt, expect: chose }).ok, false);
+  assert.equal(adoptAfterWrite({ before, after: afterOwn, receipt: { affected: [] }, expect: chose }).ok, false);
+  assert.equal(adoptAfterWrite({ before, after: { ...afterOwn, boardId: "brd_other" }, receipt, expect: chose }).ok, false);
+  // A baseline that could not be adopted stops every later write.
+  assert.match(writeDecision({ hosted: false, lastSeen: { refused: "owner changed it" }, current: afterOwn, ownWrite: true }).reason, /owner changed it/);
+});
+
+test("the owner's tomorrow is the next calendar date, also across daylight-saving changes", () => {
+  // Europe/London springs forward at 01:00 UTC on 2026-03-29 (a 23-hour day): at 23:30 on the 28th, 24 hours later
+  // would already be the 30th.
+  assert.equal(ownerDay(new Date("2026-03-28T23:30:00Z"), "Europe/London", 1), "2026-03-29");
+  // It falls back at 01:00 UTC on 2026-10-25 (a 25-hour day): at 00:30 BST on the 25th, 24 hours later is still the 25th.
+  assert.equal(ownerDay(new Date("2026-10-24T23:30:00Z"), "Europe/London", 1), "2026-10-26");
+  // The owner's day, not UTC's: 23:30 UTC on 2026-06-30 is already 1 July in Tokyo.
+  assert.equal(ownerDay(new Date("2026-06-30T23:30:00Z"), "Asia/Tokyo", 1), "2026-07-02");
+  // Month and year ends.
+  assert.equal(ownerDay(new Date("2026-12-31T12:00:00Z"), "Europe/London", 1), "2027-01-01");
+});
+
+test("board state compares the board, the choice and every option's pieces, but not the revision", () => {
+  assert.equal(boardState(syntheticBoard()), boardState(syntheticBoard({ revision: 9 })));
+  assert.notEqual(boardState(syntheticBoard()), boardState(syntheticBoard({ selection: { optionId: "opt_a" } })));
+  const otherPiece = syntheticBoard();
+  otherPiece.options[1].garments[0].garmentId = "g_top_9";
+  assert.notEqual(boardState(syntheticBoard()), boardState(otherPiece));
+});
+
+test("a wait that never settles is bounded by its deadline or by the process ending", async () => {
+  const never = new Promise(() => undefined);
+  await assert.rejects(within(never, 20, "consent did not finish"), /consent did not finish/);
+  await assert.rejects(within(never, 10_000, "consent did not finish", Promise.resolve(0)), /the process ended first/);
+  await assert.rejects(within(never, 10_000, "consent did not finish", Promise.reject(new Error("spawn failed"))), /the process ended first/);
+  assert.equal(await within(Promise.resolve("ok"), 10_000, "unused"), "ok");
+  await assert.rejects(within(Promise.reject(new Error("denied")), 10_000, "unused"), /denied/);
+});
+
+test("choosing is not wearing: the day's wear must be unchanged, not merely empty", () => {
+  // Synthetic days (labelled test data, not owner data).
+  const worn = { garments: [{ garmentId: "g_top_1" }, { garmentId: "g_bottom_1" }] };
+  assert.equal(sameWear(worn, { garments: [{ garmentId: "g_bottom_1" }, { garmentId: "g_top_1" }] }).ok, true);
+  assert.equal(sameWear({ garments: [] }, { garments: [] }).ok, true);
+  assert.equal(sameWear(worn, { garments: [...worn.garments, { garmentId: "g_shoe_1" }] }).ok, false);
+  assert.equal(sameWear({ garments: [] }, worn).ok, false);
+  assert.equal(sameWear(null, worn).ok, false);
+  assert.equal(sameWear(worn, {}).ok, false);
+});
+
+test("a swap kept for the owner (or refused) must leave the board exactly as it was read before the request", () => {
+  const before = syntheticBoard({ revision: 3 });
+  assert.equal(unchangedAfterUnapplied(before, syntheticBoard({ revision: 3 })).ok, true);
+  // A piece changed anyway, though the server answered confirmation_required.
+  const swapped = syntheticBoard({ revision: 3 });
+  swapped.options[0].garments[0].garmentId = "g_top_9";
+  assert.equal(unchangedAfterUnapplied(before, swapped).ok, false);
+  // The choice changed, the revision moved, another board, an unreadable board, no usable baseline.
+  assert.equal(unchangedAfterUnapplied(before, syntheticBoard({ revision: 3, selection: { optionId: "opt_a" } })).ok, false);
+  assert.match(unchangedAfterUnapplied(before, syntheticBoard({ revision: 4 })).reason, /revision 3 to 4/);
+  assert.equal(unchangedAfterUnapplied(before, { ...syntheticBoard({ revision: 3 }), boardId: "brd_other" }).ok, false);
+  assert.equal(unchangedAfterUnapplied(before, null).ok, false);
+  assert.equal(unchangedAfterUnapplied(null, before).ok, false);
+  assert.equal(unchangedAfterUnapplied(syntheticBoard({ revision: undefined }), syntheticBoard({ revision: undefined })).ok, false);
+});
+
+test("the authorization URL is taken only once Codex has printed all of it", () => {
+  const full = "https://garderobe.example/oauth/authorize?response_type=code&client_id=c1&scope=wardrobe.read%20wardrobe.write&resource=https%3A%2F%2Fgarderobe.example%2Fmcp&state=s1";
+  const printed = `Authorize Codex by opening:\n${full}\nWaiting for the callback...\n`;
+  // Every possible pipe chunk boundary: before the newline after the URL arrives, no URL; after it, the whole URL.
+  const end = printed.indexOf(full) + full.length;
+  for (let cut = 0; cut <= printed.length; cut++) {
+    const url = authorizationUrlFrom(printed.slice(0, cut));
+    if (cut <= end) assert.equal(url, null, `cut at ${cut}`);
+    else assert.equal(url?.toString(), full, `cut at ${cut}`);
+  }
+  assert.equal(authorizationUrlFrom(full), null);
+  assert.equal(authorizationUrlFrom(`${full}\r\n`)?.searchParams.get("scope"), "wardrobe.read wardrobe.write");
 });

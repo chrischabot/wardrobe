@@ -11,6 +11,7 @@ integrations/codex/
 │   └── skills/wardrobe/SKILL.md       how to use the tools: reads, routine actions with receipt and undo, proposals
 ├── scripts/retarget.mjs               copy the package with another MCP URL (a hosted deployment)
 ├── scripts/verify-codex.mjs           end-to-end check with the real Codex CLI
+├── scripts/board-guard.mjs            the verifier's write guard: fresh read, same revision, no owner's choice on a hosted board
 └── test/plugin.test.mjs               static checks (node --test)
 ```
 
@@ -35,7 +36,7 @@ codex mcp list                                                          # shows:
 codex mcp login wardrobe --scopes wardrobe.read,wardrobe.write --oauth-client-registration dcr
 ```
 
-`codex mcp login` opens Garderobe's consent page. The owner signs in, and allows or denies "Make changes": leave it off for a read-only connection. Then Codex stores the grant. Use `--no-browser` on a machine without a browser: Codex prints the URL and accepts the final callback URL pasted back. A grant can be withdrawn at any time in the Garderobe app under Settings › Connected assistants.
+`codex mcp login` opens Garderobe's consent page. The owner signs in, and allows or denies "Make changes": leave it off for a read-only connection. Then Codex stores the grant. Use `--no-browser` on a machine without a browser: Codex prints the URL and accepts the final callback URL pasted back. A grant can be withdrawn at any time in the Garderobe app under Settings › Connected assistants. `codex mcp logout wardrobe` deletes only Codex's local copy of the credentials; it is not shown to revoke the grant on the server, so remove the connection in the app as well.
 
 Why `--oauth-client-registration dcr`: by default Codex 0.162.1 identifies itself with its Client ID Metadata Document (`https://chatgpt.com/oauth/codex/client.json`). The local Worker could not fetch that document: chatgpt.com answered its request with HTTP 403, so the consent page says "This application could not be verified". Dynamic client registration works, and Garderobe supports it. On a deployment, try the default first.
 
@@ -55,7 +56,7 @@ The server decides, on every request, from the grant and the owner's current rul
 - **Read-only grant** (`wardrobe.read`): six tools. `garderobe_command` is not listed, and calling it gets an `insufficient_scope` challenge.
 - **Write grant** (`wardrobe.read wardrobe.write`): all seven tools.
 - **Applied:** the answer carries a receipt, and `command.undo` takes the change back. Choosing from the published board, laundry pickup and return, packing for a planned trip, and the owner's wear and wash reports are always applied this way.
-- **Waiting for the owner:** the answer is `confirmation_required` with a proposal identifier and a system-written summary. Only the signed-in owner can confirm it, in the app. Codex cannot list or decide proposals. Which changes wait follows the owner's decisions. Under the decision of 2026-10-05 only its named exceptions should wait; the API thread is implementing that decision, and on the tree of 2026-10-12 a piece swap (`board.swap_slot`) still waited.
+- **Waiting for the owner:** the answer is `confirmation_required` with a proposal identifier and a system-written summary. Only the signed-in owner can confirm it, in the app. Codex cannot list or decide proposals. Which changes wait follows the owner's decisions. Under the decision of 2026-10-05 only its named exceptions wait (the contract's section 3: irreversible erasure, authorization towards another party, what a model or outside connection may reach, rewriting the profile document, and unbounded bulk changes). On the tree of 2026-10-12 a piece swap (`board.swap_slot`) still waited; the server's current policy (`apps/worker/src/mcp/policy.ts`) applies it directly.
 - **Refused:** lifting a restriction, undoing the command that recorded one, and account-level and system commands.
 - **Wear and wash** are recorded only as the owner reported them. A board choice is an intention, not a wear.
 
@@ -73,6 +74,8 @@ End to end with the real Codex CLI. First start the local Worker in another term
 CODEX_BIN=$(command -v codex) node integrations/codex/scripts/verify-codex.mjs --report codex-verify.json
 ```
 
+Against a hosted deployment (a retargeted copy), also pass the owner's timezone from Garderobe settings, which picks the owner's day: `--marketplace ~/wardrobe-codex --timezone Europe/London`. The script refuses a hosted run without it. Against the local Worker it reads the timezone from the owner's settings.
+
 The script works in a throw-away `CODEX_HOME` and runs these steps:
 
 1. Installs the plugin from the marketplace.
@@ -80,25 +83,37 @@ The script works in a throw-away `CODEX_HOME` and runs these steps:
 3. Starts `codex app-server`, the protocol the Codex IDE extension and the desktop app use, and through Codex:
    - lists the tools;
    - reads the inventory and the board;
-   - chooses a board option, checks the receipt and that no wear was recorded, then undoes the choice;
-   - swaps a piece on the board and reports what the server did: it waited for the owner (`confirmation_required`), or it was applied with a receipt, in which case the script undoes it at once;
+   - chooses a board option other than the owner's current choice, checks the receipt and (against the local Worker) that the day's recorded wear is unchanged, then undoes the choice and checks that the board shows exactly the owner's prior choice (or none, if there was none). A hosted run prints a note that the wear check was not verified;
+   - asks for a piece swap on the board. Under the owner's 2026-10-05 contract it must apply at once with a receipt; the script reads the board to check that the piece in that role really changed, then always undoes the swap and checks that the option has its original pieces again. A `confirmation_required` answer fails this check, because it is the superseded behaviour;
    - checks that a restriction lift is refused (the request names no real restriction, and nothing is written).
-4. Asks a model-driven `codex exec` session to read the board through the plugin. This step uses your existing Codex sign-in (the `auth.json` in `CODEX_HOME` or `~/.codex`, copied into the throw-away home and deleted with it), or `OPENAI_API_KEY` when there is none; `--no-model` skips it.
+No model runs in this script. Codex can run only OpenAI models, and the project authorizes only claude-opus-5-5 for inference, so there is no model-driven `codex exec` step: every check above goes through `codex app-server`, which calls the tools without a model, and no Codex sign-in is needed. The script refuses `--codex-model` and `CODEX_MODEL`. A model-driven session would need an explicit owner exception to that rule.
 
-Against a local Worker, setup (publishing tomorrow's board) and cleanup (rejecting a waiting proposal) are done as the owner through the app API. Against a deployment the daily service publishes the board. A writing run against real data leaves undone changes in the history, and possibly one pending proposal, which the owner rejects in the app.
+Against a local Worker, setup (publishing tomorrow's board) and cleanup (rejecting a waiting proposal) are done as the owner through the app API. Against a deployment the daily service publishes the board, and the script does not write on a board where the owner has already made a choice: it reports the board writes as not run. Before every write (choice, swap and both undos) it reads the board again and sends the revision it observed as `expectedVersions`; if the board changed between steps, it stops instead of writing. A writing run against real data leaves undone changes in the history, and possibly one pending proposal, which the owner rejects in the app.
 
 ### Results
 
-The results below are from a local run, not a hosted check. On 2026-10-12, against the local Worker (Miniflare, with the real owner profile and the 127-garment inventory), with Codex CLI 0.162.1, `verify-codex.mjs` passed every check. The final version passed 22 of 22, signed in from `OPENAI_API_KEY`. The version before it passed 21 of 21 both with an existing Codex sign-in and from `OPENAI_API_KEY`; it lacked only the restriction-lift check, and the sign-in code is unchanged since. The checks covered:
+All results below are local, not a hosted check.
 
-- plugin install and login: marketplace add, plugin add, server configured, login with consent (DCR);
+**Current version, 2026-10-12, local Worker** (Miniflare via `npm run dev` in `apps/worker`, with the real owner profile and the 127-garment inventory), Codex CLI 0.162.1, `--registration dcr`, no model: **19 of 21 checks passed, 2 failed** (`node integrations/codex/scripts/verify-codex.mjs`, exit 1). Passed:
+
+- plugin install and login: Codex available, marketplace add, plugin add, server configured, Garderobe's authorization server discovered with both scopes, login with the owner's consent;
 - tools: server connected over OAuth, all seven tools listed;
-- reads: the complete inventory (127 garments) and the published board;
-- routine write: `board.select` with a receipt (actor `assistant`, channel `mcp`), shown on the app's board, with no wear recorded;
-- undo: `command.undo` with its own receipt, after which the board has no choice;
-- `board.swap_slot` waited for the owner (`confirmation_required`), which is the server's current behaviour;
-- a restriction lift was refused (`forbidden`);
-- the model session (signed in) called `wardrobe.garderobe_today` and answered with the board id.
+- reads: the complete inventory (127 garments) and tomorrow's published board (5 options);
+- a restriction lift from Codex is refused (`forbidden`);
+- routine write: `board.select` applied directly with a receipt, shown on the app's board, the day's recorded wear unchanged;
+- undo: `command.undo` took the choice back with its own receipt, and the whole board (board, choice, every option's pieces) was exactly as before;
+- contract 2026-10-05: the requested piece swap (`board.swap_slot`, the top) applied at once with a receipt, and the board showed the new top.
+
+Failed:
+
+- `command.undo` of the swap was refused: `not_undoable`, "swap the piece back instead; the earlier revision stays in history";
+- so the board was not restored after the swap (the local board keeps the swapped top).
+
+The 2026-10-05 contract says a change the owner asks for applies at once with a receipt and is taken back with undo, so the swap's refused undo is a server finding: `board.swap_slot` declares no undo plan in the daily service (`packages/daily/src/boards.ts`), so the shared command service answers `not_undoable` on every surface (the plugin does not change server behaviour). Until the daily service gives the swap an undo plan, this check fails.
+
+The same day, the refusals were also checked: a missing or non-executable `CODEX_BIN` fails the "Codex CLI available" check and stops with exit 1 (no unhandled spawn error, no temporary home left); a hosted run without `--timezone`, an invalid `--timezone`, `--codex-model` and `CODEX_MODEL` each exit 2. `node --test integrations/codex/test/plugin.test.mjs`: 18 of 18 tests passed.
+
+**Earlier versions, 2026-10-12:** 22 of 22 checks passed, and 21 of 21 before the restriction-lift check was added. Those versions accepted a `confirmation_required` answer to the piece swap (the server then still kept swaps for the owner), and they included a model-driven `codex exec` step that ran Codex 0.162.1's default OpenAI model (its name was not recorded); that step has since been removed because the project authorizes only claude-opus-5-5 for inference.
 
 What these results do not cover:
 

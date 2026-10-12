@@ -2,7 +2,15 @@
 /**
  * End-to-end check of the Wardrobe Codex plugin with the real Codex CLI.
  *
- *   node integrations/codex/scripts/verify-codex.mjs [--marketplace <dir>] [--report <file.json>] [--no-model] [--registration dcr|cimd|auto]
+ *   node integrations/codex/scripts/verify-codex.mjs [--marketplace <dir>] [--report <file.json>] [--registration dcr|cimd|auto] [--timezone <IANA zone>]
+ *
+ * No model runs here. Codex can run only OpenAI models, and the project authorizes only claude-opus-5-5 for
+ * inference, so there is no model-driven `codex exec` step; every check goes through `codex app-server`, which
+ * calls the tools without a model. --codex-model and CODEX_MODEL are refused.
+ *
+ * --timezone is required for a hosted MCP URL (the owner's timezone from Garderobe settings, which picks the
+ * owner's day); against a loopback Worker the timezone is read from the owner's settings, and the run fails if
+ * neither is available.
  *
  * Steps, each printed as PASS/FAIL and written to the JSON report:
  *   1. a fresh, throw-away CODEX_HOME; `codex plugin marketplace add <dir>` and
@@ -16,22 +24,21 @@
  *   3. `codex app-server` (the protocol the Codex IDE extension and desktop app use): start a thread, list
  *      the wardrobe server's tools, then call them through Codex: a read (`garderobe_today`, the complete
  *      inventory snapshot), a routine write with its receipt (`board.select` on the published board) and its
- *      undo (`command.undo`), a piece swap (`board.swap_slot`) reported as the server handled it (waits for the
- *      owner, or applied with a receipt and undone at once), and a restriction lift, which is refused;
- *   4. unless --no-model, a model-driven `codex exec` session that is asked to read today's board through
- *      the plugin. It uses the user's existing Codex sign-in (`auth.json` from CODEX_HOME or ~/.codex, copied
- *      into the temporary home) or, when there is none, OPENAI_API_KEY.
+ *      undo (`command.undo`), a piece swap (`board.swap_slot`), which the owner's 2026-10-05 contract says
+ *      applies at once with a receipt and undo (a `confirmation_required` answer fails that check), and a
+ *      restriction lift, which is refused.
  *
  * The MCP URL is the one in the marketplace's plugin/mcp.json (retarget a copy with scripts/retarget.mjs).
  * Environment: CODEX_BIN (default `codex`), GARDEROBE_APP_ORIGIN for the local app origin.
  * Nothing here stores a credential outside the temporary CODEX_HOME, which is deleted at the end.
  */
 import { spawn, spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
+import { adoptAfterWrite, authorizationUrlFrom, boardState, choiceOf, ownerDay, sameWear, unchangedAfterUnapplied, versionsOf, within, writeDecision } from "./board-guard.mjs";
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const REPO_ROOT = path.resolve(PACKAGE_ROOT, "../..");
@@ -42,12 +49,31 @@ const opt = (name) => {
 };
 const marketplaceRoot = path.resolve(opt("--marketplace") ?? PACKAGE_ROOT);
 const reportPath = opt("--report");
-const withModel = !args.includes("--no-model");
+// No model-driven step: Codex runs only OpenAI models, which the project does not authorize for inference.
+if (args.includes("--codex-model") || process.env.CODEX_MODEL) {
+  console.error("This verifier runs no model: Codex can run only OpenAI models, and the project authorizes only claude-opus-5-5 for inference. Remove --codex-model / CODEX_MODEL.");
+  process.exit(2);
+}
 const registration = opt("--registration") ?? "dcr";
 if (!["auto", "cimd", "dcr"].includes(registration)) throw new Error("--registration must be auto, cimd or dcr");
 const CODEX = process.env.CODEX_BIN ?? "codex";
 const mcpUrl = new URL(JSON.parse(readFileSync(path.join(marketplaceRoot, "plugin", "mcp.json"), "utf8")).mcpServers.wardrobe.url);
 const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(mcpUrl.hostname);
+// The owner's day decides which board is read. Locally it comes from the owner's settings (an authenticated read);
+// a hosted run has no such read here, so it must be told the owner's timezone: no silent default.
+const timeZoneArg = opt("--timezone");
+if (timeZoneArg !== undefined) {
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: timeZoneArg });
+  } catch {
+    console.error(`--timezone ${timeZoneArg} is not an IANA timezone (for example Europe/London)`);
+    process.exit(2);
+  }
+}
+if (!loopback && !timeZoneArg) {
+  console.error(`A hosted run (${mcpUrl}) needs --timezone <IANA zone>, the owner's timezone from Garderobe settings, to pick the owner's day.`);
+  process.exit(2);
+}
 
 const results = [];
 function check(name, pass, detail = "") {
@@ -57,11 +83,15 @@ function check(name, pass, detail = "") {
 }
 
 const codexHome = mkdtempSync(path.join(os.tmpdir(), "wardrobe-codex-home-"));
-// The user's own Codex sign-in (for the model step), copied into the throw-away home; nothing else is copied.
-const userCodexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
-if (existsSync(path.join(userCodexHome, "auth.json"))) copyFileSync(path.join(userCodexHome, "auth.json"), path.join(codexHome, "auth.json"));
+// Nothing from the user's own Codex home is copied: no model runs, so no Codex sign-in is needed.
+// Keep the Garderobe OAuth grant in this throw-away home: by default Codex may store MCP credentials in the OS
+// keyring, which deleting the directory would not remove. Written before any other command adds to the config.
+writeFileSync(path.join(codexHome, "config.toml"), 'mcp_oauth_credentials_store = "file"\n');
 const env = { ...process.env, CODEX_HOME: codexHome };
-const codex = (...a) => spawnSync(CODEX, a, { env, encoding: "utf8", input: "" });
+const codex = (...a) => spawnSync(CODEX, a, { env, encoding: "utf8", input: "", timeout: 60_000, killSignal: "SIGKILL" });
+// A setup command that hit its 60 s limit (killed) is reported as such.
+const timedOut = (r) => r.error?.code === "ETIMEDOUT" || r.signal === "SIGKILL";
+const outcome = (r) => (timedOut(r) ? "timed out after 60 s and was killed" : (r.stdout || r.stderr || String(r.error ?? "")).trim().split("\n")[0]);
 
 /** The local run mode's helpers (owner sign-in stand-in), loaded only for a loopback Worker. */
 async function localHelpers() {
@@ -74,37 +104,89 @@ async function localHelpers() {
 async function login() {
   const child = spawn(CODEX, ["mcp", "login", "wardrobe", "--no-browser", "--scopes", "wardrobe.read,wardrobe.write", "--oauth-client-registration", registration], { env, stdio: ["pipe", "pipe", "pipe"] });
   let out = "";
-  const exited = new Promise((resolve) => child.on("exit", (code) => resolve(code)));
-  const authUrl = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`no authorization URL from codex mcp login: ${out.slice(0, 400)}`)), 30_000);
-    const onData = (d) => {
-      out += d;
-      const m = /(https?:\/\/\S*\/oauth\/authorize\?\S+)/.exec(out);
-      if (m) {
-        clearTimeout(timer);
-        resolve(new URL(m[1]));
-      }
-    };
-    child.stdout.on("data", onData);
-    child.stderr.on("data", onData);
-    exited.then((code) => reject(new Error(`codex mcp login exited ${code}: ${out.slice(0, 400)}`)));
+  const timers = new Set();
+  const after = (ms, fn) => {
+    const t = setTimeout(() => {
+      timers.delete(t);
+      fn();
+    }, ms);
+    timers.add(t);
+    return t;
+  };
+  let exitCode = null;
+  // A spawn failure (missing or non-executable CODEX_BIN) emits `error`, possibly without `exit`: both settle `exited`.
+  let spawnError = null;
+  const exited = new Promise((resolve) => {
+    child.once("exit", (code, signal) => resolve((exitCode = code ?? signal ?? "exited")));
+    child.once("error", (error) => {
+      spawnError = error;
+      resolve((exitCode = `error: ${error.message}`));
+    });
   });
-  check("Codex discovered the Garderobe authorization server and asked for both scopes", authUrl.searchParams.get("scope") === "wardrobe.read wardrobe.write" && authUrl.searchParams.get("resource") === mcpUrl.toString(), `client_id ${authUrl.searchParams.get("client_id")}`);
-  let callback;
-  if (loopback) {
-    const { approveConsent } = await localHelpers();
-    callback = await approveConsent(authUrl, { allow: true, write: true });
-  } else {
-    console.log(`\nOpen this URL, sign in to Garderobe, allow "Make changes", then paste the final URL (the 127.0.0.1 callback) here:\n${authUrl}\n`);
-    const rl = readline.createInterface({ input: process.stdin });
-    callback = new URL(await new Promise((resolve) => rl.once("line", resolve)));
-    rl.close();
+  child.stdin.on("error", () => undefined); // EPIPE after Codex exits is reported through `exited`
+  let rl = null;
+  try {
+    const authUrl = await new Promise((resolve, reject) => {
+      const timer = after(30_000, () => reject(new Error(`no authorization URL from codex mcp login: ${out.slice(0, 400)}`)));
+      const onData = (d) => {
+        out += d;
+        const url = authorizationUrlFrom(out);
+        if (url) {
+          clearTimeout(timer);
+          timers.delete(timer);
+          resolve(url);
+        }
+      };
+      child.stdout.on("data", onData);
+      child.stderr.on("data", onData);
+      exited.then((code) => reject(spawnError ? new Error(`codex mcp login could not start: ${spawnError.message}`) : new Error(`codex mcp login exited ${code}: ${out.slice(0, 400)}`)));
+    });
+    check("Codex discovered the Garderobe authorization server and asked for both scopes", authUrl.searchParams.get("scope") === "wardrobe.read wardrobe.write" && authUrl.searchParams.get("resource") === mcpUrl.toString(), `client_id ${authUrl.searchParams.get("client_id")}`);
+    let callback;
+    if (loopback) {
+      const { approveConsent } = await localHelpers();
+      // Bounded: fails after 60 s or when Codex exits, so a stalled consent page still reaches the cleanup below.
+      callback = await within(approveConsent(authUrl, { allow: true, write: true }), 60_000, "local consent approval did not finish within 60 s", exited);
+    } else {
+      console.log(`\nOpen this URL, sign in to Garderobe, allow "Make changes", then paste the final URL (the 127.0.0.1 callback) here.\nIf your browser reaches Codex's callback by itself, nothing needs pasting:\n${authUrl}\n`);
+      rl = readline.createInterface({ input: process.stdin });
+      // Settles on a pasted line, or with null when Codex finishes on its own (the browser delivered the callback to
+      // its listener). Fails if Codex exits unsuccessfully, input ends, or nobody answers within 10 minutes.
+      const line = await new Promise((resolve, reject) => {
+        rl.once("line", resolve);
+        rl.once("close", () => (exitCode === 0 ? resolve(null) : reject(new Error("input ended before the callback URL was pasted"))));
+        exited.then((code) => (code === 0 ? resolve(null) : reject(new Error(`codex mcp login exited (${code}) while waiting for the callback URL`))));
+        after(600_000, () => reject(new Error("no callback URL pasted within 10 minutes")));
+      });
+      rl.removeAllListeners();
+      callback = line === null ? null : new URL(line); // throws on an invalid URL; the finally below still stops Codex
+    }
+    if (callback) {
+      // Deliver the redirect to Codex's own loopback listener, exactly as the browser would. Bounded: aborted after
+      // 15 s or as soon as Codex exits, so a callback that never answers cannot keep the cleanup below from running.
+      const delivery = new AbortController();
+      after(15_000, () => delivery.abort(new Error("callback delivery timed out after 15 s")));
+      exited.then(() => delivery.abort(new Error("codex mcp login exited during callback delivery")));
+      await fetch(callback, { redirect: "manual", signal: delivery.signal }).catch(() => {
+        if (exitCode === null) child.stdin.write(`${callback}\n`);
+      });
+    }
+    const code = await Promise.race([exited, new Promise((resolve) => after(30_000, () => resolve("timeout")))]);
+    check("codex mcp login completed with the owner's consent", code === 0, code === "timeout" ? "codex mcp login did not finish within 30 s" : out.trim().split("\n").at(-1));
+  } finally {
+    // Whatever happened above: no timer left, Codex stopped and awaited, streams closed, before CODEX_HOME is removed.
+    for (const t of timers) clearTimeout(t);
+    timers.clear();
+    rl?.removeAllListeners();
+    rl?.close();
+    if (exitCode === null) {
+      child.kill("SIGTERM");
+      const killer = setTimeout(() => child.kill("SIGKILL"), 5_000);
+      await exited;
+      clearTimeout(killer);
+    }
+    for (const stream of [child.stdin, child.stdout, child.stderr]) stream?.destroy();
   }
-  // Deliver the redirect to Codex's own loopback listener, exactly as the browser would.
-  await fetch(callback, { redirect: "manual" }).catch(() => child.stdin.write(`${callback}\n`));
-  const code = await Promise.race([exited, new Promise((r) => setTimeout(() => r("timeout"), 30_000))]);
-  if (code === "timeout") child.kill();
-  check("codex mcp login completed with the owner's consent", code === 0, out.trim().split("\n").at(-1));
 }
 
 /** A minimal JSON-RPC client for `codex app-server` over stdio. */
@@ -113,6 +195,23 @@ function appServer() {
   const rl = readline.createInterface({ input: child.stdout });
   let next = 0;
   const waiting = new Map();
+  // If Codex cannot start or stops, every pending and later request is rejected instead of hanging or throwing unhandled.
+  let failure = null;
+  const fail = (error) => {
+    if (failure) return;
+    failure = error;
+    for (const settle of waiting.values()) settle({ error: { message: error.message } });
+    waiting.clear();
+  };
+  child.on("error", (error) => fail(new Error(`codex app-server could not start: ${error.message}`)));
+  child.on("exit", (code, signal) => fail(new Error(`codex app-server exited (${code ?? signal})`)));
+  // Settles once Codex is gone: on exit, or on a spawn error (which may come without an exit).
+  const gone = new Promise((resolve) => {
+    child.once("exit", resolve);
+    child.once("error", resolve);
+  });
+  const alive = () => child.exitCode === null && child.signalCode === null && child.pid !== undefined;
+  child.stdin.on("error", (error) => fail(new Error(`codex app-server input closed: ${error.message}`)));
   rl.on("line", (line) => {
     let msg;
     try {
@@ -130,16 +229,36 @@ function appServer() {
   });
   const request = (method, params) =>
     new Promise((resolve, reject) => {
+      if (failure) return reject(new Error(`${method}: ${failure.message}`));
       const id = ++next;
-      const timer = setTimeout(() => reject(new Error(`${method}: no answer within 120 s`)), 120_000);
+      const timer = setTimeout(() => {
+        waiting.delete(id);
+        reject(new Error(`${method}: no answer within 120 s`));
+      }, 120_000);
       waiting.set(id, (msg) => {
         clearTimeout(timer);
         msg.error ? reject(new Error(`${method}: ${JSON.stringify(msg.error)}`)) : resolve(msg.result);
       });
       child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
     });
-  const notify = (method, params) => child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method, ...(params ? { params } : {}) }) + "\n");
-  return { request, notify, close: () => child.kill() };
+  const notify = (method, params) => {
+    if (!failure) child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method, ...(params ? { params } : {}) }) + "\n");
+  };
+  return {
+    request,
+    notify,
+    // Stops Codex for good before CODEX_HOME is removed: SIGTERM, SIGKILL after 5 s, awaited; streams closed.
+    close: async () => {
+      rl.close();
+      if (alive()) {
+        child.kill("SIGTERM");
+        const killer = setTimeout(() => alive() && child.kill("SIGKILL"), 5_000);
+        await gone;
+        clearTimeout(killer);
+      }
+      for (const stream of [child.stdin, child.stdout]) stream?.destroy();
+    },
+  };
 }
 
 /** The structured result of a tool called through Codex: `{ ok, data, error }`. */
@@ -165,7 +284,6 @@ function toolOutcome(result) {
   return { ok: true, data, error: null };
 }
 
-const ownerDayIso = (offsetDays, timeZone) => new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(Date.now() + offsetDays * 86_400_000));
 
 async function toolsThroughCodex() {
   const server = appServer();
@@ -183,15 +301,23 @@ async function toolsThroughCodex() {
     const snapshot = await call("garderobe_inventory", { view: "snapshot" });
     check("read: garderobe_inventory returns the complete inventory through Codex", snapshot.ok && snapshot.data?.complete === true && snapshot.data?.total > 0, snapshot.ok ? `${snapshot.data?.total} garments, complete=${snapshot.data?.complete}` : JSON.stringify(snapshot.error));
 
+    // Refused on every contract, before the restriction is looked up: the identifier names no real restriction.
+    // Checked before the board steps, which may stop early (an owner's choice on a hosted board), so it always runs.
+    const lift = await call("garderobe_command", { type: "restriction.resolve", payload: { restrictionId: "rst_codex_verify_not_a_restriction", evidence: { kind: "owner_statement" } }, idempotencyKey: `codex-verify-lift-${Date.now()}` });
+    check("a restriction lift from Codex is refused", !lift.ok && lift.error?.code === "forbidden", lift.ok ? "applied" : `${lift.error?.code}: ${lift.error?.message}`);
+
     // The board for tomorrow in the owner's own day. Locally the owner's app publishes it (the daily service's
     // own route, as the owner); on a deployment the daily service will have published it already.
     const local = loopback ? await localHelpers() : null;
-    let timeZone = "Europe/London";
+    let timeZone = timeZoneArg ?? null;
     if (local) {
       await local.ensureClaimed();
-      timeZone = (await local.api("GET", "/v1/settings")).json?.settings?.timezone ?? timeZone;
+      const fromSettings = (await local.api("GET", "/v1/settings")).json?.settings?.timezone ?? null;
+      if (fromSettings && timeZoneArg && fromSettings !== timeZoneArg) console.log(`note: the owner's settings say ${fromSettings}; using it instead of --timezone ${timeZoneArg}`);
+      timeZone = fromSettings ?? timeZone;
     }
-    const date = ownerDayIso(1, timeZone);
+    if (!check("the owner's timezone is known (owner settings, or --timezone)", Boolean(timeZone), timeZone ?? "no timezone in the owner's settings and no --timezone")) return null;
+    const date = ownerDay(new Date(), timeZone, 1);
     if (local) {
       const published = await local.api("POST", "/v1/recommendations", { clientRequestId: `codex-verify-board-${Date.now()}`, date, mode: "board" });
       check("setup (local, as the owner in the app): tomorrow's board is published", published.ok, `${published.status} ${date}`);
@@ -201,103 +327,166 @@ async function toolsThroughCodex() {
     check("read: garderobe_today returns the published board through Codex", today.ok && board?.boardId && board.options?.length > 0, today.ok ? `board ${board?.boardId} revision ${board?.revision}, ${board?.options?.length ?? 0} options` : JSON.stringify(today.error));
     if (!board?.options?.length) return { date, timeZone };
 
-    const option = board.options[0];
-    const selected = await call("garderobe_command", { type: "board.select", payload: { boardId: board.boardId, optionId: option.optionId }, expectedVersions: { [`board:${board.boardId}`]: board.revision }, idempotencyKey: `codex-verify-select-${Date.now()}` });
+    // The board may already carry the owner's choice (on a hosted run, the owner's real board). The check chooses a
+    // different option and its undo must restore exactly the prior choice (option and footwear), never clear it.
+    // Every write is preceded by a fresh read and `writeDecision` (scripts/board-guard.mjs), and sends the observed
+    // board version as expectedVersions: a concurrent change by the owner stops the verifier instead of being overwritten.
+    const hosted = !local;
+    const read = async () => {
+      const r = await call("garderobe_today", { date });
+      return r.ok ? r.data?.board ?? null : null;
+    };
+    const guard = async (what, lastSeen, ownWrite = false) => {
+      const current = await read();
+      const decision = writeDecision({ hosted, lastSeen, current, ownWrite });
+      if (!decision.ok) check(`${what}: refused before writing`, false, `not run: ${decision.reason}${ownWrite ? "; the verifier's own change is still on the board, undo it in the app" : ""}`);
+      return decision.ok ? current : null;
+    };
+    // After each of its own writes, the next read becomes the baseline only if it shows exactly that write (the
+    // receipt's board version and the expected state); otherwise every later write is refused.
+    const adopt = (before, after, receipt, expect) => {
+      const adoption = adoptAfterWrite({ before, after, receipt, expect });
+      if (!adoption.ok) check("the board after the verifier's write shows only that write", false, adoption.reason);
+      return adoption.ok ? after : { refused: adoption.reason };
+    };
+    const initialSelection = board.selection?.optionId ?? null;
+    const initialChoice = choiceOf(board);
+    const priorBoard = boardState(board);
+    // On a hosted deployment (the owner's real board) never write over a choice the owner has made: refuse the
+    // board writes and report them as not run. Locally the board is the run's own and the choice is restored.
+    if (!local && board.selection) {
+      check("board writes (choice, swap) on the owner's real board", false, `not run: the owner has already chosen option ${initialSelection} for ${date}; the verifier does not write over it. Run against a board without a choice, or a test account.`);
+      return { date, timeZone, boardId: board.boardId };
+    }
+    // A choice must change something: pick an option other than the current one, or report that none exists.
+    const other = board.options.find((o) => o.optionId !== initialSelection);
+    const option = other ?? board.options[0];
+    const beforeSelect = other ? await guard("routine write: board.select", board) : null;
+    // Choosing is not wearing: the day's wear (local Worker, read as the owner) must be the same after the choice.
+    const wearBefore = local && beforeSelect ? (await local.api("GET", `/v1/days/${date}`)).json : null;
+    const selected = beforeSelect ? await call("garderobe_command", { type: "board.select", payload: { boardId: beforeSelect.boardId, optionId: option.optionId }, expectedVersions: versionsOf(beforeSelect), idempotencyKey: `codex-verify-select-${Date.now()}` }) : { ok: false, data: null, error: other ? { code: "refused_before_writing", message: "the board changed before the choice could be made" } : { code: "no_other_option", message: "the board has no option other than the owner's current choice, so no choice transition can be shown" } };
     const receipt = selected.data?.receipt;
     check("routine write: board.select runs directly with a receipt naming the connected assistant", selected.ok && receipt?.commandId && receipt.channel === "mcp" && receipt.actor === "assistant", selected.ok ? `${receipt?.commandId}: ${receipt?.summary}` : JSON.stringify(selected.error));
+    let lastSeen = beforeSelect ?? board;
+    let undone = null;
+    let beforeUndo = null;
     // Once a choice is recorded it is always taken back, even when a check in between throws.
     try {
-      const afterSelect = await call("garderobe_today", { date });
-      check("the choice is on the board the app shows", afterSelect.data?.board?.selection?.optionId === option.optionId, `selection ${afterSelect.data?.board?.selection?.optionId}`);
+      const afterSelect = await read();
+      if (receipt?.commandId) lastSeen = adopt(beforeSelect, afterSelect, receipt, (b) => b.selection?.optionId === option.optionId);
+      check("the choice is on the board the app shows", afterSelect?.selection?.optionId === option.optionId, `selection ${afterSelect?.selection?.optionId}`);
       if (local) {
-        const day = (await local.api("GET", `/v1/days/${date}`)).json;
-        check("choosing is not wearing: no wear is recorded for that day", Array.isArray(day?.garments) && day.garments.length === 0, `${day?.garments?.length} garments worn`);
+        const wear = sameWear(wearBefore, (await local.api("GET", `/v1/days/${date}`)).json);
+        check("choosing is not wearing: the day's recorded wear is unchanged", wear.ok, wear.reason);
+      } else {
+        console.log("note: choosing is not wearing was not verified on this hosted run (no owner read of the day's wear is available to the verifier)");
       }
     } finally {
       if (receipt?.commandId) {
-        const undone = await call("garderobe_command", { type: "command.undo", payload: { commandId: receipt.commandId }, idempotencyKey: `codex-verify-undo-${Date.now()}` });
-        check("undo: command.undo takes the choice back with its own receipt", undone.ok && undone.data?.receipt?.commandId, undone.ok ? `${undone.data.receipt.commandId}: ${undone.data.receipt.summary}` : JSON.stringify(undone.error));
+        beforeUndo = await guard("undo of the choice", lastSeen, true);
+        if (beforeUndo) {
+          undone = await call("garderobe_command", { type: "command.undo", payload: { commandId: receipt.commandId }, expectedVersions: versionsOf(beforeUndo), idempotencyKey: `codex-verify-undo-${Date.now()}` });
+          check("undo: command.undo takes the choice back with its own receipt", undone.ok && undone.data?.receipt?.commandId, undone.ok && undone.data?.receipt?.commandId ? `${undone.data.receipt.commandId}: ${undone.data.receipt.summary ?? ""}` : JSON.stringify(undone.ok ? undone.data : undone.error));
+        }
       }
     }
     if (receipt?.commandId) {
-      const afterUndo = await call("garderobe_today", { date });
-      check("after the undo the board has no choice again", (afterUndo.data?.board?.selection?.optionId ?? null) === null, `selection ${afterUndo.data?.board?.selection?.optionId ?? null}`);
+      const restored = await read();
+      // The board must be exactly the captured prior state, and only the verifier's undo may have moved it on.
+      lastSeen = undone?.ok ? adopt(beforeUndo, restored, undone.data?.receipt, (b) => boardState(b) === priorBoard) : { refused: "the verifier's choice was not taken back" };
+      // A failed or malformed read proves nothing: require the board itself before judging its selection.
+      check("after the undo the board is exactly as before (board, choice, every option's pieces)", Boolean(restored?.boardId) && restored.boardId === board.boardId && choiceOf(restored) === initialChoice && boardState(restored) === priorBoard, restored?.boardId ? `before ${priorBoard}, after ${boardState(restored)}` : "garderobe_today failed or returned no board, so the restore is not shown");
     }
 
-    const boardNow = (await call("garderobe_today", { date })).data?.board ?? board;
-    const swap = await call("garderobe_command", { type: "board.swap_slot", payload: { boardId: boardNow.boardId, optionId: option.optionId, role: "top" }, idempotencyKey: `codex-verify-swap-${Date.now()}` });
+    // The owner may have chosen or edited the board while this ran: stop before the swap if so.
+    const boardNow = await guard("piece swap", lastSeen);
+    if (!boardNow) return { date, timeZone, boardId: board.boardId };
+    const pieces = (b) => JSON.stringify((b?.options?.find((o) => o.optionId === option.optionId)?.garments ?? []).map((g) => `${g.role}:${g.garmentId}`).sort());
+    const inRole = (b, role) => JSON.stringify((b?.options?.find((o) => o.optionId === option.optionId)?.garments ?? []).filter((g) => g.role === role).map((g) => g.garmentId).sort());
+    const optionNow = boardNow.options?.find((o) => o.optionId === option.optionId);
+    // Swap a role the option actually has (a top when it has one).
+    const role = optionNow?.garments?.some((g) => g.role === "top") ? "top" : optionNow?.garments?.[0]?.role;
+    const swap = role ? await call("garderobe_command", { type: "board.swap_slot", payload: { boardId: boardNow.boardId, optionId: option.optionId, role }, expectedVersions: versionsOf(boardNow), idempotencyKey: `codex-verify-swap-${Date.now()}` }) : { ok: false, error: { code: "no_role", message: "the option has no pieces to swap" } };
     const proposalId = swap.error?.details?.proposalId;
     if (swap.ok && swap.data?.receipt?.commandId) {
-      // Applied at once (owner decision of 2026-10-05): take it back straight away, and check the undo.
-      const back = await call("garderobe_command", { type: "command.undo", payload: { commandId: swap.data.receipt.commandId }, idempotencyKey: `codex-verify-undo-swap-${Date.now()}` });
-      check("a piece swap is applied with a receipt and undone", back.ok && back.data?.receipt?.commandId, `${swap.data.receipt.summary} / ${back.ok ? back.data.receipt.summary : JSON.stringify(back.error)}`);
+      // The owner asked for it, so under the 2026-10-05 contract it applies at once. Check that it really changed
+      // the piece in that role, then always take it back and check the option is exactly as before.
+      let back = null;
+      let swapSeen = { refused: "the board could not be read after the swap" };
+      try {
+        const swapped = await read();
+        swapSeen = adopt(boardNow, swapped, swap.data.receipt, (b) => inRole(b, role) !== inRole(boardNow, role));
+        check(`contract 2026-10-05: a requested piece swap applies at once with a receipt (the ${role} changed)`, Boolean(swapped?.boardId) && inRole(swapped, role) !== "[]" && inRole(swapped, role) !== inRole(boardNow, role), swapped ? `${swap.data.receipt.summary ?? swap.data.receipt.commandId}; ${role} before ${inRole(boardNow, role)}, after ${inRole(swapped, role)}` : "garderobe_today returned no board");
+      } finally {
+        const beforeSwapUndo = await guard("undo of the swap", swapSeen, true);
+        if (beforeSwapUndo) {
+          back = await call("garderobe_command", { type: "command.undo", payload: { commandId: swap.data.receipt.commandId }, expectedVersions: versionsOf(beforeSwapUndo), idempotencyKey: `codex-verify-undo-swap-${Date.now()}` });
+          check("undo: command.undo takes the swap back with its own receipt", back.ok && back.data?.receipt?.commandId, back.ok && back.data?.receipt ? back.data.receipt.summary ?? back.data.receipt.commandId : JSON.stringify(back.ok ? back.data : back.error));
+        }
+      }
+      // The undo must put the whole board back as it was: same board, same choice, every option's pieces.
+      const afterSwapUndo = await call("garderobe_today", { date });
+      const restoredBoard = afterSwapUndo.ok ? afterSwapUndo.data?.board : null;
+      check("after undoing the swap the board is exactly as before (board, choice, every option's pieces)", Boolean(restoredBoard?.boardId) && restoredBoard.boardId === boardNow.boardId && pieces(boardNow) !== "[]" && boardState(restoredBoard) === boardState(boardNow), afterSwapUndo.ok ? (restoredBoard?.boardId ? `before ${boardState(boardNow)}, after ${boardState(restoredBoard)}` : "garderobe_today returned no board") : JSON.stringify(afterSwapUndo.error));
     } else {
-      check("a piece swap waits for the owner (confirmation_required, nothing changed)", swap.error?.code === "confirmation_required" && Boolean(proposalId), `${swap.error?.code}: ${swap.error?.details?.summary ?? swap.error?.message}`);
+      // Waiting for the owner is the superseded policy for this change, so it fails the contract check.
+      check(`contract 2026-10-05: a requested piece swap applies at once with a receipt (the ${role ?? "piece"} changed)`, false, swap.error?.code === "confirmation_required" ? `the server kept it for the owner's confirmation (confirmation_required: ${swap.error?.details?.summary ?? swap.error?.message}); the 2026-10-05 contract is not implemented on this server yet` : `${swap.error?.code}: ${swap.error?.message}`);
+      // A swap kept for the owner must name its proposal, so the owner (and the cleanup below) can decide exactly it.
+      if (swap.error?.code === "confirmation_required") check("the swap kept for the owner names its proposal", typeof proposalId === "string" && proposalId.length > 0, proposalId ? `proposal ${proposalId}` : "confirmation_required without a proposal identifier");
+      // Whatever the answer, a swap that was not applied must leave the board exactly as it was read just before the
+      // request (boardNow): same board, same revision, same choice and pieces.
+      if (role) {
+        const afterRefusedSwap = await call("garderobe_today", { date });
+        const unchanged = unchangedAfterUnapplied(boardNow, afterRefusedSwap.ok ? afterRefusedSwap.data?.board : null);
+        check("a swap that was not applied left the board unchanged (board, revision, choice, every option's pieces)", unchanged.ok, afterRefusedSwap.ok ? unchanged.reason : JSON.stringify(afterRefusedSwap.error));
+      }
     }
     if (local && proposalId) {
       const rejected = await local.api("POST", `/v1/proposals/${proposalId}/decision`, { decision: "reject" });
       check("cleanup (local, as the owner in the app): the proposal is rejected", rejected.ok, rejected.json?.proposal?.state);
     }
-    // Refused on every contract, before the restriction is looked up: the identifier names no real restriction.
-    const lift = await call("garderobe_command", { type: "restriction.resolve", payload: { restrictionId: "rst_codex_verify_not_a_restriction", evidence: { kind: "owner_statement" } }, idempotencyKey: `codex-verify-lift-${Date.now()}` });
-    check("a restriction lift from Codex is refused", !lift.ok && lift.error?.code === "forbidden", lift.ok ? "applied" : `${lift.error?.code}: ${lift.error?.message}`);
     return { date, timeZone, boardId: board.boardId };
   } finally {
-    server.close();
+    await server.close();
   }
-}
-
-function modelSession(date) {
-  // `codex login status` reports on stderr.
-  const signedIn = () => {
-    const s = codex("login", "status");
-    return `${s.stdout}${s.stderr}`.includes("Logged in");
-  };
-  if (!signedIn() && process.env.OPENAI_API_KEY) {
-    spawnSync(CODEX, ["login", "--with-api-key"], { env, input: process.env.OPENAI_API_KEY, encoding: "utf8" });
-  }
-  if (!signedIn()) return { signedIn: false };
-  const prompt = `Use the wardrobe MCP server's garderobe_today tool with date ${date} and reply with only the board id it returns.`;
-  const run = spawnSync(CODEX, ["exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", "-c", 'plugins."wardrobe@wardrobe-codex".mcp_servers.wardrobe.tools.garderobe_today.approval_mode="approve"', prompt], { env, encoding: "utf8", timeout: 300_000, input: "" });
-  const events = (run.stdout ?? "").split("\n").filter(Boolean).map((l) => {
-    try {
-      return JSON.parse(l);
-    } catch {
-      return null;
-    }
-  }).filter(Boolean);
-  const calls = events.filter((e) => e.item?.type === "mcp_tool_call" && e.type === "item.completed");
-  const used = calls.find((e) => e.item.server === "wardrobe" && e.item.tool === "garderobe_today");
-  const answer = events.filter((e) => e.item?.type === "agent_message").at(-1)?.item?.text ?? "";
-  return { signedIn: true, exit: run.status, used, answer, calls: calls.map((e) => `${e.item.server}.${e.item.tool}:${e.item.status}`), stderr: (run.stderr ?? "").trim().split("\n").slice(-3).join(" | ") };
 }
 
 try {
-  const version = codex("--version").stdout.trim();
-  check("Codex CLI available", version.startsWith("codex"), version);
+  // Each setup step depends on the one before it: a failed one stops the run (reported, then cleaned up below),
+  // so a missing or non-executable CODEX_BIN ends here with a FAIL line instead of an unhandled spawn error.
+  const require = (passed, what) => {
+    if (!passed) throw new Error(`stopped: ${what} failed, so the steps that depend on it were not run`);
+  };
+  const ran = codex("--version");
+  const version = (ran.stdout ?? "").trim();
+  require(check("Codex CLI available", !ran.error && ran.status === 0 && version.startsWith("codex"), timedOut(ran) ? outcome(ran) : ran.error ? `${CODEX}: ${ran.error.message}` : version || `exit ${ran.status}`), "the Codex CLI check");
   console.log(`MCP server: ${mcpUrl} (${loopback ? "LOCAL Worker, not a hosted deployment" : "hosted"})`);
   const added = codex("plugin", "marketplace", "add", marketplaceRoot);
-  check("codex plugin marketplace add", added.status === 0, (added.stdout || added.stderr).trim().split("\n")[0]);
+  require(check("codex plugin marketplace add", added.status === 0, outcome(added)), "codex plugin marketplace add");
   const installed = codex("plugin", "add", "wardrobe@wardrobe-codex");
-  check("codex plugin add wardrobe@wardrobe-codex", installed.status === 0, (installed.stdout || installed.stderr).trim().split("\n")[0]);
+  require(check("codex plugin add wardrobe@wardrobe-codex", installed.status === 0, outcome(installed)), "codex plugin add");
   const listed = codex("mcp", "list");
-  check("the plugin's MCP server is configured in Codex", /wardrobe\s+\S*\/mcp/.test(listed.stdout), listed.stdout.trim().split("\n")[1]);
+  require(check("the plugin's MCP server is configured in Codex", !listed.error && listed.status === 0 && /wardrobe\s+\S*\/mcp/.test(listed.stdout ?? ""), timedOut(listed) || listed.error || listed.status !== 0 ? `${outcome(listed)} (exit ${listed.status})` : (listed.stdout ?? "").trim().split("\n")[1]), "the MCP server configuration check");
   await login();
-  const state = await toolsThroughCodex();
-  if (withModel && state?.boardId) {
-    const model = modelSession(state.date);
-    if (!check("model session: Codex is signed in (your existing Codex sign-in, or OPENAI_API_KEY)", model.signedIn, model.signedIn ? "" : "sign in with `codex login`, set OPENAI_API_KEY, or pass --no-model")) throw new Error("model session skipped: Codex is not signed in");
-    check("model session: codex exec called garderobe_today through the plugin", model.exit === 0 && model.used?.item?.status === "completed", `exit ${model.exit}; calls ${model.calls.join(", ") || "none"}${model.exit ? `; ${model.stderr}` : ""}`);
-    check("model session: the answer names the board Codex read", model.answer.includes(state.boardId), model.answer.slice(0, 200));
-  }
+  await toolsThroughCodex();
 } catch (error) {
   check("verification completed without an unexpected error", false, String(error?.stack ?? error));
 } finally {
-  rmSync(codexHome, { recursive: true, force: true });
+  try {
+    // Delete the credentials Codex stored (best effort, bounded to 20 s; a missing Codex has nothing to log out). This
+    // removes Codex's local copy only; it is not shown to revoke the grant on the server, which the owner removes in
+    // the app under Settings › Connected assistants.
+    const loggedOut = spawnSync(CODEX, ["mcp", "logout", "wardrobe"], { env, encoding: "utf8", input: "", timeout: 20_000, killSignal: "SIGKILL" });
+    if (!loggedOut.error && loggedOut.status !== 0) console.log(`note: codex mcp logout wardrobe exited ${loggedOut.status}: ${(loggedOut.stderr || loggedOut.stdout || "").trim().split("\n")[0]}`);
+    if (loggedOut.error && loggedOut.error.code === "ETIMEDOUT") console.log("note: codex mcp logout wardrobe did not finish within 20 s");
+  } finally {
+    // The home holds the grant (file store): it is deleted whatever happened to the logout.
+    rmSync(codexHome, { recursive: true, force: true });
+  }
 }
 
 const failed = results.filter((r) => !r.pass);
-const summary = { mcpUrl: mcpUrl.toString(), target: loopback ? "local Worker (not hosted)" : "hosted", registration, at: new Date().toISOString(), passed: results.length - failed.length, failed: failed.length, results };
+const summary = { mcpUrl: mcpUrl.toString(), target: loopback ? "local Worker (not hosted)" : "hosted", registration, model: "none (Codex runs only OpenAI models, which the project does not authorize)", at: new Date().toISOString(), passed: results.length - failed.length, failed: failed.length, results };
 if (reportPath) writeFileSync(reportPath, JSON.stringify(summary, null, 2) + "\n");
 console.log(`\n${summary.passed} passed, ${summary.failed} failed`);
 process.exit(failed.length === 0 ? 0 : 1);

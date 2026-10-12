@@ -30,5 +30,5 @@ Record a wear or wash only when the owner has said, in this conversation, that i
 
 - `insufficient_scope` / HTTP 403: the connection is read-only; the owner must reconnect and allow "Make changes".
 - HTTP 401: the grant has ended or was disconnected; the owner reconnects with `codex mcp login wardrobe`.
-- `conflict`: the board or record changed; read it again and retry with the new revision.
+- `conflict`: the board or record changed since you read it. Read it again and check whether the change alters what the owner asked for (for example the owner has meanwhile chosen another option). If it does, tell the owner and ask before doing anything; retry with the new revision only when the request still means the same thing.
 - `not_found`: the garment, board or option does not exist; do not invent one.

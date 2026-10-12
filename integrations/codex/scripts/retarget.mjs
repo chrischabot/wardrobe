@@ -14,7 +14,8 @@ import { fileURLToPath } from "node:url";
 
 export const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-/** Validate an MCP URL: absolute http(s), no credentials, query or fragment; HTTPS unless loopback. */
+/** Validate an MCP URL: absolute http(s), no credentials, query or fragment; HTTPS unless loopback; the path must be
+ * the MCP resource (`/mcp`, optionally under a path prefix). */
 export function checkMcpUrl(value) {
   let url;
   try {
@@ -27,6 +28,7 @@ export function checkMcpUrl(value) {
   if (url.search || url.hash) throw new Error("the MCP URL must not have a query or fragment");
   const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
   if (url.protocol === "http:" && !loopback) throw new Error("a non-loopback MCP URL must use https");
+  if (!/\/mcp\/?$/.test(url.pathname)) throw new Error(`the MCP URL must be the deployment's MCP resource, ending in /mcp: ${value}`);
   return url.toString();
 }
 
