@@ -588,6 +588,17 @@ test("a write in flight, or one left unanswered and not confirmed by cleanup, ke
   }
 });
 
+test("a cleanup that left a write unresolved keeps the target lock even when every write was answered", async () => {
+  const { cleanupUnresolved } = await import("../verify.mjs");
+  assert.equal(cleanupUnresolved([{ group: "cleanup", status: "fail", unresolvedReplays: 1, ownReceiptsStillOpen: 0 }]), true, "a replay with an unusable answer");
+  assert.equal(cleanupUnresolved([{ group: "cleanup", status: "fail", unresolvedReplays: 0, ownReceiptsStillOpen: 1 }]), true, "an own receipt still open");
+  assert.equal(cleanupUnresolved([{ group: "cleanup", status: "fail", reason: "cleanup raised an error" }]), true);
+  assert.equal(cleanupUnresolved([{ group: "cleanup", status: "fail", unresolvedReplays: 0, ownReceiptsStillOpen: 0, balancesRestored: false }]), false, "only a foreign change: everything of ours is settled");
+  assert.equal(cleanupUnresolved([{ group: "cleanup", status: "pass" }]), false);
+  const src = readFileSync(path.join(DIR, "verify.mjs"), "utf8");
+  assert.ok(src.includes("} else if (cleanupUnresolved(report.results)) {\n    // Every write was answered") && src.includes("exitPolicy.keepLocks = true;\n    report.passed = false;\n    report.lockKept = \"cleanup left"), "verifyAndRecord keeps the lock for it");
+});
+
 test("the uncaught-error path keeps locks for unconfirmed writes too", () => {
   const src = readFileSync(path.join(DIR, "verify.mjs"), "utf8");
   const fail = src.slice(src.indexOf("const fail = (error) => {"), src.indexOf("process.exit(1);", src.indexOf("const fail = (error) => {")));

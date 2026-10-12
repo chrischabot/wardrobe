@@ -919,6 +919,16 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
   return { target, origin: originForEvidence(origin), runId, results, counts, skippedRequired, passed: gatePasses(results) };
 }
 
+/**
+ * Whether cleanup left a write of the run unsettled: a replay without a receipt or documented refusal, an own receipt
+ * still open, or cleanup raising an error. A foreign change that only made the balances differ does not count.
+ */
+export function cleanupUnresolved(results) {
+  const c = results.find((r) => r.group === "cleanup");
+  if (!c || c.status !== "fail") return false;
+  return Number(c.unresolvedReplays ?? 0) > 0 || Number(c.ownReceiptsStillOpen ?? 0) > 0 || typeof c.reason === "string";
+}
+
 function writeEvidence(file, body) {
   mkdirSync(EVIDENCE_DIR, { recursive: true });
   writeFileSync(path.join(EVIDENCE_DIR, file), `${JSON.stringify(body, null, 2)}\n`);
@@ -1049,6 +1059,12 @@ export async function verifyAndRecord({ origin, tokens, target, dev = null, publ
   if (keepLocksForWritesInFlight(cleanupConfirmed)) {
     report.passed = false;
     report.lockKept = "a write went unanswered and cleanup did not confirm every own receipt: the target lock is kept";
+  } else if (cleanupUnresolved(report.results)) {
+    // Every write was answered, but cleanup could not settle all of them (a replay with no usable answer, an own
+    // receipt still open, or cleanup itself failed): a mutation may still stand, so the lock stays.
+    exitPolicy.keepLocks = true;
+    report.passed = false;
+    report.lockKept = "cleanup left a write of this run unresolved: the target lock is kept; check the receipts, then remove the lock file";
   }
   if (interruption.requested) {
     report.passed = false;
