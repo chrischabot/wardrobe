@@ -28,6 +28,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { connectMcp, provisionOwner, toolResult, type McpConnection, type TestOwner } from "@garderobe/worker/testing";
+import { defect } from "../src/defect.ts";
 import { addDays, exec, internalCodesIn, LONDON, mcpCommand, quantityIn, realOwnerAt, refused, type JourneyOwner } from "../src/world.ts";
 
 const DAY_MS = 86_400_000;
@@ -228,14 +229,13 @@ describe("Journey 08: an overshirt goes back, a knit is exchanged for the right 
     expect(ordersView.data).toMatchObject({ complete: true, total: 1 });
     expect(ordersView.data.data.orders).toEqual(await orders());
 
-    // Whether this runs at once or waits for the owner is the server's answer; the committed state is the same.
+    // Owner decision of 2026-10-05: updating a return is an ordinary direction; it applies at once with a receipt.
     const before = await theCase(exchangeCase);
-    const outcome = await mcpCommand(j.owner, mcp, "return.update_case", { caseId: exchangeCase, nextAction: "Ask the shop for size L" });
+    const outcome = await mcpCommand(j.owner, mcp, "return.update_case", { caseId: exchangeCase, nextAction: "Ask the shop for size L" }, { expectRoute: "direct" });
     expect(outcome.receipt.outcome).toBe("committed");
     expect(outcome.receipt.summary).toContain("Next: Ask the shop for size L");
     expect(internalCodesIn(outcome.receipt.summary)).toEqual([]);
-    // When the owner was asked, the request said what would change (its identifier wording is journey 07's DEFECT).
-    if (outcome.proposal) expect(String(outcome.proposal.summary)).toContain("Ask the shop for size L");
+    expect(outcome.receipt.undo.available).toBe(true);
     const after = await theCase(exchangeCase);
     expect(after.nextAction).toBe("Ask the shop for size L");
     expect(after.version).toBe(before.version + 1);
@@ -243,10 +243,21 @@ describe("Journey 08: an overshirt goes back, a knit is exchanged for the right 
   });
 
   it("requesting the return and getting a label remove nothing: the overshirt is still in the wardrobe", async () => {
-    const requested = await update(returnCase, { state: "requested", nextAction: "Print the label" });
+    const considering = await theCase(returnCase);
+    let requested = await update(returnCase, { state: "requested", nextAction: "Print the label" });
     expect(requested.summary).toMatch(/Return requested/);
     expect(requested.summary).toMatch(/still in your wardrobe until it physically leaves/i);
-    expect(requested.undo).toEqual({ available: false, reason: "update the return again to correct it" });
+    // Owner decision of 2026-10-05: the change applied at once and is taken back with Undo, which puts the
+    // case back exactly as it was; asking for the return again is a fresh change.
+    expect(requested.undo.available).toBe(true);
+    const undone = await exec(api(), "command.undo", { commandId: requested.commandId });
+    expect(undone.outcome).toBe("committed");
+    expect(internalCodesIn(undone.summary)).toEqual([]);
+    const restored = await theCase(returnCase);
+    expect(restored).toMatchObject({ state: considering.state, nextAction: considering.nextAction, deadline: considering.deadline, stockDeparted: false });
+    expect(restored.version).toBeGreaterThan(considering.version);
+    requested = await update(returnCase, { state: "requested", nextAction: "Print the label" });
+    expect(requested.summary).toMatch(/Return requested/);
     const labelled = await update(returnCase, { state: "label_ready", labelRef: "SYNTHETIC-LABEL-1", nextAction: "Take it to the parcel shop" });
     expect(labelled.summary).toMatch(/Label ready/);
     expect(labelled.summary).toMatch(/still in your wardrobe/i);
@@ -320,6 +331,14 @@ describe("Journey 08: an overshirt goes back, a knit is exchanged for the right 
     expect(read).toMatchObject({ labelRef: "SYNTHETIC-LABEL-1", shipmentRef: "SYNTHETIC-TRACK-1", retailerReceivedOn: j.day(0), collectionPreference: "Drop-off at the parcel shop", stockDeparted: true });
     expect(read.deadline.status).toBe("established");
     for (const receipt of [received, partial, full]) expect(internalCodesIn(receipt.summary)).toEqual([]);
+  });
+
+  defect("D08-1", "a refund recorded on the return also shows on the order line it refunds", { signature: /order line refunded after the case's full refund: expected \+?0 to be 12000/ }, async () => {
+    // Specification section 17 (L1098): returns with "partial refunds, and exchanges retain correct stock
+    // and monetary states"; section 6 keeps "refunds" on orders and order lines (L240). The case above now
+    // says GBP 120.00 of GBP 120.00 was refunded (asserted by the previous step), but the order line it
+    // refunds still says nothing was.
+    expect((await line(orderId, overshirtLine)).refundedMinor, "order line refunded after the case's full refund").toBe(12_000);
   });
 
   it("the shop's refund notices on the order keep its money right: partial, then refunded, and a repeated notice counts once", async () => {

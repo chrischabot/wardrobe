@@ -320,7 +320,7 @@ const B006: BehaviourDriver = {
     const phone = await tell(world, "wear.record", { wearingDate: world.today, garmentIds: [moss] });
     const mcp = await connectMcp(world.owner, { write: true, clientName: "Evaluation wear relay", redirectUri: "https://eval-wear-relay.client.test/cb" });
     try {
-      const relayed = await mcpCommand(world.owner, mcp, "wear.record", { wearingDate: world.today, garmentIds: [moss] });
+      const relayed = await mcpCommand(world.owner, mcp, "wear.record", { wearingDate: world.today, garmentIds: [moss] }, { expectRoute: "direct", expectOutcome: null });
       memo.reports = { phone: { commandId: phone.commandId, outcome: phone.outcome, channel: phone.channel }, mcp: { commandId: relayed.receipt.commandId, outcome: relayed.receipt.outcome, channel: relayed.receipt.channel, route: relayed.route } };
     } finally {
       await mcp.close();

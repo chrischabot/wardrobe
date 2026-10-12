@@ -214,30 +214,45 @@ export interface McpCommandOutcome {
 }
 
 /**
- * One typed command from a connected assistant, driven by the server's answer rather than by a list of
- * types: when the server says the owner must confirm, the owner reads the request in the app's proposal
- * list and confirms it there. Either way the result is the committed receipt.
+ * One typed command from a connected assistant. The caller states the route the owner's decisions
+ * require (`expectRoute`, mandatory), and any other answer fails the journey at once with the server's
+ * own words:
  *
- * Where the owner has decided the route (decision of 2026-10-03: wear and wash reports, choosing from the
- * published board, laundry pickup and return and packing run directly; settings, corrections, moves,
- * retirements, restrictions, style and measurements wait for the owner), the caller states it as
- * `expectRoute` and a command taking the other route fails the journey.
+ *  - `direct`: owner decision of 2026-10-05 (library contract "Changes apply at once with undo on every
+ *    surface"): reports, bookkeeping and every ordinary direction (corrections, settings, trips, returns,
+ *    board choices, laundry, feedback ...) are applied at once. The tool must answer with a committed
+ *    receipt on the `mcp` channel, by the `assistant`, and nothing may be left waiting for the owner.
+ *  - `owner_confirmed`: only the contract's section 3 types wait. The tool must answer
+ *    `confirmation_required` with the owner-confirmation reason, the request must be in the owner's
+ *    list attributed to the `mcp` channel, and confirming it in the app must commit it as the owner's.
+ *
+ * A refusal, a different error code, a missing receipt or a receipt of the wrong type, channel or actor is
+ * a failure on either route; nothing is retried.
  */
-export async function mcpCommand(owner: TestOwner, mcp: McpConnection, type: string, payload: Record<string, unknown>, opts: { idempotencyKey?: string; expectedVersions?: Record<string, number>; occurredAt?: string; expectRoute?: McpCommandOutcome["route"] } = {}): Promise<McpCommandOutcome> {
-  const outcome = await sendMcpCommand(owner, mcp, type, payload, opts);
-  if (opts.expectRoute && outcome.route !== opts.expectRoute) throw new Error(`the connected assistant's ${type} took the route "${outcome.route}", but the owner decided it must be "${opts.expectRoute}"`);
-  return outcome;
-}
-
-async function sendMcpCommand(owner: TestOwner, mcp: McpConnection, type: string, payload: Record<string, unknown>, opts: { idempotencyKey?: string; expectedVersions?: Record<string, number>; occurredAt?: string }): Promise<McpCommandOutcome> {
+export async function mcpCommand(owner: TestOwner, mcp: McpConnection, type: string, payload: Record<string, unknown>, opts: { idempotencyKey?: string; expectedVersions?: Record<string, number>; occurredAt?: string; expectRoute: McpCommandOutcome["route"]; expectOutcome?: string | null }): Promise<McpCommandOutcome> {
   const args = { type, payload, idempotencyKey: opts.idempotencyKey ?? `mcp-${crypto.randomUUID()}`, ...(opts.expectedVersions ? { expectedVersions: opts.expectedVersions } : {}), ...(opts.occurredAt ? { occurredAt: opts.occurredAt } : {}) };
   const first = toolResult(await mcp.client.callTool({ name: "garderobe_command", arguments: args }));
-  if (first.ok) return { route: "direct", receipt: first.data.receipt, proposal: null };
-  if (first.error!.code !== "confirmation_required") throw new Error(`MCP command ${type} was refused: ${first.error!.code} ${first.error!.message}`);
+  const answer = first.ok ? "a receipt" : `${first.error?.code}: ${first.error?.message}`;
+  if (opts.expectRoute === "direct") {
+    if (!first.ok) throw new Error(`the connected assistant's ${type} must apply at once with a receipt (owner decision of 2026-10-05), but the server answered ${answer}`);
+    const receipt = first.data?.receipt;
+    if (!receipt || receipt.type !== type || !receipt.commandId) throw new Error(`the connected assistant's ${type} answered without its own receipt: ${JSON.stringify(first.data).slice(0, 400)}`);
+    if (receipt.channel !== "mcp" || receipt.actor !== "assistant") throw new Error(`the connected assistant's ${type} receipt is attributed to channel ${receipt.channel} and actor ${receipt.actor}, not mcp and assistant`);
+    // The receipt's outcome: "committed" unless the caller names another; null leaves it to the caller to judge.
+    const expectedOutcome = opts.expectOutcome === undefined ? "committed" : opts.expectOutcome;
+    if (expectedOutcome !== null && receipt.outcome !== expectedOutcome) throw new Error(`the connected assistant's ${type} receipt has outcome ${receipt.outcome}, not ${expectedOutcome}: ${JSON.stringify(receipt.summary)}`);
+    const waiting = ((await owner.api.json("GET", "/v1/proposals")).proposals as any[]).filter((p) => p.type === type && p.source?.channel === "mcp");
+    if (waiting.length > 0) throw new Error(`the connected assistant's ${type} applied, but a request of the same type was also left waiting for the owner`);
+    return { route: "direct", receipt, proposal: null };
+  }
+  if (first.ok) throw new Error(`the connected assistant's ${type} must wait for the owner's confirmation (contract section 3), but it ran at once: ${JSON.stringify(first.data?.receipt?.summary)}`);
+  if (first.error!.code !== "confirmation_required" || first.error!.details?.reason !== "owner_confirmation_required") throw new Error(`the connected assistant's ${type} must wait for the owner's confirmation, but the server answered ${answer} ${JSON.stringify(first.error!.details)}`);
   const proposalId = String(first.error!.details.proposalId);
-  const listed = (await owner.api.json("GET", "/v1/proposals")).proposals.find((p: any) => p.proposalId === proposalId);
+  const listed = ((await owner.api.json("GET", "/v1/proposals")).proposals as any[]).find((p) => p.proposalId === proposalId);
   if (!listed) throw new Error(`proposal ${proposalId} is not in the owner's list`);
+  if (listed.type !== type || listed.state !== "pending" || listed.source?.channel !== "mcp") throw new Error(`the owner's list shows the request as ${listed.type} ${listed.state} from ${listed.source?.channel}`);
   const decided = await owner.api.json("POST", `/v1/proposals/${proposalId}/decision`, { decision: "confirm" });
+  if (decided.proposal?.state !== "confirmed" || decided.receipt?.type !== type || decided.receipt?.actor !== "owner") throw new Error(`confirming ${type} in the app did not commit it as the owner's: ${JSON.stringify(decided).slice(0, 400)}`);
   return { route: "owner_confirmed", receipt: decided.receipt, proposal: listed };
 }
 

@@ -7,8 +7,10 @@
  * protocol contract" (the 2025-11-25 compatibility path; resources are optional); section 8 "A command is
  * a verified change" (idempotency); section 5 (a restriction stays until the owner ends it). Acceptance
  * rows (section 17): Identity recovery (MCP disconnection), Hallucinated items, Personal context. What a
- * connected assistant may do: apps/worker/README.md and packages/assistant/README.md (reports run, every
- * other change waits for the signed-in owner).
+ * connected assistant may do: owner decision of 2026-10-05 (library contract "Changes apply at once with
+ * undo on every surface"): reports and every ordinary change apply at once with a receipt and undo, on
+ * every surface; only the contract's section 3 changes wait for the signed-in owner, and a connected
+ * assistant can never lift a restriction.
  *
  * Everything inside the Worker is real: the MCP server and its OAuth provider (the SDK client registers,
  * runs the authorization-code flow with PKCE and calls tools with its own token), the HTTP API, the
@@ -19,8 +21,8 @@
  *    client's behaviour is proved here;
  *  - FAKE MODEL (scripted, no inference) behind `garderobe_ask` and `garderobe_research`;
  *  - the scripted weather double for the fictional test place.
- * Which typed commands wait for the owner is the server's answer at run time (`mcpCommand` in
- * src/world.ts); the journey asserts the resulting state and receipt on either route.
+ * Each typed command states the route the owner's decision requires (`mcpCommand` in src/world.ts) and
+ * fails on any other.
  */
 import { SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -60,6 +62,7 @@ function expectVerified(outcome: McpCommandOutcome, type: string): void {
   expect(internalCodesIn(outcome.receipt.summary)).toEqual([]);
   if (outcome.route === "direct") {
     expect(outcome.receipt).toMatchObject({ channel: "mcp", actor: "assistant" });
+    expect(typeof outcome.receipt.undo.available).toBe("boolean");
   } else {
     // The owner saw the request in the app, attributed to this assistant, with exactly the command that then ran.
     expect(outcome.proposal).toMatchObject({ type, state: "pending", source: { channel: "mcp", assistantName: WRITER_NAME } });
@@ -324,12 +327,14 @@ describe("journey 14: a connected assistant reads, reports, asks and is disconne
     expect((await inventory({ view: "laundry" })).data.data).toEqual(appLaundry);
   });
 
-  it("a setting change sent by the assistant takes effect in the owner's settings with a receipt", async () => {
+  it("a setting change sent by the assistant applies at once with a receipt, and the owner can undo it in the app", async () => {
     const before = await owner.api.json("GET", "/v1/settings");
     expect(before.settings.delivery.morningLocalTime).not.toBe("06:45");
-    const outcome = await mcpCommand(owner, writer, "settings.update", { patch: { delivery: { ...before.settings.delivery, morningLocalTime: "06:45" } } }, { expectRoute: "owner_confirmed" });
+    // Owner decision of 2026-10-05: a settings change is an ordinary direction, applied at once with undo.
+    const outcome = await mcpCommand(owner, writer, "settings.update", { patch: { delivery: { ...before.settings.delivery, morningLocalTime: "06:45" } } }, { expectRoute: "direct" });
     expectVerified(outcome, "settings.update");
     expect(outcome.receipt.outcome).toBe("committed");
+    expect(outcome.receipt.undo.available).toBe(true);
     const after = await owner.api.json("GET", "/v1/settings");
     expect(after.settings.delivery.morningLocalTime).toBe("06:45");
     expect(after.version).toBeGreaterThan(before.version);
@@ -338,17 +343,36 @@ describe("journey 14: a connected assistant reads, reports, asks and is disconne
     expect(after.settings.homeLocation).toEqual(before.settings.homeLocation);
     expect(after.settings.laundry).toEqual(before.settings.laundry);
     expect((await owner.api.json("GET", `/v1/commands/${outcome.receipt.commandId}`)).type).toBe("settings.update");
+    expect(await pending()).toEqual([]);
+
+    // Undo from the app (another surface) puts the morning time back, once.
+    const undone = (await (await owner.api.command("command.undo", { commandId: outcome.receipt.commandId })).json()) as any;
+    expect(undone).toMatchObject({ type: "command.undo", outcome: "committed", result: { undoneCommandId: outcome.receipt.commandId } });
+    expect(internalCodesIn(undone.summary)).toEqual([]);
+    expect((await owner.api.json("GET", "/v1/settings")).settings.delivery).toEqual(before.settings.delivery);
+    const twice = await owner.api.command("command.undo", { commandId: outcome.receipt.commandId });
+    expect(twice.status).toBe(409);
+    expect(((await twice.json()) as any).error.code).toBe("not_undoable");
+  });
+
+  it("only a change of what an outside connection may reach waits for the owner; he confirms it in the app", async () => {
+    // Contract section 3: registering a connection decides what an outside service may reach, so it is
+    // kept as a request attributed to this assistant, and runs only when the owner confirms it.
+    const outcome = await mcpCommand(owner, writer, "connection.register", { kind: "mcp", label: "SYNTHETIC notes service (journey test)", endpoint: "https://notes.service.example.test/mcp", namespace: "synthnotes" }, { expectRoute: "owner_confirmed" });
+    expectVerified(outcome, "connection.register");
+    expect(outcome.proposal!.summary).toContain("SYNTHETIC notes service (journey test)");
+    expect(await pending()).toEqual([]);
   });
 
   it("the confirmation the owner is shown for an assistant's typed command is in plain words, without internal identifiers or raw payload", () => {
-    // Was defect D14-1; fixed by the API thread in 5db4fd87.
-    // Specification section 13 and the profile (section 11): what the owner reads is plain wording; a
-    // confirmation shows the exact change. Every summary collected above was shown in GET /v1/proposals.
+    // Was defect D14-1; fixed by the API thread in 5db4fd87. Since the owner decision of 2026-10-05 only
+    // section 3 changes are shown for confirmation; the one collected above was shown in GET /v1/proposals.
+    expect(shownToOwner.map((p) => p.type)).toEqual(["connection.register"]);
     const notPlain = shownToOwner.filter((p) => internalCodesIn(p.summary).length > 0 || /[{}]|":/.test(p.summary)).map((p) => `${p.type}: ${p.summary}`);
     expect(notPlain).toEqual([]);
   });
 
-  defect("D14-2", "the last page of the item list does not tell the assistant that more pages follow", () => {
+  defect("D14-2", "the last page of the item list does not tell the assistant that more pages follow", { signature: /more pages\|pass nextCursor/ }, () => {
     // Specification section 13 and research rows R14 to R16: "Pagination is explicit; complete snapshots
     // and counts cannot be silently truncated." The last page has no next cursor, yet its text still
     // says more pages follow and to pass a cursor that does not exist, so an assistant that trusts the
@@ -357,9 +381,12 @@ describe("journey 14: a connected assistant reads, reports, asks and is disconne
     expect(lastItemsPageText).not.toMatch(/more pages|pass nextCursor/i);
   });
 
-  it("garderobe_ask relays words: a named wear is recorded; anything else becomes a request for the owner", async () => {
+  let worn = "";
+  let correction = "";
+
+  it("garderobe_ask relays words: a named wear is recorded at once on the mcp channel", async () => {
     // A wear report naming a real garment, relayed by the write connection: recorded, on the mcp channel.
-    const worn = `I wore the ${secondTop.name} today`;
+    worn = `I wore the ${secondTop.name} today`;
     model.script({ toolCalls: [{ toolName: "record_wear", input: { garmentIds: [secondTop.garmentId] } }] }, { text: "SCRIPTED FAKE MODEL REPLY: logged." });
     const reported = await call(writer, "garderobe_ask", { message: worn, clientTurnId: `ask-${crypto.randomUUID()}`, mode: "wait" });
     expect(reported.ok, JSON.stringify(reported.error)).toBe(true);
@@ -370,33 +397,50 @@ describe("journey 14: a connected assistant reads, reports, asks and is disconne
     const stored = await owner.api.json("GET", `/v1/commands/${reported.data.receipts[0].commandId}`);
     expect(stored).toMatchObject({ type: "wear.record", outcome: "committed", channel: "mcp", actor: "assistant" });
     expect((await dayRecord(j.today)).map((g) => g.garmentId).sort()).toEqual([shoe.garmentId, secondTop.garmentId].sort());
+  });
 
-    // A correction relayed the same way writes nothing and waits for the owner in the app.
-    const revisionBefore = (await owner.api.json("GET", "/v1/wardrobe")).wardrobeRevision;
-    const correction = `The ${secondTop.name} has a loose button now`;
-    model.script({ toolCalls: [{ toolName: "correct_garment", input: { garmentId: secondTop.garmentId, changes: { condition: "loose button (journey test)" } } }] }, { text: "SCRIPTED FAKE MODEL REPLY: that needs your confirmation in the app." });
+  defect("D14-3", "a correction relayed through garderobe_ask by a write connection applies at once with a receipt and undo", { signature: /expected \[ \{ type: 'garment\.correct'.* to deeply equal \[\]/s }, async () => {
+    // Owner decision of 2026-10-05 (contract sections 1 and 5): words a connected assistant relays
+    // (`garderobe_ask`) run under the same policy as the app, so an ordinary correction in the owner's
+    // words applies at once; the turn result carries `receipts[]`, and `proposals[]` only for section 3,
+    // read-only connections and wordless turns. Seen: the correction is kept as a proposal instead.
+    correction = `The ${secondTop.name} has a loose button now`;
+    model.script({ toolCalls: [{ toolName: "correct_garment", input: { garmentId: secondTop.garmentId, changes: { condition: "loose button (journey test)" } } }] }, { text: "SCRIPTED FAKE MODEL REPLY: noted the loose button." });
     const asked = await call(writer, "garderobe_ask", { message: correction, clientTurnId: `ask-${crypto.randomUUID()}`, mode: "wait" });
     expect(asked.ok, JSON.stringify(asked.error)).toBe(true);
-    expect(asked.data.receipts).toEqual([]);
-    expect(asked.data.proposals.map((p: any) => p.type)).toEqual(["garment.correct"]);
-    expect((await owner.api.json("GET", "/v1/wardrobe")).wardrobeRevision).toBe(revisionBefore);
+    expect(asked.data.proposals).toEqual([]);
+    expect(asked.data.receipts.map((r: any) => r.type)).toEqual(["garment.correct"]);
+    const corrected = asked.data.receipts[0];
+    expect(corrected.summary).toContain(secondTop.name);
+    expect(internalCodesIn(corrected.summary)).toEqual([]);
+    expect(await owner.api.json("GET", `/v1/commands/${corrected.commandId}`)).toMatchObject({ type: "garment.correct", outcome: "committed", channel: "mcp", actor: "assistant", undo: { available: true } });
+    expect((await owner.api.json("GET", `/v1/items/${secondTop.garmentId}`)).detail.garment.condition).toBe("loose button (journey test)");
+    expect(await pending()).toEqual([]);
+    // The owner takes it back in the app: the record is as it was.
+    const undone = (await (await owner.api.command("command.undo", { commandId: corrected.commandId })).json()) as any;
+    expect(undone).toMatchObject({ outcome: "committed", result: { undoneCommandId: corrected.commandId } });
     expect((await owner.api.json("GET", `/v1/items/${secondTop.garmentId}`)).detail.garment.condition).toBe(secondTop.condition);
-    const proposal = (await pending()).find((p) => p.turnId === asked.data.runId)!;
-    expect(proposal).toMatchObject({ type: "garment.correct", state: "pending", source: { channel: "mcp", assistantName: WRITER_NAME }, payload: { garmentId: secondTop.garmentId } });
-    expect(proposal.summary).toContain(secondTop.name);
-    expect(proposal.summary).toContain("\u201Cloose button (journey test)\u201D");
-    expect(internalCodesIn(proposal.summary)).toEqual([]);
-    pendingProposalId = proposal.proposalId;
+  });
 
+  it("a read-only connection relaying a wash report only proposes; relayed messages join the owner's one conversation", async () => {
     // A read-only connection relaying a wash report gets a proposal, never a change.
     const laundryBefore = await owner.api.json("GET", "/v1/laundry");
+    const revisionBefore = (await owner.api.json("GET", "/v1/wardrobe")).wardrobeRevision;
     model.script({ toolCalls: [{ toolName: "mark_dirty", input: { garmentIds: [secondTop.garmentId] } }] }, { text: "SCRIPTED FAKE MODEL REPLY: proposed." });
     const readOnly = await call(reader, "garderobe_ask", { message: `The ${secondTop.name} is in the wash`, clientTurnId: `ask-${crypto.randomUUID()}`, mode: "wait" });
+    expect(readOnly.ok, JSON.stringify(readOnly.error)).toBe(true);
     expect(readOnly.data.receipts).toEqual([]);
     expect(readOnly.data.proposals.length).toBeGreaterThan(0);
     expect((await owner.api.json("GET", "/v1/laundry")).awaitingService).toEqual(laundryBefore.awaitingService);
+    expect((await owner.api.json("GET", "/v1/wardrobe")).wardrobeRevision).toBe(revisionBefore);
+    const proposal = (await pending()).find((p) => p.turnId === readOnly.data.runId)!;
+    expect(proposal).toMatchObject({ state: "pending", source: { channel: "mcp", assistantName: READER_NAME } });
+    expect(proposal.summary).toContain(secondTop.name);
+    expect(internalCodesIn(proposal.summary)).toEqual([]);
+    pendingProposalId = proposal.proposalId;
 
-    // Both relayed messages are in the owner's one conversation, marked with the channel they came through.
+    // Both relayed messages of the write connection are in the owner's one conversation, marked with the channel they came through.
+    expect(correction).not.toBe("");
     const transcript = (await owner.api.json("GET", "/v1/conversation/messages?limit=50")).messages as any[];
     const relayed = transcript.filter((m) => m.role === "user" && [worn, correction].includes(m.text));
     expect(relayed.map((m) => m.channel)).toEqual(["mcp", "mcp"]);
@@ -411,17 +455,28 @@ describe("journey 14: a connected assistant reads, reports, asks and is disconne
       expect(decided.status, origin).toBe(401);
     }
     expect((await writer.client.listTools()).tools.some((t) => /proposal|confirm|approve/i.test(t.name))).toBe(false);
-    // Relaying "yes, I confirm" changes nothing either.
-    model.script({ toolCalls: [{ toolName: "correct_garment", input: { garmentId: secondTop.garmentId, changes: { condition: "loose button (journey test)" } } }] }, { text: "SCRIPTED FAKE MODEL REPLY: still waiting for you." });
-    const again = await call(writer, "garderobe_ask", { message: "Yes, I confirm the loose button", clientTurnId: `ask-${crypto.randomUUID()}`, mode: "wait" });
+    // Relaying "yes, I confirm" is no authority either. The model, taking the relayed words as consent, tries
+    // to carry out the waiting wash report itself; the relayed words name no piece, so the server records
+    // nothing and keeps the attempt as a further request. The original request stays waiting.
+    const waitingBefore = (await pending()).map((p) => p.proposalId);
+    model.script({ toolCalls: [{ toolName: "mark_dirty", input: { garmentIds: [secondTop.garmentId] } }] }, { text: "SCRIPTED FAKE MODEL REPLY: done, it is in the wash." });
+    const laundryBefore = await owner.api.json("GET", "/v1/laundry");
+    const revisionBefore = (await owner.api.json("GET", "/v1/wardrobe")).wardrobeRevision;
+    const again = await call(writer, "garderobe_ask", { message: "Yes, I confirm the request that is waiting", clientTurnId: `ask-${crypto.randomUUID()}`, mode: "wait" });
+    expect(again.ok, JSON.stringify(again.error)).toBe(true);
     expect(again.data.receipts).toEqual([]);
-    expect((await owner.api.json("GET", `/v1/items/${secondTop.garmentId}`)).detail.garment.condition).toBe(secondTop.condition);
-    expect((await pending()).find((p) => p.proposalId === pendingProposalId)!.state).toBe("pending");
+    expect(again.data.proposals.map((p: any) => p.type)).toEqual(["care.mark_dirty"]);
+    expect((await owner.api.json("GET", "/v1/laundry")).awaitingService).toEqual(laundryBefore.awaitingService);
+    expect((await owner.api.json("GET", "/v1/wardrobe")).wardrobeRevision).toBe(revisionBefore);
+    const waitingAfter = await pending();
+    expect(waitingAfter.find((p) => p.proposalId === pendingProposalId)).toMatchObject({ state: "pending", commandId: null, decidedAt: null });
+    const added = waitingAfter.filter((p) => !waitingBefore.includes(p.proposalId));
+    expect(added.map((p) => `${p.type}:${p.turnId === again.data.runId}`)).toEqual(["care.mark_dirty:true"]);
 
     // The owner declines everything that is waiting; the record stays as it was.
     for (const proposal of await pending()) expect((await owner.api.post(`/v1/proposals/${proposal.proposalId}/decision`, { decision: "reject" })).status).toBe(200);
     expect(await pending()).toEqual([]);
-    expect((await owner.api.json("GET", `/v1/items/${secondTop.garmentId}`)).detail.garment.condition).toBe(secondTop.condition);
+    expect((await owner.api.json("GET", "/v1/laundry")).awaitingService).toEqual(laundryBefore.awaitingService);
   });
 
   it("lifting the sneakers-only restriction is refused over MCP, and the welted shoes stay off the next board", async () => {

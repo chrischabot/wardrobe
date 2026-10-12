@@ -101,11 +101,7 @@ describe("wearing a planned garment repairs later days and the existing Calendar
     const outcome = await mcpCommand(owner, mcp, "board.select", { boardId: planned.boardId, optionId: chosen.optionId }, { expectRoute: "direct" });
     expect(outcome.receipt.outcome).toBe("committed");
     expect(outcome.receipt.type).toBe("board.select");
-    if (outcome.proposal) {
-      // When the server keeps the request for the owner, what he confirms is described, not just identified.
-      expect(outcome.proposal.summary).toMatch(/outfit/i);
-      expect(outcome.proposal.source.assistantName).toBe("Planner");
-    }
+    expect(outcome.receipt.undo.available).toBe(true);
     await mcp.close();
     const board = await boardOf(j.day(2));
     expect(board.selection.optionId).toBe(chosen.optionId);
@@ -247,16 +243,27 @@ describe("the Calendar event is a dependable presentation of the board", () => {
     expect((after.description.match(/^\d\. /gm) ?? []).length).toBe(board.options.length);
   });
 
-  it("replaces his edit of the managed outfit text with the next authoritative revision", async () => {
+  it("after he edits the managed outfit text, the next revision replaces the managed block and keeps his rewritten line below it", async () => {
+    // Specification section 9: "A user edit to the managed outfit text can be replaced by the next
+    // authoritative projection; preserve unrelated event fields and content." Coordinator decision of
+    // 2026-10-12 (was D05-4): the managed block is current, and the owner's rewritten line is kept below it,
+    // never deleted, because a merge must not delete what may be his own words.
     const event = await theEvent();
     await editCalendarEvent(calendarId, event.id, { description: event.description.replace(board.options[0].name, "MY OWN RENAMING") });
     await swap("bottom", 3);
     await runCron();
     const after = await theEvent();
     expect(revisionOf(after)).toBe(board.revision);
-    expect(after.description).not.toContain("MY OWN RENAMING");
-    expect(after.description).toContain(board.options[0].name);
-    expect((after.description.match(/^\d\. /gm) ?? []).length).toBe(board.options.length);
+    const boardLinkAt = after.description.indexOf("Open the board:");
+    expect(boardLinkAt).toBeGreaterThan(0);
+    const managed = after.description.slice(0, boardLinkAt);
+    const below = after.description.slice(boardLinkAt);
+    // The managed block is the current board: every option once, under its own name, and not his rewrite.
+    expect((managed.match(/^\d\. /gm) ?? []).length).toBe(board.options.length);
+    for (const option of board.options) expect(managed).toContain(option.name);
+    expect(managed).not.toContain("MY OWN RENAMING");
+    // His rewritten line survives below it.
+    expect(below).toContain("MY OWN RENAMING");
   });
 
   it("his own note survives even when he also edited the outfit text", async () => {

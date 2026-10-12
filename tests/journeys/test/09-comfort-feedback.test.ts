@@ -217,12 +217,11 @@ describe("Journey 09: optional comfort feedback from the item", () => {
   });
 
   it("a remark relayed by a connected assistant is stored in the owner's words, about no garment when none was named", async () => {
-    // Whether this runs at once or waits for the owner is the server's answer; the stored remark is the same.
-    const outcome = await mcpCommand(j.owner, mcp, "feedback.record", { text: "a bit cold at my desk this afternoon", kind: "too_cold", activity: "desk work" });
+    // Comfort feedback is an ordinary direction: it applies at once with a receipt (owner decision of 2026-10-05).
+    const outcome = await mcpCommand(j.owner, mcp, "feedback.record", { text: "a bit cold at my desk this afternoon", kind: "too_cold", activity: "desk work" }, { expectRoute: "direct" });
     expect(outcome.receipt.outcome).toBe("committed");
     expect(outcome.receipt.summary).toBe("Noted: what you wore was too cold (desk work). Applied to that context only");
     expect(outcome.receipt.summary).not.toContain("?");
-    if (outcome.proposal) expect(String(outcome.proposal.summary)).toContain("a bit cold at my desk this afternoon");
     expect(await one(outcome.receipt.result.feedbackId)).toMatchObject({ text: "a bit cold at my desk this afternoon", kind: "too_cold", pain: false, garmentIds: [], wearingDate: null, activity: "desk work", layer: null, scope: null });
     expect(await feedback()).toHaveLength(4);
   });

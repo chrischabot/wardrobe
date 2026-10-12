@@ -150,7 +150,7 @@ describe("every board of a varied week obeys the profile's hard constraints", ()
     for (const offset of [1, 2, 6, 7, 8]) for (const option of boards.get(offset).options) expect(option.flourish, `day +${offset}, ${option.name}`).toBeTruthy();
   });
 
-  defect("D06-2", "no single neutral appears three times in one outfit", () => {
+  defect("D06-2", "no single neutral appears three times in one outfit", { signature: /day \+\d+/, intermittent: true }, () => {
     // Profile section 5: "A standing colour verdict worth keeping: never let a single neutral appear
     // three times in one outfit". Counted on the owner's own sheet colours across jacket, shirt,
     // trousers, belt, socks and shoes. Was seen as black chore coat, black belt and black socks while
@@ -159,7 +159,7 @@ describe("every board of a varied week obeys the profile's hard constraints", ()
     // seeded, so it stays marked intermittent (DEFECTS.md, "Under watch").
     const found = [...boards.entries()].flatMap(([offset, board]) => board.options.flatMap((o: any) => neutralViolations(shown(o)).map((v) => `day +${offset}, ${v}`)));
     expect(found).toEqual([]);
-  }, { intermittent: true });
+  });
 
   it("safe options never lead: the first outfit is not the white-or-blue shirt with navy trousers", () => {
     for (const [offset, board] of boards) expect(safeLeadViolations(board), `day +${offset}`).toEqual([]);

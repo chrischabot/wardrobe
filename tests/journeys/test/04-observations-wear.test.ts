@@ -257,7 +257,7 @@ describe("what the owner says he wore is recorded as said", () => {
     expect(again.results[0]).toMatchObject({ status: "receipt", receipt: { replayed: true, commandId: replay.results[0].receipt.commandId } });
 
     const mcp = await connectMcp(owner, { write: true, clientName: "Wear helper", redirectUri: "https://wear-helper.client.test/cb" });
-    const relayed = await mcpCommand(owner, mcp, "wear.record", { wearingDate: j.day(0), garmentIds: [g.trousers] }, { expectRoute: "direct" });
+    const relayed = await mcpCommand(owner, mcp, "wear.record", { wearingDate: j.day(0), garmentIds: [g.trousers] }, { expectRoute: "direct", expectOutcome: "merged" });
     await mcp.close();
     heard(relayed.receipt);
     expect(relayed.receipt.outcome).toBe("merged");

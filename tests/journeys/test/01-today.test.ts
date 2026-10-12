@@ -218,7 +218,7 @@ describe("the morning: Today, choose, swap, record", () => {
 
     const mcp = await connectMcp(owner, { write: true, clientName: "Morning writer", redirectUri: "https://morning-writer.client.test/cb" });
     const top = worn.garments.find((g: any) => g.role === "top");
-    const relayed = await mcpCommand(owner, mcp, "wear.record", { wearingDate: j.day(0), garmentIds: [top.garmentId] }, { expectRoute: "direct" });
+    const relayed = await mcpCommand(owner, mcp, "wear.record", { wearingDate: j.day(0), garmentIds: [top.garmentId] }, { expectRoute: "direct", expectOutcome: "merged" });
     expect(relayed.receipt.outcome).toBe("merged");
     expect(relayed.receipt.channel).toBe("mcp");
     await mcp.close();

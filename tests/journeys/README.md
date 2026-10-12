@@ -14,7 +14,7 @@ From the repository root, after `npm install`:
 
 | Command | What it does |
 | --- | --- |
-| `npm test -w @garderobe/journey-tests` | The suite. Known product defects are expected failures; anything else that fails is a regression. Exit code 0 means "no regression", **not** "no defects". |
+| `npm test -w @garderobe/journey-tests` | The suite. A known product defect passes only when it fails with its recorded signature; anything else that fails is a regression. Exit code 0 means "no regression", **not** "no defects". |
 | `npm run test:strict -w @garderobe/journey-tests` | The acceptance view: every known defect fails as an ordinary test. Its failures are exactly the open defects in [DEFECTS.md](DEFECTS.md). |
 | `npm run typecheck -w @garderobe/journey-tests` | Typecheck of the suite. |
 | `npm run evals:check -w @garderobe/journey-tests` | Checks the bundled 64-case evaluation corpus and its grader controls (see "Evaluation corpus" below). Needs `python3`; not part of `npm test`. |
@@ -37,10 +37,10 @@ day: `GARDEROBE_TEST_CLOCK=23:30 npm test` (see the Worker README).
 | `test/08-returns-exchanges.test.ts` | An order, arrival as a separate fact, sourced deadlines and unresolved ones, reminders, label to refund, stock leaves only on physical departure, an exchange without duplicate ownership | §10 Return and exchange deadlines; §17 Returns |
 | `test/09-comfort-feedback.test.ts` | Optional feedback stored verbatim with only the known context, no questions, pain changes later boards without a ban, retract and undo | §10 Optional comfort feedback; §17 Comfort |
 | `test/10-pause-resume.test.ts` | The scheduled service composes with no phone and no assistant; while paused nothing is published or reminded, observations still commit, future events are removed, return deadlines stay active; resume without backlog | §9 Schedule, Pause and resume; §17 Morning independence, Pause |
-| `test/11-conversation-capture.test.ts` | The continuous conversation: durable turns, a named wear recorded at once, a request that waits for the owner's confirmation (confirm, reject, stale), invented garments, photo capture, a question answered, cancel, transcript, recall, event stream, no status interrogation | §3 Conversation and capture; §5; §13; §17 Hallucinated items, Visual matching, Missing reports |
+| `test/11-conversation-capture.test.ts` | The continuous conversation: durable turns, a named wear recorded at once, an ordinary request applied at once with Undo, a photograph alone kept as a request for the owner's confirmation (confirm, reject, stale), invented garments, photo capture, a question answered, cancel, transcript, recall, event stream, no status interrogation | §3 Conversation and capture; §5; §13; §17 Hallucinated items, Visual matching, Missing reports |
 | `test/12-studio.test.ts` | Studio: selectors of real garments, honest markers, backend validation, locked pieces, stable compositions, previews as jobs, Save combination, Plan for a day and Wear this as three distinct effects | §3 Studio; §17 Studio |
 | `test/13-account-recovery-export.test.ts` | Losing the sign-in and recovering the same wardrobe with the recovery kit; a complete export verified checksum by checksum and imported into an empty owner without replaying effects; deletion needs its confirmation | §15; §17 Lost identity, Identity recovery, Portability |
-| `test/14-mcp-assistant.test.ts` | A connected assistant end to end over real MCP and OAuth: tools per permission, the same board as the app, every inventory view against the API, direct reports, changes that wait for the owner, no way to confirm or lift a restriction, research runs, the legacy protocol, disconnect | §13 MCP; §15 |
+| `test/14-mcp-assistant.test.ts` | A connected assistant end to end over real MCP and OAuth: tools per permission, the same board as the app, every inventory view against the API, direct reports and changes with receipts and undo, only section 3 changes waiting for the owner, no way to confirm or lift a restriction, research runs, the legacy protocol, disconnect | §13 MCP; §15 |
 
 ## What is real and what stands in
 
@@ -147,16 +147,19 @@ Each owner in a test is a fresh copy provisioned for that file; nothing is writt
 The "feet have healed" steps in `06` are a labelled what-if on such a copy: the owner has not said so.
 No test prints the owner's profile, settings, recovery codes or tokens.
 
-A connected assistant's typed command is driven by the server's answer (`mcpCommand` in `src/world.ts`):
-when the server asks for the owner's confirmation, the owner reads the request in `GET /v1/proposals`
-and confirms it; the resulting state and receipt are asserted either way. No test hard-codes which
-command types wait.
+A connected assistant's typed command states the route the owner's decisions require (`mcpCommand` in
+`src/world.ts`, `expectRoute` is mandatory): `direct` for reports and every ordinary change (owner
+decision of 2026-10-05, library contract "Changes apply at once with undo on every surface"), with a
+receipt on the `mcp` channel and nothing left waiting; `owner_confirmed` only for the contract's section 3
+types, which the owner reads in `GET /v1/proposals` and confirms. Any other answer fails the journey with
+the server's own words; nothing is retried.
 
 ## Product defects
 
 A defect test states what the specification or the profile requires and is never weakened. See
 [DEFECTS.md](DEFECTS.md) for each one's reproduction and owning workstream, and `src/defect.ts` for how
-the two run modes treat them. When a defect is fixed its test starts to pass, the default run reports
-"expected to fail", and the fix is to turn `defect(...)` into `it(...)` and move the entry to the
-"Fixed" table of DEFECTS.md with the revision that fixed it. Only the journey suite's owner converts a
-test, after re-running the journey on the branch that holds the fix.
+the two run modes treat them. Each defect records a failure signature: in the default run its test passes
+only when the body fails with that signature, and fails when the body passes (the product appears fixed)
+or fails in any other way. When a defect is fixed, the fix is to turn `defect(...)` into `it(...)` and
+move the entry to the "Fixed" table of DEFECTS.md with the revision that fixed it. Only the journey
+suite's owner converts a test, after re-running the journey on the branch that holds the fix.

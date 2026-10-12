@@ -254,6 +254,32 @@ describe("journey 13b: export my wardrobe, verify it, and import it into an empt
   let manifest: any;
   let worn: string[];
   let journeyCommands: string[];
+  /** What the export's own consistency check compares: the wardrobe revision and the newest recorded command. */
+  const ledgerMark = async () => {
+    const newest = (await owner.api.json("GET", "/v1/commands?limit=1")).receipts[0];
+    return { wardrobeRevision: (await owner.api.json("GET", "/v1/wardrobe")).wardrobeRevision as number, newestCommand: (newest?.commandId ?? null) as string | null, newestType: (newest?.type ?? null) as string | null };
+  };
+  /**
+   * Waits until nothing has been recorded for this owner for two seconds (the scheduled work started in
+   * beforeAll, such as the calendar projection and the evening preparation of tomorrow's board, has settled).
+   * A precondition of the export, not a retry of it: the export below runs once and is judged as it is.
+   */
+  async function ledgerAtRest(): Promise<void> {
+    let mark = await ledgerMark();
+    let quietSince = Date.now();
+    const deadline = Date.now() + 45_000;
+    const recorded: string[] = [];
+    while (Date.now() - quietSince < 2_000) {
+      expect(Date.now() < deadline, `the owner's ledger never went quiet before the export; recorded meanwhile: ${recorded.join(", ")}`).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      const now = await ledgerMark();
+      if (now.wardrobeRevision !== mark.wardrobeRevision || now.newestCommand !== mark.newestCommand) {
+        recorded.push(String(now.newestType));
+        mark = now;
+        quietSince = Date.now();
+      }
+    }
+  }
   let report: any;
   const said = "Which shirt goes with the grey flannels on Thursday?";
   const text = (path: string) => decoder.decode(files[path]!);
@@ -315,15 +341,16 @@ describe("journey 13b: export my wardrobe, verify it, and import it into an empt
     expect((await owner.api.json("GET", "/v1/recovery")).pending.effects).toBe(0);
   });
 
-  it("Export my wardrobe runs as a job to follow and says honestly whether the package is complete", async () => {
-    // The product reports a package as incomplete when the wardrobe changed while it was read and says
-    // "Export again"; the owner does exactly that (at most three times).
-    for (let attempt = 0; attempt < 3; attempt++) {
-      job = await exportOnce();
-      if (job.complete) break;
-      expect(job.state).toBe("completed_incomplete");
-      expect(job.components.filter((c: any) => c.state !== "complete").every((c: any) => typeof c.note === "string" && c.note.length > 0)).toBe(true);
-    }
+  it("Export my wardrobe runs as a job to follow, and a package read while nothing changed is complete in every component", async () => {
+    // Specification section 15 and evaluation case B020: a package is complete, or it says which
+    // components are not and why. Nothing is recorded for the owner while it runs, so it must be complete.
+    // One request, judged as it is; it is never repeated.
+    await ledgerAtRest();
+    const before = await ledgerMark();
+    job = await exportOnce();
+    const after = await ledgerMark();
+    const incomplete = (job.components ?? []).filter((c: any) => c.state !== "complete").map((c: any) => `${c.name}: ${c.note}`);
+    expect(incomplete, `export ${job.state}; ledger before ${JSON.stringify(before)}, after ${JSON.stringify(after)}`).toEqual([]);
     expect(job.state).toBe("completed");
     expect(job.complete).toBe(true);
     expect(job.encrypted).toBe(false);

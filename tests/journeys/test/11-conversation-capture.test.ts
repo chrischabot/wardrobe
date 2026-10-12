@@ -5,9 +5,11 @@
  * section 5 "Probability without status interrogation"; section 8 "A command is a verified change";
  * section 13 "Native and web API" (turns, transcript, recall, runs, event stream, cancel) and "Adapt
  * Think streaming to Swift" (retransmitted turn, replay cursor). Acceptance rows (section 17):
- * Hallucinated items, Visual matching, Personal context (a request waits for the owner). Command classes:
- * packages/assistant/README.md (a report is recorded at once only for garments the owner named; a
- * request waits for the owner's confirmation). Profile section 11 ("verify before asserting", decision-light).
+ * Hallucinated items, Visual matching, Personal context. Command classes: owner decision of 2026-10-05
+ * (library contract "Changes apply at once with undo on every surface"): a report is recorded at once only
+ * for garments the owner named; an ordinary request in the owner's own words applies at once with a
+ * receipt and undo; a turn with no words of the owner's (a photograph alone) keeps a change as a request
+ * he confirms. Profile section 11 ("verify before asserting", decision-light).
  *
  * Everything inside the Worker is real: HTTP API, conversation actor, command service, local D1/R2/KV, the
  * owner's real profile and the real 127-garment inventory. Stand-ins, at external boundaries only:
@@ -49,6 +51,13 @@ const transcript = async (target: TestOwner = owner) => (await target.api.json("
 async function say(text: string, extra: Record<string, unknown> = {}): Promise<any> {
   const accepted = await owner.api.json("POST", "/v1/conversation/turns", { clientTurnId: turnId(), text, ...extra });
   return settleRun(owner.api, accepted.runId);
+}
+
+/** A turn that is only a photograph (LABELLED TEST IMAGE): no words of the owner's, so no change applies from it. */
+async function photoOnly(): Promise<any> {
+  const photo = await uploadImage(owner, { intent: "attachment" });
+  const assetId = photo.complete.asset.assetId as string;
+  return say("", { attachmentIds: [assetId], imageRoles: { [assetId]: "item_photo" } });
 }
 
 /** A labelled synthetic accessory created through the ordinary command, as the owner. */
@@ -188,12 +197,47 @@ describe("journey 11: one continuous conversation, reports, requests and photo c
     expect(internalCodesIn(twice.error.message)).toEqual([]);
   });
 
-  it("a request writes nothing: it becomes a proposal the owner sees, with the system's summary of the exact change", async () => {
+  it("an ordinary request in the owner's words applies at once, with the service's receipt and a working Undo", async () => {
     scarf = await syntheticAccessory("SYNTHETIC journey scarf", "scarf");
     const before = await wholeWardrobe(owner.api);
     expect(before.total).toBe(128);
-    model.script({ toolCalls: [{ toolName: "retire_garment", input: { garmentId: scarf.garmentId, disposition: "donated" } }] }, { text: "SCRIPTED FAKE MODEL REPLY: that is waiting for you in the app." });
+    model.script({ toolCalls: [{ toolName: "retire_garment", input: { garmentId: scarf.garmentId, disposition: "donated" } }] }, { text: "SCRIPTED FAKE MODEL REPLY: done." });
     const run = await say(`I gave the ${scarf.name} away to a charity shop`);
+    expect(run.state).toBe("completed");
+    expect(run.proposals).toEqual([]);
+    expect(run.receipts.map((r: any) => r.type)).toEqual(["garment.retire"]);
+    const ref = run.receipts[0];
+    expect(ref).toMatchObject({ outcome: "committed", undoAvailable: true });
+    expect(ref.summary).toContain(scarf.name);
+    expect(internalCodesIn(ref.summary)).toEqual([]);
+    expect(ref.summary).not.toContain("SCRIPTED FAKE MODEL"); // written by the service, not by the model
+    expect(await pending(owner)).toEqual([]);
+
+    // State: the piece has left the wardrobe; the real 127 are untouched; the item's history has the receipt.
+    const after = await wholeWardrobe(owner.api);
+    expect(after.total).toBe(127);
+    expect(after.items.map((i) => i.garment.garmentId)).not.toContain(scarf.garmentId);
+    expect((await historyOf(scarf.garmentId)).map((r) => r.type)).toEqual(expect.arrayContaining(["garment.create", "garment.retire"]));
+    expect(await owner.api.json("GET", `/v1/commands/${ref.commandId}`)).toMatchObject({ type: "garment.retire", outcome: "committed", channel: "ios", undo: { available: true } });
+
+    // Undo takes it back exactly once; the scarf is in the wardrobe again.
+    const undone = await exec(owner.api, "command.undo", { commandId: ref.commandId, reason: null });
+    expect(undone.outcome).toBe("committed");
+    expect(internalCodesIn(undone.summary)).toEqual([]);
+    const restored = await wholeWardrobe(owner.api);
+    expect(restored.total).toBe(128);
+    expect(restored.items.map((i) => i.garment.garmentId)).toContain(scarf.garmentId);
+    const twice = await refused(await owner.api.command("command.undo", { commandId: ref.commandId, reason: null }));
+    expect(twice.status).toBe(409);
+    expect(twice.error.code).toBe("not_undoable");
+  });
+
+  it("a photograph alone applies nothing: the change becomes a request the owner sees, with the system's summary of the exact change", async () => {
+    const before = await wholeWardrobe(owner.api);
+    expect(before.total).toBe(128);
+    const historyBefore = (await historyOf(scarf.garmentId)).map((r) => r.commandId);
+    model.script({ toolCalls: [{ toolName: "retire_garment", input: { garmentId: scarf.garmentId, disposition: "donated" } }] }, { text: "SCRIPTED FAKE MODEL REPLY: that is waiting for you in the app." });
+    const run = await photoOnly();
     expect(run.state).toBe("completed");
     expect(run.receipts).toEqual([]);
     expect(run.proposals.map((p: any) => p.type)).toEqual(["garment.retire"]);
@@ -202,7 +246,7 @@ describe("journey 11: one continuous conversation, reports, requests and photo c
     const after = await wholeWardrobe(owner.api);
     expect(after.total).toBe(128);
     expect(after.wardrobeRevision).toBe(before.wardrobeRevision);
-    expect((await historyOf(scarf.garmentId)).map((r) => r.type)).toEqual(["garment.create"]);
+    expect((await historyOf(scarf.garmentId)).map((r) => r.commandId)).toEqual(historyBefore);
 
     const list = await owner.api.json("GET", "/v1/proposals");
     expect(list.pending).toBe(1);
@@ -250,7 +294,7 @@ describe("journey 11: one continuous conversation, reports, requests and photo c
   it("rejecting a proposal leaves the wardrobe as it was, and the rejection is final", async () => {
     const before = await wholeWardrobe(owner.api);
     model.script({ toolCalls: [{ toolName: "retire_garment", input: { garmentId: sock.garmentId, disposition: "discarded" } }] }, { text: "SCRIPTED FAKE MODEL REPLY: waiting for you." });
-    const run = await say(`I threw away the ${sock.name}`);
+    const run = await photoOnly();
     expect(run.receipts).toEqual([]);
     const proposal = (await pending(owner)).find((p) => p.turnId === run.runId)!;
     expect(proposal.summary).toContain(sock.name);
@@ -272,7 +316,7 @@ describe("journey 11: one continuous conversation, reports, requests and photo c
   it("a proposal whose garment changed after it was proposed is refused on confirm (409) and overwrites nothing", async () => {
     gloves = await syntheticAccessory("SYNTHETIC journey gloves", "gloves");
     model.script({ toolCalls: [{ toolName: "correct_garment", input: { garmentId: gloves.garmentId, changes: { condition: "loose thread at the cuff (journey test)" } } }] }, { text: "SCRIPTED FAKE MODEL REPLY: waiting for you." });
-    const run = await say(`The ${gloves.name} have a loose thread at the cuff now`);
+    const run = await photoOnly();
     expect(run.receipts).toEqual([]);
     const proposal = (await pending(owner)).find((p) => p.turnId === run.runId)!;
     expect(proposal.type).toBe("garment.correct");

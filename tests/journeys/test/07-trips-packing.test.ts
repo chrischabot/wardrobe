@@ -166,7 +166,7 @@ describe("Journey 07: three days in Paris, one dinner, carry-on only", () => {
     }
   });
 
-  it("a connected assistant reads the trip over MCP and adds a laundry opportunity; a new proposal treats it as an estimate", async () => {
+  it("a connected assistant reads the trip over MCP and adds a laundry opportunity: applied at once with a receipt; a new proposal treats it as an estimate", async () => {
     const seen = toolResult(await mcp.client.callTool({ name: "garderobe_inventory", arguments: { view: "trips" } }));
     expect(seen.ok).toBe(true);
     expect(seen.data.complete).toBe(true);
@@ -174,15 +174,21 @@ describe("Journey 07: three days in Paris, one dinner, carry-on only", () => {
     const viaApi = await trip();
     expect(seen.data.data.trips).toEqual([viaApi]);
 
-    // Whether the assistant's change runs at once or waits for the owner is the server's answer; the state must be the same.
-    mcpUpdate = await mcpCommand(j.owner, mcp, "trip.update", { tripId, changes: { laundry: [{ localDate: j.day(1), note: "hotel laundry service" }] } }, { expectRoute: "owner_confirmed" });
+    // Owner decision of 2026-10-05: a trip change is an ordinary direction. It applies at once with a
+    // receipt on every surface; nothing waits for the owner. A command with no automatic undo still
+    // applies at once and its receipt says so, with the correction to make (contract section 4).
+    mcpUpdate = await mcpCommand(j.owner, mcp, "trip.update", { tripId, changes: { laundry: [{ localDate: j.day(1), note: "hotel laundry service" }] } }, { expectRoute: "direct" });
     expect(mcpUpdate.receipt.outcome).toBe("committed");
     expect(mcpUpdate.receipt.type).toBe("trip.update");
+    expect(mcpUpdate.receipt.undo).toEqual({ available: false, reason: "edit the trip again instead" });
     expect(internalCodesIn(mcpUpdate.receipt.summary)).toEqual([]);
+    expect((await api().json("GET", "/v1/proposals")).proposals).toEqual([]);
     const updated = await trip();
     expect(updated.version).toBe(viaApi.version + 1);
     expect(updated.laundry).toEqual([{ localDate: j.day(1), note: "hotel laundry service" }]);
     expect(updated.packed).toEqual([]);
+    // The app reads the very receipt the assistant was given.
+    expect((await api().json("GET", `/v1/commands/${mcpUpdate.receipt.commandId}`)).commandId).toBe(mcpUpdate.receipt.commandId);
 
     proposal = await api().json("POST", `/v1/trips/${tripId}/packing-proposal`, { clientRequestId: `pack-${crypto.randomUUID()}` });
     expect(proposal.revision).toBe(2);
@@ -194,11 +200,28 @@ describe("Journey 07: three days in Paris, one dinner, carry-on only", () => {
     expect(after.packed).toEqual([]);
   });
 
-  it("the owner's confirmation request for the assistant's trip change is in plain words, without internal identifiers", () => {
-    // Was defect D07-1 (identifiers and raw fields); fixed by the API thread in 5db4fd87.
-    // Only meaningful when the server asked the owner to confirm; a change that ran at once showed the owner nothing.
-    const summary = mcpUpdate.proposal ? String(mcpUpdate.proposal.summary) : "";
-    expect(internalCodesIn(summary)).toEqual([]);
+  it("the owner corrects the assistant's trip change in the app the way its receipt says; the assistant's repeat is a fresh change", async () => {
+    // The receipt said Undo is not available for a trip edit: an undo is refused in the same words and
+    // writes nothing; editing the trip again is the correction, from any surface.
+    const before = await trip();
+    const refusedUndo = await refused(await api().command("command.undo", { commandId: mcpUpdate.receipt.commandId }));
+    expect(refusedUndo.status).toBe(409);
+    expect(refusedUndo.error).toMatchObject({ code: "not_undoable", message: "edit the trip again instead" });
+    expect(await trip()).toEqual(before);
+
+    const corrected = await exec(api(), "trip.update", { tripId, changes: { laundry: [] } });
+    expect(corrected.outcome).toBe("committed");
+    expect(corrected.channel).toBe("ios");
+    expect(internalCodesIn(corrected.summary)).toEqual([]);
+    expect((await trip()).laundry).toEqual([]);
+
+    const again = await mcpCommand(j.owner, mcp, "trip.update", { tripId, changes: { laundry: [{ localDate: j.day(1), note: "hotel laundry service" }] } }, { expectRoute: "direct" });
+    expect(again.receipt.outcome).toBe("committed");
+    expect(again.receipt.commandId).not.toBe(mcpUpdate.receipt.commandId);
+    expect((await trip()).laundry).toEqual([{ localDate: j.day(1), note: "hotel laundry service" }]);
+    // None of this touched the packing proposal or the suitcase.
+    expect((await trip()).proposal.revision).toBe(2);
+    expect((await trip()).packed).toEqual([]);
   });
 
   it("Packed is the owner's observation: the proposed quantities move from home to the trip", async () => {
@@ -522,5 +545,45 @@ describe("Journey 07: three days in Paris, one dinner, carry-on only", () => {
     expect(varietyRules(style)).toBe(varietyRulesBefore);
     expect(varietyRulesBefore).toContain("variety.repeat_horizon");
     expect(style.styleRevision).toBe(styleRevisionBefore);
+  });
+
+  let limited: Proposal;
+  const LIMIT = 6;
+
+  it("a trip with a stated luggage limit records the limit, and a packing proposal is made for it", async () => {
+    const created = await exec(api(), "trip.create", {
+      name: "Two days in Paris, hand luggage of six pieces",
+      departsOn: j.day(4),
+      returnsOn: j.day(5),
+      destinations: [{ label: paris.label, latitude: paris.latitude, longitude: paris.longitude, timezone: paris.timezone, from: j.day(4), to: j.day(5) }],
+      occasions: [{ localDate: j.day(5), label: "Dinner", register: "smart", segment: "evening" }],
+      luggage: { label: "small bag", maxPieces: LIMIT },
+      source: { kind: "owner_statement", note: "Two days in Paris, one dinner, a small bag of six pieces." },
+    });
+    const limitedId = created.result.tripId as string;
+    expect((await api().json("GET", `/v1/trips/${limitedId}`)).luggage).toMatchObject({ label: "small bag", maxPieces: LIMIT });
+    limited = await api().json("POST", `/v1/trips/${limitedId}/packing-proposal`, { clientRequestId: `pack-${crypto.randomUUID()}` });
+    expect(limited.items.length).toBeGreaterThan(0);
+  });
+
+  it("a packing proposal is judged against the luggage limit by the pieces packed, not the travel-day outfit worn", () => {
+    // Was defect D07-5; fixed by the daily thread in a047fe0f.
+    // Specification section 10 (L663): a trip records "luggage limits", and the proposal is "a compact set
+    // of combinations with deliberate reuse" for exactly such a request ("carry-on only"). Coordinator
+    // decision on D07-5: the outfit worn on the travel day does not count against the limit, only packed
+    // pieces do; a set that still cannot fit is the smallest set, states the shortfall and adds no tie or
+    // accessory. The owner's two days with one dinner fit six packed pieces with everything but socks reused.
+    const travel = limited.days.find((d) => d.localDate === j.day(4) && d.segment === "day");
+    expect(travel, "the proposal has an outfit for the travel day").toBeDefined();
+    const worn = new Set(travel!.slots.map((s) => s.garmentId));
+    const packed = limited.items.reduce((n, i) => n + i.quantity - (worn.has(i.garmentId) ? 1 : 0), 0);
+    expect(packed, "packed pieces").toBeLessThanOrEqual(LIMIT);
+    // The smallest set: one of each piece but socks, reused across the outfits. (A tie or accessory is ruled
+    // out only for a set that cannot fit; this one fits, and keeps the dinner's tie.)
+    expect(limited.items.filter((i) => i.role !== "socks" && i.quantity > 1).map((i) => i.name)).toEqual([]);
+    // It says plainly what is packed and states no shortfall for a bag it fits.
+    expect(limited.notes.filter((n) => /against a limit of/.test(n))).toEqual([]);
+    expect(limited.notes.some((n) => n.includes(`${packed} pieces are packed`)), JSON.stringify(limited.notes)).toBe(true);
+    for (const note of limited.notes) expect(internalCodesIn(note)).toEqual([]);
   });
 });
