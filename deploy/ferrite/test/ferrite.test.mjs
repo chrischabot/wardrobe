@@ -1,20 +1,27 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { exitPolicy } from "../lib/cli.mjs";
 import { redact } from "../lib/redact.mjs";
 import { balancesOf, committedWithUndo, csvSha256, evidenceValue, exactlyChanged, gatePasses, hiddenFields, authParams, pkcePair, httpClient, installInterruptHandlers, keepLocksForWritesInFlight, launderableClean, lineTail, portFree, refusal, runVerification, sameInventory, verifyLocal, writesInFlight, writesUnanswered } from "../verify.mjs";
 import { createHash } from "node:crypto";
-import { tokensFile } from "../lib/state.mjs";
+import { tokensFile, withTargetLock } from "../lib/state.mjs";
 
 // The verification command's tests. The shared library (CLI, state, guard) is tested in lib.test.mjs, redaction and
 // origins in redact.test.mjs, and deploy/teardown in deploy.test.mjs.
 
-const DIR = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+const DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+/** The position of `fragment` in `src`, asserting that it is there at all. */
+const at = (src, fragment) => {
+  const i = src.indexOf(fragment);
+  assert.ok(i >= 0, `verify.mjs contains ${fragment}`);
+  return i;
+};
 
 test("dev output: lines are redacted whole before a tail is kept, even when a token is split across chunks", () => {
   const secret = "tok-split-across-chunks";
@@ -55,13 +62,15 @@ test("a write answered with a server or gateway error counts as unanswered", asy
     res.end("{}");
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
-  const call = httpClient(`http://127.0.0.1:${server.address().port}`);
+  const ledger = { writes: 0, unanswered: 0 };
+  const call = httpClient(`http://127.0.0.1:${server.address().port}`, ledger);
   try {
     const before = writesUnanswered();
     await call("t", "POST", "/400", { a: 1 });
     assert.equal(writesUnanswered(), before, "an app refusal is an answer");
     await call("t", "POST", "/504", { a: 1 });
     assert.equal(writesUnanswered(), before + 1, "a gateway timeout is not");
+    assert.equal(ledger.unanswered, 1, "counted in the run's own ledger too");
     assert.equal(keepLocksForWritesInFlight(false), true);
   } finally {
     exitPolicy.keepLocks = false;
@@ -539,6 +548,47 @@ test("local verification holds its own lock: a second one is refused before any 
     assert.equal(app.state.posts, 0, "nothing was written");
   } finally {
     await new Promise((r) => app.server.close(r));
+    rmSync(lockDir, { recursive: true, force: true });
+  }
+});
+
+test("each run keeps its own write ledger: an earlier unanswered write or another run's write in flight does not hold a clean run's lock", async () => {
+  const gateway = createServer((req, res) => {
+    if (req.url === "/slow") return setTimeout(() => res.end("{}"), 300);
+    res.writeHead(504);
+    res.end();
+  });
+  await new Promise((r) => gateway.listen(0, "127.0.0.1", r));
+  const other = httpClient(`http://127.0.0.1:${gateway.address().port}`);
+  let slow = null;
+  try {
+    await other("t", "POST", "/x", { a: 1 });
+    assert.ok(writesUnanswered() > 0, "the process tally holds an earlier unanswered write");
+    const report = await runAgainst(fakeApp());
+    slow = other("t", "POST", "/slow", { a: 1 });
+    assert.equal(writesInFlight(), 1, "another client's write is in flight");
+    assert.equal(report.unansweredWrites, 0);
+    assert.deepEqual(report.ledger, { writes: 0, unanswered: 0 });
+    assert.equal(keepLocksForWritesInFlight(false, report.ledger), false, "the clean run is judged by its own writes");
+    assert.equal(exitPolicy.keepLocks, false);
+  } finally {
+    await slow;
+    gateway.close();
+  }
+});
+
+test("a finished run's unresolved write keeps only the lock it runs under, never another target's", async () => {
+  const dir = path.join(mkdtempSync(path.join(tmpdir(), "ferrite-run-lock-")), "s");
+  try {
+    await withTargetLock("a/wardrobe", async () => {
+      assert.equal(keepLocksForWritesInFlight(false, { writes: 0, unanswered: 1 }), true);
+    }, dir);
+    assert.equal(exitPolicy.keepLocks, false, "the process-wide flag is untouched");
+    await withTargetLock("b/wardrobe", async () => "clean", dir);
+    assert.equal(existsSync(`${tokensFile("a/wardrobe", dir)}.lock`), true, "the unresolved run's lock is kept");
+    assert.equal(existsSync(`${tokensFile("b/wardrobe", dir)}.lock`), false, "a later clean run's lock is released");
+  } finally {
+    rmSync(path.dirname(dir), { recursive: true, force: true });
   }
 });
 
@@ -550,7 +600,7 @@ test("dev server: an occupied port is detected before anything starts", async ()
   await new Promise((r) => server.close(r));
   assert.equal(await portFree(port), true);
   const src = readFileSync(path.join(DIR, "verify.mjs"), "utf8");
-  assert.ok(src.indexOf("if (!(await portFree(port)))") < src.indexOf('spawn("ferrite"'), "refused before spawning");
+  assert.ok(at(src, "if (!(await portFree(port)))") < at(src, 'spawn("ferrite"'), "refused before spawning");
   assert.ok(src.includes("ready = running()") && src.includes("child.signalCode === null"), "accepted only while the spawned process is alive, signal exits included");
 });
 
@@ -617,7 +667,7 @@ test("a cleanup that left a write unresolved keeps the target lock even when eve
   assert.equal(cleanupUnresolved([{ group: "cleanup", status: "pass" }]), false);
   assert.equal(cleanupUnresolved([{ group: "cleanup", status: "pass" }, { group: "oauth", status: "fail", unansweredOauth: 1 }]), true, "an unanswered OAuth write");
   const src = readFileSync(path.join(DIR, "verify.mjs"), "utf8");
-  assert.ok(src.includes("} else if (cleanupUnresolved(report.results)) {\n    // Every write was answered") && src.includes("exitPolicy.keepLocks = true;\n    report.passed = false;\n    report.lockKept = \"cleanup left"), "verifyAndRecord keeps the lock for it");
+  assert.ok(src.includes("} else if (cleanupUnresolved(report.results)) {\n    // Every write was answered") && src.includes("keepThisLock();\n    report.passed = false;\n    report.lockKept = \"cleanup left"), "verifyAndRecord keeps the lock for it");
 });
 
 test("the uncaught-error path keeps locks for unconfirmed writes too", () => {

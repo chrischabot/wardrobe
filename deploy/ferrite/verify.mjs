@@ -29,7 +29,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { APP_DIR, EVIDENCE_DIR, REPO_DIR, STATE_DIR, abortChildren, accountState, activeChildren, appSpec, deployedOrigin, exitPolicy, ferriteAsync, killTree, localOrigin, localTokens, originForEvidence, signalTree } from "./lib/cli.mjs";
+import { APP_DIR, EVIDENCE_DIR, REPO_DIR, STATE_DIR, abortChildren, accountState, activeChildren, appSpec, deployedOrigin, exitPolicy, ferriteAsync, killTree, localOrigin, localTokens, lockScope, originForEvidence, signalTree } from "./lib/cli.mjs";
 import { redact, redactError, redactText } from "./lib/redact.mjs";
 import { knownSecrets, readTokens, withTargetLock } from "./lib/state.mjs";
 
@@ -162,7 +162,9 @@ function pathOf(url) {
 /**
  * Write requests (anything but GET) sent and not yet answered: their remote effect may still be committing. A write
  * that ended without any answer (a client timeout or a connection error) is counted as `unanswered`: the server may
- * still commit it, so only a cleanup that confirmed every own receipt resolves it.
+ * still commit it, so only a cleanup that confirmed every own receipt resolves it. `inFlight` is the process-wide
+ * tally, used where no run's outcome is known (an abort, an uncaught error); each run also keeps its own ledger, so a
+ * finished run is judged only by its own writes, and the writes it confirmed are retired from the process tally.
  */
 const inFlight = { writes: 0, unanswered: 0 };
 export const writesInFlight = () => inFlight.writes;
@@ -170,26 +172,48 @@ export const writesUnanswered = () => inFlight.unanswered;
 
 /**
  * Keep every held target lock (as for a running command) while a write may still commit remotely: one is in flight,
- * or one went unanswered and `cleanupConfirmed` is not true. No other verification, deploy or teardown of the target
- * can then overlap with that mutation. Returns whether it did.
+ * or one went unanswered and `cleanupConfirmed` is not true. Both are read from `ledger` (a finished run's own) or,
+ * without one, from the process tally. No other verification, deploy or teardown of the target can then overlap with
+ * that mutation. Returns whether it did.
  */
-export function keepLocksForWritesInFlight(cleanupConfirmed = false) {
-  if (inFlight.writes === 0 && (inFlight.unanswered === 0 || cleanupConfirmed)) return false;
-  exitPolicy.keepLocks = true;
+export function keepLocksForWritesInFlight(cleanupConfirmed = false, ledger = inFlight) {
+  if (ledger.writes === 0 && (ledger.unanswered === 0 || cleanupConfirmed)) return false;
+  // The process tally (an abort, an uncaught error) keeps every lock; a finished run's ledger keeps only its own.
+  if (ledger === inFlight) exitPolicy.keepLocks = true;
+  else keepThisLock();
   return true;
+}
+
+/**
+ * Keep the target lock this code runs under (lib/state.mjs withTargetLock's scope), and no other: a finished run's
+ * judgement never reaches another run's lock through the process-wide flag. Outside any lock, the process flag.
+ */
+export function keepThisLock() {
+  const scope = lockScope.getStore();
+  if (scope) scope.keep = true;
+  else exitPolicy.keepLocks = true;
+}
+
+/** A run's confirmed writes are settled: they no longer count against the process tally. */
+function retireConfirmed(ledger) {
+  inFlight.unanswered = Math.max(0, inFlight.unanswered - ledger.unanswered);
 }
 
 /**
  * `call(token, method, route, body, scheme, { form, headers })`: `body` is sent as JSON, `form` (a string) as
  * `application/x-www-form-urlencoded`. The answer holds the status, the parsed JSON, the text and the lower-cased
- * response headers; none of the last two ever reaches evidence.
+ * response headers; none of the last two ever reaches evidence. An unanswered write is counted in the process tally
+ * and in `ledger` (the run's own).
  */
-export function httpClient(origin) {
+export function httpClient(origin, ledger = null) {
   return async (token, method, route, body, scheme = "Bearer", opts = {}) => {
     const started = Date.now();
     const write = method !== "GET";
     let answered = false;
-    if (write) inFlight.writes += 1;
+    if (write) {
+      inFlight.writes += 1;
+      if (ledger) ledger.writes += 1;
+    }
     try {
       const form = typeof opts.form === "string" ? opts.form : null;
       const res = await fetch(`${origin}${route}`, {
@@ -213,7 +237,11 @@ export function httpClient(origin) {
     } finally {
       if (write) {
         inFlight.writes -= 1;
-        if (!answered) inFlight.unanswered += 1;
+        if (ledger) ledger.writes -= 1;
+        if (!answered) {
+          inFlight.unanswered += 1;
+          if (ledger) ledger.unanswered += 1;
+        }
       }
     }
   };
@@ -306,7 +334,8 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
   // The origin the app advertises in its OAuth metadata: its WARDROBE_PUBLIC_ORIGIN. Deployed, that is the verified
   // origin itself; locally it is the dev secret, which may name another port than the one under test.
   const expectedOrigin = publicOrigin ?? origin;
-  const call = client(origin);
+  const ledger = { writes: 0, unanswered: 0 };
+  const call = client(origin, ledger);
   const results = [];
   const record = (group, name, status, detail = {}, ms = null, required = true) => {
     const safe = evidenceValue(redact(detail, known));
@@ -942,7 +971,7 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
 
   const counts = results.reduce((c, r) => ({ ...c, [r.status]: (c[r.status] ?? 0) + 1 }), {});
   const skippedRequired = results.filter((r) => r.status === "not_run" && r.required !== false).length;
-  return { target, origin: originForEvidence(origin), runId, results, counts, skippedRequired, passed: gatePasses(results) };
+  return { target, origin: originForEvidence(origin), runId, results, counts, skippedRequired, unansweredWrites: ledger.unanswered, passed: gatePasses(results), ledger };
 }
 
 /**
@@ -1084,15 +1113,20 @@ export async function verifyAndRecord({ origin, tokens, target, dev = null, publ
     throw error;
   }
   const cleanupConfirmed = report.results.some((r) => r.group === "cleanup" && r.status === "pass");
-  if (keepLocksForWritesInFlight(cleanupConfirmed)) {
+  // Judged by this run's own unanswered writes; the ledger itself never reaches evidence.
+  const { ledger, ...rest } = report;
+  report = rest;
+  if (keepLocksForWritesInFlight(cleanupConfirmed, ledger)) {
     report.passed = false;
     report.lockKept = "a write went unanswered and cleanup did not confirm every own receipt: the target lock is kept";
   } else if (cleanupUnresolved(report.results)) {
     // Every write was answered, but cleanup could not settle all of them (a replay with no usable answer, an own
     // receipt still open, or cleanup itself failed): a mutation may still stand, so the lock stays.
-    exitPolicy.keepLocks = true;
+    keepThisLock();
     report.passed = false;
     report.lockKept = "cleanup left a write of this run unresolved, or an OAuth request went unanswered: the target lock is kept; check the receipts and the connection list, then remove the lock file";
+  } else {
+    retireConfirmed(ledger);
   }
   if (interruption.requested) {
     report.passed = false;

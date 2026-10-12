@@ -3,13 +3,29 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { PUBLIC_ORIGIN_SECRET, publicOriginFrom, superviseVerification } from "../deploy.mjs";
 import { teardownPlan } from "../teardown.mjs";
 import { signalListeners } from "../verify.mjs";
 
-const DIR = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
-const tmp = (p) => mkdtempSync(path.join(tmpdir(), p));
+const DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// Every temporary directory is removed once the file's tests have settled.
+const tmpDirs = [];
+const tmp = (p) => {
+  const d = mkdtempSync(path.join(tmpdir(), p));
+  tmpDirs.push(d);
+  return d;
+};
+after(() => {
+  for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
+});
+/** The position of `fragment` in `src`, asserting that it is there at all. */
+const at = (src, fragment, file) => {
+  const i = src.indexOf(fragment);
+  assert.ok(i >= 0, `${file} contains ${fragment}`);
+  return i;
+};
 
 test("the public origin: from --public-origin or the platform's report, a bare https origin, never guessed", () => {
   assert.equal(PUBLIC_ORIGIN_SECRET, "WARDROBE_PUBLIC_ORIGIN");
@@ -20,21 +36,17 @@ test("the public origin: from --public-origin or the platform's report, a bare h
   assert.throws(() => publicOriginFrom({ hostStdout: "{}" }), /not known before its first deploy/);
   for (const bad of ["http://w.example", "https://w.example/path", "https://u@w.example"]) assert.throws(() => publicOriginFrom({ argv: [`--public-origin=${bad}`] }), /bare https origin/, bad);
   const src = readFileSync(path.join(DIR, "deploy.mjs"), "utf8");
-  const at = (fragment) => {
-    const i = src.indexOf(fragment);
-    assert.ok(i >= 0, `deploy.mjs contains ${fragment}`);
-    return i;
-  };
-  assert.ok(at("publicOriginFrom({ argv, hostStdout })") < at("ensureTokens(target)"), "settled before any remote write");
-  assert.ok(at("secrets\", \"set\", PUBLIC_ORIGIN_SECRET") < at('ferriteAsync(["deploy"]'), "set before the deploy");
-  assert.ok(at("if (origin !== publicOrigin)") > at('ferriteAsync(["deploy"]'), "the deployed origin must equal it");
+  const pos = (fragment) => at(src, fragment, "deploy.mjs");
+  assert.ok(pos("publicOriginFrom({ argv, hostStdout })") < pos("ensureTokens(target)"), "settled before any remote write");
+  assert.ok(pos("secrets\", \"set\", PUBLIC_ORIGIN_SECRET") < pos('ferriteAsync(["deploy"]'), "set before the deploy");
+  assert.ok(pos("if (origin !== publicOrigin)") > pos('ferriteAsync(["deploy"]'), "the deployed origin must equal it");
 });
 
 test("teardown: the plan deletes the app's secrets, scales to zero and removes only this target's state", () => {
   const plan = teardownPlan("wardrobe");
   assert.deepEqual(plan.map((p) => p.command), ["ferrite secrets delete WARDROBE_OWNER_TOKEN", "ferrite secrets delete WARDROBE_ASSISTANT_TOKEN", "ferrite secrets delete WARDROBE_PUBLIC_ORIGIN", "ferrite deploy --instances 0 --force", "rm"]);
   const src = readFileSync(path.join(DIR, "teardown.mjs"), "utf8");
-  assert.ok(src.indexOf("if (!execute) {") < src.indexOf("assertTarget("), "the dry run returns before the guard and before any remote command");
+  assert.ok(at(src, "if (!execute) {", "teardown.mjs") < at(src, "assertTarget(", "teardown.mjs"), "the dry run returns before the guard and before any remote command");
   assert.ok(src.includes("removeTokens(target)"));
 });
 
@@ -81,6 +93,9 @@ test("supervised verification: an interrupt reaches the verification only; its d
   const script = path.join(dir, "fake-verify.mjs");
   writeFileSync(script, FAKE_VERIFY);
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  // The supervision in progress: a failed assertion still interrupts it and waits for it (and its dev server) to
+  // stop before the directory holding its PID file is removed.
+  let active = null;
   try {
     for (const mode of ["reconciles", "stubborn"]) {
       const probe = net.createServer();
@@ -90,11 +105,13 @@ test("supervised verification: an interrupt reaches the verification only; its d
       const marker = path.join(dir, `${mode}.marker`);
       const up = () => fetch(`http://127.0.0.1:${port}/`).then((r) => r.ok, () => false);
       const run = superviseVerification({ args: [script, String(port), marker, mode], reconcileMs: 1500, timeoutMs: 30_000, quiet: true });
+      active = run;
       for (let i = 0; i < 100 && !(await up()); i += 1) await sleep(100);
       assert.equal(await up(), true, `${mode}: the dev server came up`);
       const signalled = Date.now();
       for (const listener of signalListeners) listener("SIGINT");
       const result = await run;
+      active = null;
       if (mode === "reconciles") {
         assert.equal(readFileSync(marker, "utf8"), "up", "the dev server still served at the end of the child's reconciliation");
         assert.equal(result.status, 0);
@@ -108,6 +125,10 @@ test("supervised verification: an interrupt reaches the verification only; its d
     }
     assert.equal(signalListeners.size, 0, "the supervisor removes its signal forwarding");
   } finally {
+    if (active) {
+      for (const listener of signalListeners) listener("SIGINT");
+      await active.catch(() => {});
+    }
     rmSync(dir, { recursive: true, force: true });
   }
 });

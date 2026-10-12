@@ -2,13 +2,24 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { STEPS, abortChildren, accountState, appSpec, cliDiagnostics, cliEvidence, exitPolicy, localTokens, probeEndpoint, spawnAsync } from "../lib/cli.mjs";
 import { GuardRefusal, assertTarget } from "../lib/guard.mjs";
 import { allStoredTokens, ensureTokens, readTokens, removeTokens, tokensFile, withTargetLock } from "../lib/state.mjs";
 
-const DIR = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
-const tmp = (p) => mkdtempSync(path.join(tmpdir(), p));
+const DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// Every temporary directory (state directories with generated token files among them) is removed once the file's
+// tests, and the processes they started, have settled.
+const tmpDirs = [];
+const tmp = (p) => {
+  const d = mkdtempSync(path.join(tmpdir(), p));
+  tmpDirs.push(d);
+  return d;
+};
+after(() => {
+  for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
+});
 
 test("CLI evidence holds the command, exit status, timing and sizes only; diagnostics are redacted", () => {
   const leaked = "leaked-" + "value";
