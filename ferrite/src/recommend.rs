@@ -28,7 +28,7 @@ use crate::canonical::canonical;
 use crate::ledger::CmdError;
 use crate::seed::{catalogue, Catalogue, Garment};
 use crate::sha256::hex_digest;
-use crate::time::{instant, parse_local_date};
+use crate::time::{instant, parse_instant, parse_local_date};
 
 /// The owner part of every seeded tie-break (`ctx.userId` in compose.ts).
 pub const OWNER_SEED: &str = "owner";
@@ -507,6 +507,47 @@ fn default_count(cat: &Catalogue) -> u64 {
     cat.active_rule("board.daily_entry_format").and_then(|r| r.params["defaultOptionCount"].as_u64()).filter(|n| (1..=8).contains(n)).unwrap_or(5)
 }
 
+/// Whether a saved run's `result` is a whole recommendation answer: every field present (a missing
+/// field is not read as null) and of its type, the date and read time parseable, and every option
+/// shaped as `preview_options` writes it, naming garments of the catalogue.
+fn stored_answer_ok(r: &Value) -> bool {
+    let Some(m) = r.as_object() else { return false };
+    let has = |k: &str| m.contains_key(k);
+    const RESULT_FIELDS: [&str; 7] = ["localDate", "options", "board", "insufficient", "note", "wardrobeRevision", "readAt"];
+    if m.len() != RESULT_FIELDS.len() || !RESULT_FIELDS.iter().all(|k| has(k)) {
+        return false;
+    }
+    // A line is exactly what `board::line` writes for its role and garment (the catalogue is static).
+    let line_ok = |l: &Value| match (l["role"].as_str(), l["garmentId"].as_str()) {
+        (Some(role), Some(id)) => catalogue().get(id).is_some() && *l == board::line(catalogue(), role, id),
+        _ => false,
+    };
+    let option_ok = |o: &Value| {
+        let Some(om) = o.as_object() else { return false };
+        const OPTION_FIELDS: [&str; 10] = ["optionId", "number", "name", "reason", "garments", "footwearAlternatives", "flourish", "suitsEventIds", "qualification", "changedInRevision"];
+        // Exactly the composer's fields: a field it never writes is not returned as part of an answer.
+        om.len() == OPTION_FIELDS.len() && OPTION_FIELDS.iter().all(|k| om.contains_key(*k))
+            && o["optionId"].is_string()
+            && o["number"].is_u64()
+            && o["name"].is_string()
+            && o["reason"].is_string()
+            && o["garments"].as_array().map_or(false, |g| !g.is_empty() && g.iter().all(line_ok))
+            && o["footwearAlternatives"].as_array().map_or(false, |g| g.iter().all(line_ok))
+            && (o["flourish"].is_null() || line_ok(&o["flourish"]))
+            // A preview option suits no calendar event and states no repeat (`preview_options`).
+            && o["suitsEventIds"] == json!([])
+            && o["qualification"].is_null()
+            && o["changedInRevision"] == false
+    };
+    r["localDate"].as_str().map_or(false, |d| parse_local_date(d).is_some())
+        && r["options"].as_array().map_or(false, |a| a.len() <= 8 && a.iter().all(option_ok))
+        && r["board"].is_null()
+        && r["insufficient"].is_boolean()
+        && (r["note"].is_null() || r["note"].is_string())
+        && r["wardrobeRevision"].is_u64()
+        && r["readAt"].as_str().map_or(false, |t| parse_instant(t).is_some())
+}
+
 /// `runRecommendation` in preview mode for a connection (`connection` names the grant): composes,
 /// records the run, and answers the `RecommendResponse`. A repeat of the request ID answers from
 /// the run (with its `runId`); the same ID for a different request is refused. A repeat answers
@@ -516,7 +557,6 @@ pub async fn recommend<S: Store>(store: &mut S, connection: &str, now_ms: u64, i
     let run_id = run_id_for("recommendation", connection, &input.client_request_id);
     let key = run_key(&run_id);
     let hash = request_hash(input);
-    let (_, ledger) = read_ledger(store).await?;
     let respond = |run: &Value, run_id: Option<&str>| -> Result<Value, CmdError> {
         let ok = run["kind"] == "recommendation" && run["connection"] == connection && run["clientRequestId"] == input.client_request_id.as_str();
         if !ok {
@@ -526,8 +566,8 @@ pub async fn recommend<S: Store>(store: &mut S, connection: &str, now_ms: u64, i
             return Err(CmdError::with("idempotency_key_reuse", "that request ID was already used for a different request", json!({"runId": run["runId"]})));
         }
         let r = &run["result"];
-        if !r["wardrobeRevision"].is_u64() || !r["readAt"].is_string() {
-            return Err(CmdError::with("internal", "the stored recommendation run does not name the wardrobe state it was composed from", json!({"retryable": false})));
+        if run["state"] != "completed" || !stored_answer_ok(r) {
+            return Err(CmdError::with("internal", "the stored recommendation run is incomplete; ask again with a new request ID", json!({"retryable": false})));
         }
         Ok(json!({
             "state": "completed", "runId": run_id, "localDate": r["localDate"], "options": r["options"], "board": null,
@@ -539,6 +579,8 @@ pub async fn recommend<S: Store>(store: &mut S, connection: &str, now_ms: u64, i
         let run: Value = ferrite_app::serde_json::from_slice(&bytes).map_err(|_| CmdError::with("internal", "the stored recommendation run is unreadable", json!({"retryable": false})))?;
         return respond(&run, Some(&run_id));
     }
+    // Only a new composition needs the wardrobe as it stands.
+    let (_, ledger) = read_ledger(store).await?;
     let cat = catalogue();
     let day = Day::of(cat, &ledger, &input.date);
     let requested = input.count.unwrap_or_else(|| default_count(cat)) as usize;

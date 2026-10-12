@@ -152,3 +152,44 @@ async fn refusals_write_nothing() {
     let (_, list) = call(&env, OWNER, "GET", "/v1/commands", None).await;
     assert_eq!(list["receipts"], json!([]));
 }
+
+/// `GET /v1/days/{date}`: the owner's read of a day's recorded wear (the Codex verifier's
+/// "choosing is not wearing" read). A wear appears with its report and goes with its undo.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_day_record_is_the_owners_read_of_recorded_wear() {
+    let env = start().await;
+    let day = "2026-01-05";
+    let (status, empty) = call(&env, OWNER, "GET", &format!("/v1/days/{day}"), None).await;
+    assert_eq!(status, 200, "{empty}");
+    assert_eq!(empty, json!({"wearingDate": day, "garments": [], "observations": []}));
+
+    let (_, page) = call(&env, OWNER, "GET", "/v1/wardrobe", None).await;
+    let (shirt, _) = two_shirts(&page);
+    let wear = command("wear.record", json!({"wearingDate": day, "garmentIds": [shirt]}), "app-wear-0001", "owner_tap", "ios");
+    let (status, r) = call(&env, OWNER, "POST", "/v1/commands", Some(wear)).await;
+    assert_eq!(status, 200, "{r}");
+    let (_, record) = call(&env, OWNER, "GET", &format!("/v1/days/{day}"), None).await;
+    assert_eq!(record["garments"].as_array().unwrap().len(), 1, "{record}");
+    assert_eq!((record["garments"][0]["garmentId"].clone(), record["garments"][0]["observationCount"].clone()), (json!(shirt), json!(1)));
+    assert_eq!((record["observations"][0]["status"].clone(), record["observations"][0]["channel"].clone()), (json!("active"), json!("ios")));
+    // Another day is untouched.
+    let (_, other) = call(&env, OWNER, "GET", "/v1/days/2026-01-06", None).await;
+    assert_eq!(other["garments"], json!([]));
+
+    let undo = command("command.undo", json!({"commandId": r["commandId"]}), "app-undo-0002", "owner_tap", "ios");
+    let (status, u) = call(&env, OWNER, "POST", "/v1/commands", Some(undo)).await;
+    assert_eq!(status, 200, "{u}");
+    let (_, after) = call(&env, OWNER, "GET", &format!("/v1/days/{day}"), None).await;
+    assert_eq!(after["garments"], json!([]));
+    assert_eq!(after["observations"][0]["status"], "retracted");
+
+    // Owner-scoped, and the date must be a calendar day.
+    let (status, e) = call(&env, ASSISTANT, "GET", &format!("/v1/days/{day}"), None).await;
+    assert_eq!((status, e["error"]["code"].clone()), (403, json!("forbidden")));
+    for bad in ["2026-13-01", "2026-1-5", "today", ""] {
+        let (status, e) = call(&env, OWNER, "GET", &format!("/v1/days/{bad}"), None).await;
+        assert_eq!((status, e["error"]["code"].clone()), (400, json!("invalid_command")), "{bad}");
+    }
+    let (status, _) = call(&env, "not-a-token", "GET", &format!("/v1/days/{day}"), None).await;
+    assert_eq!(status, 401);
+}

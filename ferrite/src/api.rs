@@ -228,6 +228,13 @@ pub async fn handle<S: Store>(store: &mut S, tokens: &Tokens, now_ms: u64, req: 
             let date = query.iter().find(|(k, _)| k == "date").map(|(_, v)| v.as_str());
             read_today(store, now_ms, date).await
         }
+        ("GET", p) if p.starts_with("/v1/days/") => {
+            if principal != OWNER {
+                Err(CmdError::new("forbidden", "the day's recorded wear is read by the owner"))
+            } else {
+                read_day(store, &p["/v1/days/".len()..]).await
+            }
+        }
         ("GET", "/v1/commands") => {
             let limit = query.iter().find(|(k, _)| k == "limit").and_then(|(_, v)| v.parse::<usize>().ok()).unwrap_or(50).clamp(1, 200);
             list_receipts(store, limit).await
@@ -678,6 +685,17 @@ pub async fn read_history<S: Store>(store: &mut S, date: Option<&str>, range: Op
         (None, Some((from, to))) => Ok((json!({"from": from, "to": to, "wears": wear::counted_wears(&l, from, to, garment), "caveat": "Recorded wears only; a day without a record is unknown, not unworn."}), l.revision)),
         _ => Err(CmdError::new("invalid_command", "name either a date, or a range from and to")),
     }
+}
+
+/// `GET /v1/days/{date}` (`DailyRecord`, as `getDailyRecord`): what the owner recorded as worn that
+/// day, the counted garments and every report kept. The same record `garderobe_inventory` view
+/// `history` gives for a date; choosing an outfit never changes it.
+pub async fn read_day<S: Store>(store: &mut S, date: &str) -> Result<Value, CmdError> {
+    if parse_local_date(date).is_none() {
+        return Err(CmdError::new("invalid_command", "the date must be written YYYY-MM-DD"));
+    }
+    let (_, l) = read_ledger(store).await?;
+    Ok(wear::daily_record(catalogue(), &l, date))
 }
 
 /// `GET /v1/today?date=` (`TodayView`): the day's home board, read without inference. No owner

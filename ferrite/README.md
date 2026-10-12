@@ -68,6 +68,7 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `GET /v1/wardrobe[?category=]` | the inventory: every imported garment with its balances (clean, dirty, at the laundry service) and version. A subset of `listInventory`: no availability estimate, aliases, colours or wear counts yet |
 | `POST /v1/commands` | the command envelope of `packages/contracts` (`type`, `payload`, `idempotencyKey`, `authorization`, `source.channel`, optional `occurredAt`, `expectedVersions`) |
 | `GET /v1/today?date=YYYY-MM-DD` | Today: the board published for that date (`TodayView`), or none. `date` is required, because the port has no timezone yet |
+| `GET /v1/days/{date}` (owner only) | the day's recorded wear (`DailyRecord`, as `getDailyRecord`): counted garments and every report with its status. Choosing an outfit never changes it |
 | `GET /v1/commands[?limit=]`, `GET /v1/commands/{id}` | receipts, newest first; an undo already used is no longer offered |
 | `GET /v1/connections`, `POST /v1/connections/{grantId}/disconnect` (owner only) | Settings › Connected assistants: the OAuth grants, and disconnecting one, effective on its next request |
 | `POST /mcp` (OAuth) | the MCP server of `apps/worker/src/mcp`, see below |
@@ -321,7 +322,8 @@ The observation records the payload's `timezone`, or `not set`.
 
 The day's record reads back as `dayRecord` in `/v1/today` and
 `garderobe_today`, and in full (counted garments, report counts, segments and
-every report with its status and channel) through `garderobe_inventory` view
+every report with its status and channel) through `GET /v1/days/{date}` (the
+owner) and `garderobe_inventory` view
 `history` with a `date`; `from` and `to` (at most 366 days) list the counted
 wears, optionally of one garment. A day without a record is unknown, not
 unworn. Not ported: `wear.amend`, trips, the laundry exceptions a wear

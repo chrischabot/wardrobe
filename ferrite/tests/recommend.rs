@@ -184,3 +184,53 @@ async fn a_brief_is_said_to_be_unread_and_bad_arguments_are_refused() {
     undated.remove("date");
     assert!(parse_input(&undated).unwrap_err().message.contains("no owner timezone"));
 }
+
+#[tokio::test]
+async fn a_repeat_answers_from_its_run_alone_and_a_damaged_run_is_refused() {
+    let mut store = MemStore::default();
+    let first = recommend::recommend(&mut store, "mcp:grant_a", T0, &input("rec-00000001", DAY, Some(2))).await.unwrap();
+    let key = format!("u/{}", recommend::run_id_for("recommendation", "mcp:grant_a", "rec-00000001")).into_bytes();
+    // The recorded answer needs no current wardrobe state: an unreadable ledger does not stop it.
+    store.data.insert(b"ledger".to_vec(), b"not a ledger".to_vec());
+    let again = recommend::recommend(&mut store, "mcp:grant_a", T0 + 1, &input("rec-00000001", DAY, Some(2))).await.unwrap();
+    assert_eq!(again["options"], first["options"]);
+    // A new request does need it, and says so.
+    assert_eq!(recommend::recommend(&mut store, "mcp:grant_a", T0, &input("rec-00000002", DAY, Some(2))).await.unwrap_err().code, "internal");
+    // A stored run missing any part of its answer is refused, never returned as completed.
+    let good: Value = ferrite_app::serde_json::from_slice(&store.data[&key]).unwrap();
+    let damaged: Vec<(&str, Box<dyn Fn(&mut Value)>)> = vec![
+        ("options null", Box::new(|r: &mut Value| r["options"] = Value::Null)),
+        ("options [null]", Box::new(|r: &mut Value| r["options"] = json!([null]))),
+        ("an option without garments", Box::new(|r: &mut Value| r["options"][0]["garments"] = json!([]))),
+        ("an unknown garment", Box::new(|r: &mut Value| r["options"][0]["garments"][0]["garmentId"] = json!("gmt_nope"))),
+        ("an option missing its number", Box::new(|r: &mut Value| { r["options"][0].as_object_mut().unwrap().remove("number"); })),
+        ("suitsEventIds with junk", Box::new(|r: &mut Value| r["options"][0]["suitsEventIds"] = json!([null, 123]))),
+        ("an invented qualification", Box::new(|r: &mut Value| r["options"][0]["qualification"] = json!({"anything": true}))),
+        ("changedInRevision true", Box::new(|r: &mut Value| r["options"][0]["changedInRevision"] = json!(true))),
+        ("a flourish naming no garment", Box::new(|r: &mut Value| r["options"][0]["flourish"] = json!({"role": "neckwear"}))),
+        ("a line with a changed name", Box::new(|r: &mut Value| r["options"][0]["garments"][0]["name"] = json!("Something else"))),
+        ("a line with an extra field", Box::new(|r: &mut Value| r["options"][0]["garments"][0]["extra"] = json!(1))),
+        ("an option with an extra field", Box::new(|r: &mut Value| r["options"][0]["extra"] = json!("injected"))),
+        ("a result with an extra field", Box::new(|r: &mut Value| r["extra"] = json!("injected"))),
+        ("localDate tomorrow", Box::new(|r: &mut Value| r["localDate"] = json!("tomorrow"))),
+        ("insufficient a string", Box::new(|r: &mut Value| r["insufficient"] = json!("no"))),
+        ("note a number", Box::new(|r: &mut Value| r["note"] = json!(3))),
+        ("note missing", Box::new(|r: &mut Value| { r.as_object_mut().unwrap().remove("note"); })),
+        ("readAt null", Box::new(|r: &mut Value| r["readAt"] = Value::Null)),
+        ("readAt not a time", Box::new(|r: &mut Value| r["readAt"] = json!("not a timestamp"))),
+    ];
+    for (what, damage) in damaged {
+        let mut run = good.clone();
+        damage(&mut run["result"]);
+        store.data.insert(key.clone(), ferrite_app::serde_json::to_vec(&run).unwrap());
+        let e = recommend::recommend(&mut store, "mcp:grant_a", T0, &input("rec-00000001", DAY, Some(2))).await.unwrap_err();
+        assert_eq!(e.code, "internal", "{what}");
+    }
+    // The undamaged run still answers.
+    store.data.insert(key.clone(), ferrite_app::serde_json::to_vec(&good).unwrap());
+    assert_eq!(recommend::recommend(&mut store, "mcp:grant_a", T0, &input("rec-00000001", DAY, Some(2))).await.unwrap()["options"], first["options"]);
+    let mut running = good.clone();
+    running["state"] = json!("running");
+    store.data.insert(key.clone(), ferrite_app::serde_json::to_vec(&running).unwrap());
+    assert_eq!(recommend::recommend(&mut store, "mcp:grant_a", T0, &input("rec-00000001", DAY, Some(2))).await.unwrap_err().code, "internal");
+}
