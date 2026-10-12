@@ -7,8 +7,8 @@
 import { describe, expect, it } from "vitest";
 import type { BoardDocument } from "@garderobe/contracts/ext/daily";
 import { all } from "@garderobe/domain";
-import { getBoard, weatherForecast } from "../src/index.ts";
-import { compose, createDailyHarness, garmentsByName, MILD_DAY, realOwner, syntheticOwner, WARM_DAY } from "./helpers.ts";
+import { getBoard, replenishBoards, weatherForecast } from "../src/index.ts";
+import { compose, createDailyHarness, garmentsByName, MILD_DAY, realOwner, syntheticOwner, system, WARM_DAY } from "./helpers.ts";
 
 const DAY = "2026-09-17";
 
@@ -98,6 +98,68 @@ describe("undoing a swap", () => {
     const now = (await getBoard(h.db, owner.principal(), { boardId: made.boardId }))!;
     await expect(owner.exec("command.undo", { commandId: swap.commandId })).rejects.toMatchObject({ code: "precondition_failed", message: expect.stringMatching(/reserve/) });
     expect((await getBoard(h.db, owner.principal(), { boardId: made.boardId }))!.revision).toBe(now.revision);
+  });
+
+  it("SYNTHETIC: an automatic top-up that lands between the swap and its undo does not take the undo away: the undo is rebased onto it", async () => {
+    const h = await createDailyHarness({ startAt: "2026-09-15T07:30:00Z", isolate: true });
+    const extraShirts = [
+      { id: "shirt-d", name: "synthetic grey oxford", colour: "Grey", category: "shirt", roles: ["top"], careChannel: "service" },
+    ];
+    const owner = await syntheticOwner(h, { garments: [...WARDROBE, ...extraShirts] as never });
+    h.weather.setForecast(DAY, MILD_DAY);
+    // Two shirts are in the wash, so the board is published one outfit short and flagged for a top-up.
+    await owner.exec("care.mark_dirty", { items: [{ garmentId: "shirt-c" }, { garmentId: "shirt-d" }] });
+    const made = (await compose(h, owner, DAY, { count: 3 })).board!;
+    expect(made.options).toHaveLength(2);
+    const before = made.options[0]!;
+    const swap = await owner.exec("board.swap_slot", { boardId: made.boardId, optionId: before.optionId, role: "bottom" });
+    const swapped = (await getBoard(h.db, owner.principal(), { boardId: made.boardId }))!;
+    // A shirt comes back and the background composer tops the board up: neither the owner nor a connection did it.
+    await owner.exec("care.washed", { items: [{ garmentId: "shirt-c" }] });
+    const sweep = await replenishBoards(h.deps, await system(h, owner), { nowMs: h.clock.now() });
+    expect(sweep).toEqual([expect.objectContaining({ action: "replenished" })]);
+    const toppedUp = (await getBoard(h.db, owner.principal(), { boardId: made.boardId }))!;
+    expect(toppedUp.revision).toBeGreaterThan(swapped.revision);
+    expect(toppedUp.reason).toBe("replenish");
+    expect(toppedUp.options).toHaveLength(3);
+    await owner.exec("command.undo", { commandId: swap.commandId });
+    const after = (await getBoard(h.db, owner.principal(), { boardId: made.boardId }))!;
+    expect(after.revision).toBe(toppedUp.revision + 1);
+    // The swapped outfit is back as it was; the top-up's outfits stay.
+    expect(shape(after).find((o) => o.optionId === before.optionId)).toEqual(shape(made).find((o) => o.optionId === before.optionId));
+    expect(after.options.map((o) => o.optionId)).toEqual(toppedUp.options.map((o) => o.optionId));
+    expect(shape(after).filter((o) => o.optionId !== before.optionId)).toEqual(shape(toppedUp).filter((o) => o.optionId !== before.optionId));
+  });
+
+  it("SYNTHETIC: two swaps, then a top-up, then both undone in reverse order: the top-up's outfit survives both undos", async () => {
+    const h = await createDailyHarness({ startAt: "2026-09-15T07:30:00Z", isolate: true });
+    const extraShirts = [
+      { id: "shirt-d", name: "synthetic grey oxford", colour: "Grey", category: "shirt", roles: ["top"], careChannel: "service" },
+    ];
+    const owner = await syntheticOwner(h, { garments: [...WARDROBE, ...extraShirts] as never });
+    h.weather.setForecast(DAY, MILD_DAY);
+    await owner.exec("care.mark_dirty", { items: [{ garmentId: "shirt-c" }, { garmentId: "shirt-d" }] });
+    const made = (await compose(h, owner, DAY, { count: 3 })).board!;
+    expect(made.options).toHaveLength(2);
+    const optionId = made.options[0]!.optionId;
+    const first = await owner.exec("board.swap_slot", { boardId: made.boardId, optionId, role: "bottom" });
+    const afterFirst = (await getBoard(h.db, owner.principal(), { boardId: made.boardId }))!;
+    const second = await owner.exec("board.swap_slot", { boardId: made.boardId, optionId, role: "bottom" });
+    await owner.exec("care.washed", { items: [{ garmentId: "shirt-c" }] });
+    expect(await replenishBoards(h.deps, await system(h, owner), { nowMs: h.clock.now() })).toEqual([expect.objectContaining({ action: "replenished" })]);
+    const toppedUp = (await getBoard(h.db, owner.principal(), { boardId: made.boardId }))!;
+    expect(toppedUp.reason).toBe("replenish");
+    expect(toppedUp.options).toHaveLength(3);
+    await owner.exec("command.undo", { commandId: second.commandId });
+    const afterSecondUndo = (await getBoard(h.db, owner.principal(), { boardId: made.boardId }))!;
+    expect(shape(afterSecondUndo).find((o) => o.optionId === optionId)).toEqual(shape(afterFirst).find((o) => o.optionId === optionId));
+    expect(afterSecondUndo.options).toHaveLength(3);
+    await owner.exec("command.undo", { commandId: first.commandId });
+    const after = (await getBoard(h.db, owner.principal(), { boardId: made.boardId }))!;
+    expect(shape(after).find((o) => o.optionId === optionId)).toEqual(shape(made).find((o) => o.optionId === optionId));
+    // The outfit the top-up added is still on the board after both undos.
+    expect(after.options.map((o) => o.optionId)).toEqual(toppedUp.options.map((o) => o.optionId));
+    expect(shape(after).filter((o) => o.optionId !== optionId)).toEqual(shape(toppedUp).filter((o) => o.optionId !== optionId));
   });
 });
 

@@ -769,9 +769,10 @@ export const boardSwapSlot = define({
   },
   /**
    * Undoing a swap publishes the board as it was before the swap as a NEW revision (history keeps both).
-   * Only while the board still shows the swap's revision - directly, or through undos that restored it (a
-   * newer swap undone first brings back exactly this swap's revision, so swaps unwind in reverse order) -
-   * and only when every earlier outfit, reserves included, is still valid now. The earlier
+   * Only while the board still shows the swap's revision - directly, through undos that restored it (a
+   * newer swap undone first brings back exactly this swap's revision, so swaps unwind in reverse order), or
+   * across automatic top-ups that left the swapped outfit as the swap made it (the undo is then rebased onto
+   * the topped-up board) - and only when every earlier outfit, reserves included, is still valid now. The earlier
    * outfits are judged as the forward swap is: a forecast recorded since the swap governs and is carried
    * into the new revision, a stale one is stated and rechecked. The board's lines (which outfits suit the
    * day's event, the notice) are recomputed from that current context, never copied from the old revision.
@@ -784,15 +785,41 @@ export const boardSwapSlot = define({
     // revision, so a change landing after this read makes the undo plan again. An undo always restores an
     // earlier revision, so the walk strictly descends and ends, however long the chain of swaps and undos.
     let shown = board.current_revision;
+    // An automatic top-up (a "replenish" revision) that landed after the swap neither the owner nor a
+    // connection made: it is stepped over, and the undo is rebased onto the board as it stands now (the
+    // top-up's outfits stay; only the swapped outfit goes back), provided the top-up left that outfit as
+    // the swap made it.
+    let rebased = false;
     while (shown !== data.revisionAfter) {
-      const restored = (await loadRevision(ctx.db, ctx.userId, board.board_id, shown))?.context?.undoOfSwap as { restoredRevision?: unknown } | undefined;
-      if (typeof restored?.restoredRevision !== "number" || restored.restoredRevision >= shown) break;
-      shown = restored.restoredRevision;
+      const revision = await loadRevision(ctx.db, ctx.userId, board.board_id, shown);
+      const restored = revision?.context?.undoOfSwap as { restoredRevision?: unknown; rebased?: unknown } | undefined;
+      if (typeof restored?.restoredRevision === "number" && restored.restoredRevision < shown) {
+        // A rebased undo kept outfits a top-up added, so it does not hold that revision's outfits exactly:
+        // whatever is undone through it is rebased onto the board as it stands now as well.
+        if (restored.rebased === true) rebased = true;
+        shown = restored.restoredRevision;
+        continue;
+      }
+      if (revision?.reason === "replenish" && shown > (data.revisionAfter as number)) {
+        rebased = true;
+        shown -= 1;
+        continue;
+      }
+      break;
     }
     if (shown !== data.revisionAfter) throw new CommandError("conflict", "the board changed after this swap; undo the newer change first, or swap the piece back", { revision: board.current_revision, swapRevision: data.revisionAfter });
-    const beforeOptions = await loadOptions(ctx.db, ctx.userId, board.board_id, data.revisionBefore as number);
-    const before = beforeOptions.find((o) => o.optionId === data.optionId);
+    const beforeOptionsAsRecorded = await loadOptions(ctx.db, ctx.userId, board.board_id, data.revisionBefore as number);
+    const before = beforeOptionsAsRecorded.find((o) => o.optionId === data.optionId);
     if (!before) throw new CommandError("precondition_failed", "the option as it was before the swap is not recorded");
+    let beforeOptions = beforeOptionsAsRecorded;
+    if (rebased) {
+      const swappedThen = (await loadOptions(ctx.db, ctx.userId, board.board_id, data.revisionAfter as number)).find((o) => o.optionId === data.optionId);
+      const currentOptions = await loadOptions(ctx.db, ctx.userId, board.board_id, board.current_revision);
+      const swappedNow = currentOptions.find((o) => o.optionId === data.optionId);
+      const same = (a: typeof swappedNow, b: typeof swappedNow) => !!a && !!b && a.state === b.state && JSON.stringify(a.slots) === JSON.stringify(b.slots) && JSON.stringify(a.footwearAlternatives) === JSON.stringify(b.footwearAlternatives);
+      if (!same(swappedThen, swappedNow)) throw new CommandError("conflict", "the board changed after this swap; undo the newer change first, or swap the piece back", { revision: board.current_revision, swapRevision: data.revisionAfter });
+      beforeOptions = currentOptions.map((o) => (o.optionId === data.optionId ? { ...before, state: o.state, position: o.position } : o));
+    }
     const revisionBefore = await loadRevision(ctx.db, ctx.userId, board.board_id, data.revisionBefore as number);
     if (!revisionBefore) throw new CommandError("precondition_failed", "the board revision before the swap is not recorded");
     const base = await contextForBoard(ctx, board);
@@ -831,7 +858,7 @@ export const boardSwapSlot = define({
       requestedCount,
       brief: revisionNow.brief,
       conditions: basis.snapshot ? rc.conditions : revisionNow.conditions,
-      context: revisionContext(rc, { undoOfSwap: { revision: data.revisionAfter, restoredRevision: data.revisionBefore }, swapWeatherBasis: { kind: basis.kind, ageMinutes: basis.ageMinutes, snapshotId: basis.snapshot?.snapshotId ?? revisionNow.weather_snapshot_id } }),
+      context: revisionContext(rc, { undoOfSwap: { revision: data.revisionAfter, restoredRevision: data.revisionBefore, ...(rebased ? { rebased: true } : {}) }, swapWeatherBasis: { kind: basis.kind, ageMinutes: basis.ageMinutes, snapshotId: basis.snapshot?.snapshotId ?? revisionNow.weather_snapshot_id } }),
       weatherLine: basis.snapshot ? basis.snapshot.line : revisionNow.weather_line,
       suitabilityLine: suitabilityLineFor(rc, nextOffered),
       notice,
