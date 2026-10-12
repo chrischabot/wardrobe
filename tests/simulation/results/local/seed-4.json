@@ -1,9 +1,9 @@
 {
   "formatVersion": 1,
   "seed": "4",
-  "completed": false,
+  "completed": true,
   "truncated": null,
-  "fatal": "TypeError: fetch failed\n    at node:internal/deps/undici/undici:15141:13\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async Target.door (file:///home/user/wardrobe/tests/simulation/lib/target.mjs:233:22)\n    at async Target.setClock (file:///home/user/wardrobe/tests/simulation/lib/target.mjs:256:5)\n    at async runSimulation (file:///home/user/wardrobe/tests/simulation/lib/runner.mjs:119:7)\n    at async runSeed (file:///home/user/wardrobe/tests/simulation/bin/local.mjs:46:12)\n    at async file:///home/user/wardrobe/tests/simulation/bin/local.mjs:60:26\n    at async Promise.all (index 1)\n    at async file:///home/user/wardrobe/tests/simulation/bin/local.mjs:54:1",
+  "fatal": null,
   "cleanupErrors": [],
   "target": {
     "label": "local simulation Worker",
@@ -35,7 +35,7 @@
   },
   "steps": {
     "planned": 350,
-    "run": 348,
+    "run": 350,
     "byKind": {
       "sweep": 146,
       "plan_tomorrow": 29,
@@ -76,8 +76,8 @@
     "errors": []
   },
   "invariantChecks": {
-    "passed": 12809,
-    "failed": 2,
+    "passed": 12931,
+    "failed": 0,
     "notApplicable": 3,
     "byCheck": {
       "amend.replaces_only_what_it_corrects": {
@@ -96,22 +96,22 @@
         "notApplicable": 0
       },
       "availability.hard_exclusion_states_a_hard_reason": {
-        "passed": 348,
+        "passed": 351,
         "failed": 0,
         "notApplicable": 0
       },
       "availability.parameters_are_stated_as_hypotheses": {
-        "passed": 3,
+        "passed": 4,
         "failed": 0,
         "notApplicable": 0
       },
       "availability.probabilities_in_range": {
-        "passed": 348,
+        "passed": 351,
         "failed": 0,
         "notApplicable": 0
       },
       "availability.uncertainty_alone_never_excludes": {
-        "passed": 348,
+        "passed": 351,
         "failed": 0,
         "notApplicable": 0
       },
@@ -126,7 +126,7 @@
         "notApplicable": 0
       },
       "availability.what_the_owner_made_unavailable_stays_unavailable": {
-        "passed": 348,
+        "passed": 351,
         "failed": 0,
         "notApplicable": 0
       },
@@ -141,7 +141,7 @@
         "notApplicable": 0
       },
       "board.options_are_distinct": {
-        "passed": 407,
+        "passed": 413,
         "failed": 0,
         "notApplicable": 0
       },
@@ -156,27 +156,27 @@
         "notApplicable": 0
       },
       "board.revision_never_goes_back": {
-        "passed": 527,
+        "passed": 534,
         "failed": 0,
         "notApplicable": 0
       },
       "board.selection_is_one_of_its_options": {
-        "passed": 407,
+        "passed": 413,
         "failed": 0,
         "notApplicable": 0
       },
       "calendar.a_healthy_calendar_projection_does_not_fail": {
-        "passed": 407,
+        "passed": 413,
         "failed": 0,
         "notApplicable": 0
       },
       "calendar.event_identity_is_stable": {
-        "passed": 298,
+        "passed": 302,
         "failed": 0,
         "notApplicable": 0
       },
       "calendar.event_revision_not_ahead_of_board": {
-        "passed": 298,
+        "passed": 302,
         "failed": 0,
         "notApplicable": 0
       },
@@ -191,22 +191,27 @@
         "notApplicable": 0
       },
       "calendar.one_managed_event_per_day": {
-        "passed": 348,
+        "passed": 351,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "calendar.outfits_reach_the_calendar": {
+        "passed": 1,
         "failed": 0,
         "notApplicable": 0
       },
       "calendar.projected_revision_is_the_event_s": {
-        "passed": 265,
+        "passed": 271,
         "failed": 0,
         "notApplicable": 0
       },
       "calendar.replacement_names_the_version_it_replaces": {
-        "passed": 348,
+        "passed": 351,
         "failed": 0,
         "notApplicable": 0
       },
       "calendar.revision_never_goes_back": {
-        "passed": 348,
+        "passed": 351,
         "failed": 0,
         "notApplicable": 0
       },
@@ -286,12 +291,12 @@
         "notApplicable": 0
       },
       "invariants.state_could_be_read_after_the_step": {
-        "passed": 347,
-        "failed": 1,
+        "passed": 350,
+        "failed": 0,
         "notApplicable": 0
       },
       "inventory.availability_view_matches_the_snapshot": {
-        "passed": 3,
+        "passed": 4,
         "failed": 0,
         "notApplicable": 0
       },
@@ -326,7 +331,7 @@
         "notApplicable": 0
       },
       "inventory.snapshot_is_complete": {
-        "passed": 349,
+        "passed": 352,
         "failed": 0,
         "notApplicable": 0
       },
@@ -341,17 +346,17 @@
         "notApplicable": 0
       },
       "inventory.view_describes_itself": {
-        "passed": 41,
+        "passed": 42,
         "failed": 0,
         "notApplicable": 0
       },
       "isolation.first_owner_does_not_see_the_second_s": {
-        "passed": 2,
+        "passed": 3,
         "failed": 0,
         "notApplicable": 0
       },
       "isolation.second_owner_cannot_read_a_garment_of_the_first": {
-        "passed": 2,
+        "passed": 3,
         "failed": 0,
         "notApplicable": 0
       },
@@ -361,22 +366,22 @@
         "notApplicable": 0
       },
       "isolation.second_owner_cannot_report_on_a_garment_of_the_first": {
-        "passed": 2,
+        "passed": 3,
         "failed": 0,
         "notApplicable": 0
       },
       "isolation.second_owner_does_not_get_the_first_owner_s_board": {
-        "passed": 2,
+        "passed": 3,
         "failed": 0,
         "notApplicable": 0
       },
       "isolation.second_owner_sees_no_receipt_of_the_first": {
-        "passed": 2,
+        "passed": 3,
         "failed": 0,
         "notApplicable": 0
       },
       "isolation.second_owner_sees_only_its_own_garments": {
-        "passed": 2,
+        "passed": 3,
         "failed": 0,
         "notApplicable": 0
       },
@@ -491,7 +496,7 @@
         "notApplicable": 0
       },
       "owner_text.no_internal_codes": {
-        "passed": 462,
+        "passed": 465,
         "failed": 0,
         "notApplicable": 0
       },
@@ -591,42 +596,42 @@
         "notApplicable": 0
       },
       "recommended.complete_outfit": {
-        "passed": 345,
+        "passed": 348,
         "failed": 0,
         "notApplicable": 0
       },
       "recommended.garments_exist_under_their_names": {
-        "passed": 345,
+        "passed": 348,
         "failed": 0,
         "notApplicable": 0
       },
       "recommended.not_hard_excluded": {
-        "passed": 345,
+        "passed": 348,
         "failed": 0,
         "notApplicable": 0
       },
       "recommended.not_made_unavailable_by_owner": {
-        "passed": 345,
+        "passed": 348,
         "failed": 0,
         "notApplicable": 0
       },
       "recommended.not_restricted": {
-        "passed": 345,
+        "passed": 348,
         "failed": 0,
         "notApplicable": 0
       },
       "recommended.offered_role_is_the_garment_s_own": {
-        "passed": 345,
+        "passed": 348,
         "failed": 0,
         "notApplicable": 0
       },
       "recommended.owned": {
-        "passed": 345,
+        "passed": 348,
         "failed": 0,
         "notApplicable": 0
       },
       "recommended.profile_hard_constraints": {
-        "passed": 345,
+        "passed": 348,
         "failed": 0,
         "notApplicable": 0
       },
@@ -671,7 +676,7 @@
         "notApplicable": 0
       },
       "restriction.from_the_profile_is_never_lifted": {
-        "passed": 348,
+        "passed": 351,
         "failed": 0,
         "notApplicable": 0
       },
@@ -776,7 +781,12 @@
         "notApplicable": 0
       },
       "step.ran_to_its_end": {
-        "passed": 348,
+        "passed": 350,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "swap.a_swap_and_its_undo_ran_this_run": {
+        "passed": 1,
         "failed": 0,
         "notApplicable": 0
       },
@@ -801,8 +811,8 @@
         "notApplicable": 0
       },
       "swap.receipt_names_the_new_revision": {
-        "passed": 2,
-        "failed": 1,
+        "passed": 3,
+        "failed": 0,
         "notApplicable": 0
       },
       "swap.receipt_offers_an_undo": {
@@ -941,7 +951,7 @@
         "notApplicable": 0
       },
       "wear.count_per_garment_matches_reported_days": {
-        "passed": 348,
+        "passed": 351,
         "failed": 0,
         "notApplicable": 0
       },
@@ -951,17 +961,17 @@
         "notApplicable": 0
       },
       "wear.every_report_is_counted": {
-        "passed": 348,
+        "passed": 351,
         "failed": 0,
         "notApplicable": 0
       },
       "wear.nothing_invented": {
-        "passed": 348,
+        "passed": 351,
         "failed": 0,
         "notApplicable": 0
       },
       "wear.one_counted_wear_per_garment_and_day": {
-        "passed": 348,
+        "passed": 351,
         "failed": 0,
         "notApplicable": 0
       },
@@ -977,40 +987,7 @@
       }
     }
   },
-  "failures": [
-    {
-      "check": "swap.receipt_names_the_new_revision",
-      "seed": "4",
-      "step": 233,
-      "stepKind": "swap_and_undo",
-      "day": 17,
-      "date": "2027-09-23",
-      "at": "2027-09-23T20:25:00Z",
-      "message": "the swap's receipt names [{\"kind\":\"board\",\"id\":\"brd_f7d3826273414866b966eb90722bed41\",\"version\":2}]; the board is at revision 3",
-      "evidence": {
-        "date": "2027-09-24",
-        "boardId": "brd_f7d3826273414866b966eb90722bed41",
-        "optionId": "opt_1779f5b201d345c9bb17dad77a0f440c",
-        "role": "top",
-        "previous": "California plaid",
-        "revisionBefore": 1,
-        "commandId": "cmd_2025d30b6e8a4f8a9e1ab857f40b8355",
-        "revisionSwapped": 3,
-        "now": "Pima oxford — white"
-      }
-    },
-    {
-      "check": "invariants.state_could_be_read_after_the_step",
-      "seed": "4",
-      "step": 348,
-      "stepKind": "plan_tomorrow",
-      "day": 27,
-      "date": "2027-10-03",
-      "at": "2027-10-03T20:20:30Z",
-      "message": "fetch failed",
-      "evidence": null
-    }
-  ],
+  "failures": [],
   "notApplicable": [
     {
       "check": "undo.keeps_what_another_report_still_supports",
@@ -1031,27 +1008,27 @@
   "toolCoverage": {
     "byTool": {
       "garderobe_inventory": {
-        "calls": 1910,
-        "answered": 1908,
-        "refused": 2,
+        "calls": 1927,
+        "answered": 1924,
+        "refused": 3,
         "refusalCodes": {
-          "not_found": 2
+          "not_found": 3
         }
       },
       "garderobe_command": {
-        "calls": 248,
+        "calls": 249,
         "answered": 238,
-        "refused": 10,
+        "refused": 11,
         "refusalCodes": {
-          "not_found": 2,
+          "not_found": 3,
           "forbidden": 4,
           "not_undoable": 2,
           "idempotency_key_reuse": 2
         }
       },
       "garderobe_today": {
-        "calls": 822,
-        "answered": 822,
+        "calls": 830,
+        "answered": 830,
         "refused": 0,
         "refusalCodes": {}
       },
@@ -1062,8 +1039,8 @@
         "refusalCodes": {}
       },
       "garderobe_run": {
-        "calls": 14,
-        "answered": 8,
+        "calls": 15,
+        "answered": 9,
         "refused": 6,
         "refusalCodes": {
           "not_found": 4,
@@ -1084,12 +1061,12 @@
       }
     },
     "inventoryViews": {
-      "snapshot": 976,
-      "receipts": 505,
+      "snapshot": 985,
+      "receipts": 506,
       "items": 12,
-      "item": 3,
-      "availability": 3,
-      "history": 362,
+      "item": 4,
+      "availability": 4,
+      "history": 367,
       "laundry": 18,
       "style": 4,
       "resolve": 3,
@@ -1100,7 +1077,7 @@
       "orders": 5
     },
     "runActions": {
-      "status": 9,
+      "status": 10,
       "cancel": 1,
       "resume": 2,
       "respond": 2
@@ -1207,10 +1184,10 @@
     "oauth": {
       "connections": 3,
       "authorizations": 3,
-      "tokenRefreshes": 354
+      "tokenRefreshes": 356
     },
     "ownerRequestsInTheApp": 16,
-    "testDoorRequests": 874
+    "testDoorRequests": 879
   },
   "conditions": {
     "planned": {
@@ -1283,12 +1260,12 @@
       "garments that came back: from the friend (SIMULATED event)": 2,
       "garments that came back: repaired (SIMULATED event)": 2,
       "hand-wash reports (socks washed)": 4,
-      "isolation checks against the SYNTHETIC second owner": 2,
+      "isolation checks against the SYNTHETIC second owner": 3,
       "laundry exceptions: a piece lost by the service": 1,
       "laundry exceptions: one piece did not come back with the bag": 1,
       "laundry pickups": 2,
       "laundry returns": 2,
-      "managed Calendar event writes (insert, replace, remove)": 35,
+      "managed Calendar event writes (insert, replace, remove)": 37,
       "managed Calendar events replaced in place under a newer revision": 26,
       "morning boards with options marked as suiting a calendar entry": 4,
       "morning boards, calendar ok": 23,
@@ -1302,13 +1279,15 @@
       "mornings away on the trip": 3,
       "mornings while the service was paused": 2,
       "most garments at once whose availability was an estimate": 79,
-      "offers checked without a thermal check (forecast unavailable, stale or just changed)": 67,
+      "offers checked without a thermal check (forecast unavailable, stale or just changed)": 69,
       "orders logged (SYNTHETIC order)": 1,
       "outfits chosen the evening before": 6,
       "owner observations contradicting the ledger: a spill (was available)": 1,
       "owner observations contradicting the ledger: a spill (was estimated)": 1,
-      "owner observations contradicting the ledger: all of it in the hamper (was estimated)": 2,
-      "owner observations contradicting the ledger: counted clean (was estimated)": 2,
+      "owner observations contradicting the ledger: all of it in the hamper (was available)": 1,
+      "owner observations contradicting the ledger: all of it in the hamper (was estimated)": 1,
+      "owner observations contradicting the ledger: counted clean (was estimated)": 1,
+      "owner observations contradicting the ledger: counted clean (was unavailable)": 1,
       "packing proposals (from the destination's SIMULATED forecast)": 1,
       "parcels posted back (physical departure recorded separately)": 1,
       "pauses (with a resume date) (SIMULATED circumstance)": 1,
@@ -1318,7 +1297,7 @@
       "repair probes: worn today late report": 1,
       "route.direct": 121,
       "route.refused": 4,
-      "scheduled sweeps run (the product's own scheduled handler)": 145,
+      "scheduled sweeps run (the product's own scheduled handler)": 146,
       "suitcases packed": 1,
       "suitcases unpacked": 1,
       "swaps on tomorrow's board": 3,
@@ -1375,10 +1354,10 @@
       }
     ]
   },
-  "outcomeDigest": "84ddc9eeb4b151b8",
+  "outcomeDigest": "e7bb527090c7f90a",
   "simulated": {
     "from": "2027-09-05T18:30:00Z",
-    "to": "2027-10-03T20:20:30Z"
+    "to": "2027-10-03T22:10:00Z"
   },
   "realSeconds": 213
 }

@@ -17,6 +17,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync 
 import os from "node:os";
 import path from "node:path";
 import { buildPlan, plannedConditions } from "../lib/timeline.mjs";
+import { swapRevisionVerdict } from "../lib/handlers-swap.mjs";
 
 const SEEDS = ["1", "2", "3", "4", "5", "17", "owner-requested"];
 
@@ -617,4 +618,22 @@ test("a colour-qualified name resolves only on its complete colour", () => {
   assert.deepEqual(sheetRowsFor(shown).map((r) => r.line), SHEET_ROWS.filter((r) => r.item === row.item && r.colour.toLowerCase() === row.colour.toLowerCase()).map((r) => r.line));
   assert.deepEqual(sheetRowsFor(`${shown} nonexistent`), []);
   assert.deepEqual(sheetRowsFor(`${row.item} — ${row.colour.toLowerCase().split(" ")[0]} nonexistent`), []);
+});
+
+test("the swap's revision: the receipt's own version, or a later background replenish or refresh; a stray revision fails", () => {
+  const receipt = { affected: [{ kind: "board", id: "brd_1", version: 2 }, { kind: "garment", id: "g_1", version: 5 }] };
+  // The read-back at exactly the receipt's version.
+  assert.equal(swapRevisionVerdict(receipt, "brd_1", 1, { revision: 2, reason: "swap" }).ok, true);
+  // The background replenish (exec.waitUntil → replenishBoards) published before the read-back.
+  assert.equal(swapRevisionVerdict(receipt, "brd_1", 1, { revision: 3, reason: "replenish" }).ok, true);
+  assert.equal(swapRevisionVerdict(receipt, "brd_1", 1, { revision: 4, reason: "refresh" }).ok, true);
+  // A later revision that is not the product's background work still fails.
+  for (const reason of ["swap", "repair", "rebuild", "compose", "resume", undefined]) assert.equal(swapRevisionVerdict(receipt, "brd_1", 1, { revision: 3, reason }).ok, false, `a later ${reason} revision`);
+  // An earlier read-back, a receipt that names no new version, another board or no board at all fails.
+  assert.equal(swapRevisionVerdict(receipt, "brd_1", 1, { revision: 1, reason: "replenish" }).ok, false);
+  assert.equal(swapRevisionVerdict(receipt, "brd_1", 2, { revision: 3, reason: "replenish" }).ok, false);
+  assert.equal(swapRevisionVerdict(receipt, "brd_2", 1, { revision: 2, reason: "swap" }).ok, false);
+  assert.equal(swapRevisionVerdict({ affected: [] }, "brd_1", 1, { revision: 2, reason: "swap" }).ok, false);
+  assert.equal(swapRevisionVerdict({ affected: [...receipt.affected, { kind: "board", id: "brd_1", version: 3 }] }, "brd_1", 1, { revision: 3, reason: "swap" }).ok, false);
+  assert.equal(swapRevisionVerdict(receipt, "brd_1", 1, null).ok, false);
 });

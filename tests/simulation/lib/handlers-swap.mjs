@@ -14,6 +14,27 @@ export const boardShape = (board) =>
       .map((o) => ({ optionId: o.optionId, garments: o.garments.map((g) => `${g.role}:${g.garmentId}`).sort(), alternatives: (o.footwearAlternatives ?? []).map((g) => g.garmentId).sort(), flourish: o.flourish ? `${o.flourish.role}:${o.flourish.garmentId}` : null })),
   );
 
+/** Board revisions the product's background work may publish on its own between the swap and the read-back. */
+export const BACKGROUND_REVISION_REASONS = new Set(["replenish", "refresh"]);
+
+/**
+ * Does the swap's receipt name the revision the swap made? The receipt must name this board at a version
+ * past the one before the swap. The board read back afterwards is at exactly that version, or at a later one
+ * only when the latest revision is the product's own background top-up (replenish) or refresh: after a swap
+ * the API replenishes in the background (`waitUntil`), which can publish before the read-back. Any other
+ * later revision (another swap, a repair, a rebuild, an owner change) fails.
+ */
+export function swapRevisionVerdict(receipt, boardId, revisionBefore, readBack) {
+  const named = (receipt?.affected ?? []).filter((a) => a.kind === "board" && a.id === boardId).map((a) => a.version);
+  if (named.length !== 1) return { ok: false, why: `the swap's receipt names board ${boardId} ${named.length} times (${JSON.stringify(receipt?.affected ?? [])})` };
+  const version = named[0];
+  if (!(Number.isInteger(version) && version > revisionBefore)) return { ok: false, why: `the swap's receipt names board version ${version}; the board was at ${revisionBefore} before the swap` };
+  if (!readBack) return { ok: false, why: `the board could not be read back after the swap (receipt names version ${version})` };
+  if (readBack.revision === version) return { ok: true, why: `the receipt names version ${version}, the board read back at ${version}` };
+  if (readBack.revision > version && BACKGROUND_REVISION_REASONS.has(readBack.reason)) return { ok: true, why: `the receipt names version ${version}; the board read back at ${readBack.revision}, a later ${readBack.reason} revision` };
+  return { ok: false, why: `the swap's receipt names board version ${version}; the board read back at ${readBack.revision} with reason ${readBack.reason ?? "none"}, which is not the swap's revision nor a later replenish or refresh` };
+}
+
 /**
  * The evening before, he swaps one piece of an option on tomorrow's board and then takes the swap back.
  * Both apply at once from the connected assistant (the 2026-10-05 contract). Only an unchosen option is
@@ -60,7 +81,8 @@ export async function swapAndUndo(sim, step) {
   sim.check("swap.makes_a_new_board_revision", Boolean(swapped) && swapped.revision > before.revision, `after the swap the board of ${tomorrow.date} is at revision ${swapped?.revision ?? "none"} (was ${before.revision})`, swapEvidence);
   sim.check("swap.changes_the_slot", Boolean(now) && now.garmentId !== previous?.garmentId, `after the swap the ${role} of option ${option.number} is ${now?.name ?? "empty"} (was ${previous?.name ?? "empty"})`, swapEvidence);
   sim.check("swap.keeps_the_choice", (swapped?.selection?.optionId ?? null) === (before.selection?.optionId ?? null), `the choice for ${tomorrow.date} was ${before.selection?.optionId ?? "none"}; right after swapping an unchosen option it is ${swapped?.selection?.optionId ?? "none"}`, swapEvidence);
-  sim.check("swap.receipt_names_the_new_revision", swap.receipt.affected.some((a) => a.kind === "board" && a.id === before.boardId && a.version === swapped?.revision), `the swap's receipt names ${JSON.stringify(swap.receipt.affected)}; the board is at revision ${swapped?.revision}`, swapEvidence);
+  const revisionVerdict = swapRevisionVerdict(swap.receipt, before.boardId, before.revision, swapped);
+  sim.check("swap.receipt_names_the_new_revision", revisionVerdict.ok, revisionVerdict.why, { ...swapEvidence, affected: swap.receipt.affected, reasonReadBack: swapped?.reason ?? null });
   if (!swapped || !swappedOption) return sim.check(id, false, `after the swap the board of ${tomorrow.date} no longer offers option ${option.number}`, swapEvidence);
   // The replacement is checked before the undo takes it away.
   const post = await sim.snapshot(tomorrow.date);
