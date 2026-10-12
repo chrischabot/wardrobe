@@ -166,8 +166,10 @@ moved. `laundry.return` brings back the named batch, or the oldest one
 still out: its pieces are clean, less the ones the owner names as still
 away, which stay in the batch until a later return of it. A return with no
 batch on record takes the owner's word (what was awaiting the service is
-clean); the same return said again within five days of a returned pickup
-changes nothing; a return dated before its pickup is refused. A wash report
+clean, less the pieces named as still away, which are recorded as at the
+laundry in a new `lb_` bag that a later return brings back); the same return
+said again within five days of a bag's pickup or of its return changes
+nothing; a return dated before its pickup is refused. A wash report
 of a piece the ledger has at the laundry pulls it back from there (the owner
 has it), with a repair on the receipt. A pickup or return given an earlier
 time is sized from the stock as it stood then, not as it stands now; one that
@@ -188,7 +190,12 @@ return with no pickup on record too, for withdrawing a pickup (refused if
 another bag's record or a later report relies on it) and for undoing a wash
 report (refused once, say, a pickup has collected the piece). Returns of one bag are recorded in time
 order: a return dated before the bag's last recorded return is refused (undo
-that one first if its time was wrong). A batch ID is used once for the life of
+that one first if its time was wrong). A return is undone only while its bag
+is at the version the return left it at, so a later return of the same bag,
+even one that moved nothing, keeps it in place (a return recorded before the
+version was kept still reads back, but is not undone); undoing a return with no pickup
+on record withdraws the bag it opened for still-away pieces, and is refused
+once that bag has been reported on. A batch ID is used once for the life of
 the wardrobe: only the newest 60 batches are kept, but a dropped batch's ID
 stays reserved through its stock events, which are never removed; IDs the app
 makes start with `lb_`, which an owner-supplied ID may not use.

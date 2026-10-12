@@ -170,12 +170,92 @@ async fn a_return_without_a_recorded_pickup_takes_the_owners_word() {
     let mut store = MemStore::default();
     dirty(&mut store, T0, &[OXFORD_BLUE, OXFORD_PINK], "dirty-0001").await;
     let r = run(&mut store, OWNER, T0 + HOUR, "laundry.return", json!({"stillAway": [{"garmentId": OXFORD_PINK}]}), "return-0001").await.unwrap();
-    assert_eq!(r["summary"], "Laundry returned: 1 item clean (no pickup had been recorded; your report stands)");
-    assert_eq!(r["result"], json!({"batchId": null, "returned": 1, "stillAway": 0}));
+    assert_eq!(r["summary"], "Laundry returned: 1 item clean (no pickup had been recorded; your report stands); still away: Lightweight oxford — pink");
+    let held = r["result"]["batchId"].as_str().expect("the still-away shirt is held in a bag of its own").to_string();
+    assert!(held.starts_with("lb_"));
+    assert_eq!(r["result"], json!({"batchId": held, "returned": 1, "stillAway": 1}));
     assert_eq!(balances(&mut store, OXFORD_BLUE).await, (1, 0, 0));
-    assert_eq!(balances(&mut store, OXFORD_PINK).await, (0, 1, 0));
+    // The pink shirt is with the service: not awaiting collection, and not offered.
+    assert_eq!(balances(&mut store, OXFORD_PINK).await, (0, 0, 1));
+    let n = run(&mut store, OWNER, T0 + HOUR, "laundry.collect", json!({}), "collect-0001").await.unwrap();
+    assert_eq!(n["outcome"], "noop");
     run(&mut store, OWNER, T0 + 2 * HOUR, "command.undo", json!({"commandId": r["commandId"]}), "undo-0001").await.unwrap();
     assert_eq!(balances(&mut store, OXFORD_BLUE).await, (0, 1, 0));
+    assert_eq!(balances(&mut store, OXFORD_PINK).await, (0, 1, 0));
+}
+
+#[tokio::test]
+async fn a_return_without_a_pickup_with_everything_still_away_is_recorded_and_comes_back_later() {
+    let mut store = MemStore::default();
+    dirty(&mut store, T0, &[OXFORD_PINK], "dirty-0001").await;
+    let r = run(&mut store, OWNER, T0 + HOUR, "laundry.return", json!({"stillAway": [{"garmentId": OXFORD_PINK}]}), "return-0001").await.unwrap();
+    assert_eq!(r["outcome"], "committed");
+    assert_eq!((r["result"]["returned"].clone(), r["result"]["stillAway"].clone()), (json!(0), json!(1)));
+    assert!(r["summary"].as_str().unwrap().starts_with("Laundry returned: nothing came back clean"));
+    assert_eq!(balances(&mut store, OXFORD_PINK).await, (0, 0, 1));
+    // Once its bag is held, undoing that return is refused if anything was reported on the bag since.
+    let back = run(&mut store, OWNER, T0 + 50 * HOUR, "laundry.return", json!({}), "return-0002").await.unwrap();
+    assert_eq!(back["result"], json!({"batchId": r["result"]["batchId"], "returned": 1, "stillAway": 0}));
+    assert_eq!(balances(&mut store, OXFORD_PINK).await, (1, 0, 0));
+    let before = store.clone();
+    let e = run(&mut store, OWNER, T0 + 51 * HOUR, "command.undo", json!({"commandId": r["commandId"]}), "undo-0001").await.unwrap_err();
+    assert_eq!(e.code, "conflict");
+    assert_eq!(store.data, before.data);
+}
+
+#[tokio::test]
+async fn a_late_bag_said_back_again_is_not_a_second_return() {
+    let mut store = MemStore::default();
+    dirty(&mut store, T0, &[OXFORD_BLUE], "dirty-0001").await;
+    run(&mut store, OWNER, T0 + HOUR, "laundry.collect", json!({}), "collect-0001").await.unwrap();
+    // Back a week after the pickup.
+    run(&mut store, OWNER, T0 + 7 * 24 * HOUR, "laundry.return", json!({}), "return-0001").await.unwrap();
+    dirty(&mut store, T0 + 7 * 24 * HOUR + HOUR, &[OXFORD_PINK], "dirty-0002").await;
+    // "The laundry came back" said again soon after: the pink shirt put in the hamper since is not washed.
+    let again = run(&mut store, OWNER, T0 + 7 * 24 * HOUR + 2 * HOUR, "laundry.return", json!({}), "return-0002").await.unwrap();
+    assert_eq!(again["outcome"], "noop");
+    assert!(again["summary"].as_str().unwrap().starts_with("That laundry is already recorded as back"));
+    assert_eq!(balances(&mut store, OXFORD_PINK).await, (0, 1, 0));
+}
+
+#[tokio::test]
+async fn a_return_is_not_undone_over_a_later_return_of_the_same_bag_even_one_that_moved_nothing() {
+    let mut store = MemStore::default();
+    dirty(&mut store, T0, &[OXFORD_BLUE, OXFORD_PINK], "dirty-0001").await;
+    run(&mut store, OWNER, T0 + HOUR, "laundry.collect", json!({"batchId": "bag-v"}), "collect-0001").await.unwrap();
+    let away = json!({"batchId": "bag-v", "stillAway": [{"garmentId": OXFORD_PINK}]});
+    let first = run(&mut store, OWNER, T0 + 40 * HOUR, "laundry.return", away.clone(), "return-0001").await.unwrap();
+    // The same partial return reported again at the same time leaves the same counts and moves nothing.
+    let second = run_at(&mut store, OWNER, T0 + 41 * HOUR, Some(T0 + 40 * HOUR), "laundry.return", away, "return-0002").await.unwrap();
+    assert_eq!((second["result"]["returned"].clone(), second["result"]["stillAway"].clone()), (json!(0), json!(1)));
+    let before = store.clone();
+    let e = run(&mut store, OWNER, T0 + 42 * HOUR, "command.undo", json!({"commandId": first["commandId"]}), "undo-0001").await.unwrap_err();
+    assert_eq!(e.code, "conflict", "{}", e.message);
+    assert_eq!(store.data, before.data);
+}
+
+#[tokio::test]
+async fn stored_return_undo_data_that_would_not_restore_cleanly_is_refused_as_corrupt() {
+    let mut store = MemStore::default();
+    dirty(&mut store, T0, &[OXFORD_BLUE], "dirty-0001").await;
+    run(&mut store, OWNER, T0 + HOUR, "laundry.collect", json!({}), "collect-0001").await.unwrap();
+    let r = run(&mut store, OWNER, T0 + 40 * HOUR, "laundry.return", json!({}), "return-0001").await.unwrap();
+    assert!(api::receipts_page(&mut store, 10).await.is_ok());
+    let key = format!("c/{}", r["commandId"].as_str().unwrap()).into_bytes();
+    let good: Value = ferrite_app::serde_json::from_slice(store.data.get(&key).unwrap()).unwrap();
+    let cases: [(&str, &str, Value); 5] = [
+        ("status", "/undo/data/batchBefore/status", json!("bogus")),
+        ("status after", "/undo/data/statusAfter", json!("collected")),
+        ("time", "/undo/data/returnedAtAfter", json!("yesterday")),
+        ("previous time", "/undo/data/batchBefore/returnedAt", json!("not a time")),
+        ("counter", "/undo/data/items/0/returnedBefore", json!(4_294_967_296u64)),
+    ];
+    for (what, path, bad) in cases {
+        let mut record = good.clone();
+        *record.pointer_mut(path).unwrap_or_else(|| panic!("{what}: {path}")) = bad;
+        store.data.insert(key.clone(), record.to_string().into_bytes());
+        assert_eq!(api::receipts_page(&mut store, 10).await.unwrap_err().code, "internal", "{what}");
+    }
 }
 
 #[tokio::test]
@@ -487,4 +567,21 @@ async fn a_stored_collection_with_a_malformed_member_is_refused_as_corrupt() {
         store.data.insert(key.clone(), record.to_string().into_bytes());
         assert_eq!(api::receipts_page(&mut store, 10).await.unwrap_err().code, "internal", "{what}");
     }
+}
+
+#[tokio::test]
+async fn a_return_recorded_before_the_batch_version_was_kept_still_reads_back_but_is_not_undone() {
+    let mut store = MemStore::default();
+    dirty(&mut store, T0, &[OXFORD_BLUE], "dirty-0001").await;
+    run(&mut store, OWNER, T0 + HOUR, "laundry.collect", json!({}), "collect-0001").await.unwrap();
+    let r = run(&mut store, OWNER, T0 + 40 * HOUR, "laundry.return", json!({}), "return-0001").await.unwrap();
+    let key = format!("c/{}", r["commandId"].as_str().unwrap()).into_bytes();
+    let mut record: Value = ferrite_app::serde_json::from_slice(store.data.get(&key).unwrap()).unwrap();
+    record.pointer_mut("/undo/data").unwrap().as_object_mut().unwrap().remove("versionAfter").unwrap();
+    store.data.insert(key, record.to_string().into_bytes());
+    assert!(api::receipts_page(&mut store, 10).await.is_ok());
+    let before = balances(&mut store, OXFORD_BLUE).await;
+    let e = run(&mut store, OWNER, T0 + 41 * HOUR, "command.undo", json!({"commandId": r["commandId"]}), "undo-legacy-0001").await.unwrap_err();
+    assert_eq!(e.code, "conflict");
+    assert_eq!(balances(&mut store, OXFORD_BLUE).await, before);
 }

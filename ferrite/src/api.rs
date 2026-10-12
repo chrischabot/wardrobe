@@ -521,21 +521,32 @@ fn undo_data_ok(kind: &str, data: &Value) -> bool {
     match kind {
         "care.mark_dirty" => keys(&["stockEventIds"]) && event_ids(d),
         "laundry.collect" => keys(&["stockEventIds", "batchId"]) && event_ids(d) && id("batchId"),
-        "laundry.return" if d.len() == 1 => keys(&["stockEventIds"]) && event_ids(d),
+        // A return with no pickup on record, with or without a bag of its own for what is still away.
+        "laundry.return" if !d.contains_key("batchId") => (keys(&["stockEventIds"]) || (keys(&["stockEventIds", "heldBatchId"]) && id("heldBatchId"))) && event_ids(d),
         "laundry.return" => {
-            let n = |v: &Value, k: &str| v.get(k).and_then(Value::as_u64).is_some();
-            keys(&["stockEventIds", "batchId", "batchBefore", "statusAfter", "returnedAtAfter", "items"])
+            // Every value restored on undo is checked here, so a restored batch always reads back.
+            let count = |v: &Value, k: &str| v.get(k).and_then(Value::as_u64).map_or(false, |x| x <= u64::from(u32::MAX));
+            let time = |v: Option<&Value>| v.and_then(Value::as_str).and_then(crate::time::parse_instant).is_some();
+            let open = |s: Option<&str>| matches!(s, Some("collected" | "partially_returned"));
+            let after = |s: Option<&str>| matches!(s, Some("returned" | "partially_returned"));
+            // `versionAfter` came later: a return recorded before it stays readable, but is not undone.
+            (keys(&["stockEventIds", "batchId", "batchBefore", "statusAfter", "returnedAtAfter", "items"])
+                || (keys(&["stockEventIds", "batchId", "batchBefore", "statusAfter", "returnedAtAfter", "versionAfter", "items"])
+                    && d["versionAfter"].as_u64().map_or(false, |v| v >= 2)))
                 && event_ids(d)
                 && id("batchId")
-                && id("statusAfter")
-                && id("returnedAtAfter")
-                && d["batchBefore"].as_object().map_or(false, |b| b.len() == 2 && b.get("status").and_then(Value::as_str).is_some() && matches!(b.get("returnedAt"), Some(Value::Null) | Some(Value::String(_))))
+                && after(d["statusAfter"].as_str())
+                && time(d.get("returnedAtAfter"))
+                && d["batchBefore"].as_object().map_or(false, |b| {
+                    b.len() == 2 && open(b.get("status").and_then(Value::as_str)) && (matches!(b.get("returnedAt"), Some(Value::Null)) || time(b.get("returnedAt")))
+                })
                 && d["items"].as_array().map_or(false, |items| {
-                    items.iter().all(|i| {
-                        i.as_object().map_or(false, |o| o.len() == 6)
-                            && i["garmentId"].as_str().map_or(false, |s| !s.is_empty())
-                            && ["returnedBefore", "stillAwayBefore", "returnedAfter", "stillAwayAfter", "heldBefore"].iter().all(|k| n(i, k))
-                    })
+                    !items.is_empty()
+                        && items.iter().all(|i| {
+                            i.as_object().map_or(false, |o| o.len() == 6)
+                                && i["garmentId"].as_str().map_or(false, |s| !s.is_empty())
+                                && ["returnedBefore", "stillAwayBefore", "returnedAfter", "stillAwayAfter", "heldBefore"].iter().all(|k| count(i, k))
+                        })
                 })
         }
         "board.select" => {

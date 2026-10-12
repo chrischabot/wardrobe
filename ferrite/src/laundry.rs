@@ -125,6 +125,18 @@ fn batch_id_used(ledger: &Ledger, id: &str) -> bool {
     ledger.batch(id).is_some() || ledger.events.iter().any(|e| e.batch_id.as_deref() == Some(id))
 }
 
+/// A fresh app-made batch ID (`lb_` plus the command ID), never one used before.
+fn new_batch_id(ctx: &Ctx<'_>, ledger: &Ledger) -> String {
+    let stem = format!("lb_{}", ctx.command_id.trim_start_matches("cmd_").chars().take(24).collect::<String>());
+    let mut id = stem.clone();
+    let mut n = 1;
+    while batch_id_used(ledger, &id) {
+        n += 1;
+        id = format!("{stem}_{n}");
+    }
+    id
+}
+
 // Undo is exact or refused: voiding an observation must not change what any other report moved or
 // repaired (see `ledger::others_changed`).
 use crate::ledger::others_changed as later_reports_changed;
@@ -172,14 +184,7 @@ pub fn collect(ctx: &Ctx<'_>, ledger: &mut Ledger, p: &Value) -> Result<Plan, Cm
         None => {
             // Generated IDs live under `lb_`, which an owner-supplied ID may not use, and are checked
             // against every ID ever used all the same.
-            let stem = format!("lb_{}", ctx.command_id.trim_start_matches("cmd_").chars().take(24).collect::<String>());
-            let mut id = stem.clone();
-            let mut n = 1;
-            while batch_id_used(ledger, &id) {
-                n += 1;
-                id = format!("{stem}_{n}");
-            }
-            id
+            new_batch_id(ctx, ledger)
         }
     };
     let before = replay(ctx.cat, &ledger.events);
@@ -376,6 +381,7 @@ pub fn return_batch(ctx: &Ctx<'_>, ledger: &mut Ledger, p: &Value) -> Result<Pla
     b.returned_at_ms = Some(ctx.occurred_at_ms);
     b.items = next_items;
     b.version += 1;
+    let version_after = b.version;
     affected.push(batch_affected(b));
     let mut summary = if returned > 0 { format!("Laundry returned: {returned} item{} clean", plural(returned)) } else { "Laundry returned: nothing came back clean".to_string() };
     if away_total > 0 {
@@ -395,47 +401,92 @@ pub fn return_batch(ctx: &Ctx<'_>, ledger: &mut Ledger, p: &Value) -> Result<Pla
             "batchBefore": {"status": batch.status, "returnedAt": batch.returned_at_ms.map(instant)},
             "statusAfter": status,
             "returnedAtAfter": instant(ctx.occurred_at_ms),
+            "versionAfter": version_after,
             "items": undo_items,
         })),
     })
 }
 
 /// No batch is out: the same return said again is not a second return; otherwise the owner's word is
-/// the physical fact and everything awaiting the service, less what is still away, is clean.
+/// the physical fact. Everything awaiting the service is clean, less what he names as still away,
+/// which is recorded as held by the service in a bag of its own (made by the app), so a later return
+/// brings it back and it is not offered or collected meanwhile.
 fn return_without_batch(ctx: &Ctx<'_>, ledger: &mut Ledger, still_away: &[(String, u32)], before: crate::ledger::Replay) -> Result<Plan, CmdError> {
     let empty = json!({"batchId": null, "returned": 0, "stillAway": 0});
     let at = ctx.occurred_at_ms;
-    let already = ledger.batches.iter().any(|b| b.withdrawn_by.is_none() && b.status == "returned" && b.picked_up_at_ms <= at && b.picked_up_at_ms + CYCLE_MS > at);
+    // The same return said again: a bag recorded back within the cycle (counted from its pickup or
+    // from its return, so a late bag is covered too).
+    let already = ledger.batches.iter().any(|b| {
+        let recent = |t: u64| t <= at && t + CYCLE_MS > at;
+        b.withdrawn_by.is_none() && b.status == "returned" && (recent(b.picked_up_at_ms) || b.returned_at_ms.map_or(false, recent))
+    });
     if already {
         return Ok(noop("That laundry is already recorded as back; anything put in the hamper since the pickup is still awaiting the service", empty));
     }
-    let mut events = Vec::new();
+    let held_batch = new_batch_id(ctx, ledger);
+    let mut washes = Vec::new();
+    let mut holds = Vec::new();
     for (g, _, dirty) in collectable(ctx, ledger) {
-        let away = still_away.iter().find(|(x, _)| *x == g).map_or(0, |(_, q)| *q);
-        let q = dirty.saturating_sub(away);
+        let away = still_away.iter().find(|(x, _)| *x == g).map_or(0, |(_, q)| *q).min(dirty);
+        let q = dirty - away;
         if q > 0 {
-            events.push((g.clone(), journal(ctx, ledger, &g, "wash", None, q, 0)));
+            washes.push((g.clone(), journal(ctx, ledger, &g, "wash", None, q, 0)));
+        }
+        if away > 0 {
+            holds.push((g.clone(), journal(ctx, ledger, &g, "pickup", Some(&held_batch), away, 0)));
         }
     }
-    if events.is_empty() {
+    if washes.is_empty() && holds.is_empty() {
         return Ok(noop("No laundry was recorded as away or awaiting the service", empty));
     }
     let after = replay(ctx.cat, &ledger.events);
     other_bags_changed(ctx, ledger, &before, &after)?;
-    let moved: u32 = events.iter().map(|(_, e)| after.moved.get(e).copied().unwrap_or(0)).sum();
-    if moved == 0 {
+    let moved_of = |list: &[(String, String)]| -> Vec<(String, String, u32)> { list.iter().map(|(g, e)| (g.clone(), e.clone(), after.moved.get(e).copied().unwrap_or(0))).filter(|x| x.2 > 0).collect() };
+    let (washed, held) = (moved_of(&washes), moved_of(&holds));
+    let returned: u32 = washed.iter().map(|x| x.2).sum();
+    let away_total: u32 = held.iter().map(|x| x.2).sum();
+    if returned == 0 && away_total == 0 {
         ledger.events.retain(|e| e.command_id != ctx.command_id);
         return Ok(noop("Nothing came back clean: at the time given for this return nothing was awaiting the service", empty));
     }
-    let touched: BTreeSet<String> = events.iter().map(|(g, _)| g.clone()).collect();
-    let affected = affected(ledger, &touched);
+    // Events that moved nothing are not journaled.
+    let kept: Vec<String> = washed.iter().chain(held.iter()).map(|x| x.1.clone()).collect();
+    ledger.events.retain(|e| e.command_id != ctx.command_id || kept.contains(&e.id));
+    let touched: BTreeSet<String> = washed.iter().chain(held.iter()).map(|x| x.0.clone()).collect();
+    let mut affected = affected(ledger, &touched);
+    let mut summary = if returned > 0 {
+        format!("Laundry returned: {returned} item{} clean (no pickup had been recorded; your report stands)", plural(returned))
+    } else {
+        "Laundry returned: nothing came back clean (no pickup had been recorded; your report stands)".to_string()
+    };
+    let mut undo = json!({"stockEventIds": kept});
+    let mut batch_id = Value::Null;
+    if away_total > 0 {
+        make_room(ledger)?;
+        let names: Vec<String> = held.iter().map(|x| ctx.cat.get(&x.0).map_or_else(|| x.0.clone(), |g| g.name.clone())).collect();
+        summary.push_str(&format!("; still away: {}", name_list(&names)));
+        let batch = Batch {
+            batch_id: held_batch.clone(),
+            status: "partially_returned".into(),
+            picked_up_at_ms: at,
+            returned_at_ms: Some(at),
+            command_id: ctx.command_id.to_string(),
+            withdrawn_by: None,
+            version: 1,
+            items: held.iter().map(|x| BatchItem { garment_id: x.0.clone(), quantity: x.2, returned: 0, still_away: x.2 }).collect(),
+        };
+        affected.push(batch_affected(&batch));
+        ledger.batches.push(batch);
+        undo["heldBatchId"] = json!(held_batch);
+        batch_id = json!(held_batch);
+    }
     Ok(Plan {
         outcome: "committed",
-        summary: format!("Laundry returned: {moved} item{} clean (no pickup had been recorded; your report stands)", plural(moved)),
+        summary,
         affected,
         repairs: after.new_repairs_since(&before),
-        result: json!({"batchId": null, "returned": moved, "stillAway": 0}),
-        undo: Ok(json!({"stockEventIds": events.iter().map(|(_, e)| e.clone()).collect::<Vec<_>>()})),
+        result: json!({"batchId": batch_id, "returned": returned, "stillAway": away_total}),
+        undo: Ok(undo),
     })
 }
 
@@ -444,12 +495,27 @@ fn return_without_batch(ctx: &Ctx<'_>, ledger: &mut Ledger, still_away: &[(Strin
 /// speaks for one of those units (a wash report, a later return) keeps the return in the record.
 pub fn undo_return(ctx: &Ctx<'_>, ledger: &mut Ledger, original: &StoredCommand, data: &Value, target: &str) -> Result<Plan, CmdError> {
     let Some(batch_id) = data.get("batchId").and_then(Value::as_str).map(str::to_string) else {
+        // A return with no pickup on record; what it named as still away is in a bag of its own,
+        // which must still be exactly as the return made it.
+        let held = data.get("heldBatchId").and_then(Value::as_str).map(str::to_string);
+        if let Some(id) = &held {
+            let as_left = ledger.batches.iter().any(|b| &b.batch_id == id && b.withdrawn_by.is_none() && b.version == 1 && b.status == "partially_returned");
+            if !as_left {
+                return Err(CmdError::with("conflict", "what that return named as still away has been reported on since; nothing was written", json!({"batchId": id})));
+            }
+        }
         let voided = void_events(ctx, ledger, data, target)?;
         let changed = later_reports_changed(ctx, ledger, data, &voided);
         if !changed.is_empty() {
             return Err(relied_on(&changed, None));
         }
-        let affected = affected(ledger, &voided.touched);
+        let mut affected = affected(ledger, &voided.touched);
+        if let Some(id) = &held {
+            let b = ledger.batch_mut(id).expect("batch checked above");
+            b.withdrawn_by = Some(ctx.command_id.to_string());
+            b.version += 1;
+            affected.push(batch_affected(b));
+        }
         return Ok(Plan {
             outcome: "committed",
             summary: undone_summary(&original.summary, UNDO_STOCK_SUMMARY),
@@ -464,8 +530,15 @@ pub fn undo_return(ctx: &Ctx<'_>, ledger: &mut Ledger, original: &StoredCommand,
     };
     let items = data["items"].as_array().cloned().unwrap_or_default();
     let n = |v: &Value, k: &str| v[k].as_u64().unwrap_or(0) as u32;
-    // The batch is exactly as the return left it.
-    let unchanged = Some(batch.status.as_str()) == data["statusAfter"].as_str()
+    // A return recorded before its undo data carried the batch version cannot show that no later
+    // return of the same bag relies on it, so it stays.
+    if data.get("versionAfter").is_none() {
+        return Err(CmdError::with("conflict", "that return was recorded before its bag's version was kept, so it cannot be undone safely; nothing was written", json!({"batchId": batch_id})));
+    }
+    // The batch is exactly as the return left it: its version (no later report of any kind on it),
+    // status, time and counts.
+    let unchanged = data["versionAfter"].as_u64() == Some(batch.version)
+        && Some(batch.status.as_str()) == data["statusAfter"].as_str()
         && batch.returned_at_ms.map(instant).as_deref() == data["returnedAtAfter"].as_str()
         && items.iter().all(|i| batch.items.iter().any(|b| Some(b.garment_id.as_str()) == i["garmentId"].as_str() && b.returned == n(i, "returnedAfter") && b.still_away == n(i, "stillAwayAfter")));
     if !unchanged {
