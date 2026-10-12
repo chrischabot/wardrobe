@@ -56,8 +56,11 @@ pub async fn serve(ctx: AppContext, tokens: Tokens) -> std::io::Result<()> {
             "body": body,
         });
         // Reply first, ack only once the reply is published: a lost reply leaves
-        // the lease to redeliver, and a redelivered command is answered from its
-        // idempotency record instead of running twice.
+        // the lease to redeliver with the same correlation ID. A redelivered
+        // command is answered from its idempotency record, and a redelivered
+        // OAuth consent, code exchange or refresh recomputes the secrets it
+        // already recorded and answers again (oauth::Mint) instead of running
+        // twice.
         let replied = match ctx.reply_to_queue(&req.reply_to).await {
             Ok(mut replies) => match serde_json::to_vec(&envelope) {
                 Ok(payload) => replies.publish(&payload).await.is_ok(),

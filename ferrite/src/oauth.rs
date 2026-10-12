@@ -28,6 +28,7 @@ use ferrite_app::IngressRequest;
 
 use crate::api::{Reply, Store};
 use crate::random::token;
+use ferrite_app::crypto::hmac_sha256;
 use crate::sha256::{constant_time_eq, digest, hex_digest};
 use crate::time::instant;
 
@@ -43,9 +44,78 @@ pub const MAX_CLIENTS: usize = 200;
 pub const MAX_GRANTS: usize = 100;
 /// Registrations younger than this are never pruned to make room.
 const CLIENT_PRUNE_AGE_MS: u64 = 60 * 60_000;
-const MAX_ACCESS_PER_GRANT: usize = 4;
+const MAX_ACCESS_PER_GRANT: usize = 2 * MAX_SUCCESSORS;
+/// How long a replaced refresh token may be retried, counted from the moment
+/// it was replaced. Retries never extend it, and the first use of any of its
+/// successors ends it at once (the client then holds the new lineage).
+pub const PREVIOUS_RETRY_MS: u64 = 2 * 60_000;
+/// How long a consent page may be submitted after it was served. The form
+/// carries its issue time under an owner-keyed MAC.
+pub const CONSENT_FORM_TTL_MS: u64 = 10 * 60_000;
+/// Clock difference tolerated between the instance that served a consent
+/// page and the one that receives it.
+pub const CLOCK_SKEW_MS: u64 = 60_000;
+
+/// The MAC a consent form carries over its issue time and the flow it
+/// belongs to, keyed from the owner token.
+pub fn consent_form_mac(owner_token: &str, issued: u64, client_id: &str, redirect_uri: &str, challenge: &str) -> String {
+    let key = hmac_sha256(owner_token.as_bytes(), b"wardrobe/oauth/consent-form-key/v1");
+    crate::sha256::hex(&hmac_sha256(&key, format!("wardrobe/oauth/consent-form/v1\n{issued}\n{client_id}\n{redirect_uri}\n{challenge}").as_bytes()))
+}
 const ATTEMPTS: u32 = 6;
 const CLIENTS_KEY: &[u8] = b"o/clients";
+
+/// The secrets one request mints (codes, access and refresh tokens).
+///
+/// The request queue redelivers an envelope whose reply or acknowledgement
+/// was lost, with the same gateway-assigned correlation ID. Each secret is
+/// therefore the HMAC of that ID and a label, under a key derived from the
+/// owner-token secret: a redelivery computes exactly the tokens the first
+/// delivery recorded, finds them recorded, and answers again without a second
+/// state transition. Nothing in plaintext is stored to make this work. With no
+/// owner token or no correlation ID (a hand-built request) secrets are random
+/// and nothing is replayable.
+pub struct Mint {
+    key: Option<[u8; 32]>,
+    request: String,
+}
+
+impl Mint {
+    pub fn new(owner_token: Option<&str>, correlation_id: &str) -> Mint {
+        let key = owner_token.filter(|t| !t.is_empty()).map(|t| hmac_sha256(t.as_bytes(), b"wardrobe/oauth/mint-key/v1"));
+        Mint { key, request: correlation_id.to_string() }
+    }
+
+    fn replayable(&self) -> bool {
+        self.key.is_some() && !self.request.is_empty()
+    }
+
+    /// The request's identity as recorded on what it created (None when it
+    /// cannot be replayed).
+    fn recorded(&self) -> Option<String> {
+        self.replayable().then(|| self.request.clone())
+    }
+
+    fn is(&self, recorded: Option<&str>) -> bool {
+        self.replayable() && recorded == Some(self.request.as_str())
+    }
+
+    fn secret(&self, label: &str) -> String {
+        match &self.key {
+            Some(k) if !self.request.is_empty() => crate::sha256::hex(&hmac_sha256(k, format!("wardrobe/oauth/mint/v1\n{}\n{label}", self.request).as_bytes())),
+            _ => token(32),
+        }
+    }
+
+    /// An access and refresh token pair for `grant_id`.
+    fn pair(&self, grant_id: &str, kind: &str) -> (String, String) {
+        (format!("wat.{grant_id}.{}", self.secret(&format!("{grant_id}/{kind}/access"))), format!("wrt.{grant_id}.{}", self.secret(&format!("{grant_id}/{kind}/refresh"))))
+    }
+
+    fn code(&self, grant_id: &str) -> String {
+        format!("wac.{grant_id}.{}", self.secret(&format!("{grant_id}/code")))
+    }
+}
 
 // ───────────────────────────── configuration ─────────────────────────────
 
@@ -234,6 +304,9 @@ pub struct Code {
     pub challenge: String,
     pub expires_at: u64,
     pub used: bool,
+    /// The request that exchanged it, so a redelivery of that request is
+    /// answered again instead of being taken for a replay.
+    pub exchanged_by: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -243,8 +316,12 @@ pub struct Refresh {
     /// the others.
     pub current: Vec<String>,
     /// Hash of the token most recently replaced; it stays usable (each use
-    /// adds a successor) until one of its successors is used.
+    /// adds a successor) until `previous_until` or until one of its
+    /// successors is used, whichever comes first.
     pub previous: Option<String>,
+    /// When `previous` stops being accepted: fixed when it is replaced,
+    /// never extended. Use after it is a replay.
+    pub previous_until: Option<u64>,
     /// Hashes of refresh tokens that were superseded (newest last, at most
     /// `MAX_RETIRED`). Presenting one is a replay: the grant ends.
     pub retired: Vec<String>,
@@ -280,6 +357,9 @@ pub struct Grant {
     pub created_at: u64,
     pub revoked_at: Option<u64>,
     pub revoked_reason: Option<String>,
+    /// The request that created it (consent), so a redelivery returns the
+    /// same code instead of creating another grant.
+    pub created_by: Option<String>,
     pub code: Option<Code>,
     pub refresh: Option<Refresh>,
     pub access: Vec<Access>,
@@ -295,6 +375,12 @@ fn opt_u64(v: &Value) -> Option<Option<u64>> {
         Value::Null => Some(None),
         v => v.as_u64().map(Some),
     }
+}
+
+/// A field added after records were first written: absent reads as `None`;
+/// present but of another shape is still refused.
+fn added_str(v: Option<&Value>) -> Option<Option<String>> {
+    v.map_or(Some(None), opt_str)
 }
 
 fn opt_str(v: &Value) -> Option<Option<String>> {
@@ -318,8 +404,9 @@ impl Grant {
             "createdAt": self.created_at,
             "revokedAt": self.revoked_at,
             "revokedReason": self.revoked_reason,
-            "code": self.code.as_ref().map(|c| json!({"hash": c.hash, "challenge": c.challenge, "expiresAt": c.expires_at, "used": c.used})),
-            "refresh": self.refresh.as_ref().map(|r| json!({"current": r.current, "previous": r.previous, "retired": r.retired, "lastUsedAt": r.last_used_at})),
+            "createdBy": self.created_by,
+            "code": self.code.as_ref().map(|c| json!({"hash": c.hash, "challenge": c.challenge, "expiresAt": c.expires_at, "used": c.used, "exchangedBy": c.exchanged_by})),
+            "refresh": self.refresh.as_ref().map(|r| json!({"current": r.current, "previous": r.previous, "previousUntil": r.previous_until, "retired": r.retired, "lastUsedAt": r.last_used_at})),
             "access": self.access.iter().map(|a| json!({"hash": a.hash, "expiresAt": a.expires_at, "scopes": a.scopes})).collect::<Vec<_>>(),
             "version": self.version,
         })
@@ -336,7 +423,7 @@ impl Grant {
         };
         let code = match v.get("code")? {
             Value::Null => None,
-            c => Some(Code { hash: c.get("hash")?.as_str()?.to_string(), challenge: c.get("challenge")?.as_str()?.to_string(), expires_at: c.get("expiresAt")?.as_u64()?, used: c.get("used")?.as_bool()? }),
+            c => Some(Code { hash: c.get("hash")?.as_str()?.to_string(), challenge: c.get("challenge")?.as_str()?.to_string(), expires_at: c.get("expiresAt")?.as_u64()?, used: c.get("used")?.as_bool()?, exchanged_by: added_str(c.get("exchangedBy"))? }),
         };
         let refresh = match v.get("refresh")? {
             Value::Null => None,
@@ -346,7 +433,16 @@ impl Grant {
                 if current.is_empty() || current.len() > MAX_SUCCESSORS || retired.len() > MAX_RETIRED {
                     return None;
                 }
-                Some(Refresh { current, previous: opt_str(r.get("previous")?)?, retired, last_used_at: r.get("lastUsedAt")?.as_u64()? })
+                let previous = opt_str(r.get("previous")?)?;
+                let last_used_at = r.get("lastUsedAt")?.as_u64()?;
+                let previous_until = match r.get("previousUntil") {
+                    Some(v) => opt_u64(v)?,
+                    // Written before the window existed: the replaced token
+                    // was replaced no later than the last use, so its window
+                    // is counted from there.
+                    None => previous.as_ref().map(|_| last_used_at + PREVIOUS_RETRY_MS),
+                };
+                Some(Refresh { current, previous, previous_until, retired, last_used_at })
             }
         };
         let access = v
@@ -369,6 +465,7 @@ impl Grant {
             created_at: v.get("createdAt")?.as_u64()?,
             revoked_at: opt_u64(v.get("revokedAt")?)?,
             revoked_reason: opt_str(v.get("revokedReason")?)?,
+            created_by: added_str(v.get("createdBy"))?,
             code,
             refresh,
             access,
@@ -737,9 +834,13 @@ fn message_page(status: u16, title: &str, message: &str) -> Reply {
     page(status, &format!("<h1>{}</h1><p>{}</p>", html_escape(title), html_escape(message)))
 }
 
-fn consent_page(status: u16, origin: &str, r: &AuthRequest, error: Option<&str>) -> Reply {
+fn consent_page(status: u16, origin: &str, r: &AuthRequest, error: Option<&str>, owner_token: Option<&str>, now: u64) -> Reply {
     let hidden = |name: &str, value: &str| format!("<input type=\"hidden\" name=\"{name}\" value=\"{}\">", html_escape(value));
     let mut fields = String::new();
+    if let Some(owner) = owner_token.filter(|t| !t.is_empty()) {
+        fields.push_str(&hidden("issued", &now.to_string()));
+        fields.push_str(&hidden("form_mac", &consent_form_mac(owner, now, &r.client_id, &r.redirect_uri, &r.challenge)));
+    }
     fields.push_str(&hidden("response_type", "code"));
     fields.push_str(&hidden("client_id", &r.client_id));
     fields.push_str(&hidden("redirect_uri", &r.redirect_uri));
@@ -769,16 +870,16 @@ fn consent_page(status: u16, origin: &str, r: &AuthRequest, error: Option<&str>)
 }
 
 /// `GET /oauth/authorize`: the consent page.
-pub async fn authorize_page<S: Store>(store: &mut S, origin: &str, query: &str) -> Reply {
+pub async fn authorize_page<S: Store>(store: &mut S, origin: &str, owner_token: Option<&str>, now: u64, query: &str) -> Reply {
     let Some(params) = form_decode(query) else { return message_page(400, "Cannot connect this application", "The request is not readable.") };
     match validate_authorize(store, origin, &params).await {
-        Ok(r) => consent_page(200, origin, &r, None),
+        Ok(r) => consent_page(200, origin, &r, None, owner_token, now),
         Err(e) => auth_error_reply(origin, e),
     }
 }
 
 /// `POST /oauth/authorize`: the owner's decision.
-pub async fn authorize_decision<S: Store>(store: &mut S, origin: &str, owner_token: Option<&str>, now: u64, body: &[u8]) -> Reply {
+pub async fn authorize_decision<S: Store>(store: &mut S, origin: &str, owner_token: Option<&str>, mint: &Mint, now: u64, body: &[u8]) -> Reply {
     let Some(params) = std::str::from_utf8(body).ok().and_then(form_decode) else { return message_page(400, "Cannot connect this application", "The form is not readable.") };
     let r = match validate_authorize(store, origin, &params).await {
         Ok(r) => r,
@@ -788,15 +889,29 @@ pub async fn authorize_decision<S: Store>(store: &mut S, origin: &str, owner_tok
     match field("decision") {
         Some("deny") => return auth_error_reply(origin, AuthError::Redirect { uri: r.redirect_uri.clone(), error: "access_denied", description: "the owner did not allow this connection".into(), state: r.state.clone() }),
         Some("allow") => {}
-        _ => return consent_page(400, origin, &r, Some("Choose Allow or Deny.")),
+        _ => return consent_page(400, origin, &r, Some("Choose Allow or Deny."), owner_token, now),
     }
     let presented = field("owner_token").unwrap_or("");
     let Some(owner) = owner_token.filter(|t| !t.is_empty()) else { return message_page(500, "Garderobe is not configured", "The server has no owner token, so nobody can sign in.") };
+    // The form must be one this server served for this flow, within its
+    // lifetime. That bounds how late a consent (or a queue redelivery of
+    // one) can arrive, which is what lets a grant's slot be reused safely.
+    let fresh = match (field("issued").and_then(|i| i.parse::<u64>().ok()), field("form_mac")) {
+        (Some(issued), Some(mac)) => {
+            issued <= now + CLOCK_SKEW_MS
+                && now.saturating_sub(issued) <= CONSENT_FORM_TTL_MS
+                && constant_time_eq(mac.as_bytes(), consent_form_mac(owner, issued, &r.client_id, &r.redirect_uri, &r.challenge).as_bytes())
+        }
+        _ => false,
+    };
+    if !fresh {
+        return consent_page(400, origin, &r, Some("This page expired. Nothing was granted; sign in and choose again."), owner_token, now);
+    }
     if presented.is_empty() || !constant_time_eq(presented.as_bytes(), owner.as_bytes()) {
-        return consent_page(401, origin, &r, Some("That owner token is not valid. Nothing was granted."));
+        return consent_page(401, origin, &r, Some("That owner token is not valid. Nothing was granted."), owner_token, now);
     }
     let scopes: Vec<String> = if field("write") == Some("on") { r.scopes.clone() } else { vec![READ.to_string()] };
-    let code = match create_grant(store, now, &r, scopes).await {
+    let code = match create_grant(store, now, &r, scopes, mint).await {
         Ok(code) => code,
         Err(GrantRefusal::Full) => return message_page(409, "Too many connected assistants", "Disconnect an assistant you no longer use, then connect this one again."),
         Err(GrantRefusal::Fault(f)) => return auth_error_reply(origin, AuthError::Fault(f)),
@@ -831,16 +946,24 @@ async fn read_grant_slots<S: Store>(store: &mut S) -> Result<Vec<(usize, Option<
     Ok(out)
 }
 
-async fn create_grant<S: Store>(store: &mut S, now: u64, r: &AuthRequest, scopes: Vec<String>) -> Result<String, GrantRefusal> {
+async fn create_grant<S: Store>(store: &mut S, now: u64, r: &AuthRequest, scopes: Vec<String>, mint: &Mint) -> Result<String, GrantRefusal> {
     for _ in 0..ATTEMPTS {
-        // A slot is free when it is empty or its grant can no longer produce
-        // tokens (revoked, code expired unused, refresh idle too long).
         let slots = read_grant_slots(store).await.map_err(GrantRefusal::Fault)?;
-        let Some((slot, expected)) = slots.into_iter().find(|(_, _, g)| g.as_ref().map_or(true, |g| !g.live(now))).map(|(s, b, _)| (s, b)) else {
+        // A redelivery of a consent that already committed gets its code again.
+        if let Some(g) = slots.iter().filter_map(|(_, _, g)| g.as_ref()).find(|g| mint.is(g.created_by.as_deref())) {
+            return Ok(mint.code(&g.id));
+        }
+        // A slot is free when it is empty, or its grant can no longer produce
+        // tokens (revoked, code expired unused, refresh idle too long) and
+        // every consent form that could have created it has expired. So a
+        // late redelivery of that consent still finds its grant here and is
+        // answered from it, and can never create a grant again.
+        let reusable = |g: &Grant| !g.live(now) && now > g.created_at + CONSENT_FORM_TTL_MS + CLOCK_SKEW_MS;
+        let Some((slot, expected)) = slots.into_iter().find(|(_, _, g)| g.as_ref().map_or(true, reusable)).map(|(s, b, _)| (s, b)) else {
             return Err(GrantRefusal::Full);
         };
         let id = format!("grt_{slot:04x}{}", token(14));
-        let code = format!("wac.{id}.{}", token(32));
+        let code = mint.code(&id);
         let grant = Grant {
             id: id.clone(),
             client_id: r.client_id.clone(),
@@ -851,7 +974,8 @@ async fn create_grant<S: Store>(store: &mut S, now: u64, r: &AuthRequest, scopes
             created_at: now,
             revoked_at: None,
             revoked_reason: None,
-            code: Some(Code { hash: hash(&code), challenge: r.challenge.clone(), expires_at: now + CODE_TTL_MS, used: false }),
+            created_by: mint.recorded(),
+            code: Some(Code { hash: hash(&code), challenge: r.challenge.clone(), expires_at: now + CODE_TTL_MS, used: false, exchanged_by: None }),
             refresh: None,
             access: Vec::new(),
             version: 1,
@@ -880,14 +1004,12 @@ fn verifier_matches(verifier: &str, challenge: &str) -> bool {
         && constant_time_eq(b64url(&digest(verifier.as_bytes())).as_bytes(), challenge.as_bytes())
 }
 
-fn issue(grant: &mut Grant, now: u64, scopes: Vec<String>) -> (String, String) {
-    let access = format!("wat.{}.{}", grant.id, token(32));
-    let refresh = format!("wrt.{}.{}", grant.id, token(32));
+/// Record an issued access token on its grant (at most four kept).
+fn record_access(grant: &mut Grant, now: u64, access: &str, scopes: Vec<String>) {
     grant.access.retain(|a| a.expires_at > now);
-    grant.access.push(Access { hash: hash(&access), expires_at: now + ACCESS_TTL_MS, scopes });
+    grant.access.push(Access { hash: hash(access), expires_at: now + ACCESS_TTL_MS, scopes });
     let excess = grant.access.len().saturating_sub(MAX_ACCESS_PER_GRANT);
     grant.access.drain(..excess);
-    (access, refresh)
 }
 
 fn token_reply(access: &str, refresh: &str, scopes: &[String]) -> Reply {
@@ -901,8 +1023,42 @@ fn token_reply(access: &str, refresh: &str, scopes: &[String]) -> Reply {
     .with_header("pragma", "no-cache")
 }
 
+/// The answer to a redelivered exchange or refresh, from what the first
+/// delivery recorded. It is given only while that answer is still usable:
+/// its refresh token is unused (or the replaced token inside its window) and
+/// its access token is live, reported with its remaining lifetime, never a
+/// fresh 15 minutes. Otherwise the client has moved on, or the tokens have
+/// expired, and handing them out would only invite a replay; the redelivery
+/// is refused. Nothing changes either way.
+///
+/// Every usable pair keeps its access record: at most MAX_SUCCESSORS - 1
+/// siblings and MAX_SUCCESSORS successors are issued after the replaced
+/// token's own pair, so the newest 2 * MAX_SUCCESSORS access records
+/// (MAX_ACCESS_PER_GRANT) always include it until it expires.
+fn replay_reply(grant: &Grant, now: u64, access: &str, refresh: &str) -> Reply {
+    let refresh_hash = hash(refresh);
+    let usable = grant.refresh.as_ref().map_or(false, |r| {
+        r.current.contains(&refresh_hash) || (r.previous.as_ref() == Some(&refresh_hash) && r.previous_until.map_or(false, |until| now <= until))
+    });
+    if !usable {
+        return oauth_error(400, "invalid_grant", "this request was already answered and the tokens it issued have since been replaced");
+    }
+    let issued = hash(access);
+    match grant.access.iter().find(|a| a.hash == issued && a.expires_at > now) {
+        Some(a) => Reply::json(200, json!({
+            "access_token": access,
+            "token_type": "Bearer",
+            "expires_in": ((a.expires_at - now) / 1000).max(1),
+            "refresh_token": refresh,
+            "scope": a.scopes.join(" "),
+        }))
+        .with_header("pragma", "no-cache"),
+        None => oauth_error(400, "invalid_grant", "this request was already answered and the access token it issued has expired"),
+    }
+}
+
 /// `POST /oauth/token`: the authorization code and refresh token grants.
-pub async fn token_endpoint<S: Store>(store: &mut S, origin: &str, now: u64, body: &[u8]) -> Reply {
+pub async fn token_endpoint<S: Store>(store: &mut S, origin: &str, mint: &Mint, now: u64, body: &[u8]) -> Reply {
     let Some(params) = std::str::from_utf8(body).ok().and_then(form_decode) else { return oauth_error(400, "invalid_request", "the body must be application/x-www-form-urlencoded") };
     let get = |name: &str| single(&params, name);
     let (grant_type, client_id, resource) = match (get("grant_type"), get("client_id"), get("resource")) {
@@ -918,17 +1074,17 @@ pub async fn token_endpoint<S: Store>(store: &mut S, origin: &str, now: u64, bod
             let (Ok(Some(code)), Ok(Some(redirect_uri)), Ok(verifier)) = (get("code"), get("redirect_uri"), get("code_verifier")) else {
                 return oauth_error(400, "invalid_request", "code, redirect_uri and code_verifier are required");
             };
-            exchange_code(store, now, client_id, code, redirect_uri, verifier.unwrap_or("")).await
+            exchange_code(store, mint, now, client_id, code, redirect_uri, verifier.unwrap_or("")).await
         }
         Some("refresh_token") => {
             let (Ok(Some(refresh)), Ok(scope)) = (get("refresh_token"), get("scope")) else { return oauth_error(400, "invalid_request", "refresh_token is required") };
-            refresh_tokens(store, now, client_id, refresh, scope).await
+            refresh_tokens(store, mint, now, client_id, refresh, scope).await
         }
         _ => oauth_error(400, "unsupported_grant_type", "the grants are authorization_code and refresh_token"),
     }
 }
 
-async fn exchange_code<S: Store>(store: &mut S, now: u64, client_id: &str, code: &str, redirect_uri: &str, verifier: &str) -> Reply {
+async fn exchange_code<S: Store>(store: &mut S, mint: &Mint, now: u64, client_id: &str, code: &str, redirect_uri: &str, verifier: &str) -> Reply {
     let invalid = |d: &str| oauth_error(400, "invalid_grant", d);
     let Some(grant_id) = grant_of_token(code, "wac") else { return invalid("the authorization code is not valid") };
     for _ in 0..ATTEMPTS {
@@ -945,6 +1101,12 @@ async fn exchange_code<S: Store>(store: &mut S, now: u64, client_id: &str, code:
             return invalid("this authorization was withdrawn");
         }
         if stored.used {
+            if mint.is(stored.exchanged_by.as_deref()) && verifier_matches(verifier, &stored.challenge) {
+                // The same delivery again (its reply or acknowledgement was
+                // lost): answer with the tokens it issued, change nothing.
+                let (access, refresh) = mint.pair(&grant.id, "exchange");
+                return replay_reply(&grant, now, &access, &refresh);
+            }
             // A code is used once. Presenting it again, with or without the
             // verifier, ends the grant and every token it issued (RFC 6749
             // section 4.1.2, RFC 9700 section 4.5); the client connects again.
@@ -963,9 +1125,10 @@ async fn exchange_code<S: Store>(store: &mut S, now: u64, client_id: &str, code:
             return invalid("the authorization code has expired");
         }
         let scopes = grant.scopes.clone();
-        let (access, refresh) = issue(&mut grant, now, scopes.clone());
-        grant.code = Some(Code { used: true, ..stored });
-        grant.refresh = Some(Refresh { current: vec![hash(&refresh)], previous: None, retired: Vec::new(), last_used_at: now });
+        let (access, refresh) = mint.pair(&grant.id, "exchange");
+        record_access(&mut grant, now, &access, scopes.clone());
+        grant.code = Some(Code { used: true, exchanged_by: mint.recorded(), ..stored });
+        grant.refresh = Some(Refresh { current: vec![hash(&refresh)], previous: None, previous_until: None, retired: Vec::new(), last_used_at: now });
         grant.version += 1;
         match save_grant(store, &old, &grant).await {
             Ok(true) => return token_reply(&access, &refresh, &scopes),
@@ -976,7 +1139,7 @@ async fn exchange_code<S: Store>(store: &mut S, now: u64, client_id: &str, code:
     fault_reply(Fault::Unavailable)
 }
 
-async fn refresh_tokens<S: Store>(store: &mut S, now: u64, client_id: &str, refresh: &str, scope: Option<&str>) -> Reply {
+async fn refresh_tokens<S: Store>(store: &mut S, mint: &Mint, now: u64, client_id: &str, refresh: &str, scope: Option<&str>) -> Reply {
     let invalid = |d: &str| oauth_error(400, "invalid_grant", d);
     let Some(grant_id) = grant_of_token(refresh, "wrt") else { return invalid("the refresh token is not valid") };
     for _ in 0..ATTEMPTS {
@@ -991,23 +1154,43 @@ async fn refresh_tokens<S: Store>(store: &mut S, now: u64, client_id: &str, refr
         let Some(r) = grant.refresh.clone() else { return invalid("the refresh token is not valid") };
         let is_current = r.current.iter().any(|c| hash_matches(refresh, c));
         let is_previous = r.previous.as_deref().map_or(false, |p| hash_matches(refresh, p));
+        let is_retired = r.retired.iter().any(|h| hash_matches(refresh, h));
+        // A redelivery of a refresh that already committed: the token it
+        // issued is recorded in this lineage. Answer again, change nothing,
+        // even if the client has moved on since.
+        let (access, new_refresh) = mint.pair(&grant.id, "refresh");
+        let new_hash = hash(&new_refresh);
+        if mint.replayable() && (is_current || is_previous || is_retired) && (r.current.contains(&new_hash) || r.previous.as_ref() == Some(&new_hash) || r.retired.contains(&new_hash)) {
+            return replay_reply(&grant, now, &access, &new_refresh);
+        }
+        // The replaced token is retried only within its fixed window.
+        let stale_previous = is_previous && r.previous_until.map_or(true, |until| now > until);
+        if is_retired || stale_previous {
+            // A superseded refresh token: the client and someone else both
+            // hold this lineage. End the grant and every token it issued
+            // (OAuth 2.1 section 4.3.1, RFC 9700 section 4.14.2).
+            grant.revoke(now, "refresh_token_replayed");
+            grant.version += 1;
+            return match save_grant(store, &old, &grant).await {
+                Ok(true) => invalid("the refresh token was already replaced; the authorization is withdrawn"),
+                Ok(false) => continue,
+                Err(f) => fault_reply(f),
+            };
+        }
         if !is_current && !is_previous {
-            if r.retired.iter().any(|h| hash_matches(refresh, h)) {
-                // A superseded refresh token: the client and someone else both
-                // hold this lineage. End the grant and every token it issued
-                // (OAuth 2.1 section 4.3.1, RFC 9700 section 4.14.2).
-                grant.revoke(now, "refresh_token_replayed");
-                grant.version += 1;
-                return match save_grant(store, &old, &grant).await {
-                    Ok(true) => invalid("the refresh token was already replaced; the authorization is withdrawn"),
-                    Ok(false) => continue,
-                    Err(f) => fault_reply(f),
-                };
-            }
             return invalid("the refresh token is not valid");
         }
         if now.saturating_sub(r.last_used_at) > REFRESH_IDLE_MS {
             return invalid("the connection was idle too long; connect again");
+        }
+        // The replaced token may add successors only up to MAX_SUCCESSORS.
+        // That keeps every token it issued in `current` (never pushed out to
+        // `retired` early), so a redelivery of any of those requests is still
+        // recognised above: `retired` is first-in first-out and a token is
+        // always retired before, or together with and ahead of, the tokens
+        // it issued, so a request's output outlives its input.
+        if is_previous && r.current.len() >= MAX_SUCCESSORS {
+            return invalid("the replaced refresh token was retried too often; use the newest one");
         }
         let scopes: Vec<String> = match scope {
             None => grant.scopes.clone(),
@@ -1019,30 +1202,28 @@ async fn refresh_tokens<S: Store>(store: &mut S, now: u64, client_id: &str, refr
                 SCOPES.iter().filter(|s| **s == READ || asked.contains(s)).map(|s| s.to_string()).collect()
             }
         };
-        let (access, new_refresh) = issue(&mut grant, now, scopes.clone());
+        record_access(&mut grant, now, &access, scopes.clone());
         // Narrowing is permanent: the new refresh token, and every later
         // refresh, carries at most these scopes (and earlier access tokens are
         // held to them too, because authenticate intersects with the grant's).
         grant.scopes = scopes.clone();
-        // Rotation: the replaced token stays usable until one of its
-        // successors is used, so a client whose answer was lost can retry, and
-        // a retry never ends a successor issued before it.
-        let new_hash = hash(&new_refresh);
+        // Rotation: the replaced token stays usable for a fixed window from
+        // when it was replaced, so a client whose answer was lost can retry,
+        // and a retry never ends a successor issued before it. Using any
+        // successor ends the replaced token at once.
         grant.refresh = Some(if is_current {
             // A successor is used: it becomes the replaced token; the older
             // token and the other unused successors are retired.
             let used = hash(refresh);
             let mut retired = r.retired.clone();
             retire(&mut retired, r.previous.clone().into_iter().chain(r.current.iter().filter(|c| **c != used).cloned()));
-            Refresh { current: vec![new_hash], previous: Some(used), retired, last_used_at: now }
+            Refresh { current: vec![new_hash], previous: Some(used), previous_until: Some(now + PREVIOUS_RETRY_MS), retired, last_used_at: now }
         } else {
-            // The replaced token again: one more successor beside the unused ones.
+            // The replaced token again: one more successor beside the unused
+            // ones (bounded by the check above).
             let mut current = r.current.clone();
             current.push(new_hash);
-            let excess = current.len().saturating_sub(MAX_SUCCESSORS);
-            let mut retired = r.retired.clone();
-            retire(&mut retired, current.drain(..excess).collect::<Vec<_>>());
-            Refresh { current, previous: r.previous.clone(), retired, last_used_at: now }
+            Refresh { current, previous: r.previous.clone(), previous_until: r.previous_until, retired: r.retired.clone(), last_used_at: now }
         });
         grant.version += 1;
         match save_grant(store, &old, &grant).await {
@@ -1261,8 +1442,9 @@ mod tests {
             created_at: 5,
             revoked_at: None,
             revoked_reason: None,
-            code: Some(Code { hash: "h".into(), challenge: "c".into(), expires_at: 9, used: false }),
-            refresh: Some(Refresh { current: vec!["r".into()], previous: None, retired: vec!["q".into()], last_used_at: 6 }),
+            created_by: Some("req-1".into()),
+            code: Some(Code { hash: "h".into(), challenge: "c".into(), expires_at: 9, used: false, exchanged_by: None }),
+            refresh: Some(Refresh { current: vec!["r".into()], previous: Some("p".into()), previous_until: Some(8), retired: vec!["q".into()], last_used_at: 6 }),
             access: vec![Access { hash: "a".into(), expires_at: 7, scopes: vec![READ.into()] }],
             version: 3,
         };
@@ -1273,5 +1455,33 @@ mod tests {
         let mut v = g.to_json();
         v.as_object_mut().unwrap().remove("access");
         assert_eq!(Grant::from_json(&v), None);
+        let mut v = g.to_json();
+        v["createdBy"] = json!(7);
+        assert_eq!(Grant::from_json(&v), None, "an added field of the wrong shape is still refused");
+    }
+
+    #[test]
+    fn a_grant_written_before_redelivery_and_the_retry_window_still_loads() {
+        let g = Grant {
+            id: format!("grt_{}", "1".repeat(32)),
+            client_id: format!("cli_{}", "2".repeat(32)),
+            client_name: "Codex".into(),
+            redirect_uri: "http://127.0.0.1:1/cb".into(),
+            scopes: vec![READ.into()],
+            active: true,
+            created_at: 5,
+            revoked_at: None,
+            revoked_reason: None,
+            created_by: None,
+            code: Some(Code { hash: "h".into(), challenge: "c".into(), expires_at: 9, used: true, exchanged_by: None }),
+            refresh: Some(Refresh { current: vec!["r".into()], previous: Some("p".into()), previous_until: Some(6 + PREVIOUS_RETRY_MS), retired: vec![], last_used_at: 6 }),
+            access: vec![],
+            version: 3,
+        };
+        let mut v = g.to_json();
+        v.as_object_mut().unwrap().remove("createdBy");
+        v["code"].as_object_mut().unwrap().remove("exchangedBy");
+        v["refresh"].as_object_mut().unwrap().remove("previousUntil");
+        assert_eq!(Grant::from_json(&v), Some(g), "the replaced token's window is counted from the last use");
     }
 }

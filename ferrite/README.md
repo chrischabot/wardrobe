@@ -157,13 +157,20 @@ provider and consent page:
 - **Consent.** The authorization code flow requires PKCE S256 and checks
   `resource` (RFC 8707). On the consent page the owner signs in with the owner
   token and allows or denies "Make changes" (`wardrobe.write`). A wrong token
-  grants nothing and redirects nowhere. The page cannot be framed.
+  grants nothing and redirects nowhere. The page cannot be framed. The form
+  carries its issue time under an owner-keyed MAC and is accepted for ten
+  minutes; a grant's slot is reused only once it is no longer live and every
+  form that could have created it has expired, so a late redelivery of a
+  consent can never create a grant again (not even after a disconnect).
 - **Tokens.** Access tokens live 15 minutes. Refresh tokens rotate: the token
-  just replaced stays usable until one of its successors is used, so a client
-  whose answer was lost can retry, and a retry ends no successor issued
-  before it (up to four unused successors are kept). A superseded refresh
+  just replaced stays usable for a fixed two minutes from when it was
+  replaced (retries never extend it), so a client whose answer was lost can
+  retry, and a retry ends no successor issued before it (at most four unused
+  successors; a fifth retry is refused without ending anything). The first use of any successor ends the replaced
+  token at once: the client has the new lineage. A superseded refresh
   token presented again is a replay and ends the grant with every token it
-  issued (the last 32 superseded tokens are remembered). Narrowing the scope
+  issued (the last 32 superseded tokens are remembered). Grant records
+  written before these fields existed still load. Narrowing the scope
   on refresh is permanent for the grant. A grant ends after
   90 idle days. Tokens are
   opaque, name their grant, and are stored only as SHA-256 hashes. Their
@@ -172,6 +179,16 @@ provider and consent page:
 - **Replayed codes.** A code is used once. Presenting it again, with or
   without the verifier, ends the grant and every token it issued; the client
   connects again.
+- **Queue redelivery.** The request queue redelivers an envelope whose reply
+  or acknowledgement was lost, with the same gateway correlation ID. Codes
+  and tokens are the HMAC of that ID under a key derived from the owner
+  token, so a redelivered consent, code exchange or refresh recomputes what
+  the first delivery recorded and answers again without a second state
+  change; a spent code or replaced token in any other request is a replay.
+  The repeated answer reports the access token's remaining lifetime; once
+  that token has expired the redelivery is refused (still changing nothing).
+  Client registration is not deduplicated: a redelivery registers a second,
+  unused client, which is pruned like any other.
 - **Ending a grant.** Revocation (RFC 7009) and the owner's disconnect end a
   grant on its next request. A grant whose code expired unused, or whose
   refresh token sat idle for 90 days, is shown as expired and no longer
