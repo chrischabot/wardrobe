@@ -36,6 +36,35 @@ pub const PUBLIC_ORIGIN_SECRET: &str = "WARDROBE_PUBLIC_ORIGIN";
 pub const READ: &str = "wardrobe.read";
 pub const WRITE: &str = "wardrobe.write";
 pub const SCOPES: [&str; 2] = [READ, WRITE];
+/// The scope of a sign-in of the owner's own app (the first-party client): the owner, on the `/v1`
+/// API. It is never a connected assistant's scope, and `/mcp` refuses a token that carries it.
+pub const OWNER_SCOPE: &str = "wardrobe.owner";
+/// The app's public OAuth client ID (the iOS build's `GARDEROBE_OAUTH_CLIENT_ID`) and its redirect
+/// URL (`GARDEROBE_OAUTH_REDIRECT_URL`), as deploy secrets. Without both the app cannot sign in.
+pub const APP_CLIENT_ID_SECRET: &str = "WARDROBE_APP_CLIENT_ID";
+pub const APP_REDIRECT_URI_SECRET: &str = "WARDROBE_APP_REDIRECT_URI";
+/// How many sign-ins of the app stay live at once; when another one signs in, the oldest is signed out.
+pub const MAX_APP_SESSIONS: usize = 10;
+const APP_CLIENT_NAME: &str = "Garderobe app";
+
+/// The owner's own app: a public client fixed by configuration rather than registered, whose
+/// sign-in is the owner's (no identity provider: the owner signs in with the owner token on the
+/// consent page, as for a connected assistant). Its resource indicator is the API origin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppClient {
+    pub id: String,
+    pub redirect_uri: String,
+}
+
+impl AppClient {
+    /// The configured app, when both secrets are set and well formed (a registered client's
+    /// `cli_` form is refused, so the two can never be confused).
+    pub fn from_config(id: Option<&str>, redirect_uri: Option<&str>) -> Option<AppClient> {
+        let (id, redirect_uri) = (id?.trim(), redirect_uri?.trim());
+        let id_ok = (1..=128).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._".contains(&b)) && !id.starts_with("cli_");
+        (id_ok && valid_redirect_uri(redirect_uri)).then(|| AppClient { id: id.to_string(), redirect_uri: redirect_uri.to_string() })
+    }
+}
 /// `ACCESS_TOKEN_TTL_SECONDS` and `REFRESH_IDLE_TTL_SECONDS` in mcp/handler.ts.
 pub const ACCESS_TTL_MS: u64 = 15 * 60_000;
 pub const REFRESH_IDLE_MS: u64 = 90 * 86_400_000;
@@ -452,7 +481,8 @@ impl Grant {
             .map(|a| Some(Access { hash: a.get("hash")?.as_str()?.to_string(), expires_at: a.get("expiresAt")?.as_u64()?, scopes: strings(a.get("scopes")?)? }))
             .collect::<Option<Vec<_>>>()?;
         let scopes = strings(v.get("scopes")?)?;
-        if scopes.iter().any(|s| !SCOPES.contains(&s.as_str())) || !scopes.iter().any(|s| s == READ) {
+        let app_sign_in = scopes.len() == 1 && scopes[0] == OWNER_SCOPE;
+        if !app_sign_in && (scopes.iter().any(|s| !SCOPES.contains(&s.as_str())) || !scopes.iter().any(|s| s == READ)) {
             return None;
         }
         Some(Grant {
@@ -471,6 +501,11 @@ impl Grant {
             access,
             version: v.get("version")?.as_u64()?,
         })
+    }
+
+    /// A sign-in of the owner's own app rather than a connected assistant.
+    pub fn is_app(&self) -> bool {
+        self.scopes.iter().any(|s| s == OWNER_SCOPE)
     }
 
     /// Still able to produce tokens: an unused code inside its lifetime, or a
@@ -777,6 +812,8 @@ pub struct AuthRequest {
     pub challenge: String,
     pub state: Option<String>,
     pub resource: Option<String>,
+    /// The owner's own app signing in (`AppClient`), not a connected assistant.
+    pub app: bool,
 }
 
 enum AuthError {
@@ -796,10 +833,14 @@ fn single<'a>(params: &'a [(String, String)], name: &str) -> Result<Option<&'a s
     Ok(first.filter(|v| !v.is_empty()))
 }
 
-async fn validate_authorize<S: Store>(store: &mut S, origin: &str, params: &[(String, String)]) -> Result<AuthRequest, AuthError> {
+async fn validate_authorize<S: Store>(store: &mut S, origin: &str, app: Option<&AppClient>, params: &[(String, String)]) -> Result<AuthRequest, AuthError> {
     let page = |m: String| AuthError::Page(400, m);
     let client_id = single(params, "client_id").map_err(page)?.ok_or_else(|| page("client_id is missing".into()))?;
-    let client = load_client(store, client_id).await.map_err(AuthError::Fault)?.ok_or_else(|| page("this application is not registered with Garderobe; register it again from the assistant".into()))?;
+    let app = app.filter(|a| a.id == client_id);
+    let client = match app {
+        Some(a) => Client { id: a.id.clone(), name: APP_CLIENT_NAME.to_string(), redirect_uris: vec![a.redirect_uri.clone()], registered_at: 0 },
+        None => load_client(store, client_id).await.map_err(AuthError::Fault)?.ok_or_else(|| page("this application is not registered with Garderobe; register it again from the assistant".into()))?,
+    };
     let redirect_uri = single(params, "redirect_uri").map_err(page)?.ok_or_else(|| page("redirect_uri is missing".into()))?;
     if !client.redirect_uris.iter().any(|u| u == redirect_uri) {
         return Err(page("the redirect address is not one this application registered".into()));
@@ -821,19 +862,30 @@ async fn validate_authorize<S: Store>(store: &mut S, origin: &str, params: &[(St
         _ => return Err(back("invalid_request", "code_challenge must be the base64url SHA-256 of the verifier")),
     };
     let mut scopes: Vec<String> = match get("scope")? {
+        None if app.is_some() => vec![OWNER_SCOPE.to_string()],
         None => vec![READ.to_string()],
         Some(s) => s.split(' ').filter(|x| !x.is_empty()).map(str::to_string).collect(),
     };
-    if scopes.is_empty() || scopes.iter().any(|s| !SCOPES.contains(&s.as_str())) {
-        return Err(back("invalid_scope", "the scopes are wardrobe.read and wardrobe.write"));
+    if app.is_some() {
+        // The app signs in as the owner, with the owner's scope and no other.
+        if scopes.is_empty() || scopes.iter().any(|s| s != OWNER_SCOPE) {
+            return Err(back("invalid_scope", "the app's only scope is wardrobe.owner"));
+        }
+        scopes = vec![OWNER_SCOPE.to_string()];
+    } else {
+        if scopes.is_empty() || scopes.iter().any(|s| !SCOPES.contains(&s.as_str())) {
+            return Err(back("invalid_scope", "the scopes are wardrobe.read and wardrobe.write"));
+        }
+        // Writing implies reading; keep the canonical order and no repeats.
+        scopes = SCOPES.iter().filter(|s| **s == READ || scopes.iter().any(|x| x == *s)).map(|s| s.to_string()).collect();
     }
-    // Writing implies reading; keep the canonical order and no repeats.
-    scopes = SCOPES.iter().filter(|s| **s == READ || scopes.iter().any(|x| x == *s)).map(|s| s.to_string()).collect();
     let resource = get("resource")?.map(str::to_string);
-    if resource.as_deref().map_or(false, |r| r != resource_uri(origin)) {
-        return Err(back("invalid_target", "the only resource is this server's MCP endpoint"));
+    // The app's resource is the API it calls (the origin); an assistant's is the MCP endpoint.
+    let expected = if app.is_some() { origin.to_string() } else { resource_uri(origin) };
+    if resource.as_deref().map_or(false, |r| r != expected) {
+        return Err(back("invalid_target", if app.is_some() { "the app's resource is this server's API origin" } else { "the only resource is this server's MCP endpoint" }));
     }
-    Ok(AuthRequest { client_id: client.id, client_name: client.name, redirect_uri: redirect_uri.to_string(), scopes, challenge, state, resource })
+    Ok(AuthRequest { client_id: client.id, client_name: client.name, redirect_uri: redirect_uri.to_string(), scopes, challenge, state, resource, app: app.is_some() })
 }
 
 fn auth_error_reply(origin: &str, e: AuthError) -> Reply {
@@ -891,6 +943,14 @@ fn consent_page(status: u16, origin: &str, r: &AuthRequest, error: Option<&str>,
         "<p class=\"muted\">This application asked to read only.</p>"
     };
     let error = error.map(|e| format!("<p class=\"error\">{}</p>", html_escape(e))).unwrap_or_default();
+    if r.app {
+        let body = format!(
+            "<h1>Sign in to Garderobe</h1><p>The Garderobe app (returning to {host}) asks to sign in as you, with everything you can do in the app.</p>{error}<form method=\"post\" action=\"{origin}/oauth/authorize\">{fields}<label>Owner token<input type=\"password\" name=\"owner_token\" autocomplete=\"current-password\"></label><button type=\"submit\" name=\"decision\" value=\"allow\">Sign in</button><button type=\"submit\" name=\"decision\" value=\"deny\">Cancel</button></form><p class=\"muted\">Sign out everywhere, in the app's settings, ends every sign-in of the app. Connected assistants are managed separately.</p>",
+            host = html_escape(host),
+            origin = html_escape(origin),
+        );
+        return page(status, &body);
+    }
     let body = format!(
         "<h1>Connect {name} to Garderobe?</h1><p><strong>{name}</strong> (returning to {host}) asks to read your wardrobe.</p>{error}<form method=\"post\" action=\"{origin}/oauth/authorize\">{fields}{write}<label>Owner token<input type=\"password\" name=\"owner_token\" autocomplete=\"current-password\"></label><button type=\"submit\" name=\"decision\" value=\"allow\">Allow</button><button type=\"submit\" name=\"decision\" value=\"deny\">Deny</button></form><p class=\"muted\">A connected assistant can never lift a restriction or undo the record of one. You can disconnect it at any time.</p>",
         name = html_escape(&r.client_name),
@@ -901,18 +961,18 @@ fn consent_page(status: u16, origin: &str, r: &AuthRequest, error: Option<&str>,
 }
 
 /// `GET /oauth/authorize`: the consent page.
-pub async fn authorize_page<S: Store>(store: &mut S, origin: &str, owner_token: Option<&str>, now: u64, query: &str) -> Reply {
+pub async fn authorize_page<S: Store>(store: &mut S, origin: &str, app: Option<&AppClient>, owner_token: Option<&str>, now: u64, query: &str) -> Reply {
     let Some(params) = form_decode(query) else { return message_page(400, "Cannot connect this application", "The request is not readable.") };
-    match validate_authorize(store, origin, &params).await {
+    match validate_authorize(store, origin, app, &params).await {
         Ok(r) => consent_page(200, origin, &r, None, owner_token, now),
         Err(e) => auth_error_reply(origin, e),
     }
 }
 
 /// `POST /oauth/authorize`: the owner's decision.
-pub async fn authorize_decision<S: Store>(store: &mut S, origin: &str, owner_token: Option<&str>, mint: &Mint, now: u64, body: &[u8]) -> Reply {
+pub async fn authorize_decision<S: Store>(store: &mut S, origin: &str, app: Option<&AppClient>, owner_token: Option<&str>, mint: &Mint, now: u64, body: &[u8]) -> Reply {
     let Some(params) = std::str::from_utf8(body).ok().and_then(form_decode) else { return message_page(400, "Cannot connect this application", "The form is not readable.") };
-    let r = match validate_authorize(store, origin, &params).await {
+    let r = match validate_authorize(store, origin, app, &params).await {
         Ok(r) => r,
         Err(e) => return auth_error_reply(origin, e),
     };
@@ -941,7 +1001,7 @@ pub async fn authorize_decision<S: Store>(store: &mut S, origin: &str, owner_tok
     if presented.is_empty() || !constant_time_eq(presented.as_bytes(), owner.as_bytes()) {
         return consent_page(401, origin, &r, Some("That owner token is not valid. Nothing was granted."), owner_token, now);
     }
-    let scopes: Vec<String> = if field("write") == Some("on") { r.scopes.clone() } else { vec![READ.to_string()] };
+    let scopes: Vec<String> = if r.app || field("write") == Some("on") { r.scopes.clone() } else { vec![READ.to_string()] };
     let code = match create_grant(store, now, &r, scopes, mint).await {
         Ok(code) => code,
         Err(GrantRefusal::Full) => return message_page(409, "Too many connected assistants", "Disconnect an assistant you no longer use, then connect this one again."),
@@ -985,6 +1045,20 @@ async fn create_grant<S: Store>(store: &mut S, now: u64, r: &AuthRequest, scopes
         if let Some(g) = slots.iter().filter_map(|(_, g)| g.as_ref()).find(|g| mint.is(g.created_by.as_deref())) {
             return Ok(mint.code(&g.id));
         }
+        // The app keeps at most MAX_APP_SESSIONS sign-ins: the oldest live ones are signed out in
+        // the same commit as the new one.
+        let mut evicted: Vec<Grant> = Vec::new();
+        if r.app {
+            let mut sessions: Vec<&Grant> = slots.iter().filter_map(|(_, g)| g.as_ref()).filter(|g| g.is_app() && g.live(now)).collect();
+            sessions.sort_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.id.cmp(&b.id)));
+            let excess = (sessions.len() + 1).saturating_sub(MAX_APP_SESSIONS);
+            for g in sessions.into_iter().take(excess) {
+                let mut g = g.clone();
+                g.revoke(now, "app_session_limit");
+                g.version += 1;
+                evicted.push(g);
+            }
+        }
         // A slot is free when it is empty, or its grant can no longer produce
         // tokens (revoked, code expired unused, refresh idle too long) and
         // every consent form that could have created it has expired. So a
@@ -1014,12 +1088,18 @@ async fn create_grant<S: Store>(store: &mut S, now: u64, r: &AuthRequest, scopes
         };
         let Some(gkey) = grant_key(&id) else { return Err(GrantRefusal::Fault(Fault::Corrupt)) };
         let gval = grant.to_json().to_string().into_bytes();
+        let mut records: Vec<(Vec<u8>, Vec<u8>)> = vec![(gkey, gval)];
+        for g in &evicted {
+            let Some(k) = grant_key(&g.id) else { return Err(GrantRefusal::Fault(Fault::Corrupt)) };
+            records.push((k, g.to_json().to_string().into_bytes()));
+        }
+        let entries: Vec<(&[u8], &[u8])> = records.iter().map(|(k, v)| (k.as_slice(), v.as_slice())).collect();
         // Guarded on the grant store's version read with the slots: written
         // only if no slot changed since. An exchange, refresh or disconnect
         // that committed since, or another delivery of this same consent that
         // created its grant first, advanced the version, so this write is
         // refused and the attempt starts over (and then finds that grant).
-        match commit_grants(store, &epoch, &[(&gkey, &gval)]).await {
+        match commit_grants(store, &epoch, &entries).await {
             Ok(true) => return Ok(code),
             Ok(false) => continue,
             // A lost answer leaves at most an unused grant, which the owner sees and can disconnect.
@@ -1091,7 +1171,7 @@ fn replay_reply(grant: &Grant, now: u64, access: &str, refresh: &str) -> Reply {
 }
 
 /// `POST /oauth/token`: the authorization code and refresh token grants.
-pub async fn token_endpoint<S: Store>(store: &mut S, origin: &str, mint: &Mint, now: u64, body: &[u8]) -> Reply {
+pub async fn token_endpoint<S: Store>(store: &mut S, origin: &str, app: Option<&AppClient>, mint: &Mint, now: u64, body: &[u8]) -> Reply {
     let Some(params) = std::str::from_utf8(body).ok().and_then(form_decode) else { return oauth_error(400, "invalid_request", "the body must be application/x-www-form-urlencoded") };
     let get = |name: &str| single(&params, name);
     let (grant_type, client_id, resource) = match (get("grant_type"), get("client_id"), get("resource")) {
@@ -1099,25 +1179,33 @@ pub async fn token_endpoint<S: Store>(store: &mut S, origin: &str, mint: &Mint, 
         _ => return oauth_error(400, "invalid_request", "a parameter is repeated"),
     };
     let Some(client_id) = client_id else { return oauth_error(401, "invalid_client", "client_id is required (public clients)") };
-    if resource.map_or(false, |r| r != resource_uri(origin)) {
-        return oauth_error(400, "invalid_target", "the only resource is this server's MCP endpoint");
+    let app_id = app.map(|a| a.id.as_str());
+    let expected = if app_id == Some(client_id) { origin.to_string() } else { resource_uri(origin) };
+    if resource.map_or(false, |r| r != expected) {
+        return oauth_error(400, "invalid_target", if app_id == Some(client_id) { "the app's resource is this server's API origin" } else { "the only resource is this server's MCP endpoint" });
     }
     match grant_type {
         Some("authorization_code") => {
             let (Ok(Some(code)), Ok(Some(redirect_uri)), Ok(verifier)) = (get("code"), get("redirect_uri"), get("code_verifier")) else {
                 return oauth_error(400, "invalid_request", "code, redirect_uri and code_verifier are required");
             };
-            exchange_code(store, mint, now, client_id, code, redirect_uri, verifier.unwrap_or("")).await
+            exchange_code(store, mint, now, app_id, client_id, code, redirect_uri, verifier.unwrap_or("")).await
         }
         Some("refresh_token") => {
             let (Ok(Some(refresh)), Ok(scope)) = (get("refresh_token"), get("scope")) else { return oauth_error(400, "invalid_request", "refresh_token is required") };
-            refresh_tokens(store, mint, now, client_id, refresh, scope).await
+            refresh_tokens(store, mint, now, app_id, client_id, refresh, scope).await
         }
         _ => oauth_error(400, "unsupported_grant_type", "the grants are authorization_code and refresh_token"),
     }
 }
 
-async fn exchange_code<S: Store>(store: &mut S, mint: &Mint, now: u64, client_id: &str, code: &str, redirect_uri: &str, verifier: &str) -> Reply {
+/// An app sign-in issues tokens only while that app is the one configured: a changed or removed
+/// `WARDROBE_APP_CLIENT_ID` ends its sign-ins.
+fn app_unconfigured(grant: &Grant, app_id: Option<&str>) -> bool {
+    grant.is_app() && app_id != Some(grant.client_id.as_str())
+}
+
+async fn exchange_code<S: Store>(store: &mut S, mint: &Mint, now: u64, app_id: Option<&str>, client_id: &str, code: &str, redirect_uri: &str, verifier: &str) -> Reply {
     let invalid = |d: &str| oauth_error(400, "invalid_grant", d);
     let Some(grant_id) = grant_of_token(code, "wac") else { return invalid("the authorization code is not valid") };
     for _ in 0..ATTEMPTS {
@@ -1129,6 +1217,9 @@ async fn exchange_code<S: Store>(store: &mut S, mint: &Mint, now: u64, client_id
         let Some(stored) = grant.code.clone() else { return invalid("the authorization code is not valid") };
         if !hash_matches(code, &stored.hash) || grant.client_id != client_id || grant.redirect_uri != redirect_uri {
             return invalid("the authorization code is not valid for this client and redirect");
+        }
+        if app_unconfigured(&grant, app_id) {
+            return invalid("this app is no longer configured on this server; sign in again");
         }
         if !grant.active {
             return invalid("this authorization was withdrawn");
@@ -1172,7 +1263,7 @@ async fn exchange_code<S: Store>(store: &mut S, mint: &Mint, now: u64, client_id
     fault_reply(Fault::Unavailable)
 }
 
-async fn refresh_tokens<S: Store>(store: &mut S, mint: &Mint, now: u64, client_id: &str, refresh: &str, scope: Option<&str>) -> Reply {
+async fn refresh_tokens<S: Store>(store: &mut S, mint: &Mint, now: u64, app_id: Option<&str>, client_id: &str, refresh: &str, scope: Option<&str>) -> Reply {
     let invalid = |d: &str| oauth_error(400, "invalid_grant", d);
     let Some(grant_id) = grant_of_token(refresh, "wrt") else { return invalid("the refresh token is not valid") };
     for _ in 0..ATTEMPTS {
@@ -1183,6 +1274,9 @@ async fn refresh_tokens<S: Store>(store: &mut S, mint: &Mint, now: u64, client_i
         };
         if !grant.active || grant.client_id != client_id {
             return invalid("the refresh token is not valid");
+        }
+        if app_unconfigured(&grant, app_id) {
+            return invalid("this app is no longer configured on this server; sign in again");
         }
         let Some(r) = grant.refresh.clone() else { return invalid("the refresh token is not valid") };
         let is_current = r.current.iter().any(|c| hash_matches(refresh, c));
@@ -1232,7 +1326,12 @@ async fn refresh_tokens<S: Store>(store: &mut S, mint: &Mint, now: u64, client_i
                 if asked.is_empty() || asked.iter().any(|a| !grant.scopes.iter().any(|g| g == a)) {
                     return oauth_error(400, "invalid_scope", "a refresh can only keep or narrow the granted scopes");
                 }
-                SCOPES.iter().filter(|s| **s == READ || asked.contains(s)).map(|s| s.to_string()).collect()
+                // An app sign-in has the one owner scope, which a refresh keeps.
+                if grant.is_app() {
+                    vec![OWNER_SCOPE.to_string()]
+                } else {
+                    SCOPES.iter().filter(|s| **s == READ || asked.contains(s)).map(|s| s.to_string()).collect()
+                }
             }
         };
         record_access(&mut grant, now, &access, scopes.clone());
@@ -1355,6 +1454,9 @@ pub async fn authenticate<S: Store>(store: &mut S, header: Option<&str>, now: u6
         .ok_or(BearerError::Missing)?;
     let grant_id = grant_of_token(presented, "wat").ok_or(BearerError::Invalid("the access token is not a Garderobe grant"))?;
     let (_, grant) = load_grant(store, grant_id).await.map_err(BearerError::Fault)?.ok_or(BearerError::Invalid("the access token is not a Garderobe grant"))?;
+    if grant.is_app() {
+        return Err(BearerError::Invalid("this token is a sign-in of the Garderobe app; it does not reach the MCP endpoint"));
+    }
     if !grant.active {
         return Err(BearerError::Invalid("this assistant is no longer connected to Garderobe; connect it again"));
     }
@@ -1367,6 +1469,55 @@ pub async fn authenticate<S: Store>(store: &mut S, header: Option<&str>, now: u6
         return Err(BearerError::Invalid("the access token carries no wardrobe scope"));
     }
     Ok(Caller { grant_id: grant.id, client_id: grant.client_id, scopes })
+}
+
+/// The owner's app sign-in behind a `/v1` bearer token (`wat.…`): an active sign-in of the configured
+/// app with an unexpired access token carrying the owner scope. Returns its grant ID. A connected
+/// assistant's token is refused here: it works at `/mcp` only.
+pub async fn authenticate_app<S: Store>(store: &mut S, presented: &str, now: u64, app: Option<&AppClient>) -> Result<String, BearerError> {
+    let unknown = BearerError::Invalid("that token is not valid for this wardrobe");
+    let Some(grant_id) = grant_of_token(presented, "wat") else { return Err(unknown) };
+    let Some((_, grant)) = load_grant(store, grant_id).await.map_err(BearerError::Fault)? else { return Err(unknown) };
+    if !grant.is_app() {
+        return Err(BearerError::Invalid("a connected assistant's token works at /mcp only"));
+    }
+    if app_unconfigured(&grant, app.map(|a| a.id.as_str())) {
+        return Err(BearerError::Invalid("this app is no longer configured on this server; sign in again"));
+    }
+    if !grant.active {
+        return Err(BearerError::Invalid("this sign-in has ended; sign in again"));
+    }
+    let access = grant.access.iter().find(|a| hash_matches(presented, &a.hash)).ok_or(BearerError::Invalid("the access token is not valid"))?;
+    if access.expires_at <= now {
+        return Err(BearerError::Invalid("the access token has expired"));
+    }
+    if !access.scopes.iter().any(|s| s == OWNER_SCOPE) {
+        return Err(BearerError::Invalid("the access token carries no owner scope"));
+    }
+    Ok(grant.id)
+}
+
+/// Sign out everywhere: every sign-in of the owner's app ends now, in one commit; connected
+/// assistants are not touched. Returns how many sign-ins still held tokens.
+pub async fn sign_out_app<S: Store>(store: &mut S, now: u64) -> Result<usize, Fault> {
+    for _ in 0..ATTEMPTS {
+        let (epoch, slots) = read_grant_slots(store).await?;
+        let mut ended: Vec<Grant> = slots.into_iter().filter_map(|(_, g)| g).filter(|g| g.is_app() && (g.active || g.refresh.is_some() || !g.access.is_empty())).collect();
+        if ended.is_empty() {
+            return Ok(0);
+        }
+        let mut records: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(ended.len());
+        for g in &mut ended {
+            g.revoke(now, "owner_signed_out_everywhere");
+            g.version += 1;
+            records.push((grant_key(&g.id).ok_or(Fault::Corrupt)?, g.to_json().to_string().into_bytes()));
+        }
+        let entries: Vec<(&[u8], &[u8])> = records.iter().map(|(k, v)| (k.as_slice(), v.as_slice())).collect();
+        if commit_grants(store, &epoch, &entries).await? {
+            return Ok(ended.len());
+        }
+    }
+    Err(Fault::Unavailable)
 }
 
 /// The 401 that starts discovery (RFC 9728 section 5.1).
@@ -1392,9 +1543,10 @@ pub fn insufficient_scope(origin: &str) -> Reply {
 
 // ───────────────────────────── owner settings ─────────────────────────────
 
-/// Settings › Connected assistants: every grant still in a slot, newest first.
+/// Settings › Connected assistants: every assistant grant still in a slot, newest first (the app's
+/// own sign-ins are not connected assistants and are not listed).
 pub async fn list_grants<S: Store>(store: &mut S, now: u64) -> Result<Value, Fault> {
-    let mut grants: Vec<Grant> = read_grant_slots(store).await?.1.into_iter().filter_map(|(_, g)| g).collect();
+    let mut grants: Vec<Grant> = read_grant_slots(store).await?.1.into_iter().filter_map(|(_, g)| g).filter(|g| !g.is_app()).collect();
     grants.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| b.id.cmp(&a.id)));
     Ok(json!({"connections": grants.iter().map(|g| g.summary(now)).collect::<Vec<_>>()}))
 }
@@ -1403,6 +1555,10 @@ pub async fn list_grants<S: Store>(store: &mut S, now: u64) -> Result<Value, Fau
 pub async fn disconnect<S: Store>(store: &mut S, now: u64, grant_id: &str) -> Result<Option<Value>, Fault> {
     for _ in 0..ATTEMPTS {
         let Some((old, mut grant)) = load_grant(store, grant_id).await? else { return Ok(None) };
+        if grant.is_app() {
+            // Not a connected assistant: the app's sign-ins end with sign out everywhere.
+            return Ok(None);
+        }
         if !grant.active && grant.refresh.is_none() && grant.access.is_empty() {
             return Ok(Some(grant.summary(now)));
         }

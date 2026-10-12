@@ -33,6 +33,8 @@ pub async fn run(ctx: AppContext) -> std::io::Result<()> {
         owner: ctx.secret(api::OWNER_TOKEN_SECRET),
         assistant: ctx.secret(api::ASSISTANT_TOKEN_SECRET),
         public_origin: ctx.secret(oauth::PUBLIC_ORIGIN_SECRET),
+        app_client_id: ctx.secret(oauth::APP_CLIENT_ID_SECRET),
+        app_redirect_uri: ctx.secret(oauth::APP_REDIRECT_URI_SECRET),
     };
     serve(ctx, tokens).await
 }

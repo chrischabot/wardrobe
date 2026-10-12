@@ -69,7 +69,7 @@ impl MemStore {
 }
 
 fn tokens() -> Tokens {
-    Tokens { owner: Some(OWNER.into()), assistant: None, public_origin: Some(ORIGIN.into()) }
+    Tokens { owner: Some(OWNER.into()), assistant: None, public_origin: Some(ORIGIN.into()), ..Default::default() }
 }
 
 struct Answer {
@@ -908,7 +908,7 @@ async fn the_owner_disconnects_and_the_next_request_is_refused() {
 async fn without_a_public_origin_the_endpoints_say_which_secret_is_missing() {
     let mut store = MemStore::default();
     for origin in [None, Some("http://wardrobe.example".to_string())] {
-        let t = Tokens { owner: Some(OWNER.into()), assistant: None, public_origin: origin };
+        let t = Tokens { owner: Some(OWNER.into()), assistant: None, public_origin: origin, ..Default::default() };
         let reply = api::handle(&mut store, &t, T0, &IngressRequest::new("GET", "/.well-known/oauth-authorization-server", vec![])).await;
         assert_eq!(reply.status, 500);
         assert!(reply.body["error"]["message"].as_str().unwrap().contains("WARDROBE_PUBLIC_ORIGIN"));

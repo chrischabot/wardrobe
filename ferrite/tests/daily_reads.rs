@@ -47,7 +47,7 @@ async fn send(store: &mut MemStore, now_ms: u64, token: &str, method: &str, path
     let bytes = if body.is_null() { Vec::new() } else { serde_json::to_vec(&body).unwrap() };
     let mut req = IngressRequest::new(method, path, bytes);
     req.headers = vec![("authorization".into(), format!("Bearer {token}"))];
-    let tokens = Tokens { owner: Some(OWNER.into()), assistant: Some(ASSISTANT.into()), public_origin: None };
+    let tokens = Tokens { owner: Some(OWNER.into()), assistant: Some(ASSISTANT.into()), public_origin: None, ..Default::default() };
     let reply = api::handle(store, &tokens, now_ms, &req).await;
     let (_, bytes) = reply.content();
     (reply.status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))

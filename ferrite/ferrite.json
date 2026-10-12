@@ -18,6 +18,7 @@
       { "prefix": "/v1/", "binding": "requests", "kind": "api", "public": true, "forward_headers": ["authorization"] },
       { "prefix": "/.well-known/", "binding": "requests", "kind": "api", "public": true },
       { "prefix": "/oauth/", "binding": "requests", "kind": "api", "public": true },
+      { "prefix": "/auth/", "binding": "requests", "kind": "api", "public": true, "forward_headers": ["authorization"] },
       { "prefix": "/mcp", "binding": "requests", "kind": "api", "public": true, "forward_headers": ["authorization", "mcp-protocol-version", "origin"] }
     ],
     "egress": [

@@ -45,7 +45,7 @@ async fn send(store: &mut MemStore, token: Option<&str>, method: &str, path: &st
     if let Some(token) = token {
         req.headers = vec![("authorization".into(), format!("Bearer {token}"))];
     }
-    let tokens = Tokens { owner: Some(OWNER.into()), assistant: Some(ASSISTANT.into()), public_origin: Some("http://127.0.0.1:8787".into()) };
+    let tokens = Tokens { owner: Some(OWNER.into()), assistant: Some(ASSISTANT.into()), public_origin: Some("http://127.0.0.1:8787".into()), ..Default::default() };
     let reply = api::handle(store, &tokens, T0, &req).await;
     let (_, bytes) = reply.content();
     (reply.status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))

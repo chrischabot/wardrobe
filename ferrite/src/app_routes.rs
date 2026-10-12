@@ -236,13 +236,15 @@ pub fn service() -> Value {
     service_state()
 }
 
-/// `GET /v1/me` (`MeResponse`). This port serves one owner, signed in with the owner's token (the
-/// app) or the assistant token; there are no linked identities and no recovery kit yet, and it says so.
+/// `GET /v1/me` (`MeResponse`). This port serves one owner, signed in with the owner token, a sign-in
+/// of the owner's app (both the owner, with every owner scope) or the assistant token; there are no
+/// linked identities and no recovery kit (no identity provider), and it says so.
 pub fn me(principal: Principal) -> Value {
+    let scopes = if principal == api::OWNER { json!(["read", "write", "admin"]) } else { json!(["read", "write"]) };
     json!({
         "userId": "owner",
         "displayName": "Owner",
-        "scopes": ["read", "write"],
+        "scopes": scopes,
         "channel": principal.channel,
         "identities": [],
         "recoveryKit": {"present": false, "issuedAt": null},

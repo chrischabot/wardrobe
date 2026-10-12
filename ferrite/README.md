@@ -56,6 +56,9 @@ node --experimental-transform-types ferrite/scripts/build-command-types.mjs --ch
 WARDROBE_OWNER_TOKEN = "local-dev-owner-token"
 WARDROBE_ASSISTANT_TOKEN = "local-dev-assistant-token"
 WARDROBE_PUBLIC_ORIGIN = "http://127.0.0.1:8787"
+# optional: the owner's app sign-in (see "Signing in the owner's app")
+# WARDROBE_APP_CLIENT_ID = "garderobe-ios"
+# WARDROBE_APP_REDIRECT_URI = "https://app.example.test/oauth/callback"
 ```
 
 ```bash
@@ -85,9 +88,11 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `POST /v1/boards/{id}/swap` | `SwapSlotResponse`: `board.swap_slot` under the key `board-swap:{clientRequestId}`, `expectedRevision` sent as the board's expected version, answered with the receipt and the board as it now stands. No fresher forecast is fetched first (weather is not ported) |
 | `GET /v1/laundry` | `LaundryStateResponse` as `getLaundryState`: the hamper by care channel (service, hand wash), sorted by name, and the newest 12 laundry bags not withdrawn, newest first. `returnBasis` is null; `exceptions` and `cycles` are empty (laundry exceptions and weekly cycles are not ported) |
 | `GET /v1/service` | `ServiceState`: never paused (pause and resume are not ported) |
-| `GET /v1/me` | `MeResponse` for the one owner this port serves (`userId: "owner"`), with the caller's channel; no linked identities and no recovery kit (identity, linking and recovery are not ported) |
+| `GET /v1/me` | `MeResponse` for the one owner this port serves (`userId: "owner"`), with the caller's channel (`ios` for the owner token and the app's sign-in) and scopes (`read`, `write`, `admin` for the owner; `read`, `write` for the assistant token); no linked identities and no recovery kit (identity, linking and recovery are not ported) |
+| `POST /v1/sessions/revoke` (owner only) | `SignOutEverywhereResponse`: sign out everywhere. Every sign-in of the owner's app ends now (its access and refresh tokens stop working); connected assistants and the owner token are untouched. `sessionsRevokedBefore` is the moment of the request |
+| `POST /auth/claim`, `/auth/link/complete`, `/auth/recovery/start`, `/auth/recovery/complete`, `POST /v1/identities/link`, `/v1/identities/unlink`, `/v1/recovery-kit`, `/v1/account/delete` | 501 `module_unavailable` with `details.module: "identity"`: they need an identity provider (Cloudflare Access in the TypeScript Worker), which this port does not have. The `/auth/` ones answer before any sign-in; the `/v1/` ones after it. Nothing is written |
 | `GET /v1/settings` | `SettingsResponse`: the specification's default settings (`DEFAULT_OWNER_SETTINGS`) at version 1, since no settings command is ported; `defaultOptionCount` is the count the recommender uses. `profile` and `inference` are null. Its timezone is what Today, the weather and `garderobe_today` default to; the other dated routes still take the day explicitly |
-| `/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` | the MCP authorization server, see below |
+| `/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` | the authorization server of the MCP endpoint and of the owner's app, see below |
 
 Commands: `care.mark_dirty`, `care.washed`, `board.publish`, `board.select`,
 `board.swap_slot`, `laundry.collect`, `laundry.return`, `wear.record` and `command.undo`. Each applies at once and
@@ -623,6 +628,39 @@ logged in with `--oauth-client-registration dcr`, as the plugin README
 already says for the local Worker), and a new consent does not supersede an
 earlier grant of the same client.
 
+### Signing in the owner's app
+
+The iOS client signs in as `OAuthSession` does: it discovers
+`<api>/.well-known/oauth-authorization-server`, sends the owner to
+`/oauth/authorize` with its public client ID, its redirect URL, PKCE S256, no
+scope and `resource` set to the API origin, and exchanges the code at
+`/oauth/token`. In the TypeScript Worker that server is Cloudflare Access;
+here it is this app's own authorization server, with the app configured as one
+fixed public client by two deploy secrets, `WARDROBE_APP_CLIENT_ID` (the
+build's `GARDEROBE_OAUTH_CLIENT_ID`: 1 to 128 letters, digits, `-`, `.` or
+`_`, not starting with `cli_`) and `WARDROBE_APP_REDIRECT_URI` (its
+`GARDEROBE_OAUTH_REDIRECT_URL`: https, or http on a loopback host). Without
+both, the app's client ID is an unregistered client.
+
+- The consent page becomes "Sign in to Garderobe": the owner signs in with the
+  owner token, with no "Make changes" choice. The app's grant carries the one
+  scope `wardrobe.owner`; a request for any other scope, or for the MCP
+  resource, is refused, and a registered (assistant) client may not ask for
+  `wardrobe.owner` or the API origin.
+- The app's tokens (`wat.…`) act as the owner on `/v1`, on the `ios` channel,
+  as the owner token does. They do not reach `/mcp`, an assistant's OAuth
+  token does not reach `/v1`, and the app's sign-ins are not listed under
+  Settings › Connected assistants and cannot be disconnected there.
+- Access and refresh tokens follow every rule above (lifetimes, rotation,
+  replay, redelivery). A refresh keeps `wardrobe.owner`. When the configured
+  client ID changes or is removed, its sign-ins stop working on `/v1` and at
+  the token endpoint.
+- At most ten of the app's sign-ins hold tokens at once; the eleventh ends
+  the oldest in the same commit. Sign out everywhere
+  (`POST /v1/sessions/revoke`) ends all of them.
+
+`tests/identity.rs` covers the flow end to end over the in-memory store.
+
 The inventory is `src/seed/owner-inventory.json`, written by
 `scripts/build-seed.mjs`, which runs the TypeScript importer itself on
 `requirements/wardrobe_inventory_clean.csv` (127 garments, 144 units, CSV
@@ -633,10 +671,12 @@ from the Worker's own command registry.
 
 Authentication on `/v1/` is two bearer tokens held as deploy secrets,
 `WARDROBE_OWNER_TOKEN` (the owner) and `WARDROBE_ASSISTANT_TOKEN` (a
-connected assistant without OAuth, kept for tooling). The MCP endpoint takes
+connected assistant without OAuth, kept for tooling), and the owner's app
+sign-in above. The MCP endpoint takes
 only OAuth access tokens. The owner token stands in for the owner's sign-in
 (the `/v1/` API and the consent page) until `packages/auth` is ported, and
-is refused by name when it is not set. The routes are declared
+is refused by name when it is not set. The routes (`/v1/`, `/auth/`, `/mcp`,
+`/oauth/` and `/.well-known/`) are declared
 `"public": true` in `ferrite.json`: the gateway lets the request through
 with its `authorization` header forwarded, and the application itself
 refuses anything without a valid token (Ferrite's managed route auth would
@@ -736,6 +776,19 @@ milestone, and outside the lines of the milestone in hand:
     egress) and is not recorded, so its `snapshotId` names nothing kept.
   - Pause and trips are not ported, so Today is never `paused` or
     `preparing`, and a trip scope is refused.
+- **Identity and sign-in.**
+  - There is no identity provider, so claiming, linking identities, recovery
+    kits and recovery, and account deletion answer 501, and
+    `GET /v1/recovery` (the recovery status screen) is not ported.
+  - Sign out everywhere does not end the owner token itself, which stands in
+    for the owner's sign-in; rotate it with `ferrite secrets set
+    WARDROBE_OWNER_TOKEN` and a deploy. Its `receiptId` names no stored
+    record (the account audit is not ported).
+  - The app's sign-ins share the 100 grant slots with connected assistants
+    (at most ten of them at once).
+  - The iOS build's local-development custom-scheme callback is refused as a
+    redirect URI; the app is configured with its HTTPS universal-link
+    callback, as a release build is.
 - **Recommender.**
   - Availability is binary (clean at home).
   - No weather, Calendar or brief is read.
@@ -817,7 +870,10 @@ stdin, never in source): `WARDROBE_OWNER_TOKEN`, `WARDROBE_ASSISTANT_TOKEN`
 (the deploy tooling generates both), `WARDROBE_PUBLIC_ORIGIN` (the hosted
 origin, known after the first deploy; deploy again once it is set) and, for
 the assistant's tools, `WARDROBE_AI_GATEWAY` (see "The assistant"; without
-it those two tools refuse by name and everything else works).
+it those two tools refuse by name and everything else works). For the iOS
+app to sign in, also set `WARDROBE_APP_CLIENT_ID` and
+`WARDROBE_APP_REDIRECT_URI` to the build's `GARDEROBE_OAUTH_CLIENT_ID` and
+`GARDEROBE_OAUTH_REDIRECT_URL` (see "Signing in the owner's app").
 
 `AGENTS.md` is the Ferrite CLI's brief for coding agents; `vendor/` is the
 CLI's local SDK twin, which a deploy never submits (the platform compiles

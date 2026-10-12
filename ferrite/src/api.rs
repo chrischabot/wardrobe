@@ -67,6 +67,11 @@ pub struct Tokens {
     /// The app's public origin (`WARDROBE_PUBLIC_ORIGIN`), for OAuth metadata
     /// and MCP challenges: the gateway forwards no `Host` header.
     pub public_origin: Option<String>,
+    /// The owner's own app as an OAuth client (`WARDROBE_APP_CLIENT_ID` and
+    /// `WARDROBE_APP_REDIRECT_URI`, see `oauth::AppClient`): its sign-ins
+    /// authenticate as the owner on `/v1`.
+    pub app_client_id: Option<String>,
+    pub app_redirect_uri: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,7 +158,7 @@ fn header<'a>(req: &'a IngressRequest, name: &str) -> Option<&'a str> {
     req.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
 }
 
-fn authenticate(req: &IngressRequest, tokens: &Tokens) -> Result<Principal, CmdError> {
+fn authenticate_static(req: &IngressRequest, tokens: &Tokens) -> Result<Result<Principal, String>, CmdError> {
     let Some(owner_token) = tokens.owner.as_deref().filter(|t| !t.is_empty()) else {
         return Err(CmdError::new("internal", format!("the server has no {OWNER_TOKEN_SECRET} secret; set it and deploy again")));
     };
@@ -164,14 +169,53 @@ fn authenticate(req: &IngressRequest, tokens: &Tokens) -> Result<Principal, CmdE
         return Err(CmdError::new("unauthenticated", "sign in first: send Authorization: Bearer <token>"));
     }
     if constant_time_eq(presented.as_bytes(), owner_token.as_bytes()) {
-        return Ok(OWNER);
+        return Ok(Ok(OWNER));
     }
     if let Some(a) = tokens.assistant.as_deref().filter(|t| !t.is_empty()) {
         if constant_time_eq(presented.as_bytes(), a.as_bytes()) {
-            return Ok(ASSISTANT);
+            return Ok(Ok(ASSISTANT));
         }
     }
+    Ok(Err(presented.to_string()))
+}
+
+/// Who a `/v1` request acts for: the owner token, the assistant token, or a sign-in of the owner's
+/// app (an OAuth access token of the configured app client, which acts as the owner on channel
+/// `ios`). A connected assistant's MCP token is refused here.
+async fn authenticate<S: Store>(store: &mut S, req: &IngressRequest, tokens: &Tokens, app: Option<&crate::oauth::AppClient>, now_ms: u64) -> Result<Principal, CmdError> {
+    let presented = match authenticate_static(req, tokens)? {
+        Ok(principal) => return Ok(principal),
+        Err(presented) => presented,
+    };
+    if presented.starts_with("wat.") {
+        return match crate::oauth::authenticate_app(store, &presented, now_ms, app).await {
+            Ok(_) => Ok(OWNER),
+            Err(crate::oauth::BearerError::Invalid(d)) => Err(CmdError::new("unauthenticated", d)),
+            Err(crate::oauth::BearerError::Missing) => Err(CmdError::new("unauthenticated", "sign in first: send Authorization: Bearer <token>")),
+            Err(crate::oauth::BearerError::Fault(f)) => Err(fault_error(f)),
+        };
+    }
     Err(CmdError::new("unauthenticated", "that token is not valid for this wardrobe"))
+}
+
+/// The identity routes that need an identity provider (Cloudflare Access in the TypeScript Worker):
+/// invitation claims, linked identities, recovery kits and recovery, and account deletion.
+fn identity_unavailable() -> CmdError {
+    CmdError::with(
+        "module_unavailable",
+        "linked identities, invitation claims, recovery kits and account deletion are not ported: this server has one owner, who signs in with the owner token (the app through /oauth/authorize); a lost owner token is replaced with `ferrite secrets set` and a deploy",
+        json!({"module": "identity"}),
+    )
+}
+
+/// `POST /v1/sessions/revoke` (`SessionsRevoked`): sign out everywhere. Every sign-in of the app ends
+/// now; connected assistants and the owner token itself are not affected.
+async fn sign_out_everywhere<S: Store>(store: &mut S, principal: Principal, now_ms: u64) -> Result<Value, CmdError> {
+    if principal != OWNER {
+        return Err(CmdError::new("forbidden", "only the owner signs out everywhere"));
+    }
+    crate::oauth::sign_out_app(store, now_ms).await.map_err(fault_error)?;
+    Ok(json!({"sessionsRevokedBefore": crate::time::instant(now_ms), "receiptId": format!("aud_{}", crate::random::token(12))}))
 }
 
 fn split_path(path: &str) -> (&str, Vec<(String, String)>) {
@@ -200,6 +244,11 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
     if path == "/health" {
         return ok(json!({"status": "ok", "service": "wardrobe", "host": "ferrite", "contractVersion": CONTRACT_VERSION}));
     }
+    let app = oauth::AppClient::from_config(tokens.app_client_id.as_deref(), tokens.app_redirect_uri.as_deref());
+    // Claim, link and recovery need an identity provider, which this server does not have.
+    if req.method == "POST" && matches!(path, "/auth/claim" | "/auth/link/complete" | "/auth/recovery/start" | "/auth/recovery/complete") {
+        return error_reply(identity_unavailable());
+    }
     // OAuth and MCP authenticate themselves (an MCP access token, the owner
     // token on the consent form) and need the public origin.
     if path.starts_with("/.well-known/") || path.starts_with("/oauth/") || path == "/mcp" {
@@ -215,15 +264,15 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
             ("GET", "/.well-known/oauth-protected-resource" | "/.well-known/oauth-protected-resource/mcp") => oauth::protected_resource_metadata(origin),
             ("GET", "/.well-known/oauth-authorization-server") => oauth::authorization_server_metadata(origin),
             ("POST", "/oauth/register") => oauth::register(store, now_ms, &req.body).await,
-            ("GET", "/oauth/authorize") => oauth::authorize_page(store, origin, tokens.owner.as_deref(), now_ms, raw_query).await,
-            ("POST", "/oauth/authorize") => oauth::authorize_decision(store, origin, tokens.owner.as_deref(), &oauth::Mint::new(tokens.owner.as_deref(), &req.correlation_id), now_ms, &req.body).await,
-            ("POST", "/oauth/token") => oauth::token_endpoint(store, origin, &oauth::Mint::new(tokens.owner.as_deref(), &req.correlation_id), now_ms, &req.body).await,
+            ("GET", "/oauth/authorize") => oauth::authorize_page(store, origin, app.as_ref(), tokens.owner.as_deref(), now_ms, raw_query).await,
+            ("POST", "/oauth/authorize") => oauth::authorize_decision(store, origin, app.as_ref(), tokens.owner.as_deref(), &oauth::Mint::new(tokens.owner.as_deref(), &req.correlation_id), now_ms, &req.body).await,
+            ("POST", "/oauth/token") => oauth::token_endpoint(store, origin, app.as_ref(), &oauth::Mint::new(tokens.owner.as_deref(), &req.correlation_id), now_ms, &req.body).await,
             ("POST", "/oauth/revoke") => oauth::revoke(store, now_ms, &req.body).await,
             (_, "/mcp") => mcp::handle(store, origin, inference, now_ms, req).await,
             _ => error_reply(CmdError::new("not_found", "no such route")),
         };
     }
-    let principal = match authenticate(req, tokens) {
+    let principal = match authenticate(store, req, tokens, app.as_ref(), now_ms).await {
         Ok(p) => p,
         Err(e) => return error_reply(e),
     };
@@ -270,6 +319,8 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
         ("GET", "/v1/me") => Ok(crate::app_routes::me(principal)),
         ("GET", "/v1/service") => Ok(crate::app_routes::service()),
         ("GET", "/v1/settings") => Ok(crate::app_routes::settings(now_ms)),
+        ("POST", "/v1/sessions/revoke") => sign_out_everywhere(store, principal, now_ms).await,
+        ("POST", "/v1/identities/link" | "/v1/identities/unlink" | "/v1/recovery-kit" | "/v1/account/delete") => Err(identity_unavailable()),
         ("GET", "/v1/laundry") => crate::app_routes::laundry(store, now_ms).await,
         ("POST", "/v1/commands/batch") => crate::app_routes::batch(store, principal, now_ms, &req.body).await,
         ("POST", "/v1/recommendations") => crate::app_routes::recommendations(store, principal, now_ms, &req.body).await,
@@ -1385,13 +1436,13 @@ mod tests {
             auth_context: None,
             verified_host: None,
         };
-        assert_eq!(authenticate(&req, &tokens).unwrap_err().code, "unauthenticated");
+        assert_eq!(authenticate_static(&req, &tokens).unwrap_err().code, "unauthenticated");
         req.headers = vec![("authorization".into(), "Bearer owner-secret".into())];
-        assert_eq!(authenticate(&req, &tokens).unwrap(), OWNER);
+        assert_eq!(authenticate_static(&req, &tokens).unwrap(), Ok(OWNER));
         req.headers = vec![("authorization".into(), "Bearer assistant-secret".into())];
-        assert_eq!(authenticate(&req, &tokens).unwrap(), ASSISTANT);
+        assert_eq!(authenticate_static(&req, &tokens).unwrap(), Ok(ASSISTANT));
         req.headers = vec![("authorization".into(), "Bearer guess".into())];
-        assert_eq!(authenticate(&req, &tokens).unwrap_err().code, "unauthenticated");
-        assert_eq!(authenticate(&req, &Tokens::default()).unwrap_err().code, "internal");
+        assert_eq!(authenticate_static(&req, &tokens).unwrap(), Err("guess".to_string()), "an unknown token goes on to the app sign-in check");
+        assert_eq!(authenticate_static(&req, &Tokens::default()).unwrap_err().code, "internal");
     }
 }

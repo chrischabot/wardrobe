@@ -41,7 +41,7 @@ impl Store for MemStore {
 }
 
 fn tokens(origin: Option<&str>) -> Tokens {
-    Tokens { owner: Some(OWNER.into()), assistant: Some(ASSISTANT.into()), public_origin: origin.map(str::to_string) }
+    Tokens { owner: Some(OWNER.into()), assistant: Some(ASSISTANT.into()), public_origin: origin.map(str::to_string), ..Default::default() }
 }
 
 async fn send(store: &mut MemStore, token: &str, method: &str, path: &str, body: Value) -> (u16, Value) {
