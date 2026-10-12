@@ -225,6 +225,10 @@ export async function getTrip(db: Db, principal: Principal, tripId: string): Pro
  * destination forecast for each day and the trip's wearing intervals. Trousers, the jacket, the
  * shoes and the belt are reused across days; the repeat-policy exception this takes applies to the
  * trip only and rewrites no standing rule. The result is recorded as a proposal, never as packed.
+ *
+ * A trip with a luggage limit is planned to fit it: when the set does not fit, the plan is made again with
+ * more deliberate reuse (trousers on more days, then a shirt worn twice, then three times), and the first
+ * plan that fits is proposed. Only when no level of reuse fits is the shortfall stated, with the smallest set.
  */
 export async function proposePacking(deps: DailyDeps, principal: Principal, input: { tripId: string; clientRequestId: string; nowMs?: number }): Promise<PackingProposal> {
   assertPrincipal(principal);
@@ -233,24 +237,81 @@ export async function proposePacking(deps: DailyDeps, principal: Principal, inpu
   const trip = await getTrip(deps.db, principal, input.tripId);
   if (!trip || trip.status !== "planned") throw new CommandError("not_found", `no active trip '${input.tripId}'`);
 
+  // Each destination forecast is read once, whatever the number of plans tried.
+  const forecasts = new Map<string, Awaited<ReturnType<typeof fetchWeatherSnapshot>>>();
+  const forecast = async (date: string, segment: "day" | "evening") => {
+    const key = `${date}|${segment}`;
+    let s = forecasts.get(key);
+    if (!s) {
+      s = await fetchWeatherSnapshot(deps, principal, { localDate: date, location: destinationFor(trip, date), purpose: "trip", ...(segment === "evening" ? { segment: "evening" as const } : {}), nowMs });
+      forecasts.set(key, s);
+    }
+    return s;
+  };
+  const weather: PackingProposal["weather"] = [];
+  for (let date = trip.departsOn; date <= trip.returnsOn; date = addDays(date, 1)) {
+    const s = await forecast(date, "day");
+    weather.push({ localDate: date, label: destinationFor(trip, date).label, freshness: s.freshness, line: s.line });
+  }
+
+  const LEVELS: Partial<Record<Role, number>>[] = [
+    { bottom: 2, outer: 99, footwear: 99, belt: 99 },
+    { bottom: 99, outer: 99, footwear: 99, belt: 99 },
+    { top: 2, bottom: 99, outer: 99, footwear: 99, belt: 99 },
+    { top: 3, bottom: 99, outer: 99, footwear: 99, belt: 99 },
+  ];
+  const limit = trip.luggage?.maxPieces ?? null;
+  let plan = await planPacking(deps, principal, trip, nowMs, forecast, LEVELS[0]!);
+  let smallest = plan;
+  let level = 0;
+  if (limit !== null) {
+    for (let i = 1; i < LEVELS.length && plan.pieces > limit; i++) {
+      const next = await planPacking(deps, principal, trip, nowMs, forecast, LEVELS[i]!);
+      if (next.pieces < smallest.pieces) smallest = next;
+      plan = next;
+      level = i;
+    }
+    if (plan.pieces > limit) {
+      plan = smallest;
+      level = -1;
+    }
+  }
+  const { items, days } = plan;
+  const notes = [...plan.notes];
+  if (limit !== null && plan.pieces > limit) notes.push(`This is ${plan.pieces} pieces against a limit of ${limit} for ${trip.luggage!.label}, even with trousers and shirts reused across days; wearing the travel-day outfit rather than packing it closes part of the gap.`);
+  else if (level >= 1) notes.push(`To fit ${trip.luggage!.label} (${limit} pieces), ${level === 1 ? "trousers are worn on more days" : `a shirt is worn on up to ${LEVELS[level]!.top} days`} than usual.`);
+  if (weather.some((w) => w.freshness !== "fresh")) notes.push("Some destination forecasts are stale or unavailable; those days were proposed without a verified forecast.");
+  if (trip.laundry.length > 0) notes.push("Laundry opportunities on the trip are estimates until a wash is reported; the proposal does not count on them.");
+  notes.push("Pieces are reused deliberately across days. That exception to the repeat rule applies to this trip only.");
+
+  const payload = { tripId: trip.tripId, items: [...items.values()], days, weather, notes };
+  const receipt = await execAs(deps, principal, "trip.record_packing_proposal", payload, `packing:${input.clientRequestId}`);
+  return { tripId: trip.tripId, revision: Number((receipt.result as any).revision), createdAt: receipt.recordedAt, items: payload.items, days, repeatExceptionForTrip: true, weather, notes };
+}
+
+/** One packing plan for the whole trip, reusing each role up to `REUSE_LIMIT` days (a role without a limit is not reused). */
+async function planPacking(
+  deps: DailyDeps,
+  principal: Principal,
+  trip: Trip,
+  nowMs: number,
+  forecast: (date: string, segment: "day" | "evening") => ReturnType<typeof fetchWeatherSnapshot>,
+  REUSE_LIMIT: Partial<Record<Role, number>>,
+): Promise<{ items: Map<string, { garmentId: string; name: string; role: Role; quantity: number }>; days: PackingProposal["days"]; notes: string[]; pieces: number }> {
   const items = new Map<string, { garmentId: string; name: string; role: Role; quantity: number }>();
   const days: PackingProposal["days"] = [];
-  const weather: PackingProposal["weather"] = [];
   const notes: string[] = [];
   const reuse = new Map<Role, { garmentId: string; uses: number }>();
   const usedTops: string[] = [];
   /** Clean pairs at home of each sock already in the proposal. */
   const sockUnits = new Map<string, number>();
-  const REUSE_LIMIT: Partial<Record<Role, number>> = { bottom: 2, outer: 99, footwear: 99, belt: 99 };
+  const reuseOrder: Role[] = [...(REUSE_LIMIT.top !== undefined ? ["top" as Role] : []), "bottom", "outer", "footwear", "belt"];
 
   for (let date = trip.departsOn; date <= trip.returnsOn; date = addDays(date, 1)) {
-    const destination = destinationFor(trip, date);
-    const snapshot = await fetchWeatherSnapshot(deps, principal, { localDate: date, location: destination, purpose: "trip", nowMs });
-    weather.push({ localDate: date, label: destination.label, freshness: snapshot.freshness, line: snapshot.line });
     const segments: ("day" | "evening")[] = ["day", ...(trip.occasions.some((o) => o.localDate === date && o.segment === "evening") ? ["evening" as const] : [])];
     for (const segment of segments) {
       const occasion = trip.occasions.find((o) => o.localDate === date && o.segment === segment) ?? null;
-      const eveningSnapshot = segment === "evening" ? await fetchWeatherSnapshot(deps, principal, { localDate: date, location: destination, purpose: "trip", segment: "evening", nowMs }) : snapshot;
+      const eveningSnapshot = await forecast(date, segment);
       // A pair of socks is worn for one day. Pairs already planned for earlier days are not planned
       // again: once every clean pair of a sock is allocated, that sock is excluded for the remaining
       // days (the same day's dinner still reuses the pair worn that day).
@@ -276,10 +337,10 @@ export async function proposePacking(deps: DailyDeps, principal: Principal, inpu
           const id = evening.slots.find((s) => s.role === role)?.garmentId;
           if (id && !locked.some((l) => l.role === role)) locked.push({ role, garmentId: id });
         }
-        const composed = await composeBoard(rc, { count: 1, reserveCount: 0, locked, avoidTops: usedTops, everydayFlourish: false, validate: { allowRepeat: true, ignoreBriefInclusions: true } });
+        const composed = await composeBoard(rc, { count: 1, reserveCount: 0, locked, avoidTops: usedTops.filter((id) => !locked.some((l) => l.garmentId === id)), everydayFlourish: false, validate: { allowRepeat: true, ignoreBriefInclusions: true } });
         return composed.options[0] ?? null;
       };
-      const cascade = async () => (await attempt(["bottom", "outer", "footwear", "belt"])) ?? (await attempt(["outer", "footwear", "belt"])) ?? (await attempt(["footwear"])) ?? (await attempt([]));
+      const cascade = async () => (await attempt(reuseOrder)) ?? (await attempt(["bottom", "outer", "footwear", "belt"])) ?? (await attempt(["outer", "footwear", "belt"])) ?? (await attempt(["footwear"])) ?? (await attempt([]));
       let option = await cascade();
       let socksRanOut = false;
       // Clean pairs at home that are not yet planned for an earlier day (they may still not suit this day).
@@ -326,7 +387,7 @@ export async function proposePacking(deps: DailyDeps, principal: Principal, inpu
           entry.quantity = sameDayReuse ? entry.quantity : Math.min(entry.quantity + 1, units);
         } else entry.quantity = 1;
         items.set(s.garmentId, entry);
-        if (s.role === "top") usedTops.push(s.garmentId);
+        if (s.role === "top" && !usedTops.includes(s.garmentId)) usedTops.push(s.garmentId);
         if (REUSE_LIMIT[s.role] !== undefined) {
           const r = reuse.get(s.role);
           if (r && r.garmentId === s.garmentId) r.uses += sameDayReuse ? 0 : 1;
@@ -336,14 +397,7 @@ export async function proposePacking(deps: DailyDeps, principal: Principal, inpu
     }
   }
   const pieces = [...items.values()].reduce((n, i) => n + i.quantity, 0);
-  if (trip.luggage?.maxPieces && pieces > trip.luggage.maxPieces) notes.push(`This is ${pieces} pieces against a limit of ${trip.luggage.maxPieces} for ${trip.luggage.label}; wearing the travel-day outfit rather than packing it, or reusing a shirt, closes the gap.`);
-  if (weather.some((w) => w.freshness !== "fresh")) notes.push("Some destination forecasts are stale or unavailable; those days were proposed without a verified forecast.");
-  if (trip.laundry.length > 0) notes.push("Laundry opportunities on the trip are estimates until a wash is reported; the proposal does not count on them.");
-  notes.push("Pieces are reused deliberately across days. That exception to the repeat rule applies to this trip only.");
-
-  const payload = { tripId: trip.tripId, items: [...items.values()], days, weather, notes };
-  const receipt = await execAs(deps, principal, "trip.record_packing_proposal", payload, `packing:${input.clientRequestId}`);
-  return { tripId: trip.tripId, revision: Number((receipt.result as any).revision), createdAt: receipt.recordedAt, items: payload.items, days, repeatExceptionForTrip: true, weather, notes };
+  return { items, days, notes, pieces };
 }
 
 /** A trip-day board: destination weather, the trip's occasions, and ONLY the physically packed subset. */
