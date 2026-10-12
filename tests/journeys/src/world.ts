@@ -236,7 +236,7 @@ export async function mcpCommand(owner: TestOwner, mcp: McpConnection, type: str
   if (opts.expectRoute === "direct") {
     if (!first.ok) throw new Error(`the connected assistant's ${type} must apply at once with a receipt (owner decision of 2026-10-05), but the server answered ${answer}`);
     const receipt = first.data?.receipt;
-    if (!receipt || receipt.type !== type || !receipt.commandId) throw new Error(`the connected assistant's ${type} answered without its own receipt: ${JSON.stringify(first.data).slice(0, 400)}`);
+    if (!receipt || receipt.type !== type || !receipt.commandId) throw new Error(`the connected assistant's ${type} answered without its own receipt: ${String(JSON.stringify(first.data)).slice(0, 400)}`);
     if (receipt.channel !== "mcp" || receipt.actor !== "assistant") throw new Error(`the connected assistant's ${type} receipt is attributed to channel ${receipt.channel} and actor ${receipt.actor}, not mcp and assistant`);
     // The receipt's outcome: "committed" unless the caller names another; null leaves it to the caller to judge.
     const expectedOutcome = opts.expectOutcome === undefined ? "committed" : opts.expectOutcome;
@@ -252,7 +252,9 @@ export async function mcpCommand(owner: TestOwner, mcp: McpConnection, type: str
   if (!listed) throw new Error(`proposal ${proposalId} is not in the owner's list`);
   if (listed.type !== type || listed.state !== "pending" || listed.source?.channel !== "mcp") throw new Error(`the owner's list shows the request as ${listed.type} ${listed.state} from ${listed.source?.channel}`);
   const decided = await owner.api.json("POST", `/v1/proposals/${proposalId}/decision`, { decision: "confirm" });
-  if (decided.proposal?.state !== "confirmed" || decided.receipt?.type !== type || decided.receipt?.actor !== "owner") throw new Error(`confirming ${type} in the app did not commit it as the owner's: ${JSON.stringify(decided).slice(0, 400)}`);
+  if (decided.proposal?.state !== "confirmed" || decided.receipt?.type !== type || decided.receipt?.actor !== "owner" || !decided.receipt?.commandId) throw new Error(`confirming ${type} in the app did not commit it as the owner's: ${String(JSON.stringify(decided)).slice(0, 400)}`);
+  const confirmedOutcome = opts.expectOutcome === undefined ? "committed" : opts.expectOutcome;
+  if (confirmedOutcome !== null && decided.receipt.outcome !== confirmedOutcome) throw new Error(`confirming ${type} in the app gave a receipt with outcome ${decided.receipt.outcome}, not ${confirmedOutcome}: ${JSON.stringify(decided.receipt.summary)}`);
   return { route: "owner_confirmed", receipt: decided.receipt, proposal: listed };
 }
 

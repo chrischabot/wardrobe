@@ -15,7 +15,6 @@ held other workers' unlanded changes (among them the API and MCP thread's change
 | ID | What the owner experiences | Required by | Owner |
 | --- | --- | --- | --- |
 | D08-1 | After the return case records the full refund (GBP 120.00 of GBP 120.00), the order line it refunds still shows nothing refunded | §17 L1098: returns with "partial refunds, and exchanges retain correct stock and monetary states"; §6 L240 keeps refunds on orders and order lines | assistant (`packages/assistant/src/commands/returns.ts`) |
-| D14-2 | The text a connected assistant reads beside the last page of the item list says more pages follow and to pass a cursor, although there is none | §13 and research rows R14 to R16: "Pagination is explicit; complete snapshots and counts cannot be silently truncated" | api-mcp-identity (`apps/worker/src/mcp/server.ts`). Passes on the shared tree with that thread's unlanded change; it is converted once the fix lands |
 | D14-3 | A correction in the owner's words relayed through `garderobe_ask` by a write connection is kept as a request for him to confirm instead of applying with a receipt and Undo | Owner decision of 2026-10-05 (contract "Changes apply at once with undo on every surface", sections 1 and 5: relayed words run under the same policy as the app; `proposals[]` only for section 3, read-only connections and wordless turns) | assistant (`classifyChange` and the turn's change classification in `packages/assistant`; the API thread's relayed-turn guard refuses rather than proposes, so the proposal comes from the assistant) |
 
 ## Under watch
@@ -63,6 +62,7 @@ Each was re-run here on a clean copy of the branch after its fix (`5db4fd87`, `2
 | D11-1 | The recovery screen still counted a run waiting for input after he answered it | api-mcp-identity, `5db4fd87` | 11 |
 | D11-2 | The request to confirm a new garment showed a role code and a message identifier | assistant, `486b1311` and `a6795a3d` | 11 |
 | D12-1 | For a day no board had been asked for yet, Studio said "the forecast is unavailable" and blocked a jacket over an oxford, although the forecast could be fetched | visual-wardrobe, `e94af8fb` | 12 |
+| D14-2 | The text a connected assistant read beside the last page of the item list said more pages follow and to pass a cursor, although there was none | api-mcp-identity, `4c49f582` | 14 |
 | D14-1 | The confirmation for an assistant's typed command gave identifiers or raw payload | api-mcp-identity, `5db4fd87` | 14 (see below) |
 
 ## Changed by the owner decision of 2026-10-05

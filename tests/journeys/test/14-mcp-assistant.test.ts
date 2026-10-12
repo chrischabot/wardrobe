@@ -372,11 +372,11 @@ describe("journey 14: a connected assistant reads, reports, asks and is disconne
     expect(notPlain).toEqual([]);
   });
 
-  defect("D14-2", "the last page of the item list does not tell the assistant that more pages follow", { signature: /more pages\|pass nextCursor/ }, () => {
+  it("the last page of the item list tells the assistant that nothing follows, never that more pages do", () => {
+    // Was defect D14-2; fixed by the API thread in 4c49f582.
     // Specification section 13 and research rows R14 to R16: "Pagination is explicit; complete snapshots
-    // and counts cannot be silently truncated." The last page has no next cursor, yet its text still
-    // says more pages follow and to pass a cursor that does not exist, so an assistant that trusts the
-    // text keeps asking or reports the wardrobe as partly read.
+    // and counts cannot be silently truncated." The last page has no next cursor, so its text must not
+    // say more pages follow or ask for a cursor that does not exist.
     expect(lastItemsPageText.length).toBeGreaterThan(0);
     expect(lastItemsPageText).not.toMatch(/more pages|pass nextCursor/i);
   });
