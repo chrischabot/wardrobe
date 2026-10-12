@@ -12,7 +12,8 @@
 //!   with that limitation stated, temperature rules are reported as not
 //!   checked, and the 14-16 °C jacket rule cannot be ruled out: a jacket over
 //!   anything but a lightweight oxford is offered only when it was named;
-//! - no wear records exist yet, so nothing is inside the repeat horizon;
+//! - recorded wears are not yet checked against the seven-day repeat
+//!   horizon (that comes with the composer, milestone 1e);
 //! - the home board only (no trip boards), the default day brief only, no
 //!   pause, suppression, exposure sets, Calendar projection or repair;
 //! - the sneaker and welted pair is dormant while the healing restriction
@@ -275,7 +276,49 @@ impl Board {
             revisions,
         };
         board.current()?;
-        Some(board)
+        board.well_formed().then_some(board)
+    }
+
+    /// What every board this code writes satisfies: revisions numbered once each and within the
+    /// kept bound, option IDs given and unique on a revision, slots of known roles, lists within the
+    /// bounds publication enforces (a swap may add one slot per role), and a choice that is an
+    /// option on the current revision, its shoe one of that option's.
+    fn well_formed(&self) -> bool {
+        let stored_slots = MAX_SLOTS + ROLES.len();
+        if self.revisions.is_empty() || self.revisions.len() > REVISIONS_KEPT {
+            return false;
+        }
+        let numbers: BTreeSet<u64> = self.revisions.iter().map(|r| r.revision).collect();
+        if numbers.len() != self.revisions.len() || numbers.iter().any(|n| *n == 0 || *n > self.current_revision) {
+            return false;
+        }
+        for r in &self.revisions {
+            if r.offered.len() > MAX_OPTIONS || r.reserves.len() > MAX_OPTIONS {
+                return false;
+            }
+            let mut ids = BTreeSet::new();
+            for o in r.offered.iter().chain(r.reserves.iter()) {
+                if o.option_id.is_empty() || !ids.insert(o.option_id.as_str()) {
+                    return false;
+                }
+                if o.slots.is_empty()
+                    || o.slots.len() > stored_slots
+                    || o.explicit.len() > stored_slots
+                    || o.footwear_alternatives.len() > MAX_ALTERNATIVES
+                    || !o.slots.iter().all(|s| ROLES.contains(&s.role.as_str()) && !s.garment_id.is_empty())
+                {
+                    return false;
+                }
+            }
+        }
+        let Some(current) = self.current() else { return false };
+        match (&self.selected_option_id, &self.selected_footwear_id) {
+            (None, None) => true,
+            (None, Some(_)) => false,
+            (Some(id), shoe) => current.offered.iter().find(|o| &o.option_id == id).map_or(false, |o| {
+                shoe.as_ref().map_or(true, |f| o.slot("footwear") == Some(f.as_str()) || o.footwear_alternatives.contains(f))
+            }),
+        }
     }
 }
 
@@ -425,14 +468,8 @@ pub fn garment_violations(day: &Day<'_>, garment_id: &str, role: &str, explicit:
     // Sneakers only until the owner says his feet have healed: always in force here, because
     // nothing in this port can lift the restriction.
     if role == "footwear" {
-        if let Some(rule) = day.cat.active_rule("footwear.sneakers_only_until_healed") {
-            let allowed = rule.params["allowedFootwearKinds"].as_array().cloned().unwrap_or_default();
-            let excluded_models: Vec<String> = rule.params["excludedModels"].as_array().map(|a| a.iter().filter_map(Value::as_str).map(str::to_lowercase).collect()).unwrap_or_default();
-            let kind = g.attr_str("footwearKind");
-            let model = g.attr_str("model").to_lowercase();
-            if !allowed.iter().any(|k| k.as_str() == Some(kind)) || (!model.is_empty() && excluded_models.contains(&model)) {
-                out.push(Violation::new("footwear_restricted", format!("{} is excluded while the sneakers-only restriction is active", g.name), id()).rule(Some(&rule.key)));
-            }
+        if let Some(rule) = sneakers_only_excludes(day.cat, g) {
+            out.push(Violation::new("footwear_restricted", format!("{} is excluded while the sneakers-only restriction is active", g.name), id()).rule(Some(&rule.key)));
         }
     }
     if let Some(rule) = day.cat.active_rule("accessories.no_watches_or_jewellery") {
@@ -598,7 +635,9 @@ pub fn factual_reason(cat: &Catalogue, slots: &[Slot]) -> String {
         if f != "unknown" && (f == family(t) || outer.map_or(false, |o| family(o) == f)) {
             parts.push("the sock echoes a colour from higher up".into());
         } else if SATURATED.contains(&f) {
-            parts.push("the sock is the single flash".into());
+            // "The single flash" only when no other piece is saturated too.
+            let others_saturated = slots.iter().filter(|s| s.role != "socks").filter_map(|s| cat.get(&s.garment_id)).any(|x| SATURATED.contains(&family(x)));
+            parts.push(if others_saturated { "the sock adds a further colour".into() } else { "the sock is the single flash".into() });
         }
     }
     let text = parts.join("; ");
@@ -1404,7 +1443,19 @@ pub fn undo_swap(ctx: &Ctx<'_>, day: &Day<'_>, board: Option<&Board>, data: &Val
 
 // ───────────────────────────── reading ─────────────────────────────
 
-fn line(cat: &Catalogue, role: &str, id: &str) -> Value {
+/// The sneakers-only healing restriction, when it is active and excludes this footwear: a kind it
+/// does not allow, or an excluded model. Nothing in this port can lift it.
+pub fn sneakers_only_excludes<'c>(cat: &'c Catalogue, g: &Garment) -> Option<&'c crate::seed::Rule> {
+    let rule = cat.active_rule("footwear.sneakers_only_until_healed")?;
+    let allowed = rule.params["allowedFootwearKinds"].as_array().cloned().unwrap_or_default();
+    let excluded_models: Vec<String> = rule.params["excludedModels"].as_array().map(|a| a.iter().filter_map(Value::as_str).map(str::to_lowercase).collect()).unwrap_or_default();
+    let kind = g.attr_str("footwearKind");
+    let model = g.attr_str("model").to_lowercase();
+    (!allowed.iter().any(|k| k.as_str() == Some(kind)) || (!model.is_empty() && excluded_models.contains(&model))).then_some(rule)
+}
+
+/// One garment as a board line (`BoardGarmentLine`).
+pub fn line(cat: &Catalogue, role: &str, id: &str) -> Value {
     let g = cat.get(id);
     json!({"garmentId": id, "role": role, "name": name_of(cat, id), "colour": g.and_then(|g| g.colour.clone())})
 }
@@ -1478,15 +1529,15 @@ pub fn document(day: &Day<'_>, board: &Board, wardrobe_revision: u64) -> Value {
     })
 }
 
-/// `TodayView` for one day.
-pub fn today(stock: &Day<'_>, day: &str, board: Option<&Board>, wardrobe_revision: u64, now_ms: u64) -> Value {
+/// `TodayView` for one day; `day_record` is what was recorded as worn that day.
+pub fn today(stock: &Day<'_>, day: &str, board: Option<&Board>, day_record: Vec<Value>, wardrobe_revision: u64, now_ms: u64) -> Value {
     let doc = board.map_or(Value::Null, |b| document(stock, b, wardrobe_revision));
     let empty = doc.is_null().then_some("No board has been published for this day yet.");
     let mut view = Map::new();
     view.insert("localDate".into(), json!(day));
     view.insert("timezone".into(), Value::Null);
     view.insert("board".into(), doc);
-    view.insert("dayRecord".into(), json!([]));
+    view.insert("dayRecord".into(), Value::Array(day_record));
     view.insert("paused".into(), Value::Null);
     view.insert("emptyReason".into(), json!(empty));
     view.insert("readAt".into(), json!(instant(now_ms)));

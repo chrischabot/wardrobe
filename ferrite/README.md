@@ -7,7 +7,7 @@ asked for Wardrobe and its Codex plugin to be hosted fully on Ferrite; this
 directory is that port, built flow by flow. The TypeScript backend stays the
 behaviour reference until the port reaches parity.
 
-**Status: the MCP endpoint, the board and service laundry (milestone 1c).** The owner's
+**Status: the MCP endpoint, the board, service laundry and wear records (milestone 1d).** The owner's
 real inventory can be read, and the ported commands run end to end with
 their receipts and, where the TypeScript service has one, their undo: "it is
 in the wash" (`care.mark_dirty`) and `command.undo` to take
@@ -16,8 +16,9 @@ request queue and APE store. A connected assistant such as the Codex plugin
 reaches the same commands through the MCP endpoint (`/mcp`), signing in with
 the app's own OAuth. The day's outfit board is ported (`board.publish`,
 `board.select`, `board.swap_slot` with their undo, and `garderobe_today`),
-and so is service laundry (`laundry.collect` and `laundry.return`, with
-their undo). The daily recommender and the conversation tools are next.
+and so are service laundry (`laundry.collect` and `laundry.return`, with
+their undo) and wear records (`wear.record`, with its undo, and the day's
+record). The daily recommender and the conversation tools are next.
 Nothing has been deployed: see "Deploying".
 
 ## Running it
@@ -73,7 +74,7 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` | the MCP authorization server, see below |
 
 Commands: `care.mark_dirty`, `board.publish`, `board.select`,
-`board.swap_slot`, `laundry.collect`, `laundry.return` and `command.undo`. Each applies at once and
+`board.swap_slot`, `laundry.collect`, `laundry.return`, `wear.record` and `command.undo`. Each applies at once and
 answers with the receipt of `CommandReceipt` (contract 1.1.0): summary built
 from the ledger, affected entity versions, repairs, result, undo
 availability, wardrobe revision, actor and channel. The same idempotency key
@@ -205,10 +206,75 @@ directly, and `expectedVersions` is not checked for them (they are rebased).
 `laundry_batch:<id>` versions are accepted for an undo.
 
 Not ported: lost, delayed and missed-return exceptions
-(`laundry.report_exception`), the weekly laundry reset, wear records (so
-nothing is held back from a pickup as being worn today), and hand-wash
-reports (`care.washed`). The ledger keeps at most 60 batches; the oldest
-returned or withdrawn ones make room.
+(`laundry.report_exception`), the weekly laundry reset, and hand-wash
+reports (`care.washed`). A unit recorded as worn on the day of a pickup or a
+no-pickup return, or later, is on the owner, not in the hamper, so it is not
+collected or washed (as `collectableQuantities`), and neither is a further
+unit recorded for those days; with no owner timezone
+ported, that day is the UTC date of the report. The ledger keeps at most 60
+batches; the oldest returned or withdrawn ones make room.
+
+## Wear records
+
+As `wear.record` in `handlers/wear-care.ts`. "I wore it yesterday" applies at
+once with a receipt and an undo, from the owner's app or a connected assistant
+relaying what the owner said; only the garments named are recorded, never
+what a board offered or the owner chose. A garment is counted once per
+wearing date: a second report of the same garment and date (another device,
+the assistant, a new idempotency key) is kept with its channel and merges,
+with outcome `merged`, consuming no further unit. `additionalUnits` (a second
+pair of socks) is a total for the garment and day, so the same report again
+uses nothing further; its garments must also be in `garmentIds`, so the day's
+record accounts for every unit a report uses. A counted wear moves one clean unit to the hamper; with
+none clean but one in the hamper, the wear is recorded and the unit stays
+(a repair); with none at home, a unit the ledger had at the laundry is pulled
+back (the owner wore it). A further unit is a different unit from the day's
+wear: it takes a clean unit, else one the ledger had at the laundry, and only
+with neither does it stay a repair against the hamper. A laundry bag a wear (or
+its undo) takes a unit from or puts one back into moves to a new version and is
+listed in the receipt, so a report checked against the old version is stale.
+A never-laundered pair moves nothing. Wearing
+footwear the sneakers-only restriction excludes is recorded with a repair
+that says the restriction is unchanged.
+
+The undo withdraws each report the command made. The counted wear is one record
+per garment and date, kept while any report of it stands: where the undone
+report was the only one standing, the counted wear and the unit it consumed go
+back too (whichever report's event consumed it); otherwise only the report is
+retracted.
+
+**The further-unit undo rule.** Withdrawing a report voids exactly that
+report's own further-unit increment and nothing else. No surviving event is
+consolidated, re-timed or recreated. If voiding it would leave a report still
+standing whose total the remaining increments no longer cover, or would change
+how any other record was classified (a later wear that consumed a unit, a wash
+report, a pickup), the undo is refused with `conflict` and writes nothing: undo
+the later record first. Each part of the rule has its own test in
+`tests/wear.rs` (the `rule_…` tests). The same `conflict` refusal applies to the
+wear itself: once a pickup has collected the worn shirt, the wear stays. An undo
+of a wear record is not undone (record the wear again).
+
+A laundry pickup, and a return with no pickup on record, leave the units on the
+owner out of the bag: for each garment, the most units recorded worn on any one
+day from the report's date on (the wear and its further units). Wears on
+successive days may be the same unit, so days are not added together.
+
+Refused, writing nothing: a future wearing date (later than the latest date
+anywhere on Earth, since no owner timezone is ported), a stated `occurredAt`
+more than a day before the wearing date began, `tripId` (trips are not
+ported), unknown garments and malformed payloads. Without `occurredAt`, a
+wear on a date that is still today somewhere on Earth is ordered now, and a
+past date's wear at noon UTC of that date.
+The observation records the payload's `timezone`, or `not set`.
+
+The day's record reads back as `dayRecord` in `/v1/today` and
+`garderobe_today`, and in full (counted garments, report counts, segments and
+every report with its status and channel) through `garderobe_inventory` view
+`history` with a `date`; `from` and `to` (at most 366 days) list the counted
+wears, optionally of one garment. A day without a record is unknown, not
+unworn. Not ported: `wear.amend`, trips, the laundry exceptions a wear
+settles, and the board option sets a wear resolves (the board keeps none
+yet). Wear reports are kept for the life of the ledger, like stock events.
 
 ## The MCP endpoint and its OAuth
 
@@ -228,7 +294,8 @@ Tools, with the TypeScript server's names, arguments and results:
 
 - `garderobe_today`: the board for `{date}` (required), as `/v1/today`.
 - `garderobe_inventory`: views `items` (paged, `limit` and `nextCursor`),
-  `snapshot` (complete) and `receipts`. The response says whether it is the
+  `snapshot` (complete), `receipts` and `history` (recorded wear, see "Wear
+  records"). The response says whether it is the
   whole result (`complete`, `total`). The TypeScript server's other views
   answer `invalid_command` until the data behind them is ported.
 - `garderobe_command`: the ported commands as the connected assistant
@@ -339,10 +406,11 @@ sorts keys exactly as JavaScript does.
 
 Differences from the TypeScript backend, to close in later milestones: one
 owner per deployment; laundry exceptions and the weekly reset are not ported
-(see "Service laundry"); no wear records; no effects or
+(see "Service laundry"); wear amendments and trips are not ported (see "Wear
+records"); no effects or
 outbox; `expectedVersions` is checked for every command except the owner's
-observations (the wash report, the laundry pickup and the laundry return),
-which are rebased, as in the TypeScript service.
+observations (the wash report, the laundry pickup and return, and the wear
+report), which are rebased, as in the TypeScript service.
 
 ## Ferrite limits and what they mean for Wardrobe
 
@@ -373,10 +441,11 @@ small change of its own, and passes `ferrite check`, `ferrite test` and
    the board: `board.publish` (the owner's app, until the recommender is ported),
    `board.select` with its undo, `board.swap_slot`, and `garderobe_today`. (c)
    Done: batch laundry collection and return, with pickup events and
-   still-away pieces (the other exceptions come with milestone 2). (d) Wear
-   records: `wear.record` with per-garment daily deduplication and its undo,
-   and the day's recorded wear in `garderobe_today` (`dayRecord`), so a
-   connected assistant can see that choosing an outfit records no wear. (e)
+   still-away pieces (the other exceptions come with milestone 2). (d) Done:
+   wear records: `wear.record` with per-garment daily deduplication and its undo,
+   the day's recorded wear in `garderobe_today` (`dayRecord`) and the
+   `history` view, so a connected assistant can see that choosing an outfit
+   records no wear. (e)
    `garderobe_recommend`: the deterministic composer of `packages/daily`
    over the owner's real stock, publishing through `board.publish`. (f)
    `garderobe_run` (run status) and then `garderobe_ask` and
@@ -385,7 +454,7 @@ small change of its own, and passes `ferrite check`, `ferrite test` and
    (`integrations/codex`) is pointed at this app.
 2. **Ledger.** The rest of the command service in `packages/domain`, one
    command at a time: garments (create, correct, aliases, merge, move,
-   retire), wear records with per-garment daily deduplication, washes, the
+   retire), wear amendments, washes, the
    weekly laundry reset, restrictions, owner settings, the availability
    estimator, and multi-owner storage with a compacted, sharded journal.
    Sign-in with `packages/auth`, account recovery, and portable export and

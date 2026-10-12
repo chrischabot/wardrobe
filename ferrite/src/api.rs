@@ -20,6 +20,7 @@ use ferrite_app::IngressRequest;
 
 use crate::board::{self, Board};
 use crate::laundry;
+use crate::wear;
 use crate::canonical::{canonical, keys_are_plain, numbers_are_whole, whole, MAX_SAFE};
 use crate::ledger::{self, BoardRef, CmdError, Ctx, Ledger, Plan, StoredCommand};
 use crate::seed::{catalogue, Catalogue};
@@ -431,6 +432,44 @@ pub fn validate_record(bytes: &[u8], command_id: &str) -> Option<Record> {
                 return None;
             }
         }
+        (Value::Null, "wear.record") => {
+            let ids = |k: &str| result.get(k).and_then(Value::as_array).map_or(false, |a| a.iter().all(|x| x.as_str().map_or(false, |s| !s.is_empty())));
+            let keys = ["wearingDate", "counted", "merged", "observationIds", "additionalUnitEvents", "additionalUnitsAlreadyRecorded"];
+            if result.len() != keys.len()
+                || !keys.iter().all(|k| result.contains_key(*k))
+                || !result["wearingDate"].as_str().map_or(false, |d| parse_local_date(d).is_some())
+                || !ids("counted")
+                || !ids("merged")
+                || !ids("observationIds")
+                || result["additionalUnitEvents"].as_u64().is_none()
+                || result["additionalUnitsAlreadyRecorded"].as_u64().is_none()
+            {
+                return None;
+            }
+            // One report per garment named: each garment is either counted or merged, never both,
+            // and a report names at least one garment.
+            let list = |k: &str| result[k].as_array().map(|a| a.iter().filter_map(Value::as_str).collect::<Vec<_>>()).unwrap_or_default();
+            let (counted, merged, observations) = (list("counted"), list("merged"), list("observationIds"));
+            let garments: std::collections::BTreeSet<&str> = counted.iter().chain(merged.iter()).copied().collect();
+            let distinct_obs: std::collections::BTreeSet<&str> = observations.iter().copied().collect();
+            if observations.is_empty()
+                || distinct_obs.len() != observations.len()
+                || garments.len() != counted.len() + merged.len()
+                || counted.len() + merged.len() != observations.len()
+            {
+                return None;
+            }
+            // "merged" means nothing new was counted or consumed; "committed" means something was.
+            let extras = result["additionalUnitEvents"].as_u64().unwrap_or(0);
+            let consistent = match rc["outcome"].as_str() {
+                Some("merged") => counted.is_empty() && extras == 0,
+                Some("committed") => !counted.is_empty() || extras > 0,
+                _ => false,
+            };
+            if !consistent {
+                return None;
+            }
+        }
         _ => return None,
     }
     // Exactly one of: undo data (offered by the receipt), or the reason the
@@ -443,15 +482,28 @@ pub fn validate_record(bytes: &[u8], command_id: &str) -> Option<Record> {
         _ => return None,
     };
     // A dirty report, a choice and a swap always carry undo data; an undo and a publication never do;
-    // a laundry report does unless it changed nothing.
+    // a laundry report does unless it changed nothing; a wear report always does, merged or not.
     match (kind.as_str(), &undo) {
         ("care.mark_dirty" | "board.select" | "board.swap_slot", Ok(_)) | ("command.undo" | "board.publish", Err(_)) => {}
         ("laundry.collect" | "laundry.return", Ok(_)) if rc["outcome"] == "committed" => {}
         ("laundry.collect" | "laundry.return", Err(_)) if rc["outcome"] == "noop" => {}
+        ("wear.record", Ok(_)) if rc["outcome"] == "committed" || rc["outcome"] == "merged" => {}
         _ => return None,
     }
     if rc["outcome"] == "noop" && !kind.starts_with("laundry.") {
         return None;
+    }
+    if rc["outcome"] == "merged" && kind != "wear.record" {
+        return None;
+    }
+    // A wear receipt's result and its undo data describe the same report: the same date, the same
+    // observations in the same order, and one increment per further-unit event counted.
+    if kind == "wear.record" {
+        let data = undo.as_ref().ok()?;
+        let events = data["stockEventIds"].as_array().map_or(usize::MAX, Vec::len) as u64;
+        if data["wearingDate"] != result["wearingDate"] || data["observationIds"] != result["observationIds"] || result["additionalUnitEvents"].as_u64() != Some(events) {
+            return None;
+        }
     }
     let command = StoredCommand {
         command_id: command_id.to_string(),
@@ -519,6 +571,19 @@ fn undo_data_ok(kind: &str, data: &Value) -> bool {
     let event_ids = |d: &ferrite_app::serde_json::Map<String, Value>| d.get("stockEventIds").and_then(Value::as_array).map_or(false, |ids| !ids.is_empty() && ids.iter().all(|x| x.as_str().map_or(false, |s| !s.is_empty())));
     match kind {
         "care.mark_dirty" => keys(&["stockEventIds"]) && event_ids(d),
+        "wear.record" => {
+            // Each list names each ID once: undo matches them against the journal as sets.
+            let list = |k: &str, nonempty: bool| {
+                d.get(k).and_then(Value::as_array).map_or(false, |a| {
+                    let distinct: std::collections::BTreeSet<&str> = a.iter().filter_map(Value::as_str).collect();
+                    (!nonempty || !a.is_empty()) && a.iter().all(|x| x.as_str().map_or(false, |s| !s.is_empty())) && distinct.len() == a.len()
+                })
+            };
+            keys(&["observationIds", "wearingDate", "stockEventIds"])
+                && list("observationIds", true)
+                && list("stockEventIds", false)
+                && d["wearingDate"].as_str().map_or(false, |x| parse_local_date(x).is_some())
+        }
         "laundry.collect" => keys(&["stockEventIds", "batchId"]) && event_ids(d) && id("batchId"),
         // A return with no pickup on record, with or without a bag of its own for what is still away.
         "laundry.return" if !d.contains_key("batchId") => (keys(&["stockEventIds"]) || (keys(&["stockEventIds", "heldBatchId"]) && id("heldBatchId"))) && event_ids(d),
@@ -602,6 +667,19 @@ async fn list_receipts<S: Store>(store: &mut S, limit: usize) -> Result<Value, C
     Ok(json!({"receipts": receipts}))
 }
 
+/// Recorded wear (`garderobe_inventory` view `history`): what was worn on `date` (`DailyRecord`), or
+/// the counted wears from `from` to `to` inclusive, optionally of one garment. With the wardrobe
+/// revision read. A day without a record is unknown, not unworn.
+pub async fn read_history<S: Store>(store: &mut S, date: Option<&str>, range: Option<(&str, &str)>, garment: Option<&str>) -> Result<(Value, u64), CmdError> {
+    let (_, l) = read_ledger(store).await?;
+    let cat = catalogue();
+    match (date, range) {
+        (Some(d), None) => Ok((wear::daily_record(cat, &l, d), l.revision)),
+        (None, Some((from, to))) => Ok((json!({"from": from, "to": to, "wears": wear::counted_wears(&l, from, to, garment), "caveat": "Recorded wears only; a day without a record is unknown, not unworn."}), l.revision)),
+        _ => Err(CmdError::new("invalid_command", "name either a date, or a range from and to")),
+    }
+}
+
 /// `GET /v1/today?date=` (`TodayView`): the day's home board, read without inference. No owner
 /// timezone is ported yet, so the day must be named.
 pub async fn read_today<S: Store>(store: &mut S, now_ms: u64, date: Option<&str>) -> Result<Value, CmdError> {
@@ -623,7 +701,7 @@ pub async fn read_today<S: Store>(store: &mut S, now_ms: u64, date: Option<&str>
         }
         let cat = catalogue();
         let day = board::Day { cat, stock: ledger::replay(cat, &l.events) };
-        return Ok(board::today(&day, date, board.as_ref(), l.revision, now_ms));
+        return Ok(board::today(&day, date, board.as_ref(), wear::day_record(cat, &l, date), l.revision, now_ms));
     }
     Err(CmdError::with("conflict", "the wardrobe kept changing while the board was read; try again", json!({"retryable": true})))
 }
@@ -790,8 +868,8 @@ async fn expected_boards<S: Store>(store: &mut S, env: &Envelope) -> Result<Vec<
 }
 
 /// The owner's observations: `expectedVersions` is not checked for them (they are rebased), and the
-/// boards it names are not even read, so an unrelated board can never refuse a wash report.
-const OBSERVATIONS: &[&str] = &["care.mark_dirty", "laundry.collect", "laundry.return"];
+/// boards it names are not even read, so an unrelated board can never refuse a wash or wear report.
+const OBSERVATIONS: &[&str] = &["care.mark_dirty", "laundry.collect", "laundry.return", "wear.record"];
 
 /// Client-stated versions, checked for every command but an observation
 /// (a wash report, a laundry pickup or return is rebased instead, section 5 of the specification).
@@ -852,6 +930,7 @@ async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envel
         ("care.mark_dirty", _) => Ok(Planned::stock(ledger::mark_dirty(ctx, next, &env.payload)?)),
         ("laundry.collect", _) => Ok(Planned::stock(laundry::collect(ctx, next, &env.payload)?)),
         ("laundry.return", _) => Ok(Planned::stock(laundry::return_batch(ctx, next, &env.payload)?)),
+        ("wear.record", _) => Ok(Planned::stock(wear::record(ctx, next, &env.payload, principal.channel, env.occurred_at.is_some())?)),
         ("board.publish", _) => {
             let input = board::publish_input(&env.payload)?;
             let existing = indexed_board(store, current.board_for(&input.scope, &input.local_date)).await?;
@@ -883,6 +962,7 @@ async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envel
                 "care.mark_dirty" => Planned::stock(ledger::command_undo(ctx, next, Some(&record.command), target)?),
                 "laundry.collect" => Planned::stock(laundry::undo_collect(ctx, next, &record.command, &data, target)?),
                 "laundry.return" => Planned::stock(laundry::undo_return(ctx, next, &record.command, &data, target)?),
+                "wear.record" => Planned::stock(wear::undo_record(ctx, next, &record.command, &data, target)?),
                 kind @ ("board.select" | "board.swap_slot") => {
                     let b = load_board(store, data["boardId"].as_str().unwrap_or_default()).await?;
                     Planned::board(if kind == "board.select" {
@@ -954,7 +1034,7 @@ fn receipt_is_complete(rc: &Value, command_id: &str, kind: &str) -> bool {
         && FIELDS.iter().all(|f| obj.contains_key(*f))
         && str_of("commandId") == Some(command_id)
         && str_of("type") == Some(kind)
-        && matches!(str_of("outcome"), Some("committed") | Some("noop"))
+        && matches!(str_of("outcome"), Some("committed") | Some("noop") | Some("merged"))
         && rc["summary"].as_str().map_or(false, |s| !s.is_empty())
         && affected_ok
         && rc["externalEffectState"].is_string()

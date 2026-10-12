@@ -20,7 +20,7 @@ use ferrite_app::IngressRequest;
 use crate::api::{self, Reply, Store, ASSISTANT, CONTRACT_VERSION};
 use crate::ledger::CmdError;
 use crate::oauth::{self, Caller};
-use crate::time::instant;
+use crate::time::{instant, parse_local_date};
 
 /// Protocol revisions this server speaks, newest first.
 // 2025-03-26 is not offered: its transport allows JSON-RPC batches, which
@@ -142,15 +142,19 @@ pub fn tools(caller: &Caller) -> Vec<Value> {
         json!({
         "name": "garderobe_inventory",
         "title": "Read the wardrobe",
-        "description": "Read the owner's garments with their clean and dirty balances (view items, paged; or snapshot, complete), or the newest command receipts (view receipts). `complete` and `nextCursor` say whether the data is the whole result.",
+        "description": "Read the owner's garments with their clean and dirty balances (view items, paged; or snapshot, complete), the newest command receipts (view receipts), or recorded wear (view history: what was worn on a date, or the counted wears from..to, optionally of one garmentId; a day without a record is unknown, not unworn). `complete` and `nextCursor` say whether the data is the whole result.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-                "view": {"type": "string", "enum": ["items", "snapshot", "receipts"], "default": "items"},
+                "view": {"type": "string", "enum": ["items", "snapshot", "receipts", "history"], "default": "items"},
                 "category": {"type": "string", "description": "items, snapshot: only this category"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 500, "description": "items: page size (default 50); receipts: how many (default 50, at most 200)"},
-                "cursor": {"type": "string", "description": "items: the nextCursor of the previous page"}
+                "cursor": {"type": "string", "description": "items: the nextCursor of the previous page"},
+                "date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "history: the wearing date to read"},
+                "from": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "history: first date of a range (with to, at most 366 days)"},
+                "to": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "history: last date of a range"},
+                "garmentId": {"type": "string", "description": "history with a range: only this garment"}
             }
         },
         "annotations": {"title": "Read the wardrobe", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
@@ -160,7 +164,7 @@ pub fn tools(caller: &Caller) -> Vec<Value> {
         list.push(json!({
             "name": "garderobe_command",
             "title": "Change the wardrobe",
-            "description": "One typed change the owner reported or asked for, applied at once with a verified receipt and an undo: care.mark_dirty (payload {items: [{garmentId, quantity?}]}, the owner's wash report); board.select (payload {boardId, optionId, footwearGarmentId?}; optionId null clears the choice; an intention, not a wear); board.swap_slot (payload {boardId, optionId, role, garmentId?}; without garmentId another eligible piece is chosen); board.publish (payload {localDate, requestedCount, options: [{slots: [{role, garmentId}], reason}]}; every option is validated against the wardrobe); laundry.collect (payload {batchId?, exclude?: [garmentId], include?: [{garmentId, quantity}]}; the service picked up what was awaiting it); laundry.return (payload {batchId?, stillAway?: [{garmentId, quantity?}]}; the oldest batch still out comes back clean, less what is still away); command.undo (payload {commandId}). Send expectedVersions {\"board:<boardId>\": revision} for a board change. Repeating the same idempotencyKey never repeats the change. Lifting a restriction, or undoing the command that recorded one, is refused.",
+            "description": "One typed change the owner reported or asked for, applied at once with a verified receipt and an undo: care.mark_dirty (payload {items: [{garmentId, quantity?}]}, the owner's wash report); wear.record (payload {wearingDate, garmentIds: [garmentId], segment?, additionalUnits?: [{garmentId, quantity}] for further units of a garment in garmentIds, note?}; only what the owner says he wore, counted once per garment and day; a repeat merges); board.select (payload {boardId, optionId, footwearGarmentId?}; optionId null clears the choice; an intention, not a wear); board.swap_slot (payload {boardId, optionId, role, garmentId?}; without garmentId another eligible piece is chosen); board.publish (payload {localDate, requestedCount, options: [{slots: [{role, garmentId}], reason}]}; every option is validated against the wardrobe); laundry.collect (payload {batchId?, exclude?: [garmentId], include?: [{garmentId, quantity}]}; the service picked up what was awaiting it); laundry.return (payload {batchId?, stillAway?: [{garmentId, quantity?}]}; the oldest batch still out comes back clean, less what is still away); command.undo (payload {commandId}). Send expectedVersions {\"board:<boardId>\": revision} for a board change. Repeating the same idempotencyKey never repeats the change. Lifting a restriction, or undoing the command that recorded one, is refused.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
@@ -235,13 +239,16 @@ async fn inventory<S: Store>(store: &mut S, now_ms: u64, args: &Map<String, Valu
 }
 
 async fn inventory_inner<S: Store>(store: &mut S, now_ms: u64, args: &Map<String, Value>) -> Result<Value, CmdError> {
-    only_keys(args, &["view", "category", "limit", "cursor"])?;
+    only_keys(args, &["view", "category", "limit", "cursor", "date", "from", "to", "garmentId"])?;
     let view = match args.get("view") {
         None => "items",
-        Some(Value::String(v)) if ["items", "snapshot", "receipts"].contains(&v.as_str()) => v.as_str(),
-        Some(Value::String(v)) => return Err(invalid(format!("view '{v}' is not available on this server yet; the views are items, snapshot and receipts"))),
+        Some(Value::String(v)) if ["items", "snapshot", "receipts", "history"].contains(&v.as_str()) => v.as_str(),
+        Some(Value::String(v)) => return Err(invalid(format!("view '{v}' is not available on this server yet; the views are items, snapshot, receipts and history"))),
         Some(_) => return Err(invalid("view must be a string")),
     };
+    if view != "history" && ["date", "from", "to", "garmentId"].iter().any(|k| args.contains_key(*k)) {
+        return Err(invalid("date, from, to and garmentId belong to view 'history'"));
+    }
     let category = match args.get("category") {
         None => None,
         Some(Value::String(c)) => Some(c.as_str()),
@@ -258,6 +265,45 @@ async fn inventory_inner<S: Store>(store: &mut S, now_ms: u64, args: &Map<String
         json!({"view": view, "complete": complete, "total": total, "nextCursor": next, "wardrobeRevision": revision, "readAt": instant(now_ms), "data": data})
     };
     match view {
+        "history" => {
+            if category.is_some() || limit.is_some() || args.contains_key("cursor") {
+                return Err(invalid("view 'history' takes date, or from and to (and garmentId)"));
+            }
+            let date_arg = |k: &str| -> Result<Option<&str>, CmdError> {
+                match args.get(k) {
+                    None => Ok(None),
+                    Some(Value::String(d)) if parse_local_date(d).is_some() => Ok(Some(d.as_str())),
+                    Some(_) => Err(invalid(format!("{k} must be a date, YYYY-MM-DD"))),
+                }
+            };
+            let (date, from, to) = (date_arg("date")?, date_arg("from")?, date_arg("to")?);
+            let garment = match args.get("garmentId") {
+                None => None,
+                Some(Value::String(g)) if !g.is_empty() => Some(g.as_str()),
+                Some(_) => return Err(invalid("garmentId must be a garment ID")),
+            };
+            let range = match (date, from, to, garment) {
+                (Some(_), None, None, None) => None,
+                (None, Some(f), Some(t), _) => {
+                    let (a, b) = (parse_local_date(f).unwrap_or(0), parse_local_date(t).unwrap_or(0));
+                    if b < a || b - a > 365 {
+                        return Err(invalid("from..to must run forwards and span at most 366 days"));
+                    }
+                    Some((f, t))
+                }
+                _ => return Err(invalid("view 'history' takes either date, or from and to (with an optional garmentId); this server has no owner timezone, so the days must be named")),
+            };
+            let (data, revision) = api::read_history(store, date, range, garment).await?;
+            let (summary, total) = if let Some(d) = date {
+                let names: Vec<&str> = data["garments"].as_array().map(|a| a.iter().filter_map(|g| g["name"].as_str()).collect()).unwrap_or_default();
+                let s = if names.is_empty() { format!("No wear recorded for {d} (not recorded does not mean nothing was worn).") } else { format!("Worn on {d}: {}.", names.join(", ")) };
+                (s, names.len())
+            } else {
+                let n = data["wears"].as_array().map_or(0, Vec::len);
+                (format!("{n} recorded wear(s) from {} to {}.", from.unwrap_or(""), to.unwrap_or("")), n)
+            };
+            Ok(tool_ok(envelope(data, true, Some(total), None, &json!(revision)), summary))
+        }
         "receipts" => {
             if category.is_some() || args.contains_key("cursor") {
                 return Err(invalid("view 'receipts' takes only limit"));

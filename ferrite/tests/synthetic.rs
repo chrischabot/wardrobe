@@ -7,9 +7,12 @@
 //!   one-piece itself must be of the required fabric class.
 //! - A swap of a role the outfit fills twice (two accessories) is refused as
 //!   ambiguous.
+//! - The factual reason calls a saturated sock "the single flash" only when no
+//!   other piece is saturated (the real inventory's colours are given here).
+//! - A stored board that is not one this code writes is unreadable.
 
 use ferrite_app::serde_json::{json, Value};
-use wardrobe::board::{self, Day, Slot};
+use wardrobe::board::{self, Board, Day, Slot};
 use wardrobe::ledger::{replay, Ctx};
 use wardrobe::seed::{catalogue, Catalogue, Garment};
 
@@ -42,6 +45,17 @@ fn synthetic() -> Catalogue {
     accessory.id = "syn_accessory_2".into();
     accessory.name = "Synthetic second accessory".into();
     garments.push(accessory);
+    let coloured = |id: &str, from: &str, name: &str, colour: &str| {
+        let mut g: Garment = base(from);
+        g.id = id.into();
+        g.name = name.into();
+        g.colour = Some(colour.into());
+        g
+    };
+    garments.push(coloured("syn_top_pink", OXFORD_BLUE, "Synthetic pink shirt", "pink"));
+    garments.push(coloured("syn_top_white", OXFORD_BLUE, "Synthetic white shirt", "white"));
+    garments.push(coloured("syn_bottom_grey", AKITA_CREAM, "Synthetic grey trouser", "grey"));
+    garments.push(coloured("syn_sock_green", SOCK_GREY, "Synthetic green sock", "green"));
     Catalogue {
         garments,
         source_name: real.source_name.clone(),
@@ -100,4 +114,74 @@ fn a_swap_of_a_role_the_outfit_fills_twice_is_refused_as_ambiguous() {
     // A role it fills once is still swappable.
     let one = json!({"boardId": published.board.board_id, "optionId": option, "role": "belt"});
     assert!(board::swap(&ctx, &day, Some(&published.board), &one).is_ok());
+}
+
+#[test]
+fn a_saturated_sock_is_the_single_flash_only_when_no_other_piece_is_saturated() {
+    let cat = synthetic();
+    let calm = board::factual_reason(&cat, &slots(&[("top", "syn_top_white"), ("bottom", "syn_bottom_grey"), ("socks", "syn_sock_green")]));
+    assert!(calm.contains("the sock is the single flash"), "{calm}");
+    let loud = board::factual_reason(&cat, &slots(&[("top", "syn_top_pink"), ("bottom", "syn_bottom_grey"), ("socks", "syn_sock_green")]));
+    assert!(!loud.contains("single flash") && loud.contains("the sock adds a further colour"), "{loud}");
+}
+
+#[test]
+fn a_stored_board_that_breaks_what_publication_writes_is_unreadable() {
+    let cat = synthetic();
+    let day = Day { cat: &cat, stock: replay(&cat, &[]) };
+    let ctx = Ctx { cat: &cat, command_id: "cmd_synthetic_publish_0002", now_ms: T0, occurred_at_ms: T0 };
+    let outfit = |top: &str| json!({"slots": [
+        {"role": "top", "garmentId": top}, {"role": "bottom", "garmentId": AKITA_CREAM},
+        {"role": "socks", "garmentId": SOCK_GREY}, {"role": "footwear", "garmentId": NB_OLIVE},
+    ], "reason": ""});
+    let input = board::publish_input(&json!({"localDate": DAY, "requestedCount": 2, "options": [outfit(OXFORD_BLUE), outfit("syn_top_white")]})).unwrap();
+    let published = board::publish(&ctx, &day, None, input).unwrap();
+    assert_eq!(published.plan.result["offered"], 2, "{}", published.plan.result);
+    let good = published.board.to_json();
+    assert!(Board::from_json(&good).is_some());
+    let mut chosen = good.clone();
+    chosen["selectedOptionId"] = good["revisions"][0]["offered"][1]["optionId"].clone();
+    assert!(Board::from_json(&chosen).is_some(), "a choice of an offered option is readable");
+
+    let corrupt: Vec<(&str, Box<dyn Fn(&mut Value)>)> = vec![
+        ("duplicate revision", Box::new(|b: &mut Value| {
+            let r = b["revisions"][0].clone();
+            b["revisions"].as_array_mut().unwrap().push(r);
+        })),
+        ("duplicate option ID", Box::new(|b: &mut Value| {
+            let id = b["revisions"][0]["offered"][0]["optionId"].clone();
+            b["revisions"][0]["offered"][1]["optionId"] = id;
+        })),
+        ("unknown role", Box::new(|b: &mut Value| b["revisions"][0]["offered"][0]["slots"][0]["role"] = json!("hat"))),
+        ("too many options", Box::new(|b: &mut Value| {
+            let o = b["revisions"][0]["offered"][0].clone();
+            let list = b["revisions"][0]["offered"].as_array_mut().unwrap();
+            for i in 0..board::MAX_OPTIONS {
+                let mut copy = o.clone();
+                copy["optionId"] = json!(format!("opt_extra_{i}"));
+                list.push(copy);
+            }
+        })),
+        ("too many revisions", Box::new(|b: &mut Value| {
+            let r = b["revisions"][0].clone();
+            let list = b["revisions"].as_array_mut().unwrap();
+            for n in 2..=(board::REVISIONS_KEPT as u64 + 1) {
+                let mut copy = r.clone();
+                copy["revision"] = json!(n);
+                list.push(copy);
+            }
+            b["currentRevision"] = json!(board::REVISIONS_KEPT as u64 + 1);
+        })),
+        ("choice not offered", Box::new(|b: &mut Value| b["selectedOptionId"] = json!("opt_not_on_this_board"))),
+        ("shoe without a choice", Box::new(|b: &mut Value| b["selectedFootwearId"] = json!(NB_OLIVE))),
+        ("shoe not of the option", Box::new(|b: &mut Value| {
+            b["selectedOptionId"] = b["revisions"][0]["offered"][0]["optionId"].clone();
+            b["selectedFootwearId"] = json!("gmt_some_other_shoe");
+        })),
+    ];
+    for (what, break_it) in corrupt {
+        let mut b = good.clone();
+        break_it(&mut b);
+        assert!(Board::from_json(&b).is_none(), "{what}");
+    }
 }

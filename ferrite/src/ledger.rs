@@ -31,7 +31,7 @@ pub const MAX_QUANTITY: u64 = 999;
 pub const RECENT_LIMIT: usize = 200;
 
 /// The command types this port executes. Anything else is `unknown_command`.
-pub const COMMAND_TYPES: &[&str] = &["care.mark_dirty", "command.undo", "board.publish", "board.select", "board.swap_slot", "laundry.collect", "laundry.return"];
+pub const COMMAND_TYPES: &[&str] = &["care.mark_dirty", "command.undo", "board.publish", "board.select", "board.swap_slot", "laundry.collect", "laundry.return", "wear.record"];
 /// Laundry batches kept in the ledger; the oldest closed ones make room.
 pub const MAX_BATCHES: usize = 60;
 
@@ -57,7 +57,8 @@ impl CmdError {
 
 /// One journaled stock event of a garment (`stock_events` in TypeScript):
 /// `dirty` (an owner's wash report), `pickup` and `return` of a service
-/// laundry batch, and `wash` (back clean without a recorded pickup).
+/// laundry batch, `wash` (back clean without a recorded pickup), and `wear`
+/// and `extra_unit` (a recorded wear, and a further unit used that day).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Event {
     pub id: String,
@@ -71,9 +72,40 @@ pub struct Event {
     pub seq: u64,
     pub command_id: String,
     pub voided_by: Option<String>,
+    /// The wearing date of a `wear` or `extra_unit` (only those).
+    pub wearing_date: Option<String>,
 }
 
-pub const EVENT_KINDS: &[&str] = &["dirty", "pickup", "return", "wash"];
+pub const EVENT_KINDS: &[&str] = &["dirty", "pickup", "return", "wash", "wear", "extra_unit"];
+
+/// The counted wear of one garment on one wearing date (`daily_wears`): at most one per pair, however
+/// many reports there are. `stock_event_id` is the `wear` event that consumed the unit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Wear {
+    pub garment_id: String,
+    pub wearing_date: String,
+    pub stock_event_id: String,
+    pub active: bool,
+}
+
+/// One report of a wear (`wear_observations`), kept with its provenance even when it merged into a
+/// wear already counted.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Observation {
+    pub id: String,
+    pub garment_id: String,
+    pub wearing_date: String,
+    pub occurred_at_ms: u64,
+    pub reported_at_ms: u64,
+    pub timezone: String,
+    pub channel: String,
+    pub segment: Option<String>,
+    pub note: Option<String>,
+    pub command_id: String,
+    pub retracted_by: Option<String>,
+    /// The further units of this garment the report said were used that day (a total, 0 for none).
+    pub additional_units: u32,
+}
 
 /// One garment of a laundry batch (`laundry_batch_items`).
 #[derive(Debug, Clone, PartialEq)]
@@ -121,6 +153,10 @@ pub struct Ledger {
     pub boards: Vec<BoardRef>,
     /// Service laundry batches, oldest first, at most [`MAX_BATCHES`].
     pub batches: Vec<Batch>,
+    /// Counted wears, one per garment and wearing date.
+    pub wears: Vec<Wear>,
+    /// Every wear report, in the order recorded.
+    pub observations: Vec<Observation>,
 }
 
 /// Where a day's board is stored: one entry per (scope, day).
@@ -141,10 +177,16 @@ impl Ledger {
             "v": 1,
             "revision": self.revision,
             "nextSeq": self.next_seq,
-            "events": self.events.iter().map(|e| json!({
-                "id": e.id, "garmentId": e.garment_id, "kind": e.kind, "batchId": e.batch_id, "quantity": e.quantity,
-                "stillAway": e.still_away, "atMs": e.at_ms, "seq": e.seq, "commandId": e.command_id, "voidedBy": e.voided_by,
-            })).collect::<Vec<_>>(),
+            "events": self.events.iter().map(|e| {
+                let mut x = json!({
+                    "id": e.id, "garmentId": e.garment_id, "kind": e.kind, "batchId": e.batch_id, "quantity": e.quantity,
+                    "stillAway": e.still_away, "atMs": e.at_ms, "seq": e.seq, "commandId": e.command_id, "voidedBy": e.voided_by,
+                });
+                if let Some(d) = &e.wearing_date {
+                    x["wearingDate"] = json!(d);
+                }
+                x
+            }).collect::<Vec<_>>(),
             "versions": self.versions,
             "recent": self.recent,
             "boards": self.boards.iter().map(|b| json!({"boardId": b.board_id, "scope": b.scope, "localDate": b.local_date})).collect::<Vec<_>>(),
@@ -152,6 +194,11 @@ impl Ledger {
                 "batchId": b.batch_id, "status": b.status, "pickedUpAtMs": b.picked_up_at_ms, "returnedAtMs": b.returned_at_ms,
                 "commandId": b.command_id, "withdrawnBy": b.withdrawn_by, "version": b.version,
                 "items": b.items.iter().map(|i| json!({"garmentId": i.garment_id, "quantity": i.quantity, "returned": i.returned, "stillAway": i.still_away})).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+            "wears": self.wears.iter().map(|w| json!({"garmentId": w.garment_id, "wearingDate": w.wearing_date, "stockEventId": w.stock_event_id, "active": w.active})).collect::<Vec<_>>(),
+            "observations": self.observations.iter().map(|o| json!({
+                "id": o.id, "garmentId": o.garment_id, "wearingDate": o.wearing_date, "occurredAtMs": o.occurred_at_ms, "reportedAtMs": o.reported_at_ms,
+                "timezone": o.timezone, "channel": o.channel, "segment": o.segment, "note": o.note, "commandId": o.command_id, "retractedBy": o.retracted_by, "additionalUnits": o.additional_units,
             })).collect::<Vec<_>>(),
         })
     }
@@ -198,6 +245,10 @@ impl Ledger {
             if (kind == "pickup" || kind == "return") != batch_id.is_some() {
                 return None;
             }
+            let wearing_date = opt_st(e, "wearingDate")?;
+            if (kind == "wear" || kind == "extra_unit") != wearing_date.as_deref().map_or(false, |d| crate::time::parse_local_date(d).is_some()) || (wearing_date.is_some() && kind != "wear" && kind != "extra_unit") {
+                return None;
+            }
             events.push(Event {
                 id: st(e, "id")?,
                 garment_id: st(e, "garmentId")?,
@@ -209,6 +260,7 @@ impl Ledger {
                 seq: u(e, "seq")?,
                 command_id: st(e, "commandId")?,
                 voided_by,
+                wearing_date,
             });
         }
         let mut versions = BTreeMap::new();
@@ -247,7 +299,56 @@ impl Ledger {
                 });
             }
         }
-        Some(Ledger { revision: u(v, "revision")?, next_seq: u(v, "nextSeq")?, events, versions, recent, boards, batches })
+        // Ledgers written before wear records were ported have none.
+        let date = |x: &Value, k: &str| st(x, k).filter(|d| crate::time::parse_local_date(d).is_some());
+        let mut wears = Vec::new();
+        if let Some(list) = v.get("wears") {
+            for w in list.as_array()? {
+                if w.as_object()?.len() != 4 {
+                    return None;
+                }
+                wears.push(Wear { garment_id: st(w, "garmentId")?, wearing_date: date(w, "wearingDate")?, stock_event_id: st(w, "stockEventId")?, active: w.get("active")?.as_bool()? });
+            }
+        }
+        let mut observations = Vec::new();
+        if let Some(list) = v.get("observations") {
+            for o in list.as_array()? {
+                if o.as_object()?.len() != 12 {
+                    return None;
+                }
+                observations.push(Observation {
+                    id: st(o, "id")?,
+                    garment_id: st(o, "garmentId")?,
+                    wearing_date: date(o, "wearingDate")?,
+                    occurred_at_ms: u(o, "occurredAtMs")?,
+                    reported_at_ms: u(o, "reportedAtMs")?,
+                    timezone: st(o, "timezone")?,
+                    channel: st(o, "channel")?,
+                    segment: opt_st(o, "segment")?,
+                    note: opt_st(o, "note")?,
+                    command_id: st(o, "commandId")?,
+                    retracted_by: opt_st(o, "retractedBy")?,
+                    additional_units: u32::try_from(u(o, "additionalUnits")?).ok()?,
+                });
+            }
+        }
+        Some(Ledger { revision: u(v, "revision")?, next_seq: u(v, "nextSeq")?, events, versions, recent, boards, batches, wears, observations })
+    }
+
+    /// The counted wear of a garment on a date, if there is one (active or retracted).
+    pub fn wear(&self, garment_id: &str, wearing_date: &str) -> Option<&Wear> {
+        self.wears.iter().find(|w| w.garment_id == garment_id && w.wearing_date == wearing_date)
+    }
+
+    /// The further units of a garment the reports still standing for a date say were used: the
+    /// largest total any of them gives (totals, not increments).
+    pub fn reported_additional(&self, garment_id: &str, wearing_date: &str) -> u32 {
+        self.observations.iter().filter(|o| o.garment_id == garment_id && o.wearing_date == wearing_date && o.retracted_by.is_none()).map(|o| o.additional_units).max().unwrap_or(0)
+    }
+
+    /// The reports of a garment's wear on a date that still stand.
+    pub fn active_reports(&self, garment_id: &str, wearing_date: &str) -> usize {
+        self.observations.iter().filter(|o| o.garment_id == garment_id && o.wearing_date == wearing_date && o.retracted_by.is_none()).count()
     }
 
     pub fn batch(&self, id: &str) -> Option<&Batch> {
@@ -351,7 +452,10 @@ pub fn replay_until(cat: &Catalogue, events: &[Event], at_ms: u64) -> Replay {
 /// - `pickup` moves hamper units into its batch;
 /// - `return` moves its batch's units back clean, less those named still away
 ///   (which stay in the batch, held);
-/// - `wash` moves hamper units back clean.
+/// - `wash` moves hamper units back clean;
+/// - `wear` moves one clean unit to the hamper (`extra_unit` one per unit used); a laundered garment
+///   with none clean but one in the hamper stays as it is (repair), one with none at home is pulled
+///   back from the laundry (the owner wore it). A never-laundered garment moves nothing.
 pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
     let mut out = Replay::default();
     for g in &cat.garments {
@@ -395,19 +499,42 @@ pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
                 st.clean += q;
                 q
             }
+            "wear" | "extra_unit" => {
+                let units = if e.kind == "wear" { 1 } else { e.quantity };
+                let mut moved = 0;
+                for _ in 0..units {
+                    if g.care_channel == "none" {
+                        if st.clean == 0 {
+                            out.repairs.push((e.id.clone(), format!("{}: wear recorded for an item with no owned units on record; no quantity was created", g.name)));
+                        }
+                    } else if st.clean > 0 {
+                        st.clean -= 1;
+                        st.dirty += 1;
+                        moved += 1;
+                    } else if st.dirty > 0 && (e.kind == "wear" || held.values().all(|h| h.quantity == 0)) {
+                        // A wear with none clean reused a unit awaiting care. A further unit is a
+                        // different unit from the day's wear (which may be that one in the hamper),
+                        // so it comes back from the laundry when one is there.
+                        out.repairs.push((e.id.clone(), format!("{}: the ledger had no clean unit; the wear is recorded and the unit stays awaiting care", g.name)));
+                    } else if let Some(batch) = pull_one(held) {
+                        *out.pulled.entry(e.id.clone()).or_default().entry(batch).or_default() += 1;
+                        st.dirty += 1;
+                        moved += 1;
+                        out.repairs.push((e.id.clone(), format!("{}: the ledger had this item at the laundry; the recorded wear establishes it is with the owner", g.name)));
+                    } else {
+                        out.repairs.push((e.id.clone(), format!("{}: wear recorded for an item with no owned units on record; no quantity was created", g.name)));
+                    }
+                }
+                moved
+            }
             _ => {
                 let mut q = e.quantity.min(st.clean);
                 st.clean -= q;
                 st.dirty += q;
                 // The owner has it in the hamper: a unit the ledger had at the laundry is with him.
                 while q < e.quantity {
-                    let Some(batch) = held.iter().filter(|(_, h)| h.quantity > 0).min_by_key(|(id, h)| (h.picked_up_at_ms, (*id).clone())).map(|(id, _)| id.clone()) else { break };
-                    let h = held.get_mut(&batch).expect("holding just found");
-                    h.quantity -= 1;
-                    if h.quantity == 0 {
-                        held.remove(&batch);
-                    }
-                    *out.pulled.entry(e.id.clone()).or_default().entry(batch.clone()).or_default() += 1;
+                    let Some(batch) = pull_one(held) else { break };
+                    *out.pulled.entry(e.id.clone()).or_default().entry(batch).or_default() += 1;
                     st.dirty += 1;
                     q += 1;
                     out.repairs.push((e.id.clone(), format!("{}: the ledger had this item at the laundry; the wash report establishes it is with the owner", g.name)));
@@ -422,6 +549,17 @@ pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
     }
     out.service.retain(|_, m| !m.is_empty());
     out
+}
+
+/// Take one unit back from the garment's oldest batch that holds one; the batch it came from.
+fn pull_one(held: &mut BTreeMap<String, Holding>) -> Option<String> {
+    let batch = held.iter().filter(|(_, h)| h.quantity > 0).min_by_key(|(id, h)| (h.picked_up_at_ms, (*id).clone())).map(|(id, _)| id.clone())?;
+    let h = held.get_mut(&batch).expect("holding just found");
+    h.quantity -= 1;
+    if h.quantity == 0 {
+        held.remove(&batch);
+    }
+    Some(batch)
 }
 
 // ───────────────────────────── planning ─────────────────────────────
@@ -539,6 +677,7 @@ pub(crate) fn journal(ctx: &Ctx<'_>, ledger: &mut Ledger, garment_id: &str, kind
         seq: ledger.next_seq,
         command_id: ctx.command_id.to_string(),
         voided_by: None,
+        wearing_date: None,
     });
     ledger.next_seq += 1;
     id
@@ -702,6 +841,30 @@ pub(crate) fn other_bags_changed(ctx: &Ctx<'_>, ledger: &Ledger, before: &Replay
         format!("at the time given, this would change what a laundry bag is recorded with ({}); give a later time, or undo that bag's record first; nothing was written", name_list(&names)),
         json!({"reason": "changes_another_batch", "occurredAt": crate::time::instant(ctx.occurred_at_ms)}),
     ))
+}
+
+/// Batches whose holdings a change altered (a wear or its undo took a unit back from a bag, or put
+/// it back) are at a new version, so a report checked against the old version is refused as stale.
+/// Returns them as affected records.
+pub(crate) fn bump_changed_batches(ledger: &mut Ledger, before: &Replay, after: &Replay) -> Vec<Value> {
+    let holdings = |r: &Replay| -> BTreeMap<String, BTreeMap<String, u32>> {
+        let mut out: BTreeMap<String, BTreeMap<String, u32>> = BTreeMap::new();
+        for (g, m) in &r.service {
+            for (b, h) in m.iter().filter(|(_, h)| h.quantity > 0) {
+                out.entry(b.clone()).or_default().insert(g.clone(), h.quantity);
+            }
+        }
+        out
+    };
+    let (was, now) = (holdings(before), holdings(after));
+    let mut out = Vec::new();
+    for b in ledger.batches.iter_mut().filter(|b| b.withdrawn_by.is_none()) {
+        if was.get(&b.batch_id) != now.get(&b.batch_id) {
+            b.version += 1;
+            out.push(json!({"kind": "laundry_batch", "id": b.batch_id, "version": b.version}));
+        }
+    }
+    out
 }
 
 /// Undo is exact or refused: voiding a command's events must not change what any other event moved,

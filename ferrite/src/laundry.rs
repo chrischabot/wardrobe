@@ -8,8 +8,9 @@
 //! the 2026-10-05 contract). Quantities are what the replay moved.
 //!
 //! Not ported: missed-cycle returns, lost-item and delayed exceptions
-//! (`laundry.report_exception`), the weekly laundry reset, and wear records
-//! (so nothing is held back from collection as "being worn today").
+//! (`laundry.report_exception`) and the weekly laundry reset. A unit being
+//! worn on the day of a pickup or return (a recorded wear of that day or
+//! later) stays with the owner, as in TypeScript.
 
 use std::collections::BTreeSet;
 
@@ -88,15 +89,33 @@ fn quantities(p: &Value, cmd: &str, field: &str, default: Option<u32>) -> Result
 }
 
 /// What was awaiting the laundry service at the time this command observes: the dirty units of
-/// service-laundered garments, by name. A back-dated report is sized as things stood then.
+/// service-laundered garments, by name, less the units on the owner on or after that day (still on
+/// the body, as `collectableQuantities`): the most units of the garment recorded worn on any one of
+/// those days (the wear and its further units). Wears on successive days may be the same unit, so
+/// days are not added together. A back-dated report is sized as things stood then. No owner
+/// timezone is ported, so "that day" is the UTC date of the observation.
 fn collectable(ctx: &Ctx<'_>, ledger: &Ledger) -> Vec<(String, String, u32)> {
     let r = replay_until(ctx.cat, &ledger.events, ctx.occurred_at_ms);
+    let day = crate::time::local_date((ctx.occurred_at_ms / 86_400_000) as i64);
+    let worn_now = |id: &str| {
+        let mut by_date: std::collections::BTreeMap<&str, u32> = std::collections::BTreeMap::new();
+        for w in ledger.wears.iter().filter(|w| w.active && w.garment_id == id && w.wearing_date >= day) {
+            *by_date.entry(w.wearing_date.as_str()).or_default() += 1;
+        }
+        // Further units used that day are on the owner too.
+        for e in ledger.events.iter().filter(|e| e.kind == "extra_unit" && e.voided_by.is_none() && e.garment_id == id) {
+            if let Some(d) = e.wearing_date.as_deref().filter(|d| *d >= day.as_str()) {
+                *by_date.entry(d).or_default() += e.quantity;
+            }
+        }
+        by_date.values().copied().max().unwrap_or(0)
+    };
     let mut rows: Vec<(String, String, u32)> = ctx
         .cat
         .garments
         .iter()
         .filter(|g| g.care_channel == "service")
-        .map(|g| (g.id.clone(), g.name.clone(), r.of(&g.id).dirty))
+        .map(|g| (g.id.clone(), g.name.clone(), r.of(&g.id).dirty.saturating_sub(worn_now(&g.id))))
         .filter(|(_, _, q)| *q > 0)
         .collect();
     rows.sort_by(|a, b| (&a.1, &a.0).cmp(&(&b.1, &b.0)));
