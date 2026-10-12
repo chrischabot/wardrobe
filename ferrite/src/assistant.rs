@@ -479,8 +479,9 @@ pub async fn ask<S: Store, T: Transport>(store: &mut S, inference: &mut Inferenc
                 let reply = call(inference, &cfg, &run_id, "ask", format!("{ASSISTANT_GUIDE}\n\n{}", wardrobe_context(&l, &at)), ask_user_content(input), ASK_MAX_TOKENS).await?;
                 let text = reply.text.trim();
                 let mut answer = clip(text, MAX_ANSWER_CHARS);
-                // Cut short by the model or by this server's own limit: say so either way.
-                if reply.truncated || text.chars().count() > MAX_ANSWER_CHARS {
+                // Cut short by this server's own limit: say so. (A turn the model cut short at its
+                // token limit never arrives here; the adapter refuses it.)
+                if text.chars().count() > MAX_ANSWER_CHARS {
                     answer.push_str(TRUNCATED_NOTE);
                 }
                 let result = json!({"answer": answer, "model": reply.model, "wardrobeRevision": l.revision, "readAt": at});
@@ -555,10 +556,10 @@ pub async fn research<S: Store, T: Transport>(store: &mut S, inference: &mut Inf
                 let at = instant(start);
                 let user = format!("Research kind: {}\nTopic: {}", input.kind, input.topic);
                 let reply = call(inference, &cfg, &run_id, "research", format!("{RESEARCH_GUIDE}\n\n{}", wardrobe_context(&l, &at)), user, RESEARCH_MAX_TOKENS).await?;
-                let Some((verdict, summary, comparison)) = parse_research_answer(&reply.text).filter(|_| !reply.truncated) else {
+                let Some((verdict, summary, comparison)) = parse_research_answer(&reply.text) else {
                     return Err(CmdError::with(
                         "internal",
-                        if reply.truncated { "the model's research answer was cut short; nothing was saved. Ask again, with a narrower topic" } else { "the model's research answer was not in the expected form; nothing was saved. Ask again" },
+                        "the model's research answer was not in the expected form; nothing was saved. Ask again",
                         json!({"retryable": true}),
                     ));
                 };

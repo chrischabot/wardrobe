@@ -31,7 +31,7 @@ pub const MAX_QUANTITY: u64 = 999;
 pub const RECENT_LIMIT: usize = 200;
 
 /// The command types this port executes. Anything else is `unknown_command`.
-pub const COMMAND_TYPES: &[&str] = &["care.mark_dirty", "command.undo", "board.publish", "board.select", "board.swap_slot", "laundry.collect", "laundry.return", "wear.record"];
+pub const COMMAND_TYPES: &[&str] = &["care.mark_dirty", "care.washed", "command.undo", "board.publish", "board.select", "board.swap_slot", "laundry.collect", "laundry.return", "wear.record"];
 /// Laundry batches kept in the ledger; the oldest closed ones make room.
 pub const MAX_BATCHES: usize = 60;
 
@@ -57,16 +57,19 @@ impl CmdError {
 
 /// One journaled stock event of a garment (`stock_events` in TypeScript):
 /// `dirty` (an owner's wash report), `pickup` and `return` of a service
-/// laundry batch, `wash` (back clean without a recorded pickup), and `wear`
-/// and `extra_unit` (a recorded wear, and a further unit used that day).
+/// laundry batch, `wash` (back clean without a recorded pickup), `washed` (the
+/// owner's report that he washed it, `care.washed`), and `wear` and
+/// `extra_unit` (a recorded wear, and a further unit used that day).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Event {
     pub id: String,
     pub garment_id: String,
     pub kind: String,
     pub batch_id: Option<String>,
+    /// For `washed`, 0 when the owner gave no count.
     pub quantity: u32,
-    /// Units a return names as still away (`return` only).
+    /// Units a return names as still away (`return`); for `washed`, 1 when a report without a count
+    /// may speak for units reported still away (`releaseAway` in TypeScript), else 0.
     pub still_away: u32,
     pub at_ms: u64,
     pub seq: u64,
@@ -76,7 +79,7 @@ pub struct Event {
     pub wearing_date: Option<String>,
 }
 
-pub const EVENT_KINDS: &[&str] = &["dirty", "pickup", "return", "wash", "wear", "extra_unit"];
+pub const EVENT_KINDS: &[&str] = &["dirty", "pickup", "return", "wash", "washed", "wear", "extra_unit"];
 
 /// The counted wear of one garment on one wearing date (`daily_wears`): at most one per pair, however
 /// many reports there are. `stock_event_id` is the `wear` event that consumed the unit.
@@ -249,13 +252,19 @@ impl Ledger {
             if (kind == "wear" || kind == "extra_unit") != wearing_date.as_deref().map_or(false, |d| crate::time::parse_local_date(d).is_some()) || (wearing_date.is_some() && kind != "wear" && kind != "extra_unit") {
                 return None;
             }
+            let quantity = u32::try_from(u(e, "quantity")?).ok()?;
+            let still_away = u32::try_from(opt_u(e, "stillAway")?.unwrap_or(0)).ok()?;
+            // A wash report's flag is 0 or 1, and only a report without a count carries it.
+            if kind == "washed" && (still_away > 1 || (still_away == 1 && quantity != 0)) {
+                return None;
+            }
             events.push(Event {
                 id: st(e, "id")?,
                 garment_id: st(e, "garmentId")?,
                 kind,
                 batch_id,
-                quantity: u32::try_from(u(e, "quantity")?).ok()?,
-                still_away: u32::try_from(opt_u(e, "stillAway")?.unwrap_or(0)).ok()?,
+                quantity,
+                still_away,
                 at_ms: u(e, "atMs")?,
                 seq: u(e, "seq")?,
                 command_id: st(e, "commandId")?,
@@ -453,6 +462,11 @@ pub fn replay_until(cat: &Catalogue, events: &[Event], at_ms: u64) -> Replay {
 /// - `return` moves its batch's units back clean, less those named still away
 ///   (which stay in the batch, held);
 /// - `wash` moves hamper units back clean;
+/// - `washed` (the owner washed it, `case "wash"` of `stock/replay.ts`): with a count, that many
+///   hamper units come back clean and any the hamper lacks come back from the laundry (bags not named
+///   still away first); without one, every hamper unit comes back clean, a unit at the laundry only
+///   when none of the garment is clean at home, and when nothing was in the hamper, units the owner
+///   reported still away come back too (`releaseAway`);
 /// - `wear` moves one clean unit to the hamper (`extra_unit` one per unit used); a laundered garment
 ///   with none clean but one in the hamper stays as it is (repair), one with none at home is pulled
 ///   back from the laundry (the owner wore it). A never-laundered garment moves nothing.
@@ -498,6 +512,36 @@ pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
                 st.dirty -= q;
                 st.clean += q;
                 q
+            }
+            "washed" => {
+                let explicit = e.quantity > 0;
+                let want = if explicit { e.quantity } else { st.dirty.max(1) };
+                let q = want.min(st.dirty);
+                st.dirty -= q;
+                st.clean += q;
+                let mut moved = q;
+                let mut remaining = want - q;
+                // The owner says it is washed: a unit the ledger believed was away is evidently back.
+                while remaining > 0 && (explicit || st.clean == 0) {
+                    let Some(batch) = pull_one_unheld_first(held) else { break };
+                    *out.pulled.entry(e.id.clone()).or_default().entry(batch).or_default() += 1;
+                    st.clean += 1;
+                    moved += 1;
+                    remaining -= 1;
+                    out.repairs.push((e.id.clone(), format!("{}: the ledger had this item away at the laundry; the wash report establishes it is back and clean", g.name)));
+                }
+                if e.still_away == 1 && q == 0 {
+                    // Without a count, when nothing was awaiting a wash at home, the report can only be
+                    // about units that were away: those reported still away are back and clean.
+                    let away: Vec<String> = held.iter().filter(|(_, h)| h.held && h.quantity > 0).map(|(b, _)| b.clone()).collect();
+                    for b in away {
+                        let n = held.remove(&b).map_or(0, |h| h.quantity);
+                        *out.pulled.entry(e.id.clone()).or_default().entry(b).or_default() += n;
+                        st.clean += n;
+                        moved += n;
+                    }
+                }
+                moved
             }
             "wear" | "extra_unit" => {
                 let units = if e.kind == "wear" { 1 } else { e.quantity };
@@ -554,6 +598,16 @@ pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
 /// Take one unit back from the garment's oldest batch that holds one; the batch it came from.
 fn pull_one(held: &mut BTreeMap<String, Holding>) -> Option<String> {
     let batch = held.iter().filter(|(_, h)| h.quantity > 0).min_by_key(|(id, h)| (h.picked_up_at_ms, (*id).clone())).map(|(id, _)| id.clone())?;
+    take_from(held, batch)
+}
+
+/// [`pull_one`], but from a batch not named still away first (`takeFromService` with `allowHeld`).
+fn pull_one_unheld_first(held: &mut BTreeMap<String, Holding>) -> Option<String> {
+    let batch = held.iter().filter(|(_, h)| h.quantity > 0).min_by_key(|(id, h)| (h.held, h.picked_up_at_ms, (*id).clone())).map(|(id, _)| id.clone())?;
+    take_from(held, batch)
+}
+
+fn take_from(held: &mut BTreeMap<String, Holding>, batch: String) -> Option<String> {
     let h = held.get_mut(&batch).expect("holding just found");
     h.quantity -= 1;
     if h.quantity == 0 {
@@ -717,6 +771,111 @@ pub fn mark_dirty(ctx: &Ctx<'_>, ledger: &mut Ledger, payload: &Value) -> Result
     })
 }
 
+/// The care channels a `care.washed` report may name (`CareChannel` in contracts/garment.ts).
+const CARE_CHANNELS: [&str; 3] = ["service", "handwash", "none"];
+
+/// `care.washed`: "I washed it" / "Socks washed" (an owner observation, `careWashed` in
+/// handlers/wear-care.ts). `items: [{garmentId, quantity?}]` and/or `allOfChannel`; without a
+/// quantity every unit awaiting a wash comes back clean. What it reports is what the replay moved:
+/// a garment of which nothing was in the hamper or away is not listed as washed, and a report that
+/// moved nothing at all is a `noop` with nothing written (the TypeScript service commits it).
+/// Not ported: units reported lost and laundry exceptions (milestone 2), so nothing is left as lost.
+pub fn washed(ctx: &Ctx<'_>, ledger: &mut Ledger, payload: &Value) -> Result<Plan, CmdError> {
+    const T: &str = "care.washed";
+    only_keys(payload, T, &["items", "allOfChannel"])?;
+    // An optional field is absent or set; an explicit null is not "absent" (an uncounted wash
+    // speaks for every unit), so it is refused rather than read as an omission.
+    let channel = match payload.get("allOfChannel") {
+        None => None,
+        Some(Value::String(c)) if CARE_CHANNELS.contains(&c.as_str()) => Some(c.clone()),
+        Some(_) => return Err(invalid(T, "allOfChannel: expected service, handwash or none")),
+    };
+    let listed = match payload.get("items") {
+        None => Vec::new(),
+        Some(Value::Array(a)) if a.len() <= MAX_ITEMS => {
+            let mut out = Vec::new();
+            for (i, item) in a.iter().enumerate() {
+                let Some(obj) = item.as_object() else { return Err(invalid(T, format!("items[{i}]: expected an object"))) };
+                if let Some(k) = obj.keys().find(|k| *k != "garmentId" && *k != "quantity") {
+                    return Err(invalid(T, format!("items[{i}].{k}: not a field of this command")));
+                }
+                let id = match item.get("garmentId").and_then(Value::as_str) {
+                    Some(s) if !s.is_empty() && s.len() <= 64 => s.to_string(),
+                    _ => return Err(invalid(T, format!("items[{i}].garmentId: expected a garment ID (1 to 64 characters)"))),
+                };
+                let q = match item.get("quantity") {
+                    None => None,
+                    Some(x) => match whole(x) {
+                        Some(q) if (1..=MAX_QUANTITY).contains(&q) => Some(q as u32),
+                        _ => return Err(invalid(T, format!("items[{i}].quantity: expected a whole number from 1 to {MAX_QUANTITY}"))),
+                    },
+                };
+                out.push((id, q));
+            }
+            out
+        }
+        Some(Value::Array(_)) => return Err(invalid(T, format!("items: at most {MAX_ITEMS} entries"))),
+        Some(_) => return Err(invalid(T, "items: expected an array")),
+    };
+    if listed.is_empty() && channel.is_none() {
+        return Err(invalid(T, "items or allOfChannel is required"));
+    }
+    let garments = load(ctx.cat, &listed.iter().map(|a| a.0.clone()).collect::<Vec<_>>())?;
+    let before = replay(ctx.cat, &ledger.events);
+    // (garment, quantity or 0 for none, whether it may speak for units reported still away)
+    // Explicitly listed garments come first, so a listed count is honoured even when the same
+    // garment also belongs to the channel; the channel then adds only garments not listed.
+    let mut asked: Vec<(&Garment, u32, bool)> = Vec::new();
+    for ((_, q), g) in listed.iter().zip(garments.iter()) {
+        if asked.iter().any(|a| a.0.id == g.id) {
+            continue;
+        }
+        if g.care_channel == "none" {
+            return Err(CmdError::with("precondition_failed", format!("{} is never laundered", g.name), json!({"garmentId": g.id})));
+        }
+        asked.push((g, q.unwrap_or(0), q.is_none()));
+    }
+    if let Some(c) = &channel {
+        let mut of_channel: Vec<&Garment> = ctx.cat.garments.iter().filter(|g| &g.care_channel == c && before.of(&g.id).dirty > 0 && !asked.iter().any(|a| a.0.id == g.id)).collect();
+        of_channel.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
+        asked.extend(of_channel.into_iter().map(|g| (g, 0, false)));
+    }
+    let nothing = |summary: &str| Plan {
+        outcome: "noop",
+        summary: summary.to_string(),
+        affected: Vec::new(),
+        repairs: Vec::new(),
+        result: json!({"washed": [], "units": 0}),
+        undo: Err("nothing changed".to_string()),
+    };
+    if asked.is_empty() {
+        return Ok(nothing("Nothing was awaiting a wash"));
+    }
+    let events: Vec<(&Garment, String)> = asked.iter().map(|(g, q, release)| (*g, journal(ctx, ledger, &g.id, "washed", None, *q, u32::from(*release)))).collect();
+    let after = replay(ctx.cat, &ledger.events);
+    other_bags_changed(ctx, ledger, &before, &after)?;
+    // Only what moved is journaled and reported.
+    let moved: Vec<(&Garment, String, u32)> = events.iter().map(|(g, id)| (*g, id.clone(), after.moved.get(id).copied().unwrap_or(0))).filter(|x| x.2 > 0).collect();
+    let kept: Vec<String> = moved.iter().map(|x| x.1.clone()).collect();
+    ledger.events.retain(|e| e.command_id != ctx.command_id || kept.contains(&e.id));
+    if moved.is_empty() {
+        return Ok(nothing("Nothing of that was awaiting a wash or away at the laundry, so nothing changed"));
+    }
+    let touched: BTreeSet<String> = moved.iter().map(|x| x.0.id.clone()).collect();
+    let mut affected = affected(ledger, &touched);
+    // A unit the ledger had at the laundry that the owner washed came back out of its bag.
+    affected.extend(bump_changed_batches(ledger, &before, &after));
+    let names: Vec<String> = moved.iter().map(|x| x.0.name.clone()).collect();
+    Ok(Plan {
+        outcome: "committed",
+        summary: format!("Washed and clean: {}", name_list(&names)),
+        affected,
+        repairs: after.new_repairs_since(&before),
+        result: json!({"washed": moved.iter().map(|x| x.0.id.clone()).collect::<Vec<_>>(), "units": moved.iter().map(|x| x.2).sum::<u32>()}),
+        undo: Ok(json!({"stockEventIds": kept})),
+    })
+}
+
 /// A stored command, as `crate::api` keeps it beside its receipt.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StoredCommand {
@@ -742,12 +901,13 @@ pub fn undo_precheck(original: Option<&StoredCommand>, target: &str) -> Result<V
     }
 }
 
-/// `command.undo` of a wash report: a compensating command. The original is
+/// `command.undo` of a wash report (`care.mark_dirty`) or of the owner's report that he washed it
+/// (`care.washed`): a compensating command. The original is
 /// never deleted; `crate::api` links the two in the same commit.
 pub fn command_undo(ctx: &Ctx<'_>, ledger: &mut Ledger, original: Option<&StoredCommand>, target: &str) -> Result<Plan, CmdError> {
     let data = undo_precheck(original, target)?;
     let Some(original) = original else { return Err(CmdError::new("not_found", "there is no such action to undo")) };
-    if original.kind != "care.mark_dirty" {
+    if original.kind != "care.mark_dirty" && original.kind != "care.washed" {
         return Err(CmdError::with("not_undoable", "this action has no automatic undo", json!({"commandId": target, "type": original.kind})));
     }
     let voided = void_events(ctx, ledger, &data, target)?;

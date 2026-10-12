@@ -263,6 +263,9 @@ async fn a_failed_slow_oversized_or_malformed_gateway_reply_saves_nothing() {
         ("not JSON", status(200, "<html>"), "not JSON", true),
         ("not a message", status(200, r#"{"type":"completion"}"#), "not a message", true),
         ("no text", status(200, r#"{"type":"message","content":[{"type":"text","text":"  "}]}"#), "no text", true),
+        ("an unfinished turn", status(200, r#"{"type":"message","content":[{"type":"text","text":"Half"}],"stop_reason":"pause_turn"}"#), "stop reason 'pause_turn'", true),
+        ("no stop reason", status(200, r#"{"type":"message","content":[{"type":"text","text":"Half"}]}"#), "no stop reason", true),
+        ("an answer cut short", status(200, r#"{"type":"message","content":[{"type":"text","text":"Start with the navy"}],"stop_reason":"max_tokens"}"#), "cut short at its token limit", true),
         ("over 1 MiB", Ok(Delivery::Delivered { status: 200, body: vec![b' '; MAX_REPLY_BYTES + 1] }), "larger than 1 MiB", false),
         ("the gateway's cap", Err(io::Error::new(io::ErrorKind::InvalidData, "egress response body exceeds the cap")), "larger than 1 MiB", false),
     ];
@@ -301,11 +304,12 @@ async fn a_failed_slow_oversized_or_malformed_gateway_reply_saves_nothing() {
         assert_eq!(answers_in(&store), 0, "{what}");
     }
 
-    // An ask answer cut short is kept, and says so.
+    // An ask answer cut short by the model is refused (above), never kept with a note.
     let mut store = MemStore::default();
     let mut inf = gateway(vec![message_with("Start with the navy", "max_tokens")]);
-    let out = assistant::ask(&mut store, &mut inf, CONN, T0, &ask_input("Hi", "turn-3002")).await.unwrap();
-    assert_eq!(out["answer"], "Start with the navy [The answer was cut short at this server's length limit.]");
+    let e = assistant::ask(&mut store, &mut inf, CONN, T0, &ask_input("Hi", "turn-3002")).await.unwrap_err();
+    assert!(e.message.contains("cut short at its token limit"), "{}", e.message);
+    assert_eq!(answers_in(&store), 0);
 
     // A call whose outcome is uncertain (a lost connection, or a model slower than the deadline, whose
     // answer arrives after it) saves nothing and keeps its claim for the whole lease: the request may

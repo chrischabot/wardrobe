@@ -163,8 +163,6 @@ pub struct ModelRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelReply {
     pub text: String,
-    /// The model stopped at `max_tokens`.
-    pub truncated: bool,
     pub model: String,
 }
 
@@ -320,6 +318,15 @@ impl<T: Transport> Inference<T> {
             return Err(upstream("the model returned no text".into(), true));
         }
         let model = v["model"].as_str().filter(|m| !m.is_empty() && m.len() <= 128).unwrap_or(&cfg.model).to_string();
-        Ok(ModelReply { text, truncated: v["stop_reason"] == "max_tokens", model })
+        // Only a finished turn is an answer: `end_turn` or `stop_sequence`. `max_tokens` means the model
+        // stopped before the answer was finished, so it is refused like `pause_turn`, `tool_use`,
+        // `refusal` or a missing reason, and nothing is kept.
+        match v["stop_reason"].as_str() {
+            Some("end_turn" | "stop_sequence") => {}
+            Some("max_tokens") => return Err(upstream("the model's answer was cut short at its token limit, so it is not a finished answer".into(), true)),
+            Some(other) => return Err(upstream(format!("the model's turn ended with stop reason '{}', not a finished answer", other.chars().take(40).collect::<String>()), true)),
+            None => return Err(upstream("the model's reply had no stop reason, so it is not known to be a finished answer".into(), true)),
+        }
+        Ok(ModelReply { text, model })
     }
 }

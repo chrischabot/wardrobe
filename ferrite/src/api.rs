@@ -431,6 +431,22 @@ pub fn validate_record(bytes: &[u8], command_id: &str) -> Option<Record> {
                 return None;
             }
         }
+        (Value::Null, "care.washed") => {
+            // The garments that came back clean, each once, and the units: both empty for a noop,
+            // both present for a committed report.
+            let ids = result.get("washed").and_then(Value::as_array).and_then(|a| a.iter().map(|x| x.as_str().filter(|s| !s.is_empty())).collect::<Option<Vec<_>>>());
+            let Some(ids) = ids else { return None };
+            let distinct: std::collections::BTreeSet<&str> = ids.iter().copied().collect();
+            let units = result.get("units").and_then(Value::as_u64);
+            let consistent = match (rc["outcome"].as_str(), units) {
+                (Some("committed"), Some(u)) => !ids.is_empty() && u as usize >= ids.len(),
+                (Some("noop"), Some(0)) => ids.is_empty(),
+                _ => false,
+            };
+            if result.len() != 2 || distinct.len() != ids.len() || !consistent {
+                return None;
+            }
+        }
         (Value::Null, k @ ("board.publish" | "board.select" | "board.swap_slot")) if board_result_ok(k, result) => {}
         (Value::Null, "laundry.collect") => {
             let batch = matches!(result.get("batchId"), Some(Value::Null) | Some(Value::String(_)));
@@ -505,12 +521,12 @@ pub fn validate_record(bytes: &[u8], command_id: &str) -> Option<Record> {
     // a laundry report does unless it changed nothing; a wear report always does, merged or not.
     match (kind.as_str(), &undo) {
         ("care.mark_dirty" | "board.select" | "board.swap_slot", Ok(_)) | ("command.undo" | "board.publish", Err(_)) => {}
-        ("laundry.collect" | "laundry.return", Ok(_)) if rc["outcome"] == "committed" => {}
-        ("laundry.collect" | "laundry.return", Err(_)) if rc["outcome"] == "noop" => {}
+        ("laundry.collect" | "laundry.return" | "care.washed", Ok(_)) if rc["outcome"] == "committed" => {}
+        ("laundry.collect" | "laundry.return" | "care.washed", Err(_)) if rc["outcome"] == "noop" => {}
         ("wear.record", Ok(_)) if rc["outcome"] == "committed" || rc["outcome"] == "merged" => {}
         _ => return None,
     }
-    if rc["outcome"] == "noop" && !kind.starts_with("laundry.") {
+    if rc["outcome"] == "noop" && !kind.starts_with("laundry.") && kind != "care.washed" {
         return None;
     }
     if rc["outcome"] == "merged" && kind != "wear.record" {
@@ -590,7 +606,7 @@ fn undo_data_ok(kind: &str, data: &Value) -> bool {
     let id = |k: &str| d.get(k).and_then(Value::as_str).map_or(false, |s| !s.is_empty());
     let event_ids = |d: &ferrite_app::serde_json::Map<String, Value>| d.get("stockEventIds").and_then(Value::as_array).map_or(false, |ids| !ids.is_empty() && ids.iter().all(|x| x.as_str().map_or(false, |s| !s.is_empty())));
     match kind {
-        "care.mark_dirty" => keys(&["stockEventIds"]) && event_ids(d),
+        "care.mark_dirty" | "care.washed" => keys(&["stockEventIds"]) && event_ids(d),
         "wear.record" => {
             // Each list names each ID once: undo matches them against the journal as sets.
             let list = |k: &str, nonempty: bool| {
@@ -900,7 +916,7 @@ async fn expected_boards<S: Store>(store: &mut S, env: &Envelope) -> Result<Vec<
 
 /// The owner's observations: `expectedVersions` is not checked for them (they are rebased), and the
 /// boards it names are not even read, so an unrelated board can never refuse a wash or wear report.
-const OBSERVATIONS: &[&str] = &["care.mark_dirty", "laundry.collect", "laundry.return", "wear.record"];
+const OBSERVATIONS: &[&str] = &["care.mark_dirty", "care.washed", "laundry.collect", "laundry.return", "wear.record"];
 
 /// Client-stated versions, checked for every command but an observation
 /// (a wash report, a laundry pickup or return is rebased instead, section 5 of the specification).
@@ -961,6 +977,7 @@ async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envel
     let date_of = |b: Option<&board::Board>| b.map_or(String::new(), |b| b.local_date.clone());
     match (env.kind.as_str(), undo_target) {
         ("care.mark_dirty", _) => Ok(Planned::stock(ledger::mark_dirty(ctx, next, &env.payload)?)),
+        ("care.washed", _) => Ok(Planned::stock(ledger::washed(ctx, next, &env.payload)?)),
         ("laundry.collect", _) => Ok(Planned::stock(laundry::collect(ctx, next, &env.payload)?)),
         ("laundry.return", _) => Ok(Planned::stock(laundry::return_batch(ctx, next, &env.payload)?)),
         ("wear.record", _) => Ok(Planned::stock(wear::record(ctx, next, &env.payload, principal.channel, env.occurred_at.is_some())?)),
@@ -992,7 +1009,7 @@ async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envel
             let Some(record) = record else { return Err(CmdError::new("not_found", "there is no such action to undo")) };
             let summary = record.command.summary.clone();
             let mut planned = match record.command.kind.as_str() {
-                "care.mark_dirty" => Planned::stock(ledger::command_undo(ctx, next, Some(&record.command), target)?),
+                "care.mark_dirty" | "care.washed" => Planned::stock(ledger::command_undo(ctx, next, Some(&record.command), target)?),
                 "laundry.collect" => Planned::stock(laundry::undo_collect(ctx, next, &record.command, &data, target)?),
                 "laundry.return" => Planned::stock(laundry::undo_return(ctx, next, &record.command, &data, target)?),
                 "wear.record" => Planned::stock(wear::undo_record(ctx, next, &record.command, &data, target)?),

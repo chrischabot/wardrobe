@@ -10,7 +10,7 @@ behaviour reference until the port reaches parity.
 **Status: the MCP endpoint, the board, service laundry and wear records (milestone 1d).** The owner's
 real inventory can be read, and the ported commands run end to end with
 their receipts and, where the TypeScript service has one, their undo: "it is
-in the wash" (`care.mark_dirty`) and `command.undo` to take
+in the wash" (`care.mark_dirty`), "I washed it" (`care.washed`) and `command.undo` to take
 it back, from the owner's app or a connected assistant, through Ferrite's
 request queue and APE store. A connected assistant such as the Codex plugin
 reaches the same commands through the MCP endpoint (`/mcp`), signing in with
@@ -77,7 +77,7 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `POST /mcp` (OAuth) | the MCP server of `apps/worker/src/mcp`, see below |
 | `/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` | the MCP authorization server, see below |
 
-Commands: `care.mark_dirty`, `board.publish`, `board.select`,
+Commands: `care.mark_dirty`, `care.washed`, `board.publish`, `board.select`,
 `board.swap_slot`, `laundry.collect`, `laundry.return`, `wear.record` and `command.undo`. Each applies at once and
 answers with the receipt of `CommandReceipt` (contract 1.1.0): summary built
 from the ledger, affected entity versions, repairs, result, undo
@@ -261,9 +261,41 @@ receipt's affected records. This happens when a wear, a further unit or a wash
 report (`care.mark_dirty`) takes a unit the ledger had at the laundry back to
 the owner, or when the undo of one of those puts the unit back.
 
+### The owner's own wash (`care.washed`)
+
+As `careWashed` in `handlers/wear-care.ts`, with the `wash` rules of
+`stock/replay.ts`. `items: [{garmentId, quantity?}]` and/or `allOfChannel`
+(`service`, `handwash` or `none`; "Socks washed" is `handwash`): every
+garment of that channel with a unit in the hamper is washed, without a count.
+- **With a count:** that many hamper units come back clean. Any the hamper
+  lacks come back from the laundry, from a bag not named still away first,
+  with a repair on the receipt.
+- **Without a count:** every hamper unit comes back clean. A unit at the
+  laundry comes back only when none of the garment is clean at home. When
+  nothing of a named garment was in the hamper, the units the owner reported
+  still away are back too (`releaseAway`). A channel wash never speaks for
+  still-away units.
+- **Refusals:** a never-laundered piece is refused (`precondition_failed`).
+  Unknown garments, unknown fields, an unknown channel, a count outside 1 to
+  999, or neither `items` nor `allOfChannel` are refused too. None of these
+  writes anything.
+- **Receipt:** it lists only the garments that moved (`result: {washed,
+  units}`).
+- **Deviation:** a report that moved nothing is a `noop` with nothing
+  written. The TypeScript service commits it and lists the garments as
+  washed.
+- **Routine observation:** a connected assistant runs it directly, and
+  `expectedVersions` is not checked for it.
+- **Undo:** exact or refused, like a wash report. If voiding the report
+  would change what any other report moved or repaired, it is refused; for
+  example, while a later uncounted wash of the same garment stands. A bag
+  it took a unit from moves to a new version, and the undo puts the unit
+  back.
+- **Not ported:** units reported lost and laundry exceptions (`leftAsLost`
+  and `exceptionsSettled` in TypeScript), and washing on a trip.
+
 Not ported: lost, delayed and missed-return exceptions
-(`laundry.report_exception`), the weekly laundry reset, and hand-wash
-reports (`care.washed`). A unit recorded as worn on the day of a pickup or a
+(`laundry.report_exception`) and the weekly laundry reset. A unit recorded as worn on the day of a pickup or a
 no-pickup return, or later, is on the owner, not in the hamper, so it is not
 collected or washed (as `collectableQuantities`), and neither is a further
 unit recorded for those days; with no owner timezone
@@ -432,8 +464,9 @@ reading: `url` is refused (`module_unavailable`), the model is told it has no
 live prices, stock or reviews, a `history` or `purchases` answer cites the
 wardrobe records it read, and a `product` or `general` answer cites nothing.
 Research answers must be the agreed JSON (`verdict`, `summary`,
-`comparison`); anything else, or an answer cut short, is refused and not
-kept. An ask answer cut short is kept with a note saying so.
+`comparison`); anything else is refused and not kept. A turn the model did
+not finish (stop reason `max_tokens`, `pause_turn`, `tool_use`, `refusal`, or
+none) is refused for ask and research alike, and nothing is kept.
 
 Each request is a durable run (`conversation_turn` or `research`) keyed by
 the connection and the client's ID. Before the model is called, the run is
@@ -464,8 +497,7 @@ calling the model. That check bounds only how long this server waits. (Across
 several instances this assumes their clocks agree to well under a second.)
 `mode: "start"` is answered like `wait`. Research comparison rows must be
 flat (string, number, boolean or null values), and an ask answer longer than
-8000 characters is kept cut short with the same note as one the model cut
-short.
+8000 characters is kept cut short with a note saying so.
 
 `tests/assistant.rs` checks all of this with a labelled test double standing
 in for the egress handle and the gateway; the live gateway has not been
@@ -475,8 +507,10 @@ called.
 
 A run is the durable record of a long operation, kept at `u/<runId>`
 (`runs.ts`, the `api` provider). The runs written are recommendation runs,
-conversation turns and research runs, and they finish inside their request,
-so every run is completed. A stored record is returned only when it is
+conversation turns and research runs. A recommendation run is completed
+inside its request. An assistant run is `running` while its claim's lease
+holds, `completed` once its answer is saved, and `failed` (error
+`interrupted`) after a released or expired claim. A stored record is returned only when it is
 exactly the record its writer writes (the same fields, none missing and none
 extra, each of its type, its two times and the result's read time one
 instant, the result checked as its writer writes it); anything else is
@@ -647,8 +681,9 @@ small change of its own, and passes `ferrite check`, `ferrite test` and
    Next the Codex plugin
    (`integrations/codex`) is pointed at this app.
 2. **Ledger.** The rest of the command service in `packages/domain`, one
-   command at a time: garments (create, correct, aliases, merge, move,
-   retire), wear amendments, washes, the
+   command at a time. Done: the owner's own wash (`care.washed`). Next:
+   garments (create, correct, aliases, merge, move,
+   retire), wear amendments, the
    weekly laundry reset, restrictions, owner settings, the availability
    estimator, and multi-owner storage with a compacted, sharded journal.
    Sign-in with `packages/auth`, account recovery, and portable export and
