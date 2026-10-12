@@ -247,7 +247,7 @@ function jacketWanted(ctx: RecommendationContext, index: number, smart: boolean)
   return false;
 }
 
-function chooseOuter(ctx: RecommendationContext, pools: Pools, top: PoolGarment, bottom: PoolGarment, usage: BoardUsage, seed: string, lockedOthers: (PoolGarment | undefined)[], shoes: PoolGarment[]): PoolGarment | undefined {
+function chooseOuter(ctx: RecommendationContext, pools: Pools, top: PoolGarment, bottom: PoolGarment, usage: BoardUsage, seed: string, lockedOthers: (PoolGarment | undefined)[], shoes: PoolGarment[], socks: PoolGarment[]): PoolGarment | undefined {
   const band = ctx.rules.jacketBand;
   const t = ctx.conditions.departureC;
   // Inside the 14-16 C band - or when the outdoor temperature is unknown and the band cannot be ruled
@@ -259,7 +259,15 @@ function chooseOuter(ctx: RecommendationContext, pools: Pools, top: PoolGarment,
   // from would then be the third piece in one neutral (a navy jacket over navy trousers with only navy
   // shoes eligible), while another jacket leaves a shoe within the limit.
   const leavesShoe = shoes.length === 0 ? within : within.filter((g) => shoes.some((f) => !exceedsNeutralLimit(ctx, f, [g, top, bottom, ...lockedOthers])));
-  return pick(leavesShoe.length > 0 ? leavesShoe : within, (g) => {
+  // Socks are chosen last and the limit counts them too (profile rule 1: socks always), so a jacket is
+  // preferred that leaves a shoe AND a pair of socks within the limit: over a navy shirt with only navy
+  // socks, a navy jacket would leave the sock as the third navy piece.
+  const leavesShoeAndSock = socks.length === 0 ? leavesShoe : leavesShoe.filter((g) => {
+    const base = [g, top, bottom, ...lockedOthers];
+    const shoeChoices: (PoolGarment | undefined)[] = shoes.length === 0 ? [undefined] : shoes.filter((f) => !exceedsNeutralLimit(ctx, f, base));
+    return shoeChoices.some((f) => socks.some((s) => !exceedsNeutralLimit(ctx, s, [...base, f])));
+  });
+  return pick(leavesShoeAndSock.length > 0 ? leavesShoeAndSock : leavesShoe.length > 0 ? leavesShoe : within, (g) => {
     let s = seasonFit(g, t) * 1.5 + rotation(ctx, g) - (usage.outers.get(g.garmentId) ?? 0) * 2.5 + seededUnit(seed, g.garmentId) * 0.6;
     if (g.colourFamily === bottom.colourFamily) s -= 0.6;
     if (g.attributes.fitNote) s -= 0.5;
@@ -275,7 +283,7 @@ function buildOutfit(ctx: RecommendationContext, pools: Pools, top: PoolGarment,
   const paired = ctx.rules.pairedFootwear?.inForce === true;
   const sneakers = pools.footwear.filter((g) => g.attributes.footwearKind === "sneaker");
   const shoePool = paired && sneakers.length > 0 ? sneakers : pools.footwear;
-  const outer = locked.get("outer") ?? (jacketWanted(ctx, usage.index, smart) ? chooseOuter(ctx, pools, top, bottom, usage, seed, fixed, locked.has("footwear") ? [] : shoePool) : undefined);
+  const outer = locked.get("outer") ?? (jacketWanted(ctx, usage.index, smart) ? chooseOuter(ctx, pools, top, bottom, usage, seed, fixed, locked.has("footwear") ? [] : shoePool, locked.has("socks") ? [] : pools.socks) : undefined);
   if (outer) slots.push({ role: "outer", garmentId: outer.garmentId });
   slots.push({ role: "top", garmentId: top.garmentId }, { role: "bottom", garmentId: bottom.garmentId });
 
@@ -311,8 +319,12 @@ function buildOutfit(ctx: RecommendationContext, pools: Pools, top: PoolGarment,
     pools.socks.some((s) => (!sockClass || s.attributes.fabricClass === sockClass) && s.colourFamily !== "unknown" && upper.has(s.colourFamily) && s.colourFamily !== bottom.colourFamily && !exceedsNeutralLimit(ctx, s, [...worn, shoe]));
   const keepingSockEcho = (shoes: PoolGarment[]): PoolGarment[] => {
     if (locked.has("socks")) return shoes;
-    const kept = shoes.filter(leavesSockEcho);
-    return kept.length > 0 ? kept : shoes;
+    // First, a shoe that leaves some pair of socks within the neutral limit at all (socks are always worn):
+    // under beige chinos with only beige socks, a beige shoe would make the sock the third beige piece.
+    const leavingSock = shoes.filter((shoe) => pools.socks.some((s) => !exceedsNeutralLimit(ctx, s, [...worn, shoe])));
+    const base = leavingSock.length > 0 ? leavingSock : shoes;
+    const kept = base.filter(leavesSockEcho);
+    return kept.length > 0 ? kept : base;
   };
   const footwear = locked.get("footwear") ?? pick(keepingSockEcho(withinNeutralLimit(ctx, shoePool, worn)), footwearScore);
   if (!footwear) return null;

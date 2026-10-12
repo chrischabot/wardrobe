@@ -376,6 +376,12 @@
           "maximum": 9007199254740991,
           "minimum": -9007199254740991,
           "type": "integer"
+        },
+        "withLocation": {
+          "enum": [
+            "true"
+          ],
+          "type": "string"
         }
       },
       "type": "object"
@@ -1349,6 +1355,10 @@
           ],
           "type": "string"
         },
+        "requestFingerprint": {
+          "pattern": "^[0-9a-f]{16}$",
+          "type": "string"
+        },
         "requestedCount": {
           "maximum": 8,
           "minimum": 1,
@@ -2121,6 +2131,10 @@
             "rebuild",
             "resume"
           ],
+          "type": "string"
+        },
+        "requestFingerprint": {
+          "pattern": "^[0-9a-f]{16}$",
           "type": "string"
         },
         "requestedCount": {
@@ -2950,6 +2964,16 @@
     },
     "CommandGarmentBulkCorrect": {
       "properties": {
+        "acknowledgedRestrictionIds": {
+          "items": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "type": "array"
+        },
         "changes": {
           "properties": {
             "attributes": {
@@ -3041,6 +3065,16 @@
     },
     "CommandGarmentCorrect": {
       "properties": {
+        "acknowledgedRestrictionIds": {
+          "items": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "type": "array"
+        },
         "changes": {
           "properties": {
             "attributes": {
@@ -8793,6 +8827,9 @@
         "formatVersion": {
           "type": "string"
         },
+        "includesLocation": {
+          "type": "boolean"
+        },
         "requestedAt": {
           "$ref": "#/$defs/Instant"
         },
@@ -8895,6 +8932,9 @@
           "maxLength": 128,
           "minLength": 8,
           "type": "string"
+        },
+        "includeLocation": {
+          "type": "boolean"
         },
         "passphrase": {
           "maxLength": 1024,
@@ -9751,6 +9791,16 @@
     },
     "GarmentBulkCorrect": {
       "properties": {
+        "acknowledgedRestrictionIds": {
+          "items": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "type": "array"
+        },
         "changes": {
           "properties": {
             "attributes": {
@@ -9842,6 +9892,16 @@
     },
     "GarmentCorrect": {
       "properties": {
+        "acknowledgedRestrictionIds": {
+          "items": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "type": "array"
+        },
         "changes": {
           "properties": {
             "attributes": {
@@ -16685,6 +16745,16 @@
     },
     "ProposalDecisionRequest": {
       "properties": {
+        "acknowledgedRestrictionIds": {
+          "items": {
+            "maxLength": 64,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 20,
+          "minItems": 1,
+          "type": "array"
+        },
         "decision": {
           "enum": [
             "confirm",

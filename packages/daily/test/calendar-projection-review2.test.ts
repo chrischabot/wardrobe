@@ -191,7 +191,7 @@ describe("a missing event is fenced before anything is concluded from its absenc
     expect(row).toEqual({ state: "projected", suppression_reason: null });
   });
 
-  it("SYNTHETIC: an ID taken although no event can be read under it counts as fenced, so the removal completes instead of retrying forever", async () => {
+  it("SYNTHETIC: an ID taken although no event can be read under it counts as fenced once the same observation repeats after the confirmation time, so the removal completes instead of retrying forever", async () => {
     const { h, owner } = await setup();
     await compose(h, owner, DAY);
     expect(await run(h)).toEqual(["projected"]);
@@ -200,11 +200,14 @@ describe("a missing event is fenced before anything is concluded from its absenc
     h.calendar.externalDelete(owner.userId, OUTFIT_CALENDAR, event.eventId, { reserveId: true });
     h.clock.advanceMinutes(2);
     await owner.exec("service.pause", { from: DAY, resumeOn: null });
+    // The first observation could be a read missing a live event for a moment: nothing is concluded yet.
+    expect(await run(h)).toEqual(["retry"]);
+    h.clock.advanceMinutes(6);
     expect(await run(h)).toEqual(["removed"]);
     const inserts = h.calendar.log.filter((l) => l.op === "insertEvent");
-    expect(inserts.map((l) => l.reason)).toEqual([null, "duplicate"]); // the first delivery, then one claim attempt
-    const row = await first<{ state: string; uncertain_calendars: string | null }>(h.db, "SELECT state, uncertain_calendars FROM calendar_projections WHERE user_id = ?", owner.userId);
-    expect(row).toEqual({ state: "suppressed", uncertain_calendars: null });
+    expect(inserts.map((l) => l.reason)).toEqual([null, "duplicate", "duplicate"]); // the first delivery, then one claim attempt per run
+    const row = await first<{ state: string; uncertain_calendars: string | null; duplicate_missing: string | null }>(h.db, "SELECT state, uncertain_calendars, duplicate_missing FROM calendar_projections WHERE user_id = ?", owner.userId);
+    expect(row).toEqual({ state: "suppressed", uncertain_calendars: null, duplicate_missing: null });
   });
 
   it("SYNTHETIC: a write of ours that may still land under an earlier event ID in this calendar is fenced, and an event of ours standing there is removed, before the day is projected", async () => {
@@ -360,6 +363,32 @@ describe("a missing event is fenced before anything is concluded from its absenc
     expect(await run(h)).toEqual(["removed"]);
     expect(hidden).toBe(true);
     // A restore patch of ours conditioned on the cancelled event's etag cannot land any more.
+    await expect(h.calendar.patchEvent(owner.userId, OUTFIT_CALENDAR, event.eventId, { status: "confirmed" }, cancelledEtag)).rejects.toMatchObject({ detail: { reason: "precondition" } });
+  });
+
+  it("SYNTHETIC: a fence patch on a cancelled event that answers success without moving its etag is not taken as a fence", async () => {
+    const { h, owner } = await setup();
+    await compose(h, owner, DAY);
+    expect(await run(h)).toEqual(["projected"]);
+    const event = live(h, owner)[0]!;
+    await markUncertain(h, owner, event.eventId);
+    h.calendar.externalDelete(owner.userId, OUTFIT_CALENDAR, event.eventId);
+    const cancelledEtag = h.calendar.allEvents(owner.userId, OUTFIT_CALENDAR).find((e) => e.eventId === event.eventId)!.etag;
+    // TEST FAKE: the first fence patch answers success but changes nothing, so the etag stays where it was.
+    const patchEvent = h.calendar.patchEvent.bind(h.calendar);
+    let swallowed = false;
+    h.calendar.patchEvent = async (userId, calendarId, eventId, write, etag) => {
+      if (!swallowed && eventId === event.eventId) {
+        swallowed = true;
+        return (await h.calendar.getEvent(userId, calendarId, eventId))!;
+      }
+      return patchEvent(userId, calendarId, eventId, write, etag);
+    };
+    h.clock.advanceMinutes(2);
+    await owner.exec("service.pause", { from: DAY, resumeOn: null });
+    expect(await run(h)).toEqual(["removed"]);
+    expect(swallowed).toBe(true);
+    // The fence was written again and verified: a late restore of ours against the cancelled event's etag fails.
     await expect(h.calendar.patchEvent(owner.userId, OUTFIT_CALENDAR, event.eventId, { status: "confirmed" }, cancelledEtag)).rejects.toMatchObject({ detail: { reason: "precondition" } });
   });
 });

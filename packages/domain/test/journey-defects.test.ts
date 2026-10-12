@@ -21,6 +21,9 @@ const item = (batch: Awaited<ReturnType<typeof batchOf>>, garmentId: string) => 
 const openExceptions = async (h: Harness, owner: TestOwner) => (await getLaundryState(h.db, owner.principal())).exceptions.map((e) => [e.kind, e.garmentId, e.quantity]);
 const basisOf = async (h: Harness, owner: TestOwner, garmentId: string) =>
   (await getAvailability(h.db, owner.principal(), { nowMs: h.clock.now() })).garments.find((g) => g.garmentId === garmentId)!.basis.join(" | ");
+/** Clean units the estimator counts as observed (a report, a return or the owner's own record), not inferred. */
+const observedOf = async (h: Harness, owner: TestOwner, garmentId: string) =>
+  (await getAvailability(h.db, owner.principal(), { nowMs: h.clock.now() })).garments.find((g) => g.garmentId === garmentId)!.cleanObserved;
 
 /** Two shirts worn on Monday and collected on Friday; the clock is left at Saturday's return. */
 async function collected(): Promise<{ h: Harness; owner: TestOwner }> {
@@ -183,6 +186,10 @@ describe("D03-3: the availability basis never calls an inference an observation"
     const inferred = await basisOf(h, owner, "shirt-gold");
     expect(inferred).toMatch(/^1 clean unit at home; counted clean by the weekly laundry baseline, an estimate: no wash or return was reported/);
     expect(inferred).not.toMatch(/observed/i);
+    // The count of observed clean units agrees with the basis: an inferred unit is not counted as observed.
+    expect(await observedOf(h, owner, "shirt-gold")).toBe(0);
+    expect(await observedOf(h, owner, "trouser-navy")).toBe(1);
+    expect(await observedOf(h, owner, "shirt-moss")).toBe(1);
     // One of the two pairs was never worn: only the other is an estimate.
     expect(await basisOf(h, owner, "trouser-navy")).toMatch(/^2 clean units at home; 1 of them counted clean by the weekly laundry baseline/);
     // A shirt nobody wore was recorded clean by the owner and has not moved.
@@ -190,6 +197,7 @@ describe("D03-3: the availability basis never calls an inference an observation"
 
     await owner.exec("care.washed", { items: [{ garmentId: "shirt-gold" }] });
     expect(await basisOf(h, owner, "shirt-gold")).toBe("1 clean unit at home (observed ledger balance)");
+    expect(await observedOf(h, owner, "shirt-gold")).toBe(1);
   });
 });
 

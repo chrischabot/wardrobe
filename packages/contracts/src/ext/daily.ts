@@ -423,6 +423,13 @@ export const BoardPublish = z.object({
    * never replaces a board the owner made or changed while it was composing.
    */
   expectedBoardRevision: z.number().int().min(0).optional(),
+  /**
+   * Identity of the board request that composed this publication (16 hex characters): what it asked for,
+   * hashed. A retry of the same request is answered from this publication; the same request ID with a
+   * different fingerprint is refused. Recorded in the command, so the request ID's unique command key
+   * makes the check atomic.
+   */
+  requestFingerprint: z.string().regex(/^[0-9a-f]{16}$/).optional(),
 });
 
 /** Choose records an intention, never a wear. `optionId: null` clears the selection. */

@@ -407,6 +407,64 @@ describe("one neutral at most twice: the jacket is chosen with the shoe in mind"
     expect(v.violations.map((x) => x.code)).not.toContain("neutral_three_times");
   });
 
+  it("SYNTHETIC: over a navy shirt with only navy socks, the navy jacket that leaves a grey shoe but no sock within the limit is passed over for the olive one", async () => {
+    const h = await createDailyHarness({ startAt: "2026-09-15T07:30:00Z", isolate: true });
+    const garments = [
+      BASE[0]!, // navy shirt
+      BASE[1]!, // beige chinos
+      BASE[2]!, // navy jacket
+      BASE[3]!, // olive jacket
+      { ...BASE[4]!, id: "sock-navy", name: "navy merino socks", colour: "Navy" },
+      BASE[5]!,
+      { ...BASE[6]!, id: "shoe-grey", name: "grey sneakers", colour: "Grey" },
+    ];
+    const owner = await syntheticOwner(h, { garments: garments as never });
+    await owner.exec("style.upsert_rule", NEUTRAL_RULE);
+    // The olive jacket was worn nine days ago, which ranks it below the navy one whatever the seed.
+    await owner.exec("wear.record", { wearingDate: "2026-09-07", garmentIds: ["jacket-olive"] });
+    h.weather.setForecast("2026-09-16", MILD_DAY); // 12 C at departure: a jacket is worn
+    const o = (await compose(h, owner, "2026-09-16", { count: 1 })).board!.options[0]!;
+    expect(piece(o, "outer")?.garmentId).toBe("jacket-olive");
+    expect(piece(o, "socks")!.garmentId).toBe("sock-navy");
+    const v = await validateOutfit(h.db, owner.principal(), { forDate: "2026-09-16", nowMs: h.clock.now(), slots: o.garments.map((g) => ({ role: g.role, garmentId: g.garmentId })) as never });
+    expect(v.violations.map((x) => x.code)).not.toContain("neutral_three_times");
+  });
+
+  it("SYNTHETIC control: with a green sock to choose as well, the higher-ranked navy jacket is kept over the navy shirt", async () => {
+    const h = await createDailyHarness({ startAt: "2026-09-15T07:30:00Z", isolate: true });
+    const garments = [BASE[0]!, BASE[1]!, BASE[2]!, BASE[3]!, BASE[4]!, { ...BASE[4]!, id: "sock-navy", name: "navy merino socks", colour: "Navy" }, BASE[5]!, { ...BASE[6]!, id: "shoe-grey", name: "grey sneakers", colour: "Grey" }];
+    const owner = await syntheticOwner(h, { garments: garments as never });
+    await owner.exec("style.upsert_rule", NEUTRAL_RULE);
+    await owner.exec("wear.record", { wearingDate: "2026-09-07", garmentIds: ["jacket-olive"] });
+    h.weather.setForecast("2026-09-16", MILD_DAY);
+    const o = (await compose(h, owner, "2026-09-16", { count: 1 })).board!.options[0]!;
+    expect(piece(o, "outer")!.garmentId).toBe("jacket-navy");
+    expect(piece(o, "socks")!.garmentId).toBe("sock-green");
+  });
+
+  it("SYNTHETIC: with only beige socks under beige chinos, the higher-ranked beige shoe is passed over for the navy one, so the sock is not the third beige piece", async () => {
+    const h = await createDailyHarness({ startAt: "2026-09-15T07:30:00Z", isolate: true });
+    const garments = [
+      BASE[0]!, // navy shirt
+      BASE[1]!, // beige chinos
+      { ...BASE[3]!, id: "jacket-grey", name: "grey field jacket", colour: "Grey" },
+      { ...BASE[4]!, id: "sock-beige", name: "beige merino socks", colour: "Beige" },
+      BASE[5]!,
+      BASE[6]!, // navy sneakers
+      { ...BASE[6]!, id: "shoe-beige", name: "beige sneakers", colour: "Beige" },
+    ];
+    const owner = await syntheticOwner(h, { garments: garments as never });
+    await owner.exec("style.upsert_rule", NEUTRAL_RULE);
+    // The navy pair was worn nine days ago, which ranks it below the beige pair whatever the seed.
+    await owner.exec("wear.record", { wearingDate: "2026-09-07", garmentIds: ["shoe-navy"] });
+    h.weather.setForecast("2026-09-16", MILD_DAY);
+    const o = (await compose(h, owner, "2026-09-16", { count: 1 })).board!.options[0]!;
+    expect(piece(o, "footwear")!.garmentId).toBe("shoe-navy");
+    expect(piece(o, "socks")!.garmentId).toBe("sock-beige");
+    const v = await validateOutfit(h.db, owner.principal(), { forDate: "2026-09-16", nowMs: h.clock.now(), slots: o.garments.map((g) => ({ role: g.role, garmentId: g.garmentId })) as never });
+    expect(v.violations.map((x) => x.code)).not.toContain("neutral_three_times");
+  });
+
   it("SYNTHETIC control: with a grey shoe to choose, the higher-ranked navy jacket is kept", async () => {
     const h = await createDailyHarness({ startAt: "2026-09-15T07:30:00Z", isolate: true });
     const owner = await syntheticOwner(h, { garments: [...BASE, { ...BASE[6]!, id: "shoe-grey", name: "grey sneakers", colour: "Grey" }] as never });

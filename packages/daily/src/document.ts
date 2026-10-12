@@ -12,6 +12,11 @@ import { latestCalendarSnapshot, loadOwner, weatherSnapshotById, calendarSnapsho
 /** Beyond these ages a source no longer counts as the day's forecast or calendar, whatever its label said when it was read. */
 export const FORECAST_OUTDATED_MINUTES = 12 * 60;
 export const CALENDAR_OUTDATED_MINUTES = 24 * 60;
+/**
+ * The note a Calendar projection effect carries while it is kept pending only to clean up an event of ours in
+ * an earlier outfit calendar: the board itself is delivered, so its projection does not read as pending.
+ */
+export const CALENDAR_CLEANUP_PENDING = "delivered; an event of ours in an earlier outfit calendar is still to be cleaned up";
 const MAX_PHASE_ATTEMPTS_FOR_NOTICE = 5;
 
 export interface BoardRow {
@@ -199,7 +204,8 @@ export async function buildBoardDocument(db: Db, userId: string, board: BoardRow
 
   const targetKey = `outfit-event:${board.scope}:${board.local_date}`;
   const projection = await first<{ state: string; projected_revision: number | null }>(db, "SELECT state, projected_revision FROM calendar_projections WHERE user_id = ? AND target_key = ?", userId, targetKey);
-  const pendingEffect = await first<{ n: number }>(db, "SELECT COUNT(*) AS n FROM effects WHERE user_id = ? AND kind = 'calendar.project_board' AND target_key = ? AND state IN ('pending', 'in_progress')", userId, targetKey);
+  // A projection kept pending only to clean up an event of ours in an earlier calendar does not make this board's projection pending.
+  const pendingEffect = await first<{ n: number }>(db, "SELECT COUNT(*) AS n FROM effects WHERE user_id = ? AND kind = 'calendar.project_board' AND target_key = ? AND state IN ('pending', 'in_progress') AND (last_error IS NULL OR last_error != ?)", userId, targetKey, CALENDAR_CLEANUP_PENDING);
   let projectionState: BoardDocument["calendarProjection"]["state"] = "not_requested";
   const hasPendingEffect = (pendingEffect?.n ?? 0) > 0;
   if (projection?.state === "suppressed" || projection?.state === "not_connected") projectionState = projection.state;

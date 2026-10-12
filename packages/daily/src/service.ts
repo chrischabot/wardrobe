@@ -163,6 +163,53 @@ export async function prepareBoard(deps: DailyDeps, principal: Principal, opts: 
   const scope = opts.scope ?? "home";
   const parsed = parseScope(scope);
   const brief = DayBrief.parse({ ...(opts.brief ?? {}), ...(parsed.evening ? { segment: "evening" } : {}) });
+  // A repeat of a request that already published is answered from what it published, never recomposed
+  // (composition is not deterministic and may call the model again); the same request ID used for a
+  // different board request is refused instead of silently returning another request's board. Both are
+  // decided before anything is fetched or recorded.
+  const fingerprint = await requestFingerprint(opts, scope, brief);
+  const replay = async (prior: PriorPublication): Promise<PrepareBoardResult> => {
+    if (!sameRequest(prior, fingerprint)) throw new CommandError("idempotency_key_reuse", "this request ID was already used for a different board request", { commandId: prior.commandId });
+    // The board as that publication left it (its revision), never a later revision another request made.
+    const board = await loadBoard(deps.db, principal.userId, { date: opts.localDate, scope });
+    const revision = Number((prior.receipt?.result as any)?.revision);
+    const doc = board && Number.isInteger(revision) && revision > 0 ? await buildBoardDocument(deps.db, principal.userId, board, revision) : null;
+    return { board: doc, receipt: prior.receipt ? ({ ...prior.receipt, replayed: true } as CommandReceipt) : null, note: prior.payload.notice ?? null, requestedCount: Number(prior.payload.requestedCount ?? 0), diagnostics: null };
+  };
+  /**
+   * Request-ID ownership: the one rule every path follows.
+   *
+   * A board request owns the key `${id}:1`, the key of its first publication. That key is claimed by the
+   * board-changing command itself: the command ledger's unique (user, idempotency key), written in the same
+   * transaction as the board revision, so claim and change are one atomic step and a refused claim changes
+   * nothing. This covers a composed publication, an emptied board and keeping and rechecking the owner's
+   * board (`reviseBoard` publishes under the same key). `answerIfClaimed` reads the key before anything is
+   * fetched or composed, after every refused claim, and before a request ends without a publication of its
+   * own (before and after keeping the owner's board): held by any other kind of command, or by a different
+   * board request, it refuses with the standard `idempotency_key_reuse`; held by this same request, it
+   * answers from that request's own publication at the revision it published.
+   */
+  const answerIfClaimed = async (): Promise<PrepareBoardResult | null> => {
+    const held = await priorPublication(deps.db, principal.userId, opts.idempotencyKey); // refuses a key held by another kind of command
+    return held ? replay(held) : null;
+  };
+  const claimedAtStart = await answerIfClaimed();
+  if (claimedAtStart) return claimedAtStart;
+  /** Ends a request that has not (yet) published under its key: refused or answered if the key was claimed meanwhile. */
+  const unlessTaken = async (result: PrepareBoardResult | (() => Promise<PrepareBoardResult>)): Promise<PrepareBoardResult> => {
+    if (committed === 0) {
+      const claimed = await answerIfClaimed();
+      if (claimed) return claimed;
+    }
+    if (typeof result !== "function") return result;
+    // Keeping the owner's board publishes under this request's key (atomic); if it published nothing, the key is read once more.
+    const out = await result();
+    if (committed === 0) {
+      const claimed = await answerIfClaimed();
+      if (claimed) return claimed;
+    }
+    return out;
+  };
   // A scheduled run states which board it is composing over. If the owner makes, changes or chooses
   // from the day's board while it composes, its publication is refused and the owner's board is
   // revalidated in place instead (see `keepOwnersBoard`). The owner's own requests are not guarded:
@@ -186,9 +233,24 @@ export async function prepareBoard(deps: DailyDeps, principal: Principal, opts: 
     if (!current) return { ...result, board: null, receipt: null, note: why };
     if (current.status === "active") {
       try {
-        await reviseBoard(deps, principal, current, { nowMs, reason: "refresh", ...(weather.freshness !== "unavailable" ? { weather } : {}), ...(calendar ? { calendar } : {}), force: true, idempotencyKey: `${opts.idempotencyKey}:keep:r${current.current_revision}` });
+        // Published under this request's own attempt key and fingerprint: the unique command key decides
+        // atomically whether this request owns the request ID, exactly as a composed publication does.
+        const revised = await reviseBoard(deps, principal, current, { nowMs, reason: "refresh", ...(weather.freshness !== "unavailable" ? { weather } : {}), ...(calendar ? { calendar } : {}), force: true, idempotencyKey: `${opts.idempotencyKey}:${committed + 1}`, requestFingerprint: fingerprint });
+        if (revised.action !== "none") {
+          committed++;
+          // Answered from its own publication, at the revision it published (another request may publish meanwhile).
+          const own = await priorPublication(deps.db, principal.userId, opts.idempotencyKey);
+          const board = await loadBoard(deps.db, principal.userId, { date: opts.localDate, scope });
+          return { ...result, board: board ? await buildBoardDocument(deps.db, principal.userId, board, revised.revision) : null, receipt: own?.receipt ?? null, note: why };
+        }
       } catch (e) {
-        if (!isCommandError(e)) throw e; // left as the owner made it; the next phase revalidates it
+        if (!isCommandError(e)) throw e;
+        if (e.code === "idempotency_key_reuse") {
+          const claimed = await answerIfClaimed();
+          if (claimed) return claimed;
+          throw e;
+        }
+        // Otherwise left as the owner made it; the next phase revalidates it.
       }
     }
     const after = await loadBoard(deps.db, principal.userId, { date: opts.localDate, scope });
@@ -196,12 +258,19 @@ export async function prepareBoard(deps: DailyDeps, principal: Principal, opts: 
   };
 
   let last: PrepareBoardResult = { board: null, receipt: null, note: null, requestedCount: 0, diagnostics: null };
+  // The newest publication this request committed: a later attempt that publishes nothing never hides it.
+  let published: PrepareBoardResult | null = null;
+  // Publications this request has committed. Its first publication is always keyed `${id}:1`, whatever the
+  // attempt (a refused attempt records nothing), so that one unique command key decides which request owns
+  // the request ID; a later key is used only after this request committed under `${id}:1`.
+  let committed = 0;
+  const settled = (fallback: PrepareBoardResult): PrepareBoardResult => (published ? { ...published, note: fallback.note ?? published.note } : fallback);
   for (let attempt = 1; attempt <= 3; attempt++) {
     const rc = await assembleContext(deps.db, principal, { localDate: opts.localDate, nowMs, scope, brief, weather, calendar, comfort, repeatExceptions });
     const keep = (opts.keep ?? []).map((o) => storedToComposed(rc, o)).filter((o) => o.validation.valid);
     const composed = await composeBoard(rc, { count: opts.count, model: modelOf(deps, principal), modelBudgetMs: Math.max(0, modelBudgetMs - (budgetClock.now() - startedAt)), budgetClock, maxModelAttempts: deps.maxModelAttempts ?? 2, deadlineAtMs: nowMs + 120_000, approved, keep, avoidTops: opts.avoidTops });
     last = { board: null, receipt: null, note: composed.notice, requestedCount: composed.requestedCount, diagnostics: composed.diagnostics };
-    if (composed.options.length === 0) return last;
+    if (composed.options.length === 0) return unlessTaken(settled(last));
     try {
       const receipt = await execAs(deps, principal, "board.publish", {
         localDate: opts.localDate,
@@ -216,27 +285,89 @@ export async function prepareBoard(deps: DailyDeps, principal: Principal, opts: 
         notice: composed.notice,
         composedAgainst: { wardrobeRevision: rc.revisions.wardrobeRevision, styleRevision: rc.revisions.styleRevision },
         ...(expectedRevision !== undefined ? { expectedBoardRevision: expectedRevision } : {}),
-      }, `${opts.idempotencyKey}:${attempt}`);
+        requestFingerprint: fingerprint,
+      }, `${opts.idempotencyKey}:${committed + 1}`);
+      committed++;
+      if (receipt.replayed) {
+        // The command service answered with a publication already recorded under this key (an identical
+        // request running concurrently): answered from that publication, at the revision it published.
+        const claimed = await answerIfClaimed();
+        if (claimed) return claimed;
+      }
       if (expectedRevision !== undefined && typeof (receipt.result as any)?.revision === "number") expectedRevision = (receipt.result as any).revision;
       const board = await loadBoard(deps.db, principal.userId, { date: opts.localDate, scope });
-      last = { board: board ? await buildBoardDocument(deps.db, principal.userId, board) : null, receipt, note: composed.notice, requestedCount: composed.requestedCount, diagnostics: composed.diagnostics };
+      // Pinned to the revision this publication made: another request may publish between the two reads.
+      const ownRevision = Number((receipt.result as any)?.revision);
+      last = { board: board ? await buildBoardDocument(deps.db, principal.userId, board, Number.isInteger(ownRevision) && ownRevision > 0 ? ownRevision : undefined) : null, receipt, note: composed.notice, requestedCount: composed.requestedCount, diagnostics: composed.diagnostics };
+      published = last;
       const dropped = ((receipt.result as any)?.dropped ?? []) as unknown[];
       // Something went stale between composition and publication: recompose once more from the new state.
       if (dropped.length > 0 && Number((receipt.result as any)?.offered ?? 0) < composed.options.length && !receipt.replayed) continue;
       return last;
     } catch (e) {
       if (isCommandError(e) && e.code === "idempotency_key_reuse") {
-        // The same request was already published; return what is there now.
-        const board = await loadBoard(deps.db, principal.userId, { date: opts.localDate, scope });
-        return { ...last, board: board ? await buildBoardDocument(deps.db, principal.userId, board) : null };
+        // The claim was refused: the key is held by this same request (answered) or by anything else (refused).
+        const claimed = await answerIfClaimed();
+        if (claimed) return claimed;
+        throw e;
       }
       if (isCommandError(e) && e.code === "precondition_failed" && (e.details as any)?.dropped) continue; // every candidate went stale: recompose
-      if (isCommandError(e) && e.code === "precondition_failed" && (e.details as any)?.boardChanged) return keepOwnersBoard(last, "The day's board was made or changed while this one was being prepared; the existing board was kept and rechecked.");
-      if (isCommandError(e) && e.code === "precondition_failed" && (e.details as any)?.selectionWouldBeLost) return keepOwnersBoard(last, "An outfit was chosen while the board was being refreshed; the board was rechecked around that choice instead of recomposed.");
+      if (isCommandError(e) && e.code === "precondition_failed" && (e.details as any)?.boardChanged) return unlessTaken(() => keepOwnersBoard(last, "The day's board was made or changed while this one was being prepared; the existing board was kept and rechecked."));
+      if (isCommandError(e) && e.code === "precondition_failed" && (e.details as any)?.selectionWouldBeLost) return unlessTaken(() => keepOwnersBoard(last, "An outfit was chosen while the board was being refreshed; the board was rechecked around that choice instead of recomposed."));
+      // Any other refused precondition after this request's own earlier attempt published: what it published stands.
+      if (published && isCommandError(e) && e.code === "precondition_failed") return settled(last);
       throw e;
     }
   }
-  return last;
+  return unlessTaken(settled(last));
+}
+
+interface PriorPublication { commandId: string; payload: Record<string, any>; receipt: CommandReceipt | null; fingerprint: string | null }
+
+/**
+ * Who holds this request's ownership key `${key}:1`, and if it is a board publication, the newest publication of
+ * that same request (by fingerprint) among its attempt keys. Ownership is decided by `${key}:1` alone: a command
+ * under `${key}:2` or `${key}:3` neither claims a free request ID nor hides who holds `${key}:1`.
+ */
+async function priorPublication(db: Db, userId: string, key: string): Promise<PriorPublication | null> {
+  type Row = { command_id: string; type: string; idempotency_key: string; payload_json: string | null; receipt_json: string | null };
+  const parse = (s: string | null) => { try { return s ? JSON.parse(s) : null; } catch { return null; } };
+  const toPrior = (row: Row): PriorPublication => {
+    const payload = parse(row.payload_json) ?? {};
+    return { commandId: row.command_id, payload, receipt: parse(row.receipt_json), fingerprint: typeof payload.requestFingerprint === "string" ? payload.requestFingerprint : null };
+  };
+  const holder = await first<Row>(db, "SELECT command_id, type, idempotency_key, payload_json, receipt_json FROM commands WHERE user_id = ? AND idempotency_key = ?", userId, `${key}:1`);
+  if (!holder) return null;
+  // The ownership key is held by another kind of command: a different request, refused before composing.
+  if (holder.type !== "board.publish") throw new CommandError("idempotency_key_reuse", "this request ID was already used for a different command", { commandId: holder.command_id });
+  const owner = toPrior(holder);
+  if (owner.fingerprint === null) return owner; // never the same request (see sameRequest)
+  // Later publications of the same request (its own recomposed attempts); anything else under those keys is ignored.
+  const later = await all<Row>(db, "SELECT command_id, type, idempotency_key, payload_json, receipt_json FROM commands WHERE user_id = ? AND type = 'board.publish' AND idempotency_key IN (?, ?) ORDER BY recorded_at DESC, idempotency_key DESC", userId, `${key}:2`, `${key}:3`);
+  for (const row of later) {
+    const p = toPrior(row);
+    if (p.fingerprint === owner.fingerprint) return p;
+  }
+  return owner;
+}
+
+/**
+ * Whether a publication was made by this same request, by its fingerprint. A publication recorded before
+ * fingerprints were kept no record of everything that identifies a request (purpose, destination, kept
+ * outfits, shirts to avoid, expected revision), so it is never taken for this request: the ID is refused.
+ */
+function sameRequest(prior: PriorPublication, fingerprint: string): boolean {
+  return prior.fingerprint !== null && prior.fingerprint === fingerprint;
+}
+
+/** The identity of a board request: everything that decides what it publishes, hashed (16 hex characters). */
+async function requestFingerprint(opts: PrepareBoardOptions, scope: string, brief: DayBrief): Promise<string> {
+  const identity = JSON.stringify({
+    localDate: opts.localDate, scope, reason: opts.reason ?? "compose", brief, count: opts.count ?? null, purpose: opts.purpose, location: opts.location ?? null,
+    keep: (opts.keep ?? []).map((o) => [o.optionId, o.slots, o.footwearAlternatives]), avoidTops: opts.avoidTops ?? [], expectedBoardRevision: opts.expectedBoardRevision ?? null,
+  });
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identity)));
+  return [...digest.slice(0, 8)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 /* ------------------------------------------------------------------ */
@@ -533,7 +664,7 @@ export interface ReplenishResult {
  * repair what is invalid and fill any gap with newly composed complete options. Existing valid options
  * stay exactly as they are. Publishes a new revision only when something changed or `force` is set.
  */
-export async function reviseBoard(deps: DailyDeps, principal: Principal, board: BoardRow, opts: { nowMs: number; reason: "repair" | "replenish" | "refresh" | "resume"; weather?: WeatherSnapshot; calendar?: CalendarSnapshot | null; force?: boolean; idempotencyKey: string }): Promise<ReplenishResult> {
+export async function reviseBoard(deps: DailyDeps, principal: Principal, board: BoardRow, opts: { nowMs: number; reason: "repair" | "replenish" | "refresh" | "resume"; weather?: WeatherSnapshot; calendar?: CalendarSnapshot | null; force?: boolean; idempotencyKey: string; requestFingerprint?: string }): Promise<ReplenishResult> {
   const { revision, weather, calendar, rc, stored } = await boardContext(deps, principal, board, opts.nowMs, { weather: opts.weather, calendar: opts.calendar });
   const outcome = repairOptions(rc, stored, revision.requested_count);
   const keep: ComposedOption[] = outcome.offered.map((o) => ({ optionId: o.optionId, slots: o.slots, footwearAlternatives: o.footwearAlternatives, reason: o.reason, explanationSource: o.evidence.explanationSource, removedClaims: o.evidence.removedClaims, explicitGarmentIds: o.evidence.explicitGarmentIds ?? [], source: o.evidence.source, suitsEventIds: o.suitsEventIds, validation: o.evidence.validation, jointAvailability: o.evidence.jointAvailability, score: 1000 }));
@@ -572,6 +703,7 @@ export async function reviseBoard(deps: DailyDeps, principal: Principal, board: 
       withdrawn = await execAs(deps, principal, "board.publish", {
         localDate: board.local_date, scope: board.scope, reason: opts.reason === "refresh" ? "refresh" : "repair", options: [], reserves: [], brief: revision.brief, requestedCount: revision.requested_count,
         weatherSnapshotId: weather?.snapshotId ?? null, calendarSnapshotId: calendar?.snapshotId ?? null, notice,
+        ...(opts.requestFingerprint ? { requestFingerprint: opts.requestFingerprint } : {}),
       }, opts.idempotencyKey, { expectedVersions: { [`board:${board.board_id}`]: board.current_revision } });
     } catch (e) {
       if (isCommandError(e) && e.code === "conflict") return { boardId: board.board_id, localDate: board.local_date, action: "none", revision: board.current_revision, offered: -1 };
@@ -586,6 +718,7 @@ export async function reviseBoard(deps: DailyDeps, principal: Principal, board: 
     receipt = await execAs(deps, principal, "board.publish", {
       localDate: board.local_date, scope: board.scope, reason, options: options.map(toPublishOption), reserves: reserves.map(toPublishOption), brief: revision.brief, requestedCount: revision.requested_count,
       weatherSnapshotId: weather?.snapshotId ?? null, calendarSnapshotId: calendar?.snapshotId ?? null, notice,
+      ...(opts.requestFingerprint ? { requestFingerprint: opts.requestFingerprint } : {}),
     }, opts.idempotencyKey, { expectedVersions: { [`board:${board.board_id}`]: board.current_revision } });
   } catch (e) {
     if (isCommandError(e) && e.code === "conflict") return { boardId: board.board_id, localDate: board.local_date, action: "none", revision: board.current_revision, offered: -1 };

@@ -8,14 +8,14 @@
  *   - a TEST STAND-IN lease (a plain object in place of the D1 lease) in the unit test of `leasedWriter`.
  * Calendar IDs, descriptions, notes and times below are synthetic. Nothing here shows Google's behaviour.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { BoardDocument } from "@garderobe/contracts/ext/daily";
 import { first } from "@garderobe/domain";
 import type { TestOwner } from "@garderobe/domain/testing";
 import { createGoogleCalendar } from "../src/calendar/google.ts";
-import { LeaseTooShortError, leasedWriter, managedBlock, mergeDescription, PROJECTION_LEASE_MS } from "../src/calendar/projector.ts";
+import { carriesWrite, LeaseTooShortError, leasedWriter, managedBlock, mergeDescription, PROJECTION_LEASE_MS } from "../src/calendar/projector.ts";
 import { CalendarApiError, getBoard, managedEventId, projectCalendarEffects, renderBoardCalendarText } from "../src/index.ts";
-import type { FetchLike, ManagedEventWrite } from "../src/ports.ts";
+import type { FetchLike, ManagedEvent, ManagedEventWrite } from "../src/ports.ts";
 import { FakeGoogleCalendar } from "../src/testing/fake-calendar.ts";
 import { compose, createDailyHarness, MILD_DAY, OUTFIT_CALENDAR, realOwner, type DailyHarness } from "./helpers.ts";
 
@@ -271,20 +271,21 @@ describe("finding 5: a change of outfit calendar moves the managed event", () =>
     expect(JSON.parse(row!.attempted_text ?? "[]")).toContain("UNVERIFIED LINE");
   });
 
-  it("lines of an unverified write of ours are never kept as the owner's notes once the markers are lost", () => {
+  it("once the markers are lost, a line known only from an unverified write of ours is kept: only the verified projection locates managed text", () => {
     const previous = "Day\nA\nB\nC";
     const attempted = "Day\nA\nX\nC";
     const next = managedBlock("Day\nA\nY\nC");
-    // The unverified write stands whole: it is replaced like the last verified projection.
-    expect(mergeDescription(`${attempted}\n\nMy note`, previous, next, [attempted])).toBe(`${next}\n\nMy note`);
-    // Mixed with the owner's line between surviving lines: only his line is kept.
-    expect(mergeDescription("Day\nA\nX\nOwner line\nC", previous, next, [attempted])).toBe(`${next}\nOwner line`);
-    // Partly edited, with an unverified line outside the verified span: that line goes too.
-    expect(mergeDescription("Day\nA\nOwner line\nTail", "Day\nA\nB", next, ["Day\nA\nX\nTail"])).toBe(`${next}\nOwner line`);
-    // No verified basis at all: the unverified lines go, the owner's stay.
-    expect(mergeDescription("Unverified one\nOwner line", null, next, ["Unverified one\nUnverified two"])).toBe(`${next}\n\nOwner line`);
-    // An unverified write that extends the verified text is replaced with its extension.
-    expect(mergeDescription("Day\nA\nB\n\nMy note", "Day\nA", next, ["Day\nA\nB"])).toBe(`${next}\n\nMy note`);
+    // The unverified write stands whole: its lines that are not the verified projection's are kept, after the new text.
+    expect(mergeDescription(`${attempted}\n\nMy note`, previous, next, [attempted])).toBe(`${next}\nX\n\nMy note`);
+    // Mixed with the owner's line between surviving lines: both are kept, as the owner may have written either.
+    expect(mergeDescription("Day\nA\nX\nOwner line\nC", previous, next, [attempted])).toBe(`${next}\nX\nOwner line`);
+    expect(mergeDescription("Day\nA\nOwner line\nTail", "Day\nA\nB", next, ["Day\nA\nX\nTail"])).toBe(`${next}\nOwner line\nTail`);
+    // No verified basis at all: nothing of the description is removed, the new text opens a fresh region.
+    expect(mergeDescription("Unverified one\nOwner line", null, next, ["Unverified one\nUnverified two"])).toBe(`${next}\n\nUnverified one\nOwner line`);
+    // The verified text stands whole and is replaced; a line only an unverified write added stays.
+    expect(mergeDescription("Day\nA\nB\n\nMy note", "Day\nA", next, ["Day\nA\nB"])).toBe(`${next}\nB\n\nMy note`);
+    // Inside our markers, a line of an unverified write is ours and is replaced.
+    expect(mergeDescription(`Before\n${managedBlock(attempted)}`, previous, next, [attempted])).toBe(`Before\n${next}`);
   });
 
   it("SYNTHETIC: a write of ours that may still land on an event in the previous calendar that is not marked as ours is fenced on the move", async () => {
@@ -489,6 +490,27 @@ describe("finding 6: the managed region has explicit bounds, and ambiguous owner
   });
 });
 
+describe("rule: text without the markers counts as ours only when a verified projection exists", () => {
+  it("SYNTHETIC: with no verified projection, markerless text equal to the new outfit text is the owner's: it is kept whole and the outfits go first", () => {
+    const next = "Wednesday 16 September\nNavy shirt, grey trousers";
+    const remote = `${next}\nMy note`;
+    expect(mergeDescription(remote, null, managedBlock(next))).toBe(`${managedBlock(next)}\n\n${next}\nMy note`);
+    expect(mergeDescription(remote, "", managedBlock(next))).toBe(`${managedBlock(next)}\n\n${next}\nMy note`);
+    // With a verified projection, the same text standing whole is the managed text and is replaced in place.
+    expect(mergeDescription(remote, "Tuesday 15 September\nOlder outfit", managedBlock(next))).toBe(`${managedBlock(next)}\nMy note`);
+  });
+
+  it("SYNTHETIC: an event whose markerless description shows the outfit text verifies a write only when a verified projection exists", () => {
+    const text = "Wednesday 16 September\nNavy shirt, grey trousers";
+    const write: ManagedEventWrite = { summary: "Garderobe", description: managedBlock(text), privateProperties: { garderobeBoard: "b1", garderobeRevision: "2" }, time: MORNING, reminderMinutesBefore: 10 };
+    const event: ManagedEvent = { eventId: "gdbabc", etag: "\"e1\"", status: "confirmed", summary: "Garderobe", description: text, privateProperties: { ...write.privateProperties }, attendeeCount: 0, time: MORNING, reminderMinutesBefore: 10 };
+    expect(carriesWrite(event, write, text, false)).toBe(false);
+    expect(carriesWrite(event, write, text, true)).toBe(true);
+    // With the markers the managed region itself identifies the text, verified projection or not.
+    expect(carriesWrite({ ...event, description: managedBlock(text) }, write, text, false)).toBe(true);
+  });
+});
+
 describe("finding 7: a write that does not verify advances nothing of the recorded managed basis", () => {
   it("after rounds whose read-back never verifies, the row still holds the last verified revision, text and etag", async () => {
     const { h, owner } = await setup();
@@ -516,59 +538,73 @@ describe("finding 8: Google getEvent holds its whole read to one deadline by abo
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
   it("aborts the calendar probe in flight when the read's deadline is up, before the probe's own request timeout", async () => {
-    let probeSignal: AbortSignal | undefined;
-    let probeStartedAt = 0;
-    let probeAbortedAt = 0;
-    let tokens = 0;
-    // TEST FAKE fetch: the event GET answers 404 after 150 ms; the probe never answers unless aborted.
-    const fetch: FetchLike = async (input, init) => {
-      if (new URL(input).pathname.endsWith("/events")) {
-        probeStartedAt = Date.now();
-        probeSignal = init?.signal;
-        return new Promise<Response>((_, reject) => {
-          init?.signal?.addEventListener("abort", () => {
-            probeAbortedAt = Date.now();
-            reject(new Error("TEST FAKE: aborted"));
+    // Fake timers drive every deadline, request timeout and delay here, so the timings are exact rather than wall-clock.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      let probeSignal: AbortSignal | undefined;
+      let probeStartedAt = 0;
+      let probeAbortedAt = 0;
+      let tokens = 0;
+      // TEST FAKE fetch: the event GET answers 404 after 150 ms; the probe never answers unless aborted.
+      const fetch: FetchLike = async (input, init) => {
+        if (new URL(input).pathname.endsWith("/events")) {
+          probeStartedAt = Date.now();
+          probeSignal = init?.signal;
+          return new Promise<Response>((_, reject) => {
+            init?.signal?.addEventListener("abort", () => {
+              probeAbortedAt = Date.now();
+              reject(new Error("TEST FAKE: aborted"));
+            });
           });
-        });
-      }
-      await sleep(150);
-      return notFound();
-    };
-    const calendar = createGoogleCalendar({
-      fetch,
-      timeoutMs: 200,
-      getAccessToken: async () => {
-        tokens++;
-        if (tokens === 2) await sleep(150); // a slow token refresh before the probe
-        return "ya29.synthetic-test-token";
-      },
-    });
-    const started = Date.now();
-    const error = await calendar.getEvent("u1", "primary", "gdbabcdef").catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(CalendarApiError);
-    expect((error as CalendarApiError).detail).toEqual({ status: null, retryable: true, reason: "network" });
-    expect(probeSignal?.aborted).toBe(true);
-    // The probe was aborted by the read's deadline (about 400 ms after the start), not by its own
-    // 200 ms request timeout, which could not have fired yet.
-    expect(probeAbortedAt - probeStartedAt).toBeLessThan(200);
-    expect(probeAbortedAt - started).toBeGreaterThanOrEqual(380);
-    expect(calendar.callDeadlineMs).toBe(400);
+        }
+        await sleep(150);
+        return notFound();
+      };
+      const calendar = createGoogleCalendar({
+        fetch,
+        timeoutMs: 200,
+        getAccessToken: async () => {
+          tokens++;
+          if (tokens === 2) await sleep(150); // a slow token refresh before the probe
+          return "ya29.synthetic-test-token";
+        },
+      });
+      const started = Date.now();
+      const pending = calendar.getEvent("u1", "primary", "gdbabcdef").catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(1_000);
+      const error = await pending;
+      expect(error).toBeInstanceOf(CalendarApiError);
+      expect((error as CalendarApiError).detail).toEqual({ status: null, retryable: true, reason: "network" });
+      expect(probeSignal?.aborted).toBe(true);
+      // The probe started after the GET (150 ms) and the slow token lookup (150 ms), and was aborted by the read's
+      // 400 ms deadline, 100 ms later: before its own 200 ms request timeout could fire.
+      expect(probeStartedAt - started).toBe(300);
+      expect(probeAbortedAt - started).toBe(400);
+      expect(calendar.callDeadlineMs).toBe(400);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("starts no further request once the read's deadline is up", async () => {
-    const paths: string[] = [];
-    const fetch: FetchLike = async (input) => {
-      paths.push(new URL(input).pathname);
-      await sleep(190);
-      return notFound();
-    };
-    const calendar = createGoogleCalendar({ fetch, timeoutMs: 200, getAccessToken: async () => (await sleep(190), "ya29.synthetic-test-token") });
-    const error = await calendar.getEvent("u1", "primary", "gdbabcdef").catch((e: unknown) => e);
-    expect((error as CalendarApiError).detail).toEqual({ status: null, retryable: true, reason: "network" });
-    // The second token lookup finishes after the deadline; the probe it would have led to never starts.
-    await sleep(300);
-    expect(paths).toEqual(["/calendar/v3/calendars/primary/events/gdbabcdef"]);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    try {
+      const paths: string[] = [];
+      const fetch: FetchLike = async (input) => {
+        paths.push(new URL(input).pathname);
+        await sleep(190);
+        return notFound();
+      };
+      const calendar = createGoogleCalendar({ fetch, timeoutMs: 200, getAccessToken: async () => (await sleep(190), "ya29.synthetic-test-token") });
+      const pending = calendar.getEvent("u1", "primary", "gdbabcdef").catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(400);
+      expect(((await pending) as CalendarApiError).detail).toEqual({ status: null, retryable: true, reason: "network" });
+      // The second token lookup finishes after the deadline; the probe it would have led to never starts.
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(paths).toEqual(["/calendar/v3/calendars/primary/events/gdbabcdef"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -586,12 +622,17 @@ describe("finding 9: a deleted event whose ID stays reserved moves to a replacem
 
     h.clock.advanceMinutes(2);
     await owner.exec("board.restore", { localDate: DAY });
+    // The ID is taken with no event readable under it: read again on a later attempt before moving on.
+    expect(await run(h)).toEqual(["retry"]);
+    expect(live(h, owner)).toHaveLength(0);
+    h.clock.advanceMinutes(6);
     expect(await run(h)).toEqual(["projected"]);
     const replacement = await managedEventId(owner.userId, `home|after-deletion|${eventId}`, DAY);
     expect(live(h, owner).map((e) => e.eventId)).toEqual([replacement]);
     expect(await projection(h, owner)).toMatchObject({ event_id: replacement, state: "projected", projected_revision: 2 });
     expect(h.calendar.log.filter((l) => l.op === "insertEvent").map((l) => [l.eventId, l.outcome, l.reason])).toEqual([
       [eventId, "ok", null],
+      [eventId, "failed", "duplicate"],
       [eventId, "failed", "duplicate"],
       [replacement, "ok", null],
     ]);
@@ -601,6 +642,148 @@ describe("finding 9: a deleted event whose ID stays reserved moves to a replacem
     await swap(owner, doc, 1);
     expect(await run(h)).toEqual(["projected"]);
     expect(live(h, owner).map((e) => [e.eventId, e.privateProperties.garderobeRevision])).toEqual([[replacement, "3"]]);
+  });
+
+  it("SYNTHETIC: a move to the replacement ID starts with no verified text there, keeping the old event's text among the unverified ones", async () => {
+    const { h, owner } = await setup();
+    const doc = (await compose(h, owner, DAY)).board!;
+    await run(h);
+    const eventId = live(h, owner)[0]!.eventId;
+    const delivered = (await projection(h, owner)).managed_text;
+    expect(delivered).not.toBeNull();
+    h.calendar.externalDelete(owner.userId, OUTFIT_CALENDAR, eventId, { reserveId: true });
+    h.clock.advanceMinutes(2);
+    await swap(owner, doc, 0);
+    expect(await run(h)).toEqual(["suppressed_deleted_externally"]);
+    h.clock.advanceMinutes(2);
+    await owner.exec("board.restore", { localDate: DAY });
+    expect(await run(h)).toEqual(["retry"]);
+    // TEST FAKE: the insert under the replacement ID is refused, so the run stops right after the move.
+    const replacement = await managedEventId(owner.userId, `home|after-deletion|${eventId}`, DAY);
+    const insertEvent = h.calendar.insertEvent.bind(h.calendar);
+    h.calendar.insertEvent = async (userId, calendarId, id, write) => {
+      if (id === replacement) throw new CalendarApiError("TEST FAKE: forbidden", { status: 403, retryable: false, reason: "forbidden" });
+      return insertEvent(userId, calendarId, id, write);
+    };
+    h.clock.advanceMinutes(6);
+    await run(h);
+    const row = await first<{ event_id: string; managed_text: string | null; attempted_text: string | null }>(h.db, "SELECT event_id, managed_text, attempted_text FROM calendar_projections WHERE user_id = ?", owner.userId);
+    expect(row!.event_id).toBe(replacement);
+    expect(row!.managed_text).toBeNull();
+    expect(JSON.parse(row!.attempted_text ?? "[]")).toContain(delivered);
+  });
+
+  it("SYNTHETIC: a live event that a read misses for a moment while its ID answers 409 is reconciled under its own ID, never moved to a replacement", async () => {
+    const { h, owner } = await setup();
+    const doc = (await compose(h, owner, DAY)).board!;
+    expect(await run(h)).toEqual(["projected"]);
+    const eventId = live(h, owner)[0]!.eventId;
+    // TEST-WRITTEN row state: the day was never delivered, so a missing event is not the owner's deletion and an insert is tried.
+    await h.db.prepare("UPDATE calendar_projections SET projected_revision = NULL, state = 'pending' WHERE user_id = ?").bind(owner.userId).run();
+    // TEST FAKE: the next two reads of the event miss it (a passing miss), so an insert is tried and answers 409.
+    const getEvent = h.calendar.getEvent.bind(h.calendar);
+    let misses = 2;
+    h.calendar.getEvent = async (userId, calendarId, id) => {
+      if (id === eventId && misses > 0) { misses--; return null; }
+      return getEvent(userId, calendarId, id);
+    };
+    h.clock.advanceMinutes(2);
+    await swap(owner, doc, 0);
+    expect(await run(h)).toEqual(["retry"]);
+    h.clock.advanceMinutes(6);
+    expect(await run(h)).toEqual(["projected"]);
+    expect(live(h, owner).map((e) => [e.eventId, e.privateProperties.garderobeRevision])).toEqual([[eventId, "2"]]);
+    expect(await first<{ event_id: string; duplicate_missing: string | null }>(h.db, "SELECT event_id, duplicate_missing FROM calendar_projections WHERE user_id = ?", owner.userId)).toEqual({ event_id: eventId, duplicate_missing: null });
+  });
+
+  it("SYNTHETIC: a read that sees the event clears an earlier 'taken but missing' observation even when the write after it fails, so one later miss does not move the event", async () => {
+    const { h, owner } = await setup();
+    const doc = (await compose(h, owner, DAY)).board!;
+    expect(await run(h)).toEqual(["projected"]);
+    const eventId = live(h, owner)[0]!.eventId;
+    // TEST-WRITTEN row state: the day was never delivered, so a missing event is not the owner's deletion and an insert is tried.
+    await h.db.prepare("UPDATE calendar_projections SET projected_revision = NULL, state = 'pending' WHERE user_id = ?").bind(owner.userId).run();
+    // TEST FAKE: while `hide` is set, reads of the live event miss it, so an insert is tried and answers 409.
+    const getEvent = h.calendar.getEvent.bind(h.calendar);
+    let hide = true;
+    h.calendar.getEvent = async (userId, calendarId, id) => (hide && id === eventId ? null : getEvent(userId, calendarId, id));
+    const missingSince = async () => (await first<{ duplicate_missing: string | null }>(h.db, "SELECT duplicate_missing FROM calendar_projections WHERE user_id = ?", owner.userId))!.duplicate_missing;
+    h.clock.advanceMinutes(2);
+    await swap(owner, doc, 0);
+    expect(await run(h)).toEqual(["retry"]);
+    expect(await missingSince()).not.toBeNull();
+    // The event is read again, then the write fails before any read-back (TEST FAKE: a dropped connection).
+    hide = false;
+    h.calendar.failNext("patchEvent", 1, new Error("TEST FAKE: connection reset"));
+    h.clock.advanceMinutes(6);
+    expect(await run(h)).toEqual(["retry"]);
+    expect(await missingSince()).toBeNull();
+    // One more passing miss: recorded anew, not taken as a confirmation of the first.
+    hide = true;
+    h.clock.advanceMinutes(6);
+    expect(await run(h)).toEqual(["retry"]);
+    expect(live(h, owner).map((e) => e.eventId)).toEqual([eventId]);
+    expect((await projection(h, owner)).event_id).toBe(eventId);
+  });
+
+  const takenMissing = async (h: DailyHarness, owner: TestOwner) => JSON.parse((await first<{ duplicate_missing: string | null }>(h.db, "SELECT duplicate_missing FROM calendar_projections WHERE user_id = ?", owner.userId))!.duplicate_missing ?? "[]") as { calendarId: string; eventId: string; since: string }[];
+
+  it("SYNTHETIC: an old observation of the same event ID in another calendar does not confirm a 409 here", async () => {
+    const { h, owner } = await setup();
+    const doc = (await compose(h, owner, DAY)).board!;
+    expect(await run(h)).toEqual(["projected"]);
+    const eventId = live(h, owner)[0]!.eventId;
+    // TEST-WRITTEN row state: the day was never delivered (so an insert is tried), and an observation ten minutes
+    // old of the same event ID taken but unreadable, made in another calendar.
+    const old = new Date(h.clock.now() - 10 * 60_000).toISOString();
+    await h.db.prepare("UPDATE calendar_projections SET projected_revision = NULL, state = 'pending', duplicate_missing = ? WHERE user_id = ?").bind(JSON.stringify([{ calendarId: NEW_CALENDAR, eventId, since: old }]), owner.userId).run();
+    // TEST FAKE: reads of the live event here miss it, so the insert answers 409 with nothing readable.
+    const getEvent = h.calendar.getEvent.bind(h.calendar);
+    h.calendar.getEvent = async (userId, calendarId, id) => (calendarId === OUTFIT_CALENDAR && id === eventId ? null : getEvent(userId, calendarId, id));
+    h.clock.advanceMinutes(2);
+    await swap(owner, doc, 0);
+    expect(await run(h)).toEqual(["retry"]);
+    expect((await projection(h, owner)).event_id).toBe(eventId);
+    expect((await takenMissing(h, owner)).map((t) => [t.calendarId, t.eventId, t.since === old])).toEqual([[NEW_CALENDAR, eventId, true], [OUTFIT_CALENDAR, eventId, false]]);
+  });
+
+  it("SYNTHETIC: a change of outfit calendar clears every observation, so an old one for the new calendar does not move the event there at once", async () => {
+    const { h, owner } = await setup();
+    const doc = (await compose(h, owner, DAY)).board!;
+    expect(await run(h)).toEqual(["projected"]);
+    const eventId = live(h, owner)[0]!.eventId;
+    // TEST FAKE state: the new calendar already holds an event under the stable ID, and reads there miss it.
+    await h.calendar.insertEvent(owner.userId, NEW_CALENDAR, eventId, { summary: "older", description: "", privateProperties: {}, time: { kind: "all_day", localDate: DAY }, reminderMinutesBefore: null });
+    const getEvent = h.calendar.getEvent.bind(h.calendar);
+    h.calendar.getEvent = async (userId, calendarId, id) => (calendarId === NEW_CALENDAR && id === eventId ? null : getEvent(userId, calendarId, id));
+    // TEST-WRITTEN row state: an observation ten minutes old of exactly that event, made before the change.
+    await h.db.prepare("UPDATE calendar_projections SET duplicate_missing = ? WHERE user_id = ?").bind(JSON.stringify([{ calendarId: NEW_CALENDAR, eventId, since: new Date(h.clock.now() - 10 * 60_000).toISOString() }]), owner.userId).run();
+    await owner.exec("settings.update", { patch: { extensions: { daily: { calendar: { outfitCalendarId: NEW_CALENDAR } } } } });
+    h.clock.advanceMinutes(2);
+    await swap(owner, doc, 0);
+    // (The settings change queued its own effect, superseded by the swap's.)
+    expect((await run(h)).filter((o) => o !== "superseded")).toEqual(["retry"]);
+    const row = await projection(h, owner);
+    expect([row.calendar_id, row.event_id]).toEqual([NEW_CALENDAR, eventId]);
+    expect((await takenMissing(h, owner)).map((t) => [t.calendarId, t.eventId, Date.parse(t.since) === h.clock.now()])).toEqual([[NEW_CALENDAR, eventId, true]]);
+  });
+
+  it("SYNTHETIC: a cleanup read that sees an earlier event of ours clears its observation", async () => {
+    const { h, owner } = await setup();
+    const doc = (await compose(h, owner, DAY)).board!;
+    expect(await run(h)).toEqual(["projected"]);
+    // TEST FAKE state: an earlier event of ours under another ID; TEST-WRITTEN row state: a write of ours to it may
+    // still land, and an old observation that its ID was taken with nothing readable.
+    const strayId = "gdbabc0123stra9";
+    await h.calendar.insertEvent(owner.userId, OUTFIT_CALENDAR, strayId, { summary: "older", description: "", privateProperties: { garderobeBoard: doc.boardId, garderobeRevision: "1" }, time: { kind: "all_day", localDate: DAY }, reminderMinutesBefore: null });
+    await h.db.prepare("UPDATE calendar_projections SET uncertain_calendars = ?, duplicate_missing = ? WHERE user_id = ?").bind(JSON.stringify([[OUTFIT_CALENDAR, strayId]]), JSON.stringify([{ calendarId: OUTFIT_CALENDAR, eventId: strayId, since: new Date(h.clock.now() - 10 * 60_000).toISOString() }]), owner.userId).run();
+    // The cleanup is refused after its read (TEST FAKE: forbidden), so only the read can clear the observation.
+    h.calendar.failNext("deleteEvent", 3, new CalendarApiError("TEST FAKE: forbidden", { status: 403, retryable: false, reason: "forbidden" }));
+    h.clock.advanceMinutes(2);
+    await swap(owner, doc, 0);
+    await run(h);
+    expect(h.calendar.log.some((l) => l.op === "getEvent" && l.eventId === strayId)).toBe(true);
+    expect(await takenMissing(h, owner)).toEqual([]);
   });
 });
 
@@ -703,6 +886,152 @@ describe("review: tombstones and earlier calendars", () => {
     expect(back[0]!.description).toBe(managedBlock(projected.managed_text!));
     row = await first<{ uncertain_calendars: string | null }>(h.db, "SELECT uncertain_calendars FROM calendar_projections WHERE user_id = ?", owner.userId);
     expect(row!.uncertain_calendars).toBeNull();
+  });
+
+  it("SYNTHETIC: an event left in an earlier outfit calendar is cleaned up by a later attempt on its own, without any new board change", async () => {
+    const { h, owner } = await setup();
+    const doc = (await compose(h, owner, DAY)).board!;
+    expect(await run(h)).toEqual(["projected"]);
+    await owner.exec("settings.update", { patch: { extensions: { daily: { calendar: { outfitCalendarId: NEW_CALENDAR } } } } });
+    h.clock.advanceMinutes(2);
+    await swap(owner, doc, 0);
+    // Every removal in the previous calendar is refused for now (TEST FAKE).
+    h.calendar.failNext("deleteEvent", 2, new CalendarApiError("TEST FAKE: forbidden", { status: 403, retryable: false, reason: "forbidden" }));
+    expect(await run(h)).toEqual(["superseded", "projected"]);
+    expect(live(h, owner, OUTFIT_CALENDAR)).toHaveLength(1);
+    // Delivered to the new calendar: the board's projection does not read as pending while the cleanup waits.
+    expect((await current(h, owner)).calendarProjection.state).toBe("projected");
+    // Access returns; no board change, setting or restore follows. The kept effect retries the cleanup itself.
+    h.clock.advanceMinutes(31);
+    expect(await run(h)).toEqual(["projected"]);
+    expect(live(h, owner, OUTFIT_CALENDAR)).toHaveLength(0);
+    expect(live(h, owner, NEW_CALENDAR)).toHaveLength(1);
+    const row = await first<{ uncertain_calendars: string | null }>(h.db, "SELECT uncertain_calendars FROM calendar_projections WHERE user_id = ?", owner.userId);
+    expect(row!.uncertain_calendars).toBeNull();
+    expect(await first<{ n: number }>(h.db, "SELECT COUNT(*) AS n FROM effects WHERE user_id = ? AND kind = 'calendar.project_board' AND state IN ('pending', 'in_progress')", owner.userId)).toEqual({ n: 0 });
+  });
+
+  it("SYNTHETIC: the cleanup of an event left in an earlier calendar keeps retrying with a capped backoff past the attempt limit, and stays recorded until it succeeds", async () => {
+    const { h, owner } = await setup();
+    const doc = (await compose(h, owner, DAY)).board!;
+    expect(await run(h)).toEqual(["projected"]);
+    await owner.exec("settings.update", { patch: { extensions: { daily: { calendar: { outfitCalendarId: NEW_CALENDAR } } } } });
+    h.clock.advanceMinutes(2);
+    await swap(owner, doc, 0);
+    // TEST FAKE: removals in the previous calendar are refused until `locked` is cleared.
+    const deleteEvent = h.calendar.deleteEvent.bind(h.calendar);
+    let locked = true;
+    h.calendar.deleteEvent = async (userId, calendarId, eventId, etag) => {
+      if (locked && calendarId === OUTFIT_CALENDAR) throw new CalendarApiError("TEST FAKE: forbidden", { status: 403, retryable: false, reason: "forbidden" });
+      return deleteEvent(userId, calendarId, eventId, etag);
+    };
+    expect(await run(h)).toEqual(["superseded", "projected"]);
+    const pending = async () => first<{ effect_id: string; available_at: string; attempts: number }>(h.db, "SELECT effect_id, available_at, attempts FROM effects WHERE user_id = ? AND kind = 'calendar.project_board' AND state = 'pending'", owner.userId);
+    let previousDelay = 0;
+    // Twelve more attempts, past the projector's attempt limit of eight: each is scheduled again, never given up.
+    for (let i = 0; i < 12; i++) {
+      const effect = await pending();
+      expect(effect, `attempt ${i}: the cleanup is still scheduled`).not.toBeNull();
+      const delay = Date.parse(effect!.available_at) - h.clock.now();
+      expect(delay).toBeGreaterThanOrEqual(previousDelay);
+      expect(delay).toBeLessThanOrEqual(24 * 60 * 60_000);
+      previousDelay = delay;
+      // TEST-WRITTEN: the retry is made due now rather than waiting out the backoff (the day must not pass).
+      await h.db.prepare("UPDATE effects SET available_at = ? WHERE user_id = ? AND effect_id = ?").bind(new Date(h.clock.now()).toISOString(), owner.userId, effect!.effect_id).run();
+      expect(await run(h)).toEqual(["projected"]);
+      expect(live(h, owner, OUTFIT_CALENDAR)).toHaveLength(1);
+      const row = await first<{ uncertain_calendars: string | null }>(h.db, "SELECT uncertain_calendars FROM calendar_projections WHERE user_id = ?", owner.userId);
+      expect(row!.uncertain_calendars).not.toBeNull();
+    }
+    expect(previousDelay).toBe(24 * 60 * 60_000);
+    expect((await pending())!.attempts).toBeGreaterThan(8);
+    // Access returns: the next attempt removes the event and the entry.
+    locked = false;
+    await h.db.prepare("UPDATE effects SET available_at = ? WHERE user_id = ? AND state = 'pending'").bind(new Date(h.clock.now()).toISOString(), owner.userId).run();
+    expect(await run(h)).toEqual(["projected"]);
+    expect(live(h, owner, OUTFIT_CALENDAR)).toHaveLength(0);
+    expect(await pending()).toBeNull();
+  });
+
+  it("SYNTHETIC: an ordinary writer error while cleaning up an earlier calendar does not stop delivery or the cleanup retries, past the attempt limit", async () => {
+    const { h, owner } = await setup();
+    const doc = (await compose(h, owner, DAY)).board!;
+    expect(await run(h)).toEqual(["projected"]);
+    await owner.exec("settings.update", { patch: { extensions: { daily: { calendar: { outfitCalendarId: NEW_CALENDAR } } } } });
+    h.clock.advanceMinutes(2);
+    await swap(owner, doc, 0);
+    // TEST FAKE: the move's removal is refused (so the entry is recorded), then every later removal there fails
+    // with a plain connection error that is no CalendarApiError, until `broken` is cleared.
+    const deleteEvent = h.calendar.deleteEvent.bind(h.calendar);
+    let refusals = 1;
+    let broken = true;
+    h.calendar.deleteEvent = async (userId, calendarId, eventId, etag) => {
+      if (calendarId === OUTFIT_CALENDAR && refusals > 0) { refusals--; throw new CalendarApiError("TEST FAKE: forbidden", { status: 403, retryable: false, reason: "forbidden" }); }
+      if (calendarId === OUTFIT_CALENDAR && broken) throw new Error("TEST FAKE: connection reset");
+      return deleteEvent(userId, calendarId, eventId, etag);
+    };
+    expect(await run(h)).toEqual(["superseded", "projected"]);
+    const pending = async () => first<{ effect_id: string; attempts: number; last_error: string | null }>(h.db, "SELECT effect_id, attempts, last_error FROM effects WHERE user_id = ? AND kind = 'calendar.project_board' AND state = 'pending'", owner.userId);
+    for (let i = 0; i < 10; i++) {
+      const effect = await pending();
+      expect(effect, `attempt ${i}: the cleanup is still scheduled`).not.toBeNull();
+      // TEST-WRITTEN: the retry is made due now rather than waiting out the backoff.
+      await h.db.prepare("UPDATE effects SET available_at = ? WHERE user_id = ? AND effect_id = ?").bind(new Date(h.clock.now()).toISOString(), owner.userId, effect!.effect_id).run();
+      expect(await run(h)).toEqual(["projected"]);
+      expect(live(h, owner, NEW_CALENDAR)).toHaveLength(1);
+      expect((await projection(h, owner)).last_error).toContain("could not be cleaned up yet (error)");
+    }
+    expect((await pending())!.attempts).toBeGreaterThan(8);
+    broken = false;
+    await h.db.prepare("UPDATE effects SET available_at = ? WHERE user_id = ? AND state = 'pending'").bind(new Date(h.clock.now()).toISOString(), owner.userId).run();
+    expect(await run(h)).toEqual(["projected"]);
+    expect(live(h, owner, OUTFIT_CALENDAR)).toHaveLength(0);
+    expect(await pending()).toBeNull();
+  });
+
+  it("SYNTHETIC: a fence on a cancelled event in an earlier calendar whose read-back fails is not taken as a fence: the entry stays until a later read-back verifies it", async () => {
+    const { h, owner } = await setup();
+    const doc = (await compose(h, owner, DAY)).board!;
+    expect(await run(h)).toEqual(["projected"]);
+    // TEST FAKE state: a cancelled event of ours in an earlier calendar; TEST-WRITTEN row state: a write of ours to
+    // it may still land.
+    const strayId = "gdbabc0123strb1";
+    await h.calendar.insertEvent(owner.userId, NEW_CALENDAR, strayId, { summary: "older", description: "", privateProperties: { garderobeBoard: doc.boardId, garderobeRevision: "1" }, time: { kind: "all_day", localDate: DAY }, reminderMinutesBefore: null });
+    h.calendar.externalDelete(owner.userId, NEW_CALENDAR, strayId);
+    await h.db.prepare("UPDATE calendar_projections SET uncertain_calendars = ? WHERE user_id = ?").bind(JSON.stringify([[NEW_CALENDAR, strayId]]), owner.userId).run();
+    // TEST FAKE: the read-back after the fence patch (the second read of that event) fails.
+    const getEvent = h.calendar.getEvent.bind(h.calendar);
+    let reads = 0;
+    let failReadBack = true;
+    h.calendar.getEvent = async (userId, calendarId, id) => {
+      if (calendarId === NEW_CALENDAR && id === strayId && failReadBack && ++reads === 2) throw new Error("TEST FAKE: connection reset");
+      return getEvent(userId, calendarId, id);
+    };
+    h.clock.advanceMinutes(2);
+    await swap(owner, doc, 0);
+    expect(await run(h)).toEqual(["projected"]);
+    expect(h.calendar.log.some((l) => l.op === "patchEvent" && l.eventId === strayId && l.outcome === "ok")).toBe(true);
+    const uncertain = async () => (await first<{ uncertain_calendars: string | null }>(h.db, "SELECT uncertain_calendars FROM calendar_projections WHERE user_id = ?", owner.userId))!.uncertain_calendars;
+    expect(JSON.parse((await uncertain()) ?? "[]")).toEqual([[NEW_CALENDAR, strayId]]);
+    // The next attempt reads the fence back and only then settles the entry.
+    failReadBack = false;
+    await h.db.prepare("UPDATE effects SET available_at = ? WHERE user_id = ? AND state = 'pending'").bind(new Date(h.clock.now()).toISOString(), owner.userId).run();
+    expect(await run(h)).toEqual(["projected"]);
+    expect(await uncertain()).toBeNull();
+  });
+
+  it("keeps an owner's note that reads like a line of an unverified write of ours when it stands above or below the outfits", () => {
+    const previous = ["Tuesday: 12 °C at 08:00, 19 °C peak.", "", "1. Pink oxford with grey chino", "Warm against cool.", "Shirt: Pink oxford"].join("\n");
+    const next = previous.replace("grey chino", "walnut chino");
+    // An unverified write of ours carried, between its outfit lines, the same line the owner wrote above and below the outfits.
+    const attempted = ["Tuesday: 12 °C at 08:00, 19 °C peak.", "", "1. Pink oxford with grey chino", "Bring the umbrella.", "Warm against cool.", "Shirt: Pink oxford"].join("\n");
+    const remote = ["Bring the umbrella.", "Tuesday: 12 °C at 08:00, 19 °C peak.", "", "1. Pink oxford with grey chino", "MY OWN EDIT", "Warm against cool.", "Shirt: Pink oxford", "Bring the umbrella."].join("\n");
+    expect(mergeDescription(remote, previous, managedBlock(next), [attempted])).toBe(["Bring the umbrella.", managedBlock(next), "MY OWN EDIT", "Bring the umbrella."].join("\n"));
+    // Without markers, the same line among the outfits is not known to be ours (only an unverified write had it): it stays.
+    const within = ["Tuesday: 12 °C at 08:00, 19 °C peak.", "", "1. Pink oxford with grey chino", "Bring the umbrella.", "MY OWN EDIT", "Warm against cool.", "Shirt: Pink oxford"].join("\n");
+    expect(mergeDescription(within, previous, managedBlock(next), [attempted])).toBe([managedBlock(next), "Bring the umbrella.", "MY OWN EDIT"].join("\n"));
+    // A description that now holds only the owner's note, which an unverified write of ours also carried: it survives.
+    expect(mergeDescription("Bring the umbrella.", previous, managedBlock(next), [attempted])).toBe(`${managedBlock(next)}\n\nBring the umbrella.`);
   });
 
   it("SYNTHETIC: the history of unverified texts is not cut short while a write of ours is still outstanding", async () => {

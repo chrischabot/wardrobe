@@ -18,7 +18,7 @@ import { claimDueEffects, first, latestDesiredRevision, prepare, settleEffect, s
 import { CALENDAR_EFFECT_KIND } from "../boards.ts";
 import { dailySettings, loadOwner } from "../context.ts";
 import { nowOf, type DailyDeps } from "../deps.ts";
-import { boardSummary, buildBoardDocument, loadBoard, pauseCovering, renderBoardCalendarText } from "../document.ts";
+import { boardSummary, buildBoardDocument, CALENDAR_CLEANUP_PENDING, loadBoard, pauseCovering, renderBoardCalendarText } from "../document.ts";
 import { CalendarApiError, CalendarNotConnectedError, DeadlineError, hasBoundedCallDeadline, withDeadline, type CalendarWriter, type ManagedEvent, type ManagedEventWrite } from "../ports.ts";
 import { managedEventId } from "./event-id.ts";
 
@@ -33,6 +33,12 @@ export const FENCE_PROPERTY = "garderobeFence";
 export const TOMBSTONE_PROPERTY = "garderobeTombstone";
 const MAX_ATTEMPTS = 8;
 const MAX_ROUNDS = 4;
+/** How long a 409 with no readable event must persist (seen again on a later attempt) before the ID is taken as gone for good. */
+const DUPLICATE_GONE_CONFIRM_MS = 5 * 60_000;
+/** First retry interval for cleaning up an event of ours in an earlier outfit calendar once the board is delivered. */
+const CLEANUP_RETRY_MS = 30 * 60_000;
+/** Longest interval between cleanup retries: the retries never stop while the event of ours is outstanding. */
+const CLEANUP_RETRY_MAX_MS = 24 * 60 * 60_000;
 /** How long one projector holds a managed event; renewed before every Calendar call. */
 export const PROJECTION_LEASE_MS = 60_000;
 /** Lease time that must remain beyond a call's deadline (and grace) before the call may start. */
@@ -58,6 +64,42 @@ interface ProjectionRow {
   uncertain_calendars: string | null;
   /** JSON array of the managed texts of writes that may have landed unverified, newest first (migration 0101). */
   attempted_text: string | null;
+  /**
+   * JSON array of {calendarId, eventId, since}: when an insert first found that event ID taken with no event
+   * readable under it. An entry is cleared by any read that sees that event; all are cleared when the outfit
+   * calendar changes (migration 0103).
+   */
+  duplicate_missing: string | null;
+}
+
+/** One "ID taken but no event readable" observation, for exactly one event in one calendar. */
+interface TakenMissing {
+  calendarId: string;
+  eventId: string;
+  since: string;
+}
+
+function takenMissingOf(raw: string | null): TakenMissing[] {
+  try {
+    const value: unknown = JSON.parse(raw ?? "[]");
+    return Array.isArray(value)
+      ? value.filter((t): t is TakenMissing => typeof t === "object" && t !== null && typeof (t as TakenMissing).calendarId === "string" && typeof (t as TakenMissing).eventId === "string" && typeof (t as TakenMissing).since === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * An event ID answered 409 while no event could be read under it, and the same observation for that calendar
+ * and event has not yet stood for DUPLICATE_GONE_CONFIRM_MS: a read may have missed a live event for a moment,
+ * so nothing is concluded from it yet and the run is retried once it can be confirmed.
+ */
+export class TakenMissingUnconfirmedError extends Error {
+  constructor() {
+    super("an event's ID is taken but no event could be read under it; it is read again before anything is concluded");
+    this.name = "TakenMissingUnconfirmedError";
+  }
 }
 
 /* ------------------------------ the lease ------------------------------ */
@@ -354,18 +396,16 @@ export function mergeDescription(remoteRaw: string | null, previousManaged: stri
   }
   const bareRaw = stripMarkers(remote);
   if (bareRaw.trim() === "") return next;
-  // The last verified projection or an unverified write of ours that stands whole is ours to replace; the
-  // longest first, so an unverified write that extends the verified text is replaced with its extension.
-  const whole = [previousManaged, ...alsoManaged].filter((t): t is string => t !== null && t.trim() !== "").sort((a, b) => b.length - a.length);
-  for (const text of whole) if (bareRaw.includes(text)) return bareRaw.replace(text, () => next);
+  // Without markers, text counts as managed only when a verified projection of ours exists: then its text (or
+  // the new text) standing whole is replaced. With no verified projection nothing markerless is ours, not even
+  // the new text standing whole, and text known only from a write of ours that was never verified is never
+  // taken as managed: the owner may have written the same words, and losing his note is worse than repeating
+  // a line of ours.
+  const verified = previousManaged !== null && previousManaged.trim() !== "";
+  if (verified && bareRaw.includes(previousManaged)) return bareRaw.replace(previousManaged, () => next);
   const nextText = stripMarkers(next);
-  if (nextText.trim() !== "" && bareRaw.includes(nextText)) return bareRaw.replace(nextText, () => next);
-  // Lines of an unverified write of ours are never kept as the owner's: they leave the description wherever
-  // they stand (those it shares with the verified projection or the new text still locate the managed text),
-  // and what remains is located and kept as below.
-  const known = new Set([previousManaged ?? "", nextText].flatMap((t) => t.replace(/\r\n?/g, "\n").split("\n").map((l) => l.trim())));
-  const attemptedLines = new Set(alsoManaged.flatMap((a) => a.replace(/\r\n?/g, "\n").split("\n").map((l) => l.trim()).filter((l) => l !== "" && !known.has(l))));
-  const bare = attemptedLines.size === 0 ? bareRaw : bareRaw.split("\n").filter((l) => !attemptedLines.has(l.trim())).join("\n");
+  if (verified && nextText.trim() !== "" && bareRaw.includes(nextText)) return bareRaw.replace(nextText, () => next);
+  const bare = bareRaw;
   if (bare.trim() === "") return next;
   if (previousManaged) {
     const managed = previousManaged.replace(/\r\n?/g, "\n").split("\n");
@@ -383,12 +423,19 @@ export function mergeDescription(remoteRaw: string | null, previousManaged: stri
   return `${next}\n\n${bare.replace(/^\n+/, "")}`;
 }
 
+/** True when a verified managed text is recorded: non-empty, as `mergeDescription` requires before it replaces markerless text. */
+function hasVerifiedText(row: { managed_text: string | null }): boolean {
+  return row.managed_text !== null && row.managed_text.trim() !== "";
+}
+
 /** True when `description` carries exactly `text` as its managed text. */
-function carriesManagedText(description: string | null, text: string): boolean {
+function carriesManagedText(description: string | null, text: string, verifiedProjection: boolean): boolean {
   const plain = plainDescription(description);
   const region = managedRegion(plain);
-  // Without markers (lost in an editor), the text must at least stand whole in the description.
-  return region ? region.inner === text : stripMarkers(plain).includes(text);
+  if (region) return region.inner === text;
+  // Without markers (lost in an editor), text counts as ours only when a verified projection of ours exists;
+  // otherwise the same words may be the owner's own, and nothing of his is taken as our delivery.
+  return verifiedProjection && stripMarkers(plain).includes(text);
 }
 
 function sameTime(read: ManagedEventWrite["time"], wanted: ManagedEventWrite["time"]): boolean {
@@ -399,15 +446,16 @@ function sameTime(read: ManagedEventWrite["time"], wanted: ManagedEventWrite["ti
 /**
  * True when `event` is live and shows every managed field of `write`: summary, time (presentation and
  * start), reminder, private properties (board and revision), and `text` as its managed text. A field the
- * adapter did not read back never verifies.
+ * adapter did not read back never verifies. A description without the managed markers carries `text` only
+ * when `verifiedProjection` (a verified projection of ours exists for this event).
  */
-export function carriesWrite(event: ManagedEvent | null, write: ManagedEventWrite, text: string): boolean {
+export function carriesWrite(event: ManagedEvent | null, write: ManagedEventWrite, text: string, verifiedProjection: boolean): boolean {
   if (!event || event.status === "cancelled") return false;
   if (event.summary !== write.summary) return false;
   for (const [key, value] of Object.entries(write.privateProperties)) if (event.privateProperties[key] !== value) return false;
   if (event.time === undefined || event.time === null || !sameTime(event.time, write.time)) return false;
   if (event.reminderMinutesBefore === undefined || event.reminderMinutesBefore !== write.reminderMinutesBefore) return false;
-  return carriesManagedText(event.description, text);
+  return carriesManagedText(event.description, text, verifiedProjection);
 }
 
 /**
@@ -690,7 +738,7 @@ async function projectOne(deps: DailyDeps, effect: EffectRecord, nowMs: number):
   if (!lease) return busy();
   held = lease;
 
-  const readRow = async (): Promise<ProjectionRow> => (await first<ProjectionRow>(db, "SELECT target_key, board_id, calendar_id, event_id, state, suppression_reason, projected_revision, etag, managed_text, removing_event_id, uncertain_calendars, attempted_text FROM calendar_projections WHERE user_id = ? AND target_key = ?", userId, targetKey))!;
+  const readRow = async (): Promise<ProjectionRow> => (await first<ProjectionRow>(db, "SELECT target_key, board_id, calendar_id, event_id, state, suppression_reason, projected_revision, etag, managed_text, removing_event_id, uncertain_calendars, attempted_text, duplicate_missing FROM calendar_projections WHERE user_id = ? AND target_key = ?", userId, targetKey))!;
   // Only the connection problem is recorded. What was delivered, a suppression (above all the owner's
   // own deletion of the event), the managed text and the event's identity stay as they are.
   // Writes of ours that may still land: each (calendar, event ID) is recorded in the row before every insert,
@@ -716,6 +764,30 @@ async function projectOne(deps: DailyDeps, effect: EffectRecord, nowMs: number):
     } catch {
       return [];
     }
+  };
+  // "ID taken but no event readable" observations, read once per run and written through (the lease serializes runs).
+  let takenMissing: TakenMissing[] | null = null;
+  const loadTakenMissing = async (): Promise<TakenMissing[]> => (takenMissing ??= takenMissingOf((await readRow()).duplicate_missing));
+  const storeTakenMissing = async (next: TakenMissing[]): Promise<void> => {
+    await lease.write({ duplicate_missing: next.length > 0 ? JSON.stringify(next) : null });
+    takenMissing = next;
+  };
+  /** The event was seen (or written): an earlier observation of exactly it was a passing miss. */
+  const forgetTakenMissing = async (cal: string, id: string): Promise<void> => {
+    const current = await loadTakenMissing();
+    if (current.some((t) => t.calendarId === cal && t.eventId === id)) await storeTakenMissing(current.filter((t) => t.calendarId !== cal || t.eventId !== id));
+  };
+  /**
+   * True when the same "ID taken but no event readable" observation, for exactly this calendar and event, was
+   * recorded at least DUPLICATE_GONE_CONFIRM_MS ago (and not cleared since by a read that saw the event).
+   * Otherwise the first observation is recorded and false is returned.
+   */
+  const takenMissingConfirmed = async (cal: string, id: string): Promise<boolean> => {
+    const current = await loadTakenMissing();
+    const seen = current.find((t) => t.calendarId === cal && t.eventId === id);
+    if (seen) return Date.parse(seen.since) <= clock() - DUPLICATE_GONE_CONFIRM_MS;
+    await storeTakenMissing([...current, { calendarId: cal, eventId: id, since: toInstant(clock()) }]);
+    return false;
   };
   const fenceKey = (cal: string, id: string) => JSON.stringify([cal, id]);
   const unfenced = (r: ProjectionRow, cal: string, id: string): boolean => !fenced.has(fenceKey(cal, id)) && uncertainOf(r).some((t) => same(t, [cal, id]));
@@ -765,10 +837,21 @@ async function projectOne(deps: DailyDeps, effect: EffectRecord, nowMs: number):
         }
       } else {
         // A cancelled event: a fresh fence value moves its etag on, so a late conditional write of ours fails.
-        await mutate(cal, id, () => w.patchEvent(userId, cal, id, { privateProperties: { [FENCE_PROPERTY]: crypto.randomUUID() } }, requireEtag(remote)));
+        const before = requireEtag(remote);
+        await mutate(cal, id, () => w.patchEvent(userId, cal, id, { privateProperties: { [FENCE_PROPERTY]: crypto.randomUUID() } }, before));
+        // Read back: only an event still cancelled under an etag that moved on fences a late write. A patch that
+        // answered success without moving the etag (or an event gone or live again) fences nothing yet.
+        const after = await w.getEvent(userId, cal, id);
+        if (after === null || live(after) || !after.etag || after.etag === before) {
+          fenced.delete(fenceKey(cal, id));
+          return false;
+        }
       }
       return true;
     } catch (e) {
+      // Whatever failed (the claim, the fence patch or the read-back after it), nothing is fenced by it: a fence
+      // counts only once read back as described above. A taken ID confirmed below marks itself fenced again.
+      fenced.delete(fenceKey(cal, id));
       const reason = apiError(e)?.detail.reason;
       if (reason === "duplicate" && remote === null) {
         // Taken: an ID kept after deletion with no event to read (fenced already: a late insert fails the
@@ -777,6 +860,10 @@ async function projectOne(deps: DailyDeps, effect: EffectRecord, nowMs: number):
         const taken = await w.getEvent(userId, cal, id);
         if (live(taken)) return false;
         if (taken !== null) return again ? false : fenceMissing(w, cal, id, taken, true);
+        // A read can also miss a live event for a moment: only the same observation for this calendar and event,
+        // repeated after DUPLICATE_GONE_CONFIRM_MS, is taken as an ID kept after deletion.
+        if (!(await takenMissingConfirmed(cal, id))) throw new TakenMissingUnconfirmedError();
+        await forgetTakenMissing(cal, id);
         fenced.add(fenceKey(cal, id));
         return true;
       }
@@ -792,10 +879,16 @@ async function projectOne(deps: DailyDeps, effect: EffectRecord, nowMs: number):
    * unfenced and the caller decides anew).
    */
   const fencedAfterDelete = async (w: ManagedEventCalls, cal: string, id: string): Promise<boolean> => {
-    const after = await w.getEvent(userId, cal, id);
-    const done = live(after) ? false : await fenceMissing(w, cal, id, after);
-    if (!done) fenced.delete(fenceKey(cal, id));
-    return done;
+    try {
+      const after = await w.getEvent(userId, cal, id);
+      const done = live(after) ? false : await fenceMissing(w, cal, id, after);
+      if (!done) fenced.delete(fenceKey(cal, id));
+      return done;
+    } catch (e) {
+      // The read-back (or the fence after it) failed: the delete is not verified, so nothing counts as fenced.
+      fenced.delete(fenceKey(cal, id));
+      throw e;
+    }
   };
   const recordConnectionFailure = async (message: string): Promise<void> => {
     if (!(await lease.write({ state: "not_connected", last_error: message }, "state != 'suppressed'"))) await lease.write({ last_error: message });
@@ -803,6 +896,19 @@ async function projectOne(deps: DailyDeps, effect: EffectRecord, nowMs: number):
   const recordFailure = async (message: string, terminal: boolean): Promise<void> => {
     if (terminal && (await lease.write({ state: "failed", last_error: message }, "state != 'suppressed'"))) return;
     await lease.write({ last_error: message });
+  };
+  /**
+   * Settle a delivered (or removed) day. While an event of ours in an earlier calendar is still outstanding, the
+   * effect stays pending under CALENDAR_CLEANUP_PENDING and is retried on its own, without waiting for a new
+   * board change, with a backoff capped at CLEANUP_RETRY_MAX_MS: it never gives up while the entry is recorded,
+   * and the entry stays recorded in the row until the event is gone. The board's projection does not read as
+   * pending meanwhile.
+   */
+  const settleDelivered = async (fields: Record<string, unknown> & { uncertain_calendars: string | null }): Promise<void> => {
+    if (fields.uncertain_calendars !== null) {
+      const delay = Math.min(CLEANUP_RETRY_MAX_MS, CLEANUP_RETRY_MS * 2 ** Math.min(Math.max(0, effect.attempts - 1), 6));
+      await settle({ state: "retry", error: CALENDAR_CLEANUP_PENDING, retryAtMs: nowMs + delay }, fields);
+    } else await settle({ state: "projected" }, fields);
   };
 
   const run = async (): Promise<ProjectionOutcome> => {
@@ -826,7 +932,27 @@ async function projectOne(deps: DailyDeps, effect: EffectRecord, nowMs: number):
       await settle({ state: "failed" });
       return "failed";
     }
-    const w = leasedWriter(writer, lease, clock);
+    const leased = leasedWriter(writer, lease, clock);
+    // Every read that sees an event (and every write of ours that lands on it) ends an earlier "ID taken but no
+    // event readable" observation of exactly that event: it was a passing miss. Cleanup reads included.
+    const w: ManagedEventCalls = {
+      ...leased,
+      getEvent: async (u, cal, id) => {
+        const event = await leased.getEvent(u, cal, id);
+        if (event !== null) await forgetTakenMissing(cal, id);
+        return event;
+      },
+      insertEvent: async (u, cal, id, write) => {
+        const event = await leased.insertEvent(u, cal, id, write);
+        await forgetTakenMissing(cal, id);
+        return event;
+      },
+      patchEvent: async (u, cal, id, write, etag) => {
+        const event = await leased.patchEvent(u, cal, id, write, etag);
+        await forgetTakenMissing(cal, id);
+        return event;
+      },
+    };
     let note: string | null = null;
     // A missing event was fenced in this run: its absence was seen while a write of ours could still land.
     let fencedMissing = false;
@@ -858,7 +984,9 @@ async function projectOne(deps: DailyDeps, effect: EffectRecord, nowMs: number):
       // The verified text of the event left behind is kept with the unverified ones: an event of ours that
       // still carries it (in the previous calendar, or back here after a later switch) is recognised as ours.
       const kept = row.managed_text !== null ? { attempted_text: JSON.stringify([row.managed_text, ...attemptedOf(await readRow()).filter((t) => t !== row.managed_text)]) } : {};
-      await lease.write({ calendar_id: calendarId, event_id: stableEventId, projected_revision: null, etag: null, managed_text: null, removing_event_id: null, ...kept, ...(row.state === "suppressed" ? {} : { state: "pending" }) });
+      // Every "ID taken but no event readable" observation ends with the calendar change: it is made anew.
+      await lease.write({ calendar_id: calendarId, event_id: stableEventId, projected_revision: null, etag: null, managed_text: null, removing_event_id: null, duplicate_missing: null, ...kept, ...(row.state === "suppressed" ? {} : { state: "pending" }) });
+      takenMissing = [];
     }
 
     // Writes of ours that may still land on another event ID in this calendar (an earlier replacement ID),
@@ -894,8 +1022,13 @@ async function projectOne(deps: DailyDeps, effect: EffectRecord, nowMs: number):
         if (!done) throw new CalendarApiError("an earlier event of ours changed while it was being removed or fenced", { status: null, retryable: true, reason: "stray_event" });
       } catch (e) {
         const api = apiError(e);
-        if (cal !== calendarId && api && !api.detail.retryable && api.detail.reason !== "precondition") {
-          note = `an event of ours in an earlier outfit calendar could not be cleaned up yet (${api.detail.reason ?? `HTTP ${api.detail.status ?? "error"}`})`;
+        // An earlier calendar that cannot be cleaned up yet (refused, unreachable, failing for now, changing under
+        // us, or with any other writer error) keeps its entry and is retried on its own after delivery here, with
+        // the capped cleanup backoff that never gives up. Only the lease and an abandoned call end the run: no
+        // further call may start under them.
+        if (cal !== calendarId && !(e instanceof LeaseLostError || e instanceof CallAbandonedError || e instanceof LeaseTooShortError)) {
+          const reason = e instanceof TakenMissingUnconfirmedError ? "its ID is taken but no event could be read under it" : api ? (api.detail.reason ?? `HTTP ${api.detail.status ?? "error"}`) : "error";
+          note = `an event of ours in an earlier outfit calendar could not be cleaned up yet (${reason})`;
           continue;
         }
         throw e;
@@ -982,7 +1115,7 @@ async function projectOne(deps: DailyDeps, effect: EffectRecord, nowMs: number):
         }
         // A restore, the end of a pause or a new board may have landed during the delete: go round again.
         if ((await desiredState(deps, userId, payload)).key !== want.key) continue;
-        await settle({ state: "projected" }, { state: "suppressed", suppression_reason: ownerDeleted && !fencedMissing ? "deleted_externally" : want.absent, projected_revision: null, etag: null, removing_event_id: null, ...(await settledFields(calendarId, eventId)), last_error: note, last_verified_at: toInstant(clock()) });
+        await settleDelivered({ state: "suppressed", suppression_reason: ownerDeleted && !fencedMissing ? "deleted_externally" : want.absent, projected_revision: null, etag: null, removing_event_id: null, ...(await settledFields(calendarId, eventId)), last_error: note, last_verified_at: toInstant(clock()) });
         return "removed";
       }
 
@@ -1004,7 +1137,7 @@ async function projectOne(deps: DailyDeps, effect: EffectRecord, nowMs: number):
       // A removal or another write of ours may still land: the event is written even when it already shows
       // this write, with a fresh fence value, so the late call's etag is stale.
       const mustFence = removalPending || unfenced(row, calendarId, eventId);
-      if (carriesWrite(remote, write, text) && !mustFence) {
+      if (carriesWrite(remote, write, text, hasVerifiedText(row)) && !mustFence) {
         written = remote; // exactly this write already landed (a retried or duplicate effect): nothing to write
       } else {
         try {
@@ -1036,24 +1169,34 @@ async function projectOne(deps: DailyDeps, effect: EffectRecord, nowMs: number):
 
       const check = await w.getEvent(userId, calendarId, eventId);
       if (duplicate && check === null) {
-        // The ID is taken although no event can be read under it (a deleted event whose ID Google keeps):
-        // an insert there can never succeed. The event moves to a replacement ID derived from this one,
-        // the same on every attempt, so a lost response still finds the event it created. Nothing of ours can
-        // land under the taken ID any more (an insert fails the same way, and there is no event to change).
+        // The ID is taken although no event can be read under it. That is a deleted event whose ID Google keeps
+        // only if it stays so: a read can also miss a live event for a moment. The first observation is recorded
+        // and the original ID is reconciled again on a later attempt; only when the same observation repeats
+        // there does the event move to a replacement ID derived from this one (the same on every attempt, so a
+        // lost response still finds the event it created). Nothing of ours can land under the taken ID any more.
+        if (!(await takenMissingConfirmed(calendarId, eventId))) {
+          await lease.write({ last_error: "the event's ID is taken but no event could be read under it; it is read again before a replacement ID is used" });
+          return retryLater("the event's ID is taken but no event could be read under it", "retry", DUPLICATE_GONE_CONFIRM_MS);
+        }
         const replacement = await managedEventId(userId, `${payload.scope}|after-deletion|${eventId}`, payload.localDate);
-        await lease.write({ event_id: replacement, etag: null, projected_revision: null, ...(await settledFields(calendarId, eventId)) });
+        await forgetTakenMissing(calendarId, eventId);
+        // Nothing is verified on the replacement event yet: its verified text starts empty, so markerless text
+        // there is never taken as ours. The text verified on the old event is kept with the unverified ones, so
+        // its lines inside the markers stay recognisable as ours.
+        const keptText = row.managed_text !== null ? { attempted_text: JSON.stringify([row.managed_text, ...attemptedOf(await readRow()).filter((t) => t !== row.managed_text)]) } : {};
+        await lease.write({ event_id: replacement, etag: null, projected_revision: null, managed_text: null, ...keptText, ...(await settledFields(calendarId, eventId)) });
         continue;
       }
       // Only a read-back showing every managed field as written counts, and only while D1 still wants
       // exactly that write; otherwise nothing of the managed basis is recorded and the round repeats.
-      if (!check || !carriesWrite(check, write, text)) continue;
+      if (!check || !carriesWrite(check, write, text, hasVerifiedText(row))) continue;
       // A write of this round got no definite answer: it may still land after the read-back, so fence it first.
       if (unfenced(await readRow(), calendarId, eventId)) continue;
       if ((await desiredState(deps, userId, payload)).key !== want.key) continue;
       // Texts of unverified writes stay recorded while a write of ours elsewhere (an earlier calendar not yet
       // cleaned up) may still land: its lines must stay recognisable as ours if the event moves back there.
       const remaining = await settledFields(calendarId, eventId);
-      await settle({ state: "projected" }, { state: "projected", suppression_reason: null, board_id: doc.boardId, calendar_id: calendarId, projected_revision: doc.revision, etag: check.etag ?? written?.etag ?? null, managed_text: text, ...(remaining.uncertain_calendars === null ? { attempted_text: null } : {}), removing_event_id: null, ...remaining, last_verified_at: toInstant(clock()), last_error: note });
+      await settleDelivered({ state: "projected", suppression_reason: null, board_id: doc.boardId, calendar_id: calendarId, projected_revision: doc.revision, etag: check.etag ?? written?.etag ?? null, managed_text: text, ...(remaining.uncertain_calendars === null ? { attempted_text: null } : {}), removing_event_id: null, ...remaining, last_verified_at: toInstant(clock()), last_error: note });
       return "projected";
     }
     await lease.write({ last_error: "the event could not be verified after writing" });
@@ -1067,6 +1210,10 @@ async function projectOne(deps: DailyDeps, effect: EffectRecord, nowMs: number):
       // The abandoned call may still land: the next attempt waits until this lease has run out.
       await lease.write({ last_error: "a Calendar call was given up; delivery resumes once it can no longer land" });
       return retryLater(e.message, "retry", PROJECTION_LEASE_MS);
+    }
+    if (e instanceof TakenMissingUnconfirmedError) {
+      await lease.write({ last_error: e.message });
+      return retryLater(e.message, "retry", DUPLICATE_GONE_CONFIRM_MS);
     }
     if (e instanceof LeaseTooShortError) {
       await lease.write({ last_error: "a Calendar call could not start within the projection lease" });

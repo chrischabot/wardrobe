@@ -182,3 +182,26 @@ phase times, wearing intervals, freshness thresholds, the outfit calendar and it
   `{ basis, minC?, maxC?, pieces: { outer?, top?, mid_layer?, bottom? } }`; none exists in the profile
   beyond the 14 to 16 C jacket rule.
 - Unpacking returns every packed unit as awaiting care (the ledger's rule), including unworn ones.
+
+## Calendar projection: ours or the owner's, missing or present
+
+- Text without the invisible managed markers counts as ours only when a verified projection exists
+  (`managed_text`), both when merging the description and when a read-back verifies a write. Otherwise
+  even text equal to the new outfit text is the owner's: it is kept and the outfits go first.
+- An "ID taken but no event readable" observation (409 on insert, nothing under the ID) is recorded per
+  calendar and event ID (`duplicate_missing`, migration 0103). It is cleared by any read that sees that
+  event (cleanup reads included) or by a write of ours that lands on it, and every observation is cleared
+  when the outfit calendar changes. Only the same observation seen again at least five minutes later is
+  taken as a deleted event whose ID Google keeps: then the event moves to its replacement ID, or a fence
+  on that ID counts as done. Until then the run is retried.
+- A fence counts only once read back; a fence whose read-back fails or throws is withdrawn.
+- Cleaning up an earlier outfit calendar never stops delivery to the current one and never gives up: any
+  error there other than a lost lease or an abandoned call keeps the entry, and the effect is retried with
+  the capped cleanup backoff (30 minutes doubling to 24 hours).
+- Not changed: one null or cancelled read of a delivered event (with no write of ours outstanding) is
+  still taken as the owner's deletion and suppresses the day until he restores it. No observation
+  record is involved there; confirming it the same way would delay every honest owner deletion by five
+  minutes, and it is left as is.
+- Review findings fixed in the same change, outside those two rules: a cancelled-event fence whose
+  read-back threw stayed marked as fenced; an ordinary (non-API) writer error during earlier-calendar
+  cleanup fell into the bounded retries and could stop the cleanup after the attempt limit.
