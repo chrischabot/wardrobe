@@ -7,16 +7,17 @@ asked for Wardrobe and its Codex plugin to be hosted fully on Ferrite; this
 directory is that port, built flow by flow. The TypeScript backend stays the
 behaviour reference until the port reaches parity.
 
-**Status: the MCP endpoint and the board (milestone 1b).** The owner's
+**Status: the MCP endpoint, the board and service laundry (milestone 1c).** The owner's
 real inventory can be read, and one undoable command runs end to end: "it is
 in the wash" (`care.mark_dirty`) with its receipt, and `command.undo` to take
 it back, from the owner's app or a connected assistant, through Ferrite's
 request queue and APE store. A connected assistant such as the Codex plugin
 reaches the same commands through the MCP endpoint (`/mcp`), signing in with
 the app's own OAuth. The day's outfit board is ported (`board.publish`,
-`board.select`, `board.swap_slot` with their undo, and `garderobe_today`);
-laundry collection and return is next (milestone 1c). Nothing has been
-deployed: see "Deploying".
+`board.select`, `board.swap_slot` with their undo, and `garderobe_today`),
+and so is service laundry (`laundry.collect` and `laundry.return`, with
+their undo). The daily recommender and the conversation tools are next.
+Nothing has been deployed: see "Deploying".
 
 ## Running it
 
@@ -62,7 +63,7 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | Route | As in the TypeScript API |
 |---|---|
 | `GET /health` (public) | service status |
-| `GET /v1/wardrobe[?category=]` | the inventory: every imported garment with its balances (clean, dirty) and version. A subset of `listInventory`: no availability estimate, aliases, colours or wear counts yet |
+| `GET /v1/wardrobe[?category=]` | the inventory: every imported garment with its balances (clean, dirty, at the laundry service) and version. A subset of `listInventory`: no availability estimate, aliases, colours or wear counts yet |
 | `POST /v1/commands` | the command envelope of `packages/contracts` (`type`, `payload`, `idempotencyKey`, `authorization`, `source.channel`, optional `occurredAt`, `expectedVersions`) |
 | `GET /v1/today?date=YYYY-MM-DD` | Today: the board published for that date (`TodayView`), or none. `date` is required, because the port has no timezone yet |
 | `GET /v1/commands[?limit=]`, `GET /v1/commands/{id}` | receipts, newest first; an undo already used is no longer offered |
@@ -71,7 +72,7 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` | the MCP authorization server, see below |
 
 Commands: `care.mark_dirty`, `board.publish`, `board.select`,
-`board.swap_slot` and `command.undo`. Each applies at once and
+`board.swap_slot`, `laundry.collect`, `laundry.return` and `command.undo`. Each applies at once and
 answers with the receipt of `CommandReceipt` (contract 1.1.0): summary built
 from the ledger, affected entity versions, repairs, result, undo
 availability, wardrobe revision, actor and channel. The same idempotency key
@@ -136,7 +137,13 @@ in factual copy. `board.select` and `board.swap_slot` have an undo through
 a new revision instead; earlier revisions stay in history). Choices unwind
 only newest first, and an undone choice is itself a change of choice, so an
 earlier one is chosen again rather than undone (also as in TypeScript).
-`expectedVersions` accepts `board:<boardId>`.
+`expectedVersions` accepts `board:<boardId>`. A publisher that read the day
+sends `expectedBoardRevision` (0 for a day with no board): a board published
+or changed meanwhile refuses the publication with `precondition_failed`
+(`boardChanged: true`), and nothing is written. The day's board index lives
+in the guarded ledger record, so two publishers racing for an empty day
+cannot both succeed: the second one's commit fails its guard, re-plans, and
+sees the first board.
 
 Automatic repair is not ported, so a board is checked again against the
 current stock whenever it is read: an option a later report made unwearable
@@ -148,6 +155,45 @@ board until it is), weather, Calendar, wear history, the owner's timezone
 (`timezone` is null and the date is required), freshness (`unavailable`), and
 scopes other than home. A board's validity is therefore reported as limited
 or degraded, never as fully checked.
+
+## Service laundry
+
+As `handlers/wear-care.ts` does it. `laundry.collect` is the pickup: every
+unit of a service-laundered garment that is in the hamper goes into a new
+batch (less `exclude`, plus `include` with its count; a hand-washed or
+never-laundered piece is refused), and the receipt counts what the replay
+moved. `laundry.return` brings back the named batch, or the oldest one
+still out: its pieces are clean, less the ones the owner names as still
+away, which stay in the batch until a later return of it. A return with no
+batch on record takes the owner's word (what was awaiting the service is
+clean); the same return said again within five days of a returned pickup
+changes nothing; a return dated before its pickup is refused. A wash report
+of a piece the ledger has at the laundry pulls it back from there (the owner
+has it), with a repair on the receipt. A pickup or return given an earlier
+time is sized from the stock as it stood then, not as it stands now.
+
+Undo: a pickup is withdrawn while the bag is still out (the batch stays on
+record, withdrawn); once it is back, the return is undone instead, exactly or
+not at all: if voiding it would change what any other report (recorded or dated
+after it) moved
+or repaired (a wash report, a later return), the return stays. This holds for a
+return with no pickup on record too, for withdrawing a pickup (refused if
+another bag's record or a later report relies on it) and for undoing a wash
+report (refused once, say, a pickup has collected the piece). Returns of one bag are recorded in time
+order: a return dated before the bag's last recorded return is refused (undo
+that one first if its time was wrong). A batch ID is used once for the life of
+the wardrobe: only the newest 60 batches are kept, but a dropped batch's ID
+stays reserved through its stock events, which are never removed; IDs the app
+makes start with `lb_`, which an owner-supplied ID may not use.
+Both are routine owner observations, so a connected assistant runs them
+directly, and `expectedVersions` is not checked for them (they are rebased).
+`laundry_batch:<id>` versions are accepted for an undo.
+
+Not ported: lost, delayed and missed-return exceptions
+(`laundry.report_exception`), the weekly laundry reset, wear records (so
+nothing is held back from a pickup as being worn today), and hand-wash
+reports (`care.washed`). The ledger keeps at most 60 batches; the oldest
+returned or withdrawn ones make room.
 
 ## The MCP endpoint and its OAuth
 
@@ -275,11 +321,11 @@ command must be printable ASCII and not only digits, so the request hash
 sorts keys exactly as JavaScript does.
 
 Differences from the TypeScript backend, to close in later milestones: one
-owner per deployment; no laundry service yet (collection, return, still-away
-pieces and exceptions arrive with milestone 1), so the inventory has no
-"at the laundry" balance; no wear records; no weekly reset; no effects or
-outbox; `expectedVersions` is checked for every command except the wash
-report (observations are rebased, as in the TypeScript service).
+owner per deployment; laundry exceptions and the weekly reset are not ported
+(see "Service laundry"); no wear records; no effects or
+outbox; `expectedVersions` is checked for every command except the owner's
+observations (the wash report, the laundry pickup and the laundry return),
+which are rebased, as in the TypeScript service.
 
 ## Ferrite limits and what they mean for Wardrobe
 
@@ -309,9 +355,17 @@ small change of its own, and passes `ferrite check`, `ferrite test` and
    inventory and command tools, and the restriction-lift refusals. (b) Done:
    the board: `board.publish` (the owner's app, until the recommender is ported),
    `board.select` with its undo, `board.swap_slot`, and `garderobe_today`. (c)
-   Batch laundry collection and return, with pickup events, still-away pieces
-   and exceptions. Then the Codex plugin (`integrations/codex`) is pointed at
-   this app.
+   Done: batch laundry collection and return, with pickup events and
+   still-away pieces (the other exceptions come with milestone 2). (d) Wear
+   records: `wear.record` with per-garment daily deduplication and its undo,
+   and the day's recorded wear in `garderobe_today` (`dayRecord`), so a
+   connected assistant can see that choosing an outfit records no wear. (e)
+   `garderobe_recommend`: the deterministic composer of `packages/daily`
+   over the owner's real stock, publishing through `board.publish`. (f)
+   `garderobe_run` (run status) and then `garderobe_ask` and
+   `garderobe_research`, which wait on model and outside calls and so come
+   with the queued runs of milestones 3 and 4. Then the Codex plugin
+   (`integrations/codex`) is pointed at this app.
 2. **Ledger.** The rest of the command service in `packages/domain`, one
    command at a time: garments (create, correct, aliases, merge, move,
    retire), wear records with per-garment daily deduplication, washes, the

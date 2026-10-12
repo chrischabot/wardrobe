@@ -347,7 +347,13 @@ fn availability(day: &Day<'_>, g: &Garment) -> Availability {
     }
     let st = day.stock.of(&g.id);
     if st.clean == 0 {
-        reasons.push(if st.dirty > 0 { "awaiting care" } else { "no clean unit at home" });
+        reasons.push(if st.dirty > 0 {
+            "awaiting care"
+        } else if day.stock.at_service(&g.id) > 0 {
+            "at the laundry"
+        } else {
+            "no clean unit at home"
+        });
     }
     if !reasons.is_empty() {
         Availability::Excluded(reasons)
@@ -495,7 +501,8 @@ pub fn validate(day: &Day<'_>, slots: &[Slot], alternatives: &[String], explicit
     if let (Some(rule), Some(outer)) = (day.cat.active_rule("thermal.jacket_14_16_lightweight_oxford_only"), get("outer")) {
         if outer.attr_true("jacketLike") || outer.category == "outerwear" {
             let required = rule.params["requiredShirtFabricClass"].as_str().unwrap_or("");
-            let offenders: Vec<&Garment> = [get("top"), get("mid_layer")].into_iter().flatten().filter(|g| g.attr_str("fabricClass") != required).collect();
+            // A one-piece outfit has no shirt under the jacket: the one-piece itself must qualify.
+            let offenders: Vec<&Garment> = [get("top"), get("mid_layer"), get("one_piece")].into_iter().flatten().filter(|g| g.attr_str("fabricClass") != required).collect();
             if !offenders.is_empty() {
                 let names = offenders.iter().map(|g| g.name.as_str()).collect::<Vec<_>>().join(" and ");
                 let mut ids = vec![outer.id.clone()];
@@ -1238,10 +1245,30 @@ pub fn swap(ctx: &Ctx<'_>, day: &Day<'_>, board: Option<&Board>, p: &Value) -> R
             }
         }
     }
+    // `replace_slot` replaces the role's one slot; an outfit with two pieces in the role (two
+    // accessories) does not say which one is meant.
+    if option.slots.iter().filter(|s| s.role == role).count() > 1 {
+        return Err(CmdError::with(
+            "invalid_command",
+            format!("this outfit has more than one {}, so which one to swap is ambiguous; nothing was changed", role_words(&role)),
+            json!({"optionId": option_id, "role": role}),
+        ));
+    }
     let previous_id = option.slot(&role).map(str::to_string);
     let kept_explicit: Vec<String> = option.explicit.iter().filter(|id| Some(*id) != previous_id.as_ref()).cloned().collect();
     let (slots, validation, explicit) = match &picked {
         Some(gid) => {
+            // A shirt already offered in another option is refused here as publication drops it there.
+            let shirt_roles = ["top", "one_piece"];
+            if shirt_roles.contains(&role.as_str()) {
+                if let Some((i, _)) = offered.iter().enumerate().find(|(_, o)| o.option_id != option_id && shirt_roles.iter().any(|r| o.slot(r) == Some(gid.as_str()))) {
+                    return Err(CmdError::with(
+                        "precondition_failed",
+                        format!("{} is already offered in option {}; choose another piece; nothing was changed", name_of(day.cat, gid), i + 1),
+                        json!({"violations": [{"code": "duplicate", "garmentIds": [gid]}]}),
+                    ));
+                }
+            }
             // The owner's own pick, validated as given: it admits an occasional piece, never absent or restricted stock.
             let slots = replace_slot(&option.slots, &role, gid);
             let mut explicit = kept_explicit.clone();

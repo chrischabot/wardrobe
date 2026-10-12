@@ -32,7 +32,7 @@ garderobe_today reads the day's outfit board for a named date (YYYY-MM-DD): its 
 garderobe_inventory reads the wardrobe (views items, snapshot, receipts); check `complete` and `nextCursor` before saying how many things exist. \
 garderobe_command makes one typed change the owner reported or asked for (needs the write permission) and returns its verified receipt; \
 send a stable idempotencyKey per intended change, send the board's revision as expectedVersions ({\"board:<boardId>\": revision}) for a board change, and take a change back with command.undo and the receipt's commandId. \
-Choosing an outfit is an intention, not a recorded wear. \
+Choosing an outfit is an intention, not a recorded wear. A laundry pickup or return is what the owner says happened: name pieces still away only when he says so. \
 Lifting a restriction, or undoing the command that recorded one, is refused here. Only send what the owner actually reported or asked for.";
 
 fn header<'a>(req: &'a IngressRequest, name: &str) -> Option<&'a str> {
@@ -160,7 +160,7 @@ pub fn tools(caller: &Caller) -> Vec<Value> {
         list.push(json!({
             "name": "garderobe_command",
             "title": "Change the wardrobe",
-            "description": "One typed change the owner reported or asked for, applied at once with a verified receipt and an undo: care.mark_dirty (payload {items: [{garmentId, quantity?}]}, the owner's wash report); board.select (payload {boardId, optionId, footwearGarmentId?}; optionId null clears the choice; an intention, not a wear); board.swap_slot (payload {boardId, optionId, role, garmentId?}; without garmentId another eligible piece is chosen); board.publish (payload {localDate, requestedCount, options: [{slots: [{role, garmentId}], reason}]}; every option is validated against the wardrobe); command.undo (payload {commandId}). Send expectedVersions {\"board:<boardId>\": revision} for a board change. Repeating the same idempotencyKey never repeats the change. Lifting a restriction, or undoing the command that recorded one, is refused.",
+            "description": "One typed change the owner reported or asked for, applied at once with a verified receipt and an undo: care.mark_dirty (payload {items: [{garmentId, quantity?}]}, the owner's wash report); board.select (payload {boardId, optionId, footwearGarmentId?}; optionId null clears the choice; an intention, not a wear); board.swap_slot (payload {boardId, optionId, role, garmentId?}; without garmentId another eligible piece is chosen); board.publish (payload {localDate, requestedCount, options: [{slots: [{role, garmentId}], reason}]}; every option is validated against the wardrobe); laundry.collect (payload {batchId?, exclude?: [garmentId], include?: [{garmentId, quantity}]}; the service picked up what was awaiting it); laundry.return (payload {batchId?, stillAway?: [{garmentId, quantity?}]}; the oldest batch still out comes back clean, less what is still away); command.undo (payload {commandId}). Send expectedVersions {\"board:<boardId>\": revision} for a board change. Repeating the same idempotencyKey never repeats the change. Lifting a restriction, or undoing the command that recorded one, is refused.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,

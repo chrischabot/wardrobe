@@ -215,6 +215,22 @@ async fn publishing_validates_every_option_against_the_owners_wardrobe_and_rules
 }
 
 #[tokio::test]
+async fn a_publication_for_an_empty_day_never_replaces_a_board_published_meanwhile() {
+    let mut store = MemStore::default();
+    // Two publishers both read an empty day and publish with expectedBoardRevision 0.
+    let first = json!({"localDate": DAY, "requestedCount": 2, "options": two_outfits(), "expectedBoardRevision": 0});
+    run(&mut store, OWNER, T0, "board.publish", first, "publish-empty-1", None).await.unwrap();
+    let b = board(&mut store).await;
+    let before = store.clone();
+    let mut other = two_outfits();
+    other.as_array_mut().unwrap().truncate(1);
+    let e = run(&mut store, ASSISTANT, T0 + 1, "board.publish", json!({"localDate": DAY, "requestedCount": 1, "options": other, "expectedBoardRevision": 0}), "publish-empty-2", None).await.unwrap_err();
+    assert_eq!((e.code, e.details["boardChanged"].clone(), e.details["currentRevision"].clone()), ("precondition_failed", json!(true), json!(1)));
+    assert_eq!(store.data, before.data, "the board published first stands and nothing was written");
+    assert_eq!(pieces(&board(&mut store).await), pieces(&b));
+}
+
+#[tokio::test]
 async fn publication_refusals() {
     let mut store = MemStore::default();
     let base = || json!({"localDate": DAY, "requestedCount": 2, "options": two_outfits()});

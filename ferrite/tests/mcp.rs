@@ -331,7 +331,7 @@ async fn the_codex_flow_reads_writes_with_a_receipt_and_undoes() {
     assert_eq!(error_of(&twice)["code"], "not_undoable");
     let snap = call(&mut store, &access, "garderobe_inventory", json!({"view": "snapshot"})).await;
     let item = snap["structuredContent"]["data"]["items"].as_array().unwrap().iter().find(|i| i["garmentId"] == shirt.as_str()).unwrap().clone();
-    assert_eq!(item["balances"], json!({"clean": 1, "dirty": 0}));
+    assert_eq!(item["balances"], json!({"clean": 1, "dirty": 0, "service": 0}));
     let receipts = call(&mut store, &access, "garderobe_inventory", json!({"view": "receipts"})).await;
     assert_eq!((receipts["structuredContent"]["total"].clone(), receipts["structuredContent"]["complete"].clone()), (json!(2), json!(true)));
 

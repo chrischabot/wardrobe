@@ -5,6 +5,7 @@
 
 pub mod api;
 pub mod board;
+pub mod laundry;
 pub mod canonical;
 pub mod ledger;
 pub mod mcp;
