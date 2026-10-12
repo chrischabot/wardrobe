@@ -137,6 +137,29 @@ fn relied_on(names: &[String], batch_id: Option<&str>) -> CmdError {
     )
 }
 
+/// Batches record what their pickups and returns moved. An observation dated earlier must not change
+/// what another bag's pickup or return moved, or that bag's record would disagree with the stock;
+/// such a report is refused (nothing is written) and names the pieces concerned.
+fn other_bags_changed(ctx: &Ctx<'_>, ledger: &Ledger, before: &crate::ledger::Replay, after: &crate::ledger::Replay) -> Result<(), CmdError> {
+    let mut names: Vec<String> = Vec::new();
+    for e in ledger.events.iter().filter(|e| e.voided_by.is_none() && e.command_id != ctx.command_id && (e.kind == "pickup" || e.kind == "return")) {
+        if before.moved.get(&e.id) != after.moved.get(&e.id) {
+            let name = ctx.cat.get(&e.garment_id).map_or_else(|| e.garment_id.clone(), |g| g.name.clone());
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    if names.is_empty() {
+        return Ok(());
+    }
+    Err(CmdError::with(
+        "precondition_failed",
+        format!("at the time given, this would take pieces another laundry bag is recorded with ({}); give a later time, or undo that bag's record first; nothing was written", name_list(&names)),
+        json!({"reason": "changes_another_batch", "occurredAt": instant(ctx.occurred_at_ms)}),
+    ))
+}
+
 /// `laundry.collect`: the service picked up the laundry.
 pub fn collect(ctx: &Ctx<'_>, ledger: &mut Ledger, p: &Value) -> Result<Plan, CmdError> {
     const T: &str = "laundry.collect";
@@ -181,6 +204,7 @@ pub fn collect(ctx: &Ctx<'_>, ledger: &mut Ledger, p: &Value) -> Result<Plan, Cm
     let before = replay(ctx.cat, &ledger.events);
     let events: Vec<(String, String)> = picked.iter().map(|(g, q)| (g.clone(), journal(ctx, ledger, g, "pickup", Some(&batch_id), *q, 0))).collect();
     let after = replay(ctx.cat, &ledger.events);
+    other_bags_changed(ctx, ledger, &before, &after)?;
     let mut members = Vec::new();
     let mut units = 0;
     for (g, eid) in &events {
@@ -334,6 +358,7 @@ pub fn return_batch(ctx: &Ctx<'_>, ledger: &mut Ledger, p: &Value) -> Result<Pla
         planned.push((item.clone(), outstanding, away, eid));
     }
     let after = replay(ctx.cat, &ledger.events);
+    other_bags_changed(ctx, ledger, &before, &after)?;
     let at_after = replay_until(ctx.cat, &ledger.events, ctx.occurred_at_ms);
     let (mut returned, mut away_total) = (0u32, 0u32);
     let mut away_names = Vec::new();
@@ -415,6 +440,7 @@ fn return_without_batch(ctx: &Ctx<'_>, ledger: &mut Ledger, still_away: &[(Strin
         return Ok(noop("No laundry was recorded as away or awaiting the service", empty));
     }
     let after = replay(ctx.cat, &ledger.events);
+    other_bags_changed(ctx, ledger, &before, &after)?;
     let moved: u32 = events.iter().map(|(_, e)| after.moved.get(e).copied().unwrap_or(0)).sum();
     if moved == 0 {
         ledger.events.retain(|e| e.command_id != ctx.command_id);

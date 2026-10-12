@@ -779,12 +779,16 @@ async fn expected_boards<S: Store>(store: &mut S, env: &Envelope) -> Result<Vec<
     Ok(out)
 }
 
+/// The owner's observations: `expectedVersions` is not checked for them (they are rebased), and the
+/// boards it names are not even read, so an unrelated board can never refuse a wash report.
+const OBSERVATIONS: &[&str] = &["care.mark_dirty", "laundry.collect", "laundry.return"];
+
 /// Client-stated versions, checked for every command but an observation
 /// (a wash report, a laundry pickup or return is rebased instead, section 5 of the specification).
 /// A board choice does not advance the board's revision, so it can be made
 /// at the version the client read; a revision moved by anyone else is a conflict.
 fn check_expected_versions(env: &Envelope, l: &Ledger, boards: &[(String, u64)]) -> Result<(), CmdError> {
-    if matches!(env.kind.as_str(), "care.mark_dirty" | "laundry.collect" | "laundry.return") {
+    if OBSERVATIONS.contains(&env.kind.as_str()) {
         return Ok(());
     }
     if let Some(map) = env.expected_versions.as_object() {
@@ -823,7 +827,15 @@ impl Planned {
 
 /// Plan one command against `current`, writing ledger changes into `next`.
 async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envelope, ctx: &Ctx<'_>, current: &Ledger, next: &mut Ledger, undo_target: Option<&str>) -> Result<Planned, CmdError> {
-    let boards = expected_boards(store, env).await?;
+    let boards = if OBSERVATIONS.contains(&env.kind.as_str()) {
+        // The envelope's shape still holds; only the board reads are skipped.
+        if env.expected_versions.as_object().map_or(false, |m| m.len() > MAX_EXPECTED) {
+            return Err(envelope_error(format!("expectedVersions: at most {MAX_EXPECTED} entries")));
+        }
+        Vec::new()
+    } else {
+        expected_boards(store, env).await?
+    };
     check_expected_versions(env, current, &boards)?;
     let day = || board::Day { cat: ctx.cat, stock: ledger::replay(ctx.cat, &current.events) };
     match (env.kind.as_str(), undo_target) {

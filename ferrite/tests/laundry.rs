@@ -281,32 +281,65 @@ async fn an_unnamed_back_dated_return_is_about_the_bag_that_was_out_then() {
 }
 
 #[tokio::test]
-async fn a_pickup_or_wash_report_is_not_undone_when_another_record_relies_on_it() {
+async fn a_back_dated_report_never_takes_pieces_another_bag_is_recorded_with() {
     let mut store = MemStore::default();
     dirty(&mut store, T0, &[OXFORD_PINK], "dirty-0001").await;
-    run(&mut store, OWNER, T0 + 20 * HOUR, "laundry.collect", json!({"batchId": "bag-x"}), "collect-x").await.unwrap();
-    // A pickup reported later but dated earlier collects that unit into bag-y instead.
-    let y = run_at(&mut store, OWNER, T0 + 21 * HOUR, Some(T0 + 10 * HOUR), "laundry.collect", json!({"batchId": "bag-y"}), "collect-y").await.unwrap();
-    assert_eq!(y["result"]["units"], 1);
-    run(&mut store, OWNER, T0 + 30 * HOUR, "laundry.return", json!({"batchId": "bag-x"}), "return-x").await.unwrap();
-    // Withdrawing bag-y would put the unit back in bag-x, already recorded as returned: refused.
+    let x = run(&mut store, OWNER, T0 + 20 * HOUR, "laundry.collect", json!({"batchId": "bag-x"}), "collect-x").await.unwrap();
+    assert_eq!(x["result"]["units"], 1);
+    // A pickup reported later but dated earlier would collect bag-x's unit into bag-y: refused.
     let before = store.clone();
-    let e = run(&mut store, OWNER, T0 + 31 * HOUR, "command.undo", json!({"commandId": y["commandId"]}), "undo-y-0001").await.unwrap_err();
-    assert_eq!(e.code, "not_undoable", "{} {}", e.message, e.details);
-    assert!(e.message.contains("another record relies on this pickup"), "{}", e.message);
-    assert_eq!(store.data, before.data);
-    // The unit is still recorded in bag-y, and its return brings it back.
-    assert_eq!(balances(&mut store, OXFORD_PINK).await, (0, 0, 1));
-    let r = run(&mut store, OWNER, T0 + 32 * HOUR, "laundry.return", json!({"batchId": "bag-y"}), "return-y").await.unwrap();
+    let e = run_at(&mut store, OWNER, T0 + 21 * HOUR, Some(T0 + 10 * HOUR), "laundry.collect", json!({"batchId": "bag-y"}), "collect-y").await.unwrap_err();
+    assert_eq!((e.code, e.details["reason"].clone()), ("precondition_failed", json!("changes_another_batch")), "{}", e.message);
+    assert!(e.message.contains("Lightweight oxford"), "{}", e.message);
+    // A return dated before bag-x was collected is refused too (that open bag was not out yet).
+    let e = run_at(&mut store, OWNER, T0 + 21 * HOUR, Some(T0 + 10 * HOUR), "laundry.return", json!({}), "return-early").await.unwrap_err();
+    assert_eq!(e.details["reason"], "return_before_pickup", "{}", e.message);
+    assert_eq!(store.data, before.data, "nothing was written");
+    assert_eq!(balances(&mut store, OXFORD_PINK).await, (0, 0, 1), "still in bag-x");
+    let r = run(&mut store, OWNER, T0 + 30 * HOUR, "laundry.return", json!({"batchId": "bag-x"}), "return-x").await.unwrap();
     assert_eq!(r["result"]["returned"], 1);
-
-    // A wash report a pickup collected cannot be undone under it either.
-    let d = run(&mut store, OWNER, T0 + 40 * HOUR, "care.mark_dirty", json!({"items": [{"garmentId": OXFORD_BLUE}]}), "dirty-0002").await.unwrap();
-    run(&mut store, OWNER, T0 + 41 * HOUR, "laundry.collect", json!({}), "collect-z").await.unwrap();
+    // With no bag out, a return without a pickup dated before bag-x was collected would wash the
+    // unit bag-x took: refused.
     let before = store.clone();
-    let e = run(&mut store, OWNER, T0 + 42 * HOUR, "command.undo", json!({"commandId": d["commandId"]}), "undo-dirty").await.unwrap_err();
-    assert_eq!(e.code, "not_undoable");
+    let e = run_at(&mut store, OWNER, T0 + 31 * HOUR, Some(T0 + 10 * HOUR), "laundry.return", json!({}), "return-early-2").await.unwrap_err();
+    assert_eq!(e.details["reason"], "changes_another_batch", "{}", e.message);
     assert_eq!(store.data, before.data);
+}
+
+#[tokio::test]
+async fn a_wash_report_a_pickup_collected_is_not_undone_under_it() {
+    let mut store = MemStore::default();
+    let d = run(&mut store, OWNER, T0, "care.mark_dirty", json!({"items": [{"garmentId": OXFORD_BLUE}]}), "dirty-0001").await.unwrap();
+    run(&mut store, OWNER, T0 + HOUR, "laundry.collect", json!({}), "collect-0001").await.unwrap();
+    let before = store.clone();
+    let e = run(&mut store, OWNER, T0 + 2 * HOUR, "command.undo", json!({"commandId": d["commandId"]}), "undo-dirty").await.unwrap_err();
+    assert_eq!(e.code, "not_undoable");
+    assert!(e.message.contains("relies on that report"), "{}", e.message);
+    assert_eq!(store.data, before.data);
+}
+
+#[tokio::test]
+async fn an_observation_never_reads_the_boards_its_expected_versions_name() {
+    let mut store = MemStore::default();
+    let outfit = json!({"slots": [{"role": "top", "garmentId": OXFORD_PINK}, {"role": "bottom", "garmentId": GREY_CHINO}, {"role": "belt", "garmentId": BELT_BLACK}, {"role": "socks", "garmentId": SOCK_GREY}, {"role": "footwear", "garmentId": NB_OLIVE}], "reason": ""});
+    let p = run(&mut store, OWNER, T0, "board.publish", json!({"localDate": "2026-09-11", "requestedCount": 1, "options": [outfit]}), "publish-0001").await.unwrap();
+    let board = p["result"]["boardId"].as_str().unwrap().to_string();
+    // The board record is unreadable; a board command naming it fails, a wash report does not.
+    let key = format!("b/{board}").into_bytes();
+    assert!(store.data.contains_key(&key), "board key b/<id>");
+    store.data.insert(key, b"not a board".to_vec());
+    let versions = json!({format!("board:{board}"): 1});
+    for (kind, payload, key) in [
+        ("care.mark_dirty", json!({"items": [{"garmentId": OXFORD_BLUE}]}), "dirty-0001"),
+        ("laundry.collect", json!({}), "collect-0001"),
+        ("laundry.return", json!({}), "return-0001"),
+    ] {
+        let env = json!({"type": kind, "payload": payload, "idempotencyKey": key, "authorization": "owner_tap", "source": {"channel": "ios"}, "expectedVersions": versions});
+        let r = api::execute(&mut store, OWNER, T0 + HOUR, &env).await;
+        assert!(r.is_ok(), "{kind}: {:?}", r.err().map(|e| (e.code, e.message)));
+    }
+    let env = json!({"type": "board.select", "payload": {"boardId": board, "optionId": p["result"]["optionIds"][0]}, "idempotencyKey": "select-0001", "authorization": "owner_tap", "source": {"channel": "ios"}, "expectedVersions": versions});
+    assert!(api::execute(&mut store, OWNER, T0 + HOUR, &env).await.is_err());
 }
 
 #[tokio::test]

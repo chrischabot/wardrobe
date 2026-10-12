@@ -170,7 +170,11 @@ clean); the same return said again within five days of a returned pickup
 changes nothing; a return dated before its pickup is refused. A wash report
 of a piece the ledger has at the laundry pulls it back from there (the owner
 has it), with a repair on the receipt. A pickup or return given an earlier
-time is sized from the stock as it stood then, not as it stands now.
+time is sized from the stock as it stood then, not as it stands now; one that
+would change what another bag's pickup or return moved (take a piece that bag
+is recorded with) is refused, so a batch's record always matches the stock.
+The boards named in `expectedVersions` are not read for an observation, so an
+unrelated board can never refuse a wash report.
 
 Undo: a pickup is withdrawn while the bag is still out (the batch stays on
 record, withdrawn); once it is back, the return is undone instead, exactly or
