@@ -3,7 +3,7 @@ import { all, isCommandError } from "@garderobe/domain";
 import { exportMediaData, getAsset, importMediaData, openRendition, purgeOwnerMediaCache, readExportFile, withoutLocation } from "../src/index.ts";
 import { legacyThumbnailCacheUrl, thumbnailCacheUrl } from "../src/delivery.ts";
 import { decodeJpeg, encodeJpeg, probeImage } from "../src/image/index.ts";
-import { jpegScanDataBytes } from "../src/image/jpeg.ts";
+import { jpegScanDataBytes, stripJpegMetadata } from "../src/image/jpeg.ts";
 import { createMediaHarness, syntheticShirt } from "../src/testing/index.ts";
 
 // Regression tests for the review of commit 232af57f and for the adversarial defects MEDIA-ABUSE-1 and
@@ -158,6 +158,80 @@ describe("MEDIA-ABUSE-1: a direct image-state import over existing state is a ty
     expect(await code(run([{ ...record, garment_id: "shirt-gold" }, { ...record, garment_id: "shirt-gold" }]))).toBe("invalid_command");
     expect(await code(run([{ ...record, garment_id: null }]))).toBe("invalid_command");
     expect(await all(h.db, "SELECT * FROM garment_media WHERE user_id = ? ORDER BY garment_id", owner.userId)).toEqual(before);
+  });
+});
+
+describe("automatic review of 56b53eac: metadata between scans, and finalization never undoes a newer image choice", () => {
+  it("stripJpegMetadata filters Exif, IPTC and comments that sit between scans, keeps every scan, and drops what follows the end", () => {
+    const plain = encodeJpeg(syntheticShirt({ size: 64 }), 90);
+    const sos = plain.findIndex((b, i) => b === 0xff && plain[i + 1] === 0xda);
+    const eoi = plain.length - 2;
+    // TEST DATA: a second (repeated) scan after metadata segments, as in a multi-scan file, and trailing bytes.
+    const scan = plain.subarray(sos, eoi);
+    const tagged = concat(
+      plain.subarray(0, eoi),
+      segment(0xe1, ascii("Exif\0\0TEST-INTERSCAN-GPS-POSITION")),
+      segment(0xed, ascii("Photoshop 3.0\0TEST-INTERSCAN-IPTC-POSITION")),
+      segment(0xfe, ascii("TEST-INTERSCAN-COMMENT-POSITION")),
+      scan,
+      new Uint8Array([0xff, 0xd9]),
+      ascii("TEST-TRAILER-POSITION"),
+    );
+    const out = stripJpegMetadata(tagged);
+    expect(latin1(out)).not.toMatch(/TEST-[A-Z-]*POSITION/);
+    // Both scans are still there, byte for byte, and the file ends at its end marker.
+    expect(out.filter((b, i) => b === 0xff && out[i + 1] === 0xda).length).toBe(2);
+    expect(latin1(out)).toContain(latin1(scan));
+    expect([...out.subarray(out.length - 2)]).toEqual([0xff, 0xd9]);
+    expect(() => stripJpegMetadata(concat(plain.subarray(0, sos), new Uint8Array([0xff, 0xd9])))).toThrow(/no image data/);
+  });
+
+  it("a primary-image choice that commits while a new photo is being finalized is kept: finalization plans again from the newer state", async () => {
+    const h = await createMediaHarness();
+    const owner = await h.createSyntheticOwner({ displayName: "Synthetic owner (finalize race)" });
+    const a = await h.upload(owner, { garmentId: "shirt-moss", raster: syntheticShirt({ size: 256 }), demo: true });
+    const c = await h.upload(owner, { garmentId: "shirt-moss", raster: syntheticShirt({ size: 300 }), demo: true });
+    await h.settle(owner);
+    const read = async () => (await all<{ primary_asset_id: string | null; image_state: string; version: number }>(h.db, "SELECT primary_asset_id, image_state, version FROM garment_media WHERE user_id = ? AND garment_id = 'shirt-moss'", owner.userId))[0]!;
+    const before = await read();
+    expect(before.image_state).toBe("resolved");
+    const chosen = before.primary_asset_id === a.asset!.assetId ? c.asset!.assetId : a.asset!.assetId;
+
+    // TEST SETUP: the owner's choice of the other photo commits right after finalization has read the garment's
+    // image state and before its batch commits, by wrapping that one read on the shared database binding.
+    const db = h.db as unknown as { prepare: (sql: string) => unknown };
+    const original = db.prepare;
+    const realPrepare = original.bind(db) as (sql: string) => { bind: (...p: unknown[]) => { first: <T>() => Promise<T | null>; run: () => Promise<unknown> } };
+    let raced = 0;
+    db.prepare = (sql: string) => {
+      const statement = realPrepare(sql);
+      if (raced > 0 || !sql.startsWith("SELECT garment_id, image_state, primary_asset_id")) return statement;
+      return {
+        ...statement,
+        bind: (...params: unknown[]) => {
+          const bound = statement.bind(...params);
+          return {
+            ...bound,
+            first: async <T,>() => {
+              const row = await bound.first<T>();
+              if (raced++ === 0) await realPrepare("UPDATE garment_media SET primary_asset_id = ?, version = version + 1 WHERE user_id = ? AND garment_id = 'shirt-moss'").bind(chosen, owner.userId).run();
+              return row;
+            },
+          };
+        },
+      };
+    };
+    try {
+      const b = await h.upload(owner, { garmentId: "shirt-moss", raster: syntheticShirt({ size: 320 }), demo: true });
+      expect(b.rejected).toBeNull();
+    } finally {
+      db.prepare = original;
+    }
+    expect(raced).toBeGreaterThanOrEqual(1);
+    const after = await read();
+    expect(after.primary_asset_id).toBe(chosen);
+    expect(after.image_state).toBe("resolved");
+    expect(after.version).toBe(before.version + 2);
   });
 });
 

@@ -98,32 +98,59 @@ export function encodeJpeg(raster: Raster, quality = 90): Uint8Array {
 /**
  * Lossless metadata removal: rewrites the segment list without APP1 (Exif/XMP), APP13 (IPTC), COM and the
  * other application segments, keeping APP0 (JFIF), APP2 (ICC profile) and APP14 (Adobe colour transform).
- * The entropy-coded image data is copied untouched.
+ * Every scan's entropy-coded data is copied untouched; segments between scans (a progressive or multi-scan
+ * file) are filtered the same way, and nothing after the end-of-image marker is kept.
  */
 export function stripJpegMetadata(bytes: Uint8Array): Uint8Array {
   if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) throw new ImageDecodeError("unrecognized", "not a JPEG");
   const parts: Uint8Array[] = [bytes.subarray(0, 2)];
   let o = 2;
-  while (o + 4 <= bytes.length) {
+  let sawScan = false;
+  while (o + 1 < bytes.length) {
     if (bytes[o] !== 0xff) throw new ImageDecodeError("corrupt", "invalid JPEG segment marker");
     const marker = bytes[o + 1]!;
     if (marker === 0xff) {
       o++;
       continue;
     }
-    if (marker === 0xda) {
-      // Start of scan: everything from here to the end is image data.
-      parts.push(bytes.subarray(o));
-      o = bytes.length;
-      break;
+    if (marker === 0xd9) break;
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+      parts.push(bytes.subarray(o, o + 2));
+      o += 2;
+      continue;
     }
+    if (o + 4 > bytes.length) throw new ImageDecodeError("corrupt", "truncated JPEG segment");
     const len = (bytes[o + 2]! << 8) | bytes[o + 3]!;
     if (len < 2 || o + 2 + len > bytes.length) throw new ImageDecodeError("corrupt", "truncated JPEG segment");
+    if (marker === 0xda) {
+      // A scan: its header, then entropy-coded data up to the next marker that is not a stuffed byte or a restart.
+      let p = o + 2 + len;
+      while (p < bytes.length) {
+        if (bytes[p] !== 0xff) {
+          p++;
+          continue;
+        }
+        if (p + 1 >= bytes.length) {
+          p = bytes.length;
+          break;
+        }
+        const next = bytes[p + 1]!;
+        if (next === 0x00 || (next >= 0xd0 && next <= 0xd7)) p += 2;
+        else if (next === 0xff) p++;
+        else break;
+      }
+      parts.push(bytes.subarray(o, p));
+      o = p;
+      sawScan = true;
+      continue;
+    }
     const isApp = marker >= 0xe0 && marker <= 0xef;
     const keep = marker === 0xe0 || marker === 0xe2 || marker === 0xee || (!isApp && marker !== 0xfe);
     if (keep) parts.push(bytes.subarray(o, o + 2 + len));
     o += 2 + len;
   }
+  if (!sawScan) throw new ImageDecodeError("corrupt", "the JPEG holds no image data");
+  parts.push(new Uint8Array([0xff, 0xd9]));
   const total = parts.reduce((n, p) => n + p.length, 0);
   const out = new Uint8Array(total);
   let at = 0;

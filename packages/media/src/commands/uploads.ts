@@ -3,7 +3,7 @@
  * Nothing in staging is evidence: an asset exists only after `media.finalize_upload` validated the bytes.
  */
 import { z } from "zod";
-import { CommandError, define, first, loadGarment, sha256Hex, stableId, stmt, toInstant, parseInstant, type CommandContext, type CommandDefinition, type Stmt } from "@garderobe/domain";
+import { CommandError, define, first, loadGarment, sha256Hex, stableId, stmt, toInstant, parseInstant, type CommandContext, type CommandDefinition, type Precondition, type Stmt } from "@garderobe/domain";
 import { MEDIA_COMMANDS as C } from "@garderobe/contracts/ext/media";
 import type { MediaAssetKind, MediaSource } from "@garderobe/contracts/ext/media";
 import { probeImage } from "../image/index.ts";
@@ -198,6 +198,7 @@ export function uploadCommands(depsSource: MediaDepsSource): CommandDefinition<a
         { kind: "media_upload", id: upload.upload_id, version: 2 },
         { kind: "media_asset", id: assetId, version: 1 },
       ];
+      const preconditions: Precondition[] = [stillOpen];
       if (upload.garment_id && assetKindFor(upload) !== "generic_illustration") {
         const current = await loadGarmentMediaRow(ctx.db, ctx.userId, upload.garment_id);
         // A photograph arrived: processing starts. An existing approved image stays primary until the new one is ready.
@@ -209,6 +210,13 @@ export function uploadCommands(depsSource: MediaDepsSource): CommandDefinition<a
             lastFailure: null,
           }),
         );
+        // The write above is built from this read: if an approval or a primary-image choice commits in between,
+        // the batch fails and the service plans again from the newer state, so that choice is never undone.
+        preconditions.push(
+          current
+            ? { label: "garment image state unchanged since read", sql: "(SELECT version FROM garment_media WHERE user_id = ? AND garment_id = ?) = ?", params: [ctx.userId, upload.garment_id, current.version], class: "internal" as const }
+            : { label: "garment image state still absent since read", sql: "NOT EXISTS (SELECT 1 FROM garment_media WHERE user_id = ? AND garment_id = ?)", params: [ctx.userId, upload.garment_id], class: "internal" as const },
+        );
         affected.push({ kind: "garment", id: upload.garment_id, version: 0 });
       }
       const jobId = await stableId("job", ctx.userId, "normalize", assetId, "1");
@@ -216,7 +224,7 @@ export function uploadCommands(depsSource: MediaDepsSource): CommandDefinition<a
       return {
         summary: `Photo stored privately (${probe.width ?? "?"}x${probe.height ?? "?"} ${probe.contentType}); preparing its catalogue view`,
         statements: [...statements, ...job.statements],
-        preconditions: [stillOpen],
+        preconditions,
         affected: affected.filter((a) => a.kind !== "garment"),
         outbox: job.outbox,
         result: { uploadId: upload.upload_id, finalized: true, assetId, renditionId, jobId, sha256, width: probe.width, height: probe.height, hadLocationMetadata: probe.exif.hasGps },
