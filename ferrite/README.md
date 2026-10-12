@@ -152,11 +152,59 @@ current stock whenever it is read: an option a later report made unwearable
 (its shirt went in the wash, say) carries a `qualification` saying why and the
 board reads as degraded, and `board.select` refuses it.
 
-Not ported yet: the recommender itself (so the owner's app publishes the
-board until it is), weather, Calendar, wear history, the owner's timezone
+Recorded wear counts against the seven-day repeat horizon
+(`variety.repeat_horizon`: shirts and trousers): a piece with a counted wear
+in the seven days before the board's date is refused with
+`repeat_within_horizon` ("… was worn on 2026-09-10, inside the 7-day repeat
+horizon"), the rule named, whether the board is being published, read, chosen
+from or swapped. Undoing the wear lifts it at once. No repeat exception
+exists yet: the owner's named-piece override and `allowRepeat` belong to day
+briefs, which are not ported (test
+`trousers_worn_inside_the_seven_day_horizon_are_not_offered_and_a_choice_of_them_is_refused`).
+
+Not ported yet: board-mode recommendations (the composer answers in preview
+mode, see "Recommendations"; a board is published through `board.publish`),
+weather, Calendar, the owner's timezone
 (`timezone` is null and the date is required), freshness (`unavailable`), and
 scopes other than home. A board's validity is therefore reported as limited
 or degraded, never as fully checked.
+
+## Recommendations
+
+`garderobe_recommend` answers validated outfit options for a named day
+(`count` 1 to 8, default the profile's 5), as `recommend` in preview mode in
+`packages/daily/src/service.ts`: the deterministic composer of
+`packages/daily/src/compose.ts` ranks shirt and trouser pairs (rotation,
+colour relation, a seeded tie-break), builds each outfit around a pair (a
+jacket only over a lightweight oxford while the 14-16 °C band cannot be ruled
+out, sneakers while the restriction holds, the sock that echoes a colour from
+higher up, the belt, a tie on a shirt), never offers the same shirt twice, and
+keeps only outfits the board's validator accepts. Nothing is published or
+logged. The options are numbered `preview-1`, `preview-2`, …; the owner can
+publish them as they stand.
+
+A request is a durable run, as `runRecommendation` in
+`apps/worker/src/routes/daily.ts`. The run is keyed by the connection and its
+`clientRequestId`, and its ID is derived from both (`run_<24 hex>`, stored
+under `u/<runId>`). Repeating the request answers from the run, naming its
+`runId`. A different request under the same ID is refused with
+`idempotency_key_reuse`.
+
+What differs from the TypeScript build, and why:
+
+- no composition model is connected, so every option comes from the
+  deterministic composer (the specification's tested fallback). A brief's
+  words are not read, and the note says so;
+- no forecast or Calendar: every piece has the same season fit, there is no
+  scarf day, a jacket goes only over a lightweight oxford, and no option suits
+  an event;
+- the probabilistic availability estimator is not ported: a piece with a clean
+  unit at home counts as available, and one without is not offered;
+- comfort feedback, the coming week's selections and recently shown
+  combinations do not rank pieces;
+- the seeded tie-break names this app's single owner (`owner`) where
+  TypeScript uses the user ID, so the same day ranks differently there
+  (`seeded_unit` itself is the TypeScript hash, pinned by a test).
 
 ## Service laundry
 
@@ -203,7 +251,11 @@ stays reserved through its stock events, which are never removed; IDs the app
 makes start with `lb_`, which an owner-supplied ID may not use.
 Both are routine owner observations, so a connected assistant runs them
 directly, and `expectedVersions` is not checked for them (they are rebased).
-`laundry_batch:<id>` versions are accepted for an undo.
+`laundry_batch:<id>` versions are accepted for an undo. A bag whose holdings
+another record changes moves to a new version too, and is listed among that
+receipt's affected records. This happens when a wear, a further unit or a wash
+report (`care.mark_dirty`) takes a unit the ledger had at the laundry back to
+the owner, or when the undo of one of those puts the unit back.
 
 Not ported: lost, delayed and missed-return exceptions
 (`laundry.report_exception`), the weekly laundry reset, and hand-wash
@@ -298,15 +350,17 @@ Tools, with the TypeScript server's names, arguments and results:
   records"). The response says whether it is the
   whole result (`complete`, `total`). The TypeScript server's other views
   answer `invalid_command` until the data behind them is ported.
+- `garderobe_recommend`: validated outfit options for `{date, count?,
+  brief?, clientRequestId}` (see "Recommendations"). It is a read, so a
+  read-only grant is offered it.
 - `garderobe_command`: the ported commands as the connected assistant
   (`assistant`, channel `mcp`, authorization `owner_statement`), returning
   `{receipt}`. Only a grant with `wardrobe.write` is offered it. A read-only
   grant that calls it gets HTTP 403 with the OAuth `insufficient_scope`
   challenge.
 
-`garderobe_recommend`, `garderobe_ask`, `garderobe_research` and
-`garderobe_run` are not offered yet: they come with the daily service and the
-conversation actor.
+`garderobe_ask`, `garderobe_research` and `garderobe_run` are not offered
+yet: they come with milestone 1f.
 
 The authorization server follows the TypeScript Worker's Workers OAuth
 provider and consent page:
@@ -445,9 +499,10 @@ small change of its own, and passes `ferrite check`, `ferrite test` and
    wear records: `wear.record` with per-garment daily deduplication and its undo,
    the day's recorded wear in `garderobe_today` (`dayRecord`) and the
    `history` view, so a connected assistant can see that choosing an outfit
-   records no wear. (e)
+   records no wear. (e) Done:
    `garderobe_recommend`: the deterministic composer of `packages/daily`
-   over the owner's real stock, publishing through `board.publish`. (f)
+   over the owner's real stock, in preview mode, as a durable run per request
+   ID, with recorded wear held to the seven-day repeat horizon. (f)
    `garderobe_run` (run status) and then `garderobe_ask` and
    `garderobe_research`, which wait on model and outside calls and so come
    with the queued runs of milestones 3 and 4. Then the Codex plugin

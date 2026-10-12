@@ -6,6 +6,9 @@
 //! The tools are those of apps/worker/src/mcp/server.ts that the ported
 //! commands can back, with the same names, arguments and results:
 //!   `garderobe_today`     the day's board (`TodayView`), for a named day;
+//!   `garderobe_recommend` validated outfit options for a named day, composed
+//!                         and validated by the same code as a board, never
+//!                         published (a durable run per client request ID);
 //!   `garderobe_inventory` views `items`, `snapshot` and `receipts`;
 //!   `garderobe_command`   the ported commands, offered only to a grant with
 //!                         `wardrobe.write` and refused to any other with the
@@ -29,6 +32,7 @@ pub const PROTOCOL_VERSIONS: [&str; 2] = ["2025-11-25", "2025-06-18"];
 
 const GUIDE: &str = "Garderobe: the connected owner's private wardrobe. The owner is fixed by this connection; no tool takes an owner or user. \
 garderobe_today reads the day's outfit board for a named date (YYYY-MM-DD): its options, their pieces and the owner's choice. \
+garderobe_recommend returns validated outfit options for a named date and count; never invent garments: only the options returned there exist, and nothing is published. \
 garderobe_inventory reads the wardrobe (views items, snapshot, receipts); check `complete` and `nextCursor` before saying how many things exist. \
 garderobe_command makes one typed change the owner reported or asked for (needs the write permission) and returns its verified receipt; \
 send a stable idempotencyKey per intended change, send the board's revision as expectedVersions ({\"board:<boardId>\": revision}) for a board change, and take a change back with command.undo and the receipt's commandId. \
@@ -114,6 +118,7 @@ pub async fn handle<S: Store>(store: &mut S, origin: &str, now_ms: u64, req: &In
             };
             match name {
                 "garderobe_today" => rpc_result(id, today(store, now_ms, &args).await),
+                "garderobe_recommend" => rpc_result(id, recommend(store, &caller, now_ms, &args).await),
                 "garderobe_inventory" => rpc_result(id, inventory(store, now_ms, &args).await),
                 "garderobe_command" if !caller.can_write() => oauth::insufficient_scope(origin),
                 "garderobe_command" => rpc_result(id, command(store, now_ms, &args).await),
@@ -138,6 +143,23 @@ pub fn tools(caller: &Caller) -> Vec<Value> {
                 "properties": {"date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "the owner's calendar day, YYYY-MM-DD"}}
             },
             "annotations": {"title": "Read the day's board", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+        }),
+        json!({
+            "name": "garderobe_recommend",
+            "title": "Recommend outfits",
+            "description": "Validated outfit options for a date and count, composed from the owner's garments and checked by the same rules as the day's board (socks always, sneakers only while the restriction holds, nothing worn inside the seven-day repeat horizon, nothing at the laundry or in the wash). Nothing is published or logged; choosing or wearing is a separate garderobe_command. Name the day: this server has no owner timezone yet. Pass a fresh clientRequestId; repeating it returns the same result. No composition model is connected, so a brief's words are not read.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["date", "clientRequestId"],
+                "properties": {
+                    "brief": {"type": "string", "maxLength": 2000},
+                    "date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "the owner's calendar day, YYYY-MM-DD"},
+                    "count": {"type": "integer", "minimum": 1, "maximum": 8},
+                    "clientRequestId": {"type": "string", "minLength": 8, "maxLength": 128}
+                }
+            },
+            "annotations": {"title": "Recommend outfits", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
         }),
         json!({
         "name": "garderobe_inventory",
@@ -226,6 +248,21 @@ async fn today<S: Store>(store: &mut S, now_ms: u64, args: &Map<String, Value>) 
                 )
             };
             tool_ok(view, summary.trim_end().to_string())
+        }
+        Err(e) => tool_error(e),
+    }
+}
+
+async fn recommend<S: Store>(store: &mut S, caller: &Caller, now_ms: u64, args: &Map<String, Value>) -> Value {
+    let input = match crate::recommend::parse_input(args) {
+        Ok(i) => i,
+        Err(e) => return tool_error(e),
+    };
+    // A request ID belongs to its connection (`mcp:<grantId>:<clientRequestId>` in the TypeScript build).
+    match crate::recommend::recommend(store, &format!("mcp:{}", caller.grant_id), now_ms, &input).await {
+        Ok(response) => {
+            let line = crate::recommend::summary(&response);
+            tool_ok(response, line)
         }
         Err(e) => tool_error(e),
     }

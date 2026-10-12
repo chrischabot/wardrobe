@@ -704,7 +704,9 @@ pub fn mark_dirty(ctx: &Ctx<'_>, ledger: &mut Ledger, payload: &Value) -> Result
     let after = replay(ctx.cat, &ledger.events);
     other_bags_changed(ctx, ledger, &before, &after)?;
     let units: u32 = event_ids.iter().map(|id| after.moved.get(id).copied().unwrap_or(0)).sum();
-    let affected = affected(ledger, &touched);
+    let mut affected = affected(ledger, &touched);
+    // A unit the ledger had at the laundry and the owner put in the wash came back out of its bag.
+    affected.extend(bump_changed_batches(ledger, &before, &after));
     Ok(Plan {
         outcome: "committed",
         summary: format!("In the wash: {}", name_list(&names)),
@@ -757,7 +759,8 @@ pub fn command_undo(ctx: &Ctx<'_>, ledger: &mut Ledger, original: Option<&Stored
             json!({"commandId": target}),
         ));
     }
-    let affected = affected(ledger, &voided.touched);
+    let mut affected = affected(ledger, &voided.touched);
+    affected.extend(bump_changed_batches(ledger, &voided.before, &voided.after));
     Ok(Plan {
         outcome: "committed",
         summary: undone_summary(&original.summary, UNDO_STOCK_SUMMARY),
@@ -843,8 +846,8 @@ pub(crate) fn other_bags_changed(ctx: &Ctx<'_>, ledger: &Ledger, before: &Replay
     ))
 }
 
-/// Batches whose holdings a change altered (a wear or its undo took a unit back from a bag, or put
-/// it back) are at a new version, so a report checked against the old version is refused as stale.
+/// Batches whose holdings a change altered (a wear, a wash report or its undo took a unit back from
+/// a bag, or put it back) are at a new version, so a report checked against the old version is refused as stale.
 /// Returns them as affected records.
 pub(crate) fn bump_changed_batches(ledger: &mut Ledger, before: &Replay, after: &Replay) -> Vec<Value> {
     let holdings = |r: &Replay| -> BTreeMap<String, BTreeMap<String, u32>> {

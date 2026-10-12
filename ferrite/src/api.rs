@@ -280,7 +280,7 @@ fn fault_error(f: oauth::Fault) -> CmdError {
     }
 }
 
-async fn read_ledger<S: Store>(store: &mut S) -> Result<(Option<Vec<u8>>, Ledger), CmdError> {
+pub(crate) async fn read_ledger<S: Store>(store: &mut S) -> Result<(Option<Vec<u8>>, Ledger), CmdError> {
     let bytes = store.get(LEDGER_KEY).await.map_err(|_| internal("the wardrobe could not be read just now; try again"))?;
     let ledger = match &bytes {
         // A record that is not a ledger is refused, never read as empty, so
@@ -700,7 +700,7 @@ pub async fn read_today<S: Store>(store: &mut S, now_ms: u64, date: Option<&str>
             continue;
         }
         let cat = catalogue();
-        let day = board::Day { cat, stock: ledger::replay(cat, &l.events) };
+        let day = board::Day::of(cat, &l, date);
         return Ok(board::today(&day, date, board.as_ref(), wear::day_record(cat, &l, date), l.revision, now_ms));
     }
     Err(CmdError::with("conflict", "the wardrobe kept changing while the board was read; try again", json!({"retryable": true})))
@@ -925,7 +925,9 @@ async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envel
         expected_boards(store, env).await?
     };
     check_expected_versions(env, current, &boards)?;
-    let day = || board::Day { cat: ctx.cat, stock: ledger::replay(ctx.cat, &current.events) };
+    // A board is validated for its own date: the repeat horizon looks back from that day.
+    let day = |date: &str| board::Day::of(ctx.cat, current, date);
+    let date_of = |b: Option<&board::Board>| b.map_or(String::new(), |b| b.local_date.clone());
     match (env.kind.as_str(), undo_target) {
         ("care.mark_dirty", _) => Ok(Planned::stock(ledger::mark_dirty(ctx, next, &env.payload)?)),
         ("laundry.collect", _) => Ok(Planned::stock(laundry::collect(ctx, next, &env.payload)?)),
@@ -934,17 +936,17 @@ async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envel
         ("board.publish", _) => {
             let input = board::publish_input(&env.payload)?;
             let existing = indexed_board(store, current.board_for(&input.scope, &input.local_date)).await?;
-            Ok(Planned::board(board::publish(ctx, &day(), existing.as_ref(), input)?))
+            Ok(Planned::board(board::publish(ctx, &day(&input.local_date), existing.as_ref(), input)?))
         }
         ("board.select", _) => {
             let id = board::named_board(&env.kind, &env.payload)?;
             let b = load_board(store, &id).await?;
-            Ok(Planned::board(board::select(ctx, &day(), b.as_ref(), &env.payload)?))
+            Ok(Planned::board(board::select(ctx, &day(&date_of(b.as_ref())), b.as_ref(), &env.payload)?))
         }
         ("board.swap_slot", _) => {
             let id = board::named_board(&env.kind, &env.payload)?;
             let b = load_board(store, &id).await?;
-            Ok(Planned::board(board::swap(ctx, &day(), b.as_ref(), &env.payload)?))
+            Ok(Planned::board(board::swap(ctx, &day(&date_of(b.as_ref())), b.as_ref(), &env.payload)?))
         }
         ("command.undo", Some(target)) => {
             let record = load_command(store, target).await?;
@@ -968,7 +970,7 @@ async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envel
                     Planned::board(if kind == "board.select" {
                         board::undo_select(ctx, b.as_ref(), &data, &summary, target)?
                     } else {
-                        board::undo_swap(ctx, &day(), b.as_ref(), &data, &summary, target)?
+                        board::undo_swap(ctx, &day(&date_of(b.as_ref())), b.as_ref(), &data, &summary, target)?
                     })
                 }
                 other => return Err(CmdError::with("not_undoable", "this action has no automatic undo", json!({"commandId": target, "type": other}))),

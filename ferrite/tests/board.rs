@@ -364,3 +364,47 @@ async fn receipts_of_board_commands_replay_and_a_corrupt_board_is_refused() {
     assert_eq!(api::read_today(&mut store, T0, Some(DAY)).await.unwrap_err().code, "internal");
     assert_eq!(run(&mut store, OWNER, T0, "board.select", json!({"boardId": board_id, "optionId": first}), "select-corrupt1", None).await.unwrap_err().code, "internal");
 }
+
+const NAVY_TROUSER: &str = "gmt_58fb8730a65c17ad9bc80215"; // Di Sondrio faded navy lightweight (trousers), two pairs
+const TODAY: &str = "2026-09-10";
+
+fn navy_outfit() -> Value {
+    outfit(OXFORD_BLUE, NAVY_TROUSER, SOCK_BISCUIT, NB_GREY, BELT_BROWN)
+}
+
+#[tokio::test]
+async fn trousers_worn_inside_the_seven_day_horizon_are_not_offered_and_a_choice_of_them_is_refused() {
+    let mut store = MemStore::default();
+    // A board for tomorrow published before anything is worn offers the navy trousers.
+    let options = json!([navy_outfit(), outfit(OXFORD_PINK, GREY_CHINO, SOCK_GREY, NB_OLIVE, BELT_BLACK)]);
+    run(&mut store, OWNER, T0, "board.publish", json!({"localDate": DAY, "requestedCount": 2, "options": options}), "publish-0001", None).await.unwrap();
+    let b = board(&mut store).await;
+    let navy_option = b["options"][0]["optionId"].as_str().unwrap().to_string();
+    assert_eq!(b["options"][0]["qualification"], Value::Null);
+    // One pair is worn today; the other is still clean, so only the horizon keeps them out.
+    let wear = run(&mut store, OWNER, T0 + 1_000, "wear.record", json!({"wearingDate": TODAY, "garmentIds": [NAVY_TROUSER]}), "wear-0001", None).await.unwrap();
+    let b = board(&mut store).await;
+    let q = b["options"][0]["qualification"].as_str().unwrap();
+    assert!(q.contains("Di Sondrio faded navy lightweight was worn on 2026-09-10, inside the 7-day repeat horizon"), "{q}");
+    assert_eq!(b["validity"], "degraded");
+    // Choosing that outfit is refused and writes nothing; the other one can be chosen.
+    let before = store.clone();
+    let e = run(&mut store, OWNER, T0 + 2_000, "board.select", json!({"boardId": b["boardId"], "optionId": navy_option}), "select-0001", None).await.unwrap_err();
+    assert_eq!(e.code, "precondition_failed");
+    assert_eq!(e.details["violations"][0]["code"], "repeat_within_horizon");
+    assert_eq!(e.details["violations"][0]["ruleKey"], "variety.repeat_horizon");
+    assert_eq!(store.data, before.data);
+    // A new publication drops it with the rule named, for every day up to seven days on.
+    for (date, key) in [(DAY, "publish-0002"), ("2026-09-17", "publish-0003")] {
+        let r = run(&mut store, OWNER, T0 + 3_000, "board.publish", json!({"localDate": date, "requestedCount": 2, "options": [navy_outfit(), outfit(OXFORD_PINK, GREY_CHINO, SOCK_GREY, NB_OLIVE, BELT_BLACK)]}), key, None).await.unwrap();
+        assert_eq!(r["result"]["offered"], 1, "{date}");
+        assert!(r["result"]["dropped"][0]["violations"][0].as_str().unwrap().starts_with("repeat_within_horizon: "), "{}", r["result"]["dropped"]);
+    }
+    // Eight days on the wear is outside the horizon, and the outfit is offered again.
+    let r = run(&mut store, OWNER, T0 + 4_000, "board.publish", json!({"localDate": "2026-09-18", "requestedCount": 1, "options": [navy_outfit()]}), "publish-0004", None).await.unwrap();
+    assert_eq!(r["result"]["offered"], 1);
+    // Undoing the wear lifts the horizon at once: the first board reads as wearable again.
+    run(&mut store, OWNER, T0 + 5_000, "command.undo", json!({"commandId": wear["commandId"]}), "undo-wear-0001", None).await.unwrap();
+    let b = board(&mut store).await;
+    assert!(b["options"].as_array().unwrap().iter().all(|o| o["qualification"].is_null()), "{}", b["options"]);
+}

@@ -275,6 +275,27 @@ async fn a_further_unit_is_a_different_unit_and_a_bag_it_comes_from_moves_to_a_n
     assert!(batch_versions(&plain).is_empty());
 }
 
+#[tokio::test]
+async fn a_wash_report_that_takes_a_unit_back_from_a_bag_moves_it_to_a_new_version() {
+    let mut store = MemStore::default();
+    // The blue oxford (one unit) in the hamper, then collected: none at home, one at the laundry.
+    run(&mut store, OWNER, T0, "care.mark_dirty", json!({"items": [{"garmentId": OXFORD_BLUE}]}), "dirty-0001").await.unwrap();
+    let c = run(&mut store, OWNER, T0 + HOUR, "laundry.collect", json!({}), "collect-0001").await.unwrap();
+    assert_eq!(batch_versions(&c), vec![1]);
+    assert_eq!(balances(&mut store, OXFORD_BLUE).await, (0, 0, 1));
+    // The owner says it is in the wash: he has it, so it comes back out of the bag, which moves on.
+    let d = run(&mut store, OWNER, T0 + 2 * HOUR, "care.mark_dirty", json!({"items": [{"garmentId": OXFORD_BLUE}]}), "dirty-0002").await.unwrap();
+    assert_eq!(balances(&mut store, OXFORD_BLUE).await, (0, 1, 0));
+    assert_eq!(batch_versions(&d), vec![2], "{}", d["affected"]);
+    // Its undo puts it back in the bag, and the bag moves on again.
+    let u = undo(&mut store, OWNER, T0 + 3 * HOUR, &d, "undo-dirty-0002").await.unwrap();
+    assert_eq!(balances(&mut store, OXFORD_BLUE).await, (0, 0, 1));
+    assert_eq!(batch_versions(&u), vec![3], "{}", u["affected"]);
+    // A wash report that touches no bag names none.
+    let plain = run(&mut store, OWNER, T0 + 4 * HOUR, "care.mark_dirty", json!({"items": [{"garmentId": GREY_CHINO}]}), "dirty-0003").await.unwrap();
+    assert!(batch_versions(&plain).is_empty());
+}
+
 fn ledger_of(store: &MemStore) -> wardrobe::ledger::Ledger {
     let bytes = store.data.get(b"ledger".as_slice()).expect("a ledger");
     wardrobe::ledger::Ledger::from_json(&ferrite_app::serde_json::from_slice(bytes).unwrap()).expect("a readable ledger")
@@ -401,11 +422,15 @@ async fn wear_refusals_write_nothing() {
         // A stated time more than a day before the wearing date began.
         (json!({"wearingDate": TODAY, "garmentIds": [OXFORD_BLUE]}), Some(T0 - 3 * 24 * HOUR), "invalid_command"),
     ];
+    // One committed record first, so a refusal has a ledger it could have written to.
+    wore(&mut store, OWNER, now, YESTERDAY, &[GREY_CHINO], "wear-setup").await;
+    let snapshot = store.data.clone();
     for (i, (payload, occurred, code)) in cases.into_iter().enumerate() {
         let e = run_at(&mut store, OWNER, now, occurred, "wear.record", payload.clone(), &format!("refused-{i:04}")).await.unwrap_err();
         assert_eq!(e.code, code, "{payload}");
     }
-    assert_eq!(revision(&mut store).await, 0);
+    assert!(store.data == snapshot, "a refused report wrote to the store");
+    assert_eq!(revision(&mut store).await, 1);
     assert_eq!(balances(&mut store, OXFORD_BLUE).await, (1, 0, 0));
     assert_eq!(balances(&mut store, SOCK_GREY).await, (3, 0, 0));
 }

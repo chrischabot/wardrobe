@@ -12,8 +12,10 @@
 //!   with that limitation stated, temperature rules are reported as not
 //!   checked, and the 14-16 °C jacket rule cannot be ruled out: a jacket over
 //!   anything but a lightweight oxford is offered only when it was named;
-//! - recorded wears are not yet checked against the seven-day repeat
-//!   horizon (that comes with the composer, milestone 1e);
+//! - recorded wears are checked against the seven-day repeat horizon of
+//!   `variety.repeat_horizon` for the board's own date; no repeat exception
+//!   exists yet (only the default brief is ported, and a trip's deliberate
+//!   reuse comes with trips);
 //! - the home board only (no trip boards), the default day brief only, no
 //!   pause, suppression, exposure sets, Calendar projection or repair;
 //! - the sneaker and welted pair is dormant while the healing restriction
@@ -22,11 +24,11 @@
 //!   not ported: a replacement is chosen by the never-navy tier, then the
 //!   fabric class of the piece it replaces, then garment ID.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ferrite_app::serde_json::{json, Map, Value};
 
-use crate::ledger::{invalid, only_keys, CmdError, Ctx, Plan, Replay, ALREADY_AN_UNDO};
+use crate::ledger::{invalid, only_keys, replay, CmdError, Ctx, Ledger, Plan, Replay, ALREADY_AN_UNDO};
 use crate::seed::{Catalogue, Garment};
 use crate::sha256::hex_digest;
 use crate::time::{day_line, earliest_day, instant, latest_day, local_date, parse_instant, parse_local_date};
@@ -368,10 +370,38 @@ impl Validation {
     }
 }
 
-/// What a board is validated against: the owner's garments and their stock as the ledger replays it.
+/// What a board is validated against: the owner's garments, their stock as the ledger replays it, and
+/// the counted wears the repeat horizon looks back over from the day validated for.
 pub struct Day<'a> {
     pub cat: &'a Catalogue,
     pub stock: Replay,
+    /// The day validated for, as days since the epoch; `None` checks no repeat horizon.
+    pub local_date: Option<i64>,
+    /// The wearing dates of every counted wear, by garment.
+    pub worn: BTreeMap<String, Vec<i64>>,
+}
+
+impl<'a> Day<'a> {
+    /// The day `local_date` against the ledger: its replayed stock and its active counted wears.
+    pub fn of(cat: &'a Catalogue, ledger: &Ledger, local_date: &str) -> Day<'a> {
+        let mut worn: BTreeMap<String, Vec<i64>> = BTreeMap::new();
+        for w in ledger.wears.iter().filter(|w| w.active) {
+            if let Some(d) = parse_local_date(&w.wearing_date) {
+                worn.entry(w.garment_id.clone()).or_default().push(d);
+            }
+        }
+        Day { cat, stock: replay(cat, &ledger.events), local_date: parse_local_date(local_date), worn }
+    }
+
+    /// Stock alone, with no date and no wear history (no repeat horizon is checked).
+    pub fn undated(cat: &'a Catalogue, stock: Replay) -> Day<'a> {
+        Day { cat, stock, local_date: None, worn: BTreeMap::new() }
+    }
+
+    /// The latest counted wearing date of a garment in `[from, before)`.
+    pub fn last_worn(&self, garment_id: &str, from: i64, before: i64) -> Option<i64> {
+        self.worn.get(garment_id)?.iter().copied().filter(|d| *d >= from && *d < before).max()
+    }
 }
 
 enum Availability {
@@ -488,6 +518,17 @@ pub fn garment_violations(day: &Day<'_>, garment_id: &str, role: &str, explicit:
             out.push(Violation::new("thermal_unverified", format!("{} could not be checked against its {} temperature rule: the forecast is unavailable", g.name, role_words(fabric)), id()).rule(Some(&rule.key)).advisory());
         }
     }
+    // Repeat horizon: recorded wear only (validate.ts). No exception reaches this port: the owner's
+    // named-piece override and `allowRepeat` belong to day briefs, which are not ported yet.
+    if let (Some(date), Some(rule)) = (day.local_date, day.cat.active_rule("variety.repeat_horizon")) {
+        let days = rule.params["days"].as_i64().unwrap_or(7);
+        let covered = rule.params["categories"].as_array().map_or(false, |a| a.iter().any(|c| c.as_str() == Some(g.category.as_str())));
+        if covered {
+            if let Some(hit) = day.last_worn(garment_id, date - days, date) {
+                out.push(Violation::new("repeat_within_horizon", format!("{} was worn on {}, inside the {days}-day repeat horizon", g.name, local_date(hit)), id()).rule(Some(&rule.key)));
+            }
+        }
+    }
     out
 }
 
@@ -571,10 +612,10 @@ const FAMILY_WORDS: &[(&str, &[&str])] = &[
     ("grey", &["grey", "gray", "charcoal", "slate", "pepper", "pow"]),
     ("light_neutral", &["beige", "sand", "stone", "cream", "bone", "natural", "biscuit", "tea", "off-white", "white", "almond", "ecru"]),
 ];
-const SATURATED: &[&str] = &["red", "pink", "yellow", "green"];
-const NEUTRAL: &[&str] = &["navy", "light_neutral", "brown", "grey", "black"];
-const WARM: &[&str] = &["brown", "red", "pink", "yellow", "light_neutral"];
-const COOL: &[&str] = &["navy", "blue", "green", "grey", "black"];
+pub(crate) const SATURATED: &[&str] = &["red", "pink", "yellow", "green"];
+pub(crate) const NEUTRAL: &[&str] = &["navy", "light_neutral", "brown", "grey", "black"];
+pub(crate) const WARM: &[&str] = &["brown", "red", "pink", "yellow", "light_neutral"];
+pub(crate) const COOL: &[&str] = &["navy", "blue", "green", "grey", "black"];
 
 /// JavaScript's `\w`.
 fn is_word(c: Option<char>) -> bool {
@@ -603,6 +644,12 @@ pub fn colour_family(colour: Option<&str>) -> &'static str {
         return "unknown";
     }
     FAMILY_WORDS.iter().find(|(_, words)| words.iter().any(|w| has_word(&text, w))).map_or("unknown", |(f, _)| f)
+}
+
+/// `neutralFamiliesOf`: every neutral family a recorded colour names (a two-colour piece counts towards each).
+pub fn neutral_families(colour: &str) -> Vec<&'static str> {
+    let text = colour.to_lowercase();
+    FAMILY_WORDS.iter().filter(|(f, words)| NEUTRAL.contains(f) && words.iter().any(|w| has_word(&text, w))).map(|(f, _)| *f).collect()
 }
 
 fn family(g: &Garment) -> &'static str {

@@ -74,7 +74,7 @@ fn slots(pairs: &[(&str, &str)]) -> Vec<Slot> {
 #[test]
 fn a_jacket_over_a_one_piece_is_held_to_the_jacket_rule() {
     let cat = synthetic();
-    let day = Day { cat: &cat, stock: replay(&cat, &[]) };
+    let day = Day::undated(&cat, replay(&cat, &[]));
     let outfit = |one: &str| slots(&[("one_piece", one), ("outer", GAMES_JACKET), ("socks", SOCK_GREY), ("footwear", NB_OLIVE)]);
     let heavy = board::validate(&day, &outfit("syn_one_piece_heavy"), &[], &[]);
     let jacket: Vec<_> = heavy.blocking().into_iter().filter(|v| v.code == "jacket_band_unverified").collect();
@@ -91,7 +91,7 @@ fn a_jacket_over_a_one_piece_is_held_to_the_jacket_rule() {
 #[test]
 fn a_swap_of_a_role_the_outfit_fills_twice_is_refused_as_ambiguous() {
     let cat = synthetic();
-    let day = Day { cat: &cat, stock: replay(&cat, &[]) };
+    let day = Day::undated(&cat, replay(&cat, &[]));
     let ctx = Ctx { cat: &cat, command_id: "cmd_synthetic_publish_0001", now_ms: T0, occurred_at_ms: T0 };
     let outfit = json!({
         "slots": [
@@ -128,7 +128,7 @@ fn a_saturated_sock_is_the_single_flash_only_when_no_other_piece_is_saturated() 
 #[test]
 fn a_stored_board_that_breaks_what_publication_writes_is_unreadable() {
     let cat = synthetic();
-    let day = Day { cat: &cat, stock: replay(&cat, &[]) };
+    let day = Day::undated(&cat, replay(&cat, &[]));
     let ctx = Ctx { cat: &cat, command_id: "cmd_synthetic_publish_0002", now_ms: T0, occurred_at_ms: T0 };
     let outfit = |top: &str| json!({"slots": [
         {"role": "top", "garmentId": top}, {"role": "bottom", "garmentId": AKITA_CREAM},

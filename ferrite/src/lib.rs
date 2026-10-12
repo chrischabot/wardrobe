@@ -11,6 +11,7 @@ pub mod ledger;
 pub mod mcp;
 pub mod oauth;
 pub mod random;
+pub mod recommend;
 pub mod seed;
 pub mod sha256;
 pub mod time;
