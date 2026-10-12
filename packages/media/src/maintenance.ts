@@ -9,6 +9,7 @@
 import { all, isCommandError, toInstant } from "@garderobe/domain";
 import { execSystem } from "./exec.ts";
 import { dispatchMediaJobs, runQueuedMediaJobs } from "./jobs.ts";
+import { sweepAbandonedWrites } from "./write-intents.ts";
 import { stagingKey } from "./keys.ts";
 import { limitsOf, type MediaRuntime } from "./runtime.ts";
 import { FINALIZE_GRACE_MS } from "./commands/uploads.ts";
@@ -24,12 +25,14 @@ export interface MaintenanceResult {
   stagingObjectsRemoved: number;
   /** Deletions whose stored files are still not removed after this sweep (retried on the next one). */
   purgesOutstanding: number;
+  /** Files that background runs wrote and no live record names (a write that landed after its run stopped), removed. */
+  abandonedWritesRemoved: number;
   errors: string[];
 }
 
 export async function runMediaMaintenance(rt: MediaRuntime, opts: { startDiscovery?: boolean } = {}): Promise<MaintenanceResult> {
   const now = toInstant(rt.clock());
-  const result: MaintenanceResult = { expiredUploads: 0, selfieOriginalsRemoved: 0, discoveryQueued: 0, jobsDispatched: 0, staleJobsRun: 0, stagingObjectsRemoved: 0, purgesOutstanding: 0, errors: [] };
+  const result: MaintenanceResult = { expiredUploads: 0, selfieOriginalsRemoved: 0, discoveryQueued: 0, jobsDispatched: 0, staleJobsRun: 0, stagingObjectsRemoved: 0, purgesOutstanding: 0, abandonedWritesRemoved: 0, errors: [] };
   const attempt = async (what: string, fn: () => Promise<void>) => {
     try {
       await fn();
@@ -108,6 +111,9 @@ export async function runMediaMaintenance(rt: MediaRuntime, opts: { startDiscove
   await attempt("run jobs", async () => {
     const ran = await runQueuedMediaJobs(rt, { limit: 20, ...(rt.deps.queue ? { idleForMs: limitsOf(rt.deps).jobLeaseSeconds * 1000 } : {}) });
     result.staleJobsRun = ran.succeeded + ran.dead + ran.retry;
+  });
+  await attempt("remove files left by stopped runs", async () => {
+    result.abandonedWritesRemoved = (await sweepAbandonedWrites(rt)).removed;
   });
   await attempt("count outstanding deletions", async () => {
     const failing = await all<{ user_id: string; job_id: string; last_error: string }>(rt.db, "SELECT user_id, job_id, last_error FROM media_jobs WHERE kind = 'purge_objects' AND state IN ('queued', 'running', 'failed', 'dead') AND last_error IS NOT NULL ORDER BY created_at LIMIT 50");

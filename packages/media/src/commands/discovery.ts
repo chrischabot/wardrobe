@@ -4,6 +4,7 @@ import { all, CommandError, define, first, json, loadGarment, stableId, stmt, ty
 import { CandidateRejectionReason, DiscoveryStrategy, MEDIA_COMMANDS as C } from "@garderobe/contracts/ext/media";
 import type { MediaSource } from "@garderobe/contracts/ext/media";
 import { originalKey } from "../keys.ts";
+import { cleanupFence } from "../write-intents.ts";
 import { limitsOf, resolveDeps, type MediaDepsSource } from "../runtime.ts";
 import { enqueueJob, insertRendition, isRealGarmentImage, loadAsset, loadGarmentMediaRow, upsertGarmentMedia, type AssetRow, type GarmentMediaRow } from "../store.ts";
 import { finishJob, photoRequestFor, planAssetRemoval, requireSystemActor, SYSTEM_AUTH } from "./assets.ts";
@@ -110,9 +111,14 @@ export function discoveryCommands(depsSource: MediaDepsSource): CommandDefinitio
       const statements: Stmt[] = [];
       const outbox: PlannedOutbox[] = [];
       const queued: string[] = [];
+      const preconditions: { label: string; sql: string; params: unknown[]; class: "state" }[] = [];
+      // A garment whose image search is already queued or running gets no second one (a search for a product photo
+      // beside the owner's own keeps the garment resolved, so its state alone does not show the outstanding job).
+      const outstanding = new Set((await all<{ subject_id: string }>(ctx.db, "SELECT subject_id FROM media_jobs WHERE user_id = ? AND kind = 'discover' AND state IN ('queued', 'running')", ctx.userId)).map((r) => r.subject_id));
       let eligible = 0;
       for (const g of rows) {
         if (wanted && !wanted.has(g.garment_id)) continue;
+        if (outstanding.has(g.garment_id)) continue;
         const current = media.get(g.garment_id) ?? null;
         const state = current?.image_state ?? "not_started";
         if (state === "searching" || state === "needs_review") continue;
@@ -134,12 +140,15 @@ export function discoveryCommands(depsSource: MediaDepsSource): CommandDefinitio
         );
         outbox.push(...job.outbox);
         queued.push(g.garment_id);
+        // Checked again in the commit: no other search for this garment was queued meanwhile.
+        preconditions.push({ label: `no image search is outstanding for ${g.garment_id}`, sql: "NOT EXISTS (SELECT 1 FROM media_jobs WHERE user_id = ? AND kind = 'discover' AND subject_id = ? AND state IN ('queued', 'running'))", params: [ctx.userId, g.garment_id], class: "state" });
       }
       if (queued.length === 0) return { outcome: "noop", summary: "No garment needs an image search right now", result: { queued: 0, remaining: 0 }, undo: { unavailableReason: "nothing changed" } };
       return {
         summary: `Image search queued for ${queued.length} garment${queued.length === 1 ? "" : "s"}${eligible > queued.length ? ` (${eligible - queued.length} more will follow)` : ""}; recommendations do not wait for it`,
         statements,
         outbox,
+        preconditions,
         result: { queued: queued.length, remaining: eligible - queued.length, garmentIds: queued },
         undo: { unavailableReason: "a queued search simply runs; delete an unwanted image afterwards" },
       };
@@ -156,6 +165,15 @@ export function discoveryCommands(depsSource: MediaDepsSource): CommandDefinitio
       requireSystemActor(ctx);
       const garment = await loadGarment(ctx, p.garmentId);
       const current = await loadGarmentMediaRow(ctx.db, ctx.userId, garment.garment_id);
+      // The result belongs to this garment's current image search: a discovery job, about this garment, of the
+      // round the garment's record names. A result for another job, or from a round a newer request replaced, is refused.
+      const job = await first<{ kind: string; subject_id: string }>(ctx.db, "SELECT kind, subject_id FROM media_jobs WHERE user_id = ? AND job_id = ?", ctx.userId, p.jobId);
+      if (!job || job.kind !== "discover" || job.subject_id !== garment.garment_id) throw new CommandError("invalid_command", "the job named is not an image search for this garment; nothing was written");
+      const round = json<DiscoveryState>(current?.discovery_json, {}).rounds ?? 0;
+      if (p.jobId !== (await stableId("job", ctx.userId, "discover", garment.garment_id, String(round)))) {
+        throw new CommandError("precondition_failed", "a newer image search for this garment replaced this one; nothing was written");
+      }
+      const generation = { label: "this is still the garment's current image search", sql: "(SELECT COALESCE(json_extract(discovery_json, '$.rounds'), 0) FROM garment_media WHERE user_id = ? AND garment_id = ?) = ?", params: [ctx.userId, garment.garment_id, round], class: "state" as const };
       const statements: Stmt[] = [];
       const outbox: PlannedOutbox[] = [];
       const affected: { kind: string; id: string; version: number }[] = [];
@@ -167,6 +185,12 @@ export function discoveryCommands(depsSource: MediaDepsSource): CommandDefinitio
             ctx.userId, a.attemptId, garment.garment_id, a.strategy, a.queryHash, JSON.stringify(a.query), a.provider, a.pagesExamined, a.browserSessions, a.browserSeconds, a.outcome, a.detail, ctx.commandId, ctx.now,
           ),
         );
+      }
+      // The claims of the searches recorded here are released in this same commit (migration 0402): once a search
+      // is recorded its browser time is counted from the attempt, never from a claim as well.
+      const attemptIds = [...new Set(p.attempts.map((a) => a.attemptId))];
+      if (attemptIds.length > 0) {
+        statements.push(stmt(`DELETE FROM media_browser_reservations WHERE user_id = ? AND attempt_id IN (${attemptIds.map(() => "?").join(",")})`, ctx.userId, ...attemptIds));
       }
       let adoptedAssetId: string | null = null;
       let reviewCount = 0;
@@ -238,7 +262,9 @@ export function discoveryCommands(depsSource: MediaDepsSource): CommandDefinitio
               : p.conclusion === "already_resolved"
                 ? `${garment.name} already has a photo`
                 : `The image search for ${garment.name} could not run yet: ${p.note ?? "deferred"}`;
-      return { summary, statements, outbox, affected, result: { garmentId: garment.garment_id, conclusion: p.conclusion, adoptedAssetId, needsReview: reviewCount, rejected }, undo: { unavailableReason: "delete an unwanted image instead" } };
+      // The stored candidate files are not being removed by the abandoned-write sweep now (write-intents.ts).
+      const fence = cleanupFence(ctx.userId, p.candidates.flatMap((c) => (c.stored ? [originalKey(ctx.userId, c.stored.assetId, c.stored.sha256, c.stored.contentType)] : [])), ctx.now);
+      return { summary, statements, outbox, affected, preconditions: [generation, fence], result: { garmentId: garment.garment_id, conclusion: p.conclusion, adoptedAssetId, needsReview: reviewCount, rejected }, undo: { unavailableReason: "delete an unwanted image instead" } };
     },
   });
 

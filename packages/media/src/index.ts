@@ -19,6 +19,7 @@ import { discoveryCommands } from "./commands/discovery.ts";
 import { registerStudioHooks, studioCommands } from "./commands/studio.ts";
 import { uploadCommands } from "./commands/uploads.ts";
 import { portabilityCommands } from "./portability.ts";
+import { fenceJobResult } from "./job-fence.ts";
 import type { MediaDepsSource } from "./runtime.ts";
 
 /** Command types that record pipeline results. They require the system actor and are not offered to clients. */
@@ -26,7 +27,7 @@ export const MEDIA_SYSTEM_COMMAND_TYPES = ["media.record_normalization", "media.
 
 /** Register every media and Studio command, the Studio commit hook and the version resolvers. */
 export function registerMedia(registry: CommandRegistry, deps: MediaDepsSource): void {
-  for (const def of [...uploadCommands(deps), ...assetCommands(deps), ...discoveryCommands(deps), ...compositeCommands(deps), ...studioCommands(deps), ...portabilityCommands(deps)]) registry.register(def);
+  for (const def of [...uploadCommands(deps), ...assetCommands(deps), ...discoveryCommands(deps), ...compositeCommands(deps), ...studioCommands(deps), ...portabilityCommands(deps)]) registry.register(fenceJobResult(def));
   registerStudioHooks(registry);
   registry.registerVersionResolver("media_asset", (userId, id) => ({ sql: "SELECT version FROM media_assets WHERE user_id = ? AND asset_id = ?", params: [userId, id] }));
   registry.registerVersionResolver("garment_media", (userId, id) => ({ sql: "SELECT version FROM garment_media WHERE user_id = ? AND garment_id = ?", params: [userId, id] }));
@@ -40,6 +41,7 @@ export { garmentImageRefs, getAsset, getBackfillEstimate, getGarmentMedia, listM
 export { MEDIA_RESPONSE_HEADERS, openAssetImage, openRendition, purgeOwnerMediaCache, SERVABLE_IMAGE_TYPES, serveSignedMedia, signRenditionUrl, type LocationRelease, type OpenedImage } from "./delivery.ts";
 export { dispatchMediaJobs, getMediaStorageStatus, handleMediaQueue, listMediaJobs, runMediaJob, runQueuedMediaJobs, type MediaStorageStatus } from "./jobs.ts";
 export { runMediaMaintenance, type MaintenanceResult } from "./maintenance.ts";
+export { sweepAbandonedWrites, writeSettleMs, ABANDONED_WRITE_WATCH_MS, type AbandonedWriteSweep } from "./write-intents.ts";
 export { composeOutfit, getComposition, getStudioSelectors, knownCombinationsForGarment, listStudioCombinations, listStudioDayPlans, openCompositePreview, requestCompositePreview, suggestStudioOutfits, validateStudioOutfit } from "./studio/reads.ts";
 export { buildManifest, manifestHash, manifestLabels, TEMPLATE_VERSION, type ComposeSlot } from "./compose/manifest.ts";
 export { renderSvg } from "./compose/svg.ts";

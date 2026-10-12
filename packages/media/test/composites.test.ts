@@ -282,7 +282,10 @@ describe("outfit previews through the command service, the queue and private sto
     expect(svg).not.toMatch(/https?:\/\/(?!www\.w3\.org)/); // no external reference of any kind
 
     // Stored under the owner's prefix only; the ledger row has the key, the read model does not.
-    expect((await h.bindings.MEDIA_BUCKET.list({ prefix: `u/${owner.userId}/composites/` })).objects.map((o) => o.key).sort()).toEqual([`u/${owner.userId}/composites/${hash}.png`, `u/${owner.userId}/composites/${hash}.svg`]);
+    // Generation- and content-addressed: <manifest hash>.<render job>.<first 16 hex of the PNG's sha256>.png|svg.
+    const previewSha = String(done.preview.sha256).slice(0, 16);
+    const renderJob = (await all<{ render_job_id: string }>(h.db, "SELECT render_job_id FROM outfit_composites WHERE user_id = ? AND manifest_hash = ?", owner.userId, hash))[0]!.render_job_id;
+    expect((await h.bindings.MEDIA_BUCKET.list({ prefix: `u/${owner.userId}/composites/` })).objects.map((o) => o.key).sort()).toEqual([`u/${owner.userId}/composites/${hash}.${renderJob}.${previewSha}.png`, `u/${owner.userId}/composites/${hash}.${renderJob}.${previewSha}.svg`]);
     expect(JSON.stringify(done)).not.toContain(`u/${owner.userId}`);
     const receipts = await h.service.listReceipts(owner.principal(), { kind: "outfit_composite", entityId: hash });
     expect(receipts.map((r) => r.type).sort()).toEqual(["media.record_composite", "media.request_composite_preview"]);
@@ -302,7 +305,7 @@ describe("outfit previews through the command service, the queue and private sto
     expect(his.manifest.layers.every((l) => l.renditionId === null && l.imageLabel === "missing")).toBe(true);
     expect(his.preview.state).toBe("none");
     // A client cannot record a preview (and the command names no storage location, so it could not point into another owner's storage).
-    const forged = { manifestHash: hash, jobId: "job_x", previewSha256: "c".repeat(64), previewBytes: 10, hasSvg: false, renderer: "forged" };
+    const forged = { manifestHash: hash, jobId: "job_x", attempt: 1, previewSha256: "c".repeat(64), previewBytes: 10, hasSvg: false, renderer: "forged" };
     expect(await code(bob.exec("media.record_composite", forged, { authorization: "system_schedule" }))).toBe("forbidden");
     expect(await code(owner.exec("media.record_composite", forged, { authorization: "system_schedule" }))).toBe("forbidden");
   });
@@ -329,7 +332,9 @@ describe("outfit previews through the command service, the queue and private sto
     expect(invalidated.preview).toMatchObject({ state: "none", sha256: null, failure: "an image it used was deleted" });
     expect(await code(openCompositePreview(h.rt, owner.principal(), hash))).toBe("not_found");
     expect((await getComposition(h.rt, owner.principal(), swappedHash)).preview).toMatchObject({ state: "rendered", sha256: second.preview.sha256 });
-    expect((await h.bindings.MEDIA_BUCKET.list({ prefix: `u/${owner.userId}/composites/` })).objects.map((o) => o.key).sort()).toEqual([`u/${owner.userId}/composites/${swappedHash}.png`, `u/${owner.userId}/composites/${swappedHash}.svg`]);
+    const swappedSha = String(second.preview.sha256).slice(0, 16);
+    const swappedJob = (await all<{ render_job_id: string }>(h.db, "SELECT render_job_id FROM outfit_composites WHERE user_id = ? AND manifest_hash = ?", owner.userId, swappedHash))[0]!.render_job_id;
+    expect((await h.bindings.MEDIA_BUCKET.list({ prefix: `u/${owner.userId}/composites/` })).objects.map((o) => o.key).sort()).toEqual([`u/${owner.userId}/composites/${swappedHash}.${swappedJob}.${swappedSha}.png`, `u/${owner.userId}/composites/${swappedHash}.${swappedJob}.${swappedSha}.svg`]);
     // The same slots now compose to a new manifest in which the shoes are honestly missing.
     const now = await composeOutfit(h.rt, owner.principal(), { slots: [...outfit] });
     expect(now.manifestHash).not.toBe(hash);

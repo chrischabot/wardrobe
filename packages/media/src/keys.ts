@@ -7,7 +7,7 @@ import { CommandError } from "@garderobe/domain";
  *   u/<userId>/staging/<uploadId>                          bytes received but not finalized (never evidence)
  *   u/<userId>/assets/<assetId>/original-<sha16>.<ext>     immutable original
  *   u/<userId>/assets/<assetId>/<kind>-v<n>-<sha16>.<ext>  derived renditions
- *   u/<userId>/composites/<manifestHash>.png|.svg          outfit previews
+ *   u/<userId>/composites/<manifestHash>.<renderJobId>.<sha16>.png|.svg   outfit previews, one generation per render request
  */
 const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -38,8 +38,28 @@ export function renditionKey(userId: string, assetId: string, kind: string, vers
   return `${ownerPrefix(userId)}assets/${safe(assetId, "asset id")}/${safe(kind, "rendition kind")}-v${version}-${sha256.slice(0, 16)}.${extensionFor(contentType)}`;
 }
 
-export function compositeKey(userId: string, manifestHash: string, contentType: "image/png" | "image/svg+xml"): string {
-  return `${ownerPrefix(userId)}composites/${safe(manifestHash, "manifest hash")}.${extensionFor(contentType)}`;
+/**
+ * An outfit preview file. With the render job and the preview's checksum the key is generation- and
+ * content-addressed (`<manifestHash>.<renderJobId>.<sha16>.png|svg`): two runners of the same render write the
+ * same bytes to the same object, a runner whose claim was taken over cannot replace the files another runner
+ * committed, and a purge of one discarded generation never reaches the files of a newer request, even when
+ * that request draws byte-identical pixels. Without a job and checksum the key is the pre-generation name, still
+ * purged when its composite is discarded.
+ */
+export function compositeKey(userId: string, manifestHash: string, contentType: "image/png" | "image/svg+xml", previewSha256?: string, renderJobId?: string): string {
+  if (previewSha256 && !renderJobId) throw new CommandError("invalid_command", "a preview file is named by its render job and checksum together");
+  const version = previewSha256 && renderJobId ? `.${safe(renderJobId, "render job id")}.${safe(previewSha256.slice(0, 16), "preview checksum")}` : "";
+  return `${ownerPrefix(userId)}composites/${safe(manifestHash, "manifest hash")}${version}.${extensionFor(contentType)}`;
+}
+
+/** Every file of one outfit preview, whichever render wrote it, starts with this. */
+export function compositePrefix(userId: string, manifestHash: string): string {
+  return `${ownerPrefix(userId)}composites/${safe(manifestHash, "manifest hash")}.`;
+}
+
+/** Every file one render request (one generation) of an outfit preview wrote starts with this. */
+export function compositeGenerationPrefix(userId: string, manifestHash: string, renderJobId: string): string {
+  return `${compositePrefix(userId, manifestHash)}${safe(renderJobId, "render job id")}.`;
 }
 
 export function keyBelongsTo(userId: string, key: string): boolean {

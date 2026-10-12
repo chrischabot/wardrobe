@@ -224,7 +224,7 @@ describe("queue-driven normalization with fidelity checks (real local queue and 
   });
 
   it("pipeline result commands are not available to clients", async () => {
-    const attempt = owner.exec("media.record_normalization", { assetId: "x", jobId: "y", outcome: "normalized", renditions: [], fidelity: [], note: null }, { authorization: "system_schedule" });
+    const attempt = owner.exec("media.record_normalization", { assetId: "x", jobId: "y", attempt: 1, outcome: "normalized", renditions: [], fidelity: [], note: null }, { authorization: "system_schedule" });
     await expect(attempt).rejects.toSatisfy((e) => isCommandError(e) && e.code === "forbidden");
   });
 

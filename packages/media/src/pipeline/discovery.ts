@@ -9,12 +9,12 @@
  * garment, within the owner's daily browser allowance (interactive reserve first). A search that was
  * already made is never repeated. With no usable provider the investigation is DEFERRED, not failed.
  */
-import { all, first, getSettings, json, sha256Hex, stableId, systemPrincipalFor, toInstant } from "@garderobe/domain";
+import { all, first, getSettings, json, prepare, sha256Hex, stableId, stmt, systemPrincipalFor, toInstant } from "@garderobe/domain";
 import type { CandidateRejectionReason, DiscoveryStrategy } from "@garderobe/contracts/ext/media";
-import type { DiscoveryCandidatePage, DiscoveryGarment, DiscoveryProvider, ImageFetcher } from "../adapters.ts";
+import type { DiscoveryCandidatePage, DiscoveryGarment, DiscoveryProvider, DiscoveryProviderResult, ImageFetcher } from "../adapters.ts";
 import type { RecordDiscoveryPayload } from "../commands/discovery.ts";
 import { execSystem } from "../exec.ts";
-import { decodeImage, probeImage, type Raster } from "../image/index.ts";
+import { decodeImage, decodePng, probeImage, withoutLocationForConversion, type Raster } from "../image/index.ts";
 import type { JobRow } from "../jobs.ts";
 import { originalKey } from "../keys.ts";
 import { limitsOf, type MediaRuntime } from "../runtime.ts";
@@ -23,6 +23,9 @@ import { evaluateCandidate, type CandidateEvaluation } from "./evaluate.ts";
 import { createPurchaseLinkProvider } from "./purchase-link.ts";
 import { compareCandidateWithOwnerPhotos, loadOwnerReferences, type OwnerReferences } from "./owner-photo.ts";
 import { createSafeImageFetcher } from "./safe-fetch.ts";
+
+/** A search that failed at its provider is tried again later, at most this many times in all. */
+export const MAX_PROVIDER_ATTEMPTS = 3;
 
 export const STRATEGY_ORDER: DiscoveryStrategy[] = ["purchase_source", "maker_catalogue", "identifier_search"];
 const MAX_REVIEW_CANDIDATES = 2;
@@ -88,7 +91,23 @@ async function fetchAndCheckImage(rt: MediaRuntime, fetcher: ImageFetcher, url: 
     if (ratio > 3 || ratio < 1 / 3) return { ok: false, reason: "image_quality", detail: "banner-shaped image, not a product photograph" };
   }
   let raster: Raster | null = null;
-  if (probe.format !== "webp") {
+  if (probe.format === "webp") {
+    // This package cannot decode WebP itself. A candidate is adopted only once its pixels were read: through the
+    // configured converter, bounded in size; without one a WebP candidate cannot be checked and is not taken.
+    if (!rt.deps.transcoder) return { ok: false, reason: "image_quality", detail: "a WebP image cannot be checked without a converter, so it was not taken" };
+    // The converter gets the picture without its metadata; one whose metadata cannot be removed is not sent.
+    const clean = withoutLocationForConversion(fetched.bytes, limits.discovery.maxCandidateBytes);
+    if (!clean.ok) return { ok: false, reason: "image_quality", detail: `the WebP image's metadata could not be removed, so it was not sent to the converter: ${clean.reason}`.slice(0, 300) };
+    try {
+      const out = await rt.deps.transcoder.toPng({ bytes: clean.bytes, contentType: "image/webp", maxEdge: limits.workingEdge });
+      if (!out.ok) return { ok: false, reason: "image_quality", detail: `the WebP image could not be read: ${out.reason}`.slice(0, 300) };
+      // The converter's output is a generated file: held to the same size limit before it is decoded.
+      if (out.png.length > limits.maxDerivedBytes) return { ok: false, reason: "image_quality", detail: "the converted WebP image is larger than a generated file may be" };
+      raster = await decodePng(out.png, { maxPixels: limits.maxPixels });
+    } catch {
+      return { ok: false, reason: "image_quality", detail: "the image is corrupt" };
+    }
+  } else {
     try {
       raster = (await decodeImage(fetched.bytes, { maxPixels: limits.maxPixels })).raster;
     } catch {
@@ -98,16 +117,200 @@ async function fetchAndCheckImage(rt: MediaRuntime, fetcher: ImageFetcher, url: 
   return { ok: true, bytes: fetched.bytes, contentType: probe.contentType, width: probe.width, height: probe.height, raster };
 }
 
+/** One browser session is one minute (specification section 11). */
+const BROWSER_SECONDS_PER_SESSION = 60;
+
+/** All browser seconds this owner has recorded, read before the allowance so later usage can be counted in the claim itself. */
+async function recordedBrowserSeconds(rt: MediaRuntime, userId: string): Promise<number> {
+  return (await first<{ s: number }>(rt.db, "SELECT COALESCE(SUM(browser_seconds), 0) AS s FROM media_discovery_attempts WHERE user_id = ?", userId))?.s ?? 0;
+}
+
+type SearchClaim =
+  | { status: "claimed"; seconds: number }
+  | { status: "no_budget" }
+  | { status: "busy" }
+  /** The search was already made (or interrupted) by a run that stopped before recording it: it is recorded with what it returned, not repeated. */
+  | { status: "recovered"; seconds: number; sessions: number; pages: number; storedPages: DiscoveryCandidatePage[]; error: string | null; retryable: boolean };
+
+/** The job attempt that owns a claim: only it settles or releases the claim, and it is taken over only from a stopped owner. */
+interface ClaimOwner { jobId: string; attempt: number }
+
+/** A job run's effect gate (see jobs.ts): each claim write below is started through it, so none starts after the run's deadline or once its lease is not confirmed. */
+type Gate = <T>(effect: () => Promise<T>) => Promise<T>;
+const ungated: Gate = (effect) => effect();
+
+type ClaimRow = { job_id: string; job_attempt: number | null; seconds: number; settled_at: string | null; pages_examined: number | null; browser_sessions: number | null; detail: string | null; retryable: number | null; pages_json: string | null };
+const CLAIM_COLUMNS = "job_id, job_attempt, seconds, settled_at, pages_examined, browser_sessions, detail, retryable, pages_json";
+
+/**
+ * SQL condition (two parameters: job_id, attempt): the requesting job is running under exactly this attempt.
+ * Every claim insert and takeover carries it, so a runner whose attempt was superseded (its lease lapsed and
+ * the job was claimed again) can neither make new claims nor take one back from the newer attempt.
+ */
+const REQUESTER_CURRENT = "EXISTS (SELECT 1 FROM media_jobs WHERE user_id = ? AND job_id = ? AND state = 'running' AND attempts = ?)";
+
+/** SQL (two parameters: user, attempt id): this search has not been recorded yet. A recorded search is never claimed or made again. */
+const NOT_YET_RECORDED = "NOT EXISTS (SELECT 1 FROM media_discovery_attempts WHERE user_id = ? AND attempt_id = ?)";
+
+/**
+ * SQL (three parameters: user, now, now): browser seconds held by claims whose search is not recorded yet (a recorded
+ * one counts from its attempt): every open claim, and every claim made today even once it has expired, since an
+ * interrupted search whose job was then abandoned is never recorded, yet its time was spent within today's allowance.
+ */
+const OPEN_CLAIM_SECONDS = "(SELECT COALESCE(SUM(r.seconds), 0) FROM media_browser_reservations r WHERE r.user_id = ? AND (r.expires_at > ? OR substr(r.created_at, 1, 10) = substr(?, 1, 10)) AND NOT EXISTS (SELECT 1 FROM media_discovery_attempts d WHERE d.user_id = r.user_id AND d.attempt_id = r.attempt_id))";
+
+/**
+ * Claim one search durably before it is dispatched. A claim that already exists for this search is resolved
+ * first, before any budget check: a stopped owner's claim is taken over and recorded (not repeated), a live
+ * owner's makes this search busy. A new browser search also reserves its seconds, atomically across concurrent
+ * jobs of the same owner: the insert succeeds only while every open claim, plus the browser time recorded since
+ * the allowance was read, plus this reservation fit in that allowance, all evaluated in the insert itself.
+ */
+async function claimSearch(rt: MediaRuntime, c: { userId: string; owner: ClaimOwner; garmentId: string; queryHash: string; attemptId: string; claimId: string; wanted: number; browser: boolean; sessions: number }, g: Gate = ungated): Promise<SearchClaim> {
+  const leaseMs = limitsOf(rt.deps).jobLeaseSeconds * 1000;
+  const readClaim = () => first<ClaimRow>(rt.db, `SELECT ${CLAIM_COLUMNS} FROM media_browser_reservations WHERE user_id = ? AND reservation_id = ?`, c.userId, c.claimId);
+  const existing = await readClaim();
+  if (existing) return resolveExistingClaim(rt, c.userId, c.claimId, c.owner, existing, g);
+  const seconds = c.browser ? Math.floor(c.wanted) : 0;
+  if (c.browser && seconds <= 0) return { status: "no_budget" };
+  // An unsettled claim stays live (and counted) for its whole bounded search: its time allowance plus a lease.
+  // The clock is read when the insert starts, after every earlier read (which may have stalled while renewal kept
+  // the run alive), so the claim is never written already expired or nearly so, and open claims are counted at that moment.
+  const fresh = () => {
+    const nowMs = rt.clock();
+    return { now: toInstant(nowMs), lapse: toInstant(nowMs + Math.max(2 * leaseMs, seconds * 1000 + leaseMs)) };
+  };
+  // The browser sessions the search may open are held on the claim until it settles with what it used: a search
+  // that stops or fails without saying is charged all of them.
+  const sessions = c.browser ? Math.max(0, Math.floor(c.sessions)) : 0;
+  let changes = 0;
+  if (c.browser) {
+    const recordedBefore = await recordedBrowserSeconds(rt, c.userId);
+    const available = await browserSecondsAvailable(rt, c.userId);
+    const res = await g(() => { const { now, lapse } = fresh(); return prepare(
+      rt.db,
+      stmt(
+        `INSERT INTO media_browser_reservations (user_id, reservation_id, job_id, job_attempt, garment_id, query_hash, attempt_id, seconds, browser_sessions, expires_at, created_at)
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          WHERE ${OPEN_CLAIM_SECONDS}
+              + ((SELECT COALESCE(SUM(browser_seconds), 0) FROM media_discovery_attempts WHERE user_id = ?) - ?)
+              + ? <= ?
+            AND ${REQUESTER_CURRENT}
+            AND ${NOT_YET_RECORDED}
+         ON CONFLICT (user_id, reservation_id) DO NOTHING`,
+        c.userId, c.claimId, c.owner.jobId, c.owner.attempt, c.garmentId, c.queryHash, c.attemptId, seconds, sessions, lapse, now,
+        c.userId, now, now, c.userId, recordedBefore, seconds, available,
+        c.userId, c.owner.jobId, c.owner.attempt,
+        c.userId, c.attemptId,
+      ),
+    ).run(); });
+    changes = res.meta?.changes ?? 0;
+  } else {
+    const res = await g(() => { const { now, lapse } = fresh(); return prepare(
+      rt.db,
+      stmt(
+        `INSERT INTO media_browser_reservations (user_id, reservation_id, job_id, job_attempt, garment_id, query_hash, attempt_id, seconds, expires_at, created_at)
+         SELECT ?, ?, ?, ?, ?, ?, ?, 0, ?, ? WHERE ${REQUESTER_CURRENT} AND ${NOT_YET_RECORDED}
+         ON CONFLICT (user_id, reservation_id) DO NOTHING`,
+        c.userId, c.claimId, c.owner.jobId, c.owner.attempt, c.garmentId, c.queryHash, c.attemptId, lapse, now,
+        c.userId, c.owner.jobId, c.owner.attempt,
+        c.userId, c.attemptId,
+      ),
+    ).run(); });
+    changes = res.meta?.changes ?? 0;
+  }
+  if (changes === 1) return { status: "claimed", seconds };
+  const raced = await readClaim();
+  if (raced) return resolveExistingClaim(rt, c.userId, c.claimId, c.owner, raced, g);
+  // No claim was written: this attempt is no longer the job's current one, or the search was recorded meanwhile by
+  // another run (it must not search either way), or the allowance did not fit.
+  const current = await first<{ n: number }>(rt.db, `SELECT (${REQUESTER_CURRENT}) AND (${NOT_YET_RECORDED}) AS n`, c.userId, c.owner.jobId, c.owner.attempt, c.userId, c.attemptId);
+  return (current?.n ?? 0) === 1 ? { status: "no_budget" } : { status: "busy" };
+}
+
+/** A claim found for this search: busy while its owner runs; otherwise taken over atomically and recorded, never repeated. */
+async function resolveExistingClaim(rt: MediaRuntime, userId: string, claimId: string, owner: ClaimOwner, held: ClaimRow, g: Gate = ungated): Promise<SearchClaim> {
+  if (held.job_id === owner.jobId && held.job_attempt === owner.attempt) return { status: "busy" }; // cannot happen: this attempt claims each search once
+  // The claim changes hands in one statement, and only if, at that moment: it is still exactly as read; this
+  // attempt is its job's current running attempt; and the attempt holding it is not running under a live
+  // lease (an earlier attempt of this job is superseded by definition; another job is live while it runs
+  // under the same attempt with an unexpired lease, since it may still be processing candidates).
+  // The row returned is the one taken over, as it stood at that moment (the earlier owner may have settled it since it was read).
+  const took = await g(() => prepare(
+    rt.db,
+    stmt(
+      `UPDATE media_browser_reservations SET job_id = ?, job_attempt = ?
+        WHERE user_id = ? AND reservation_id = ? AND job_id = ? AND job_attempt IS ?
+          AND ${REQUESTER_CURRENT}
+          AND NOT EXISTS (SELECT 1 FROM media_jobs WHERE user_id = ? AND job_id = ? AND state = 'running' AND attempts IS ? AND lease_until > ?)
+        RETURNING ${CLAIM_COLUMNS}`,
+      owner.jobId, owner.attempt, userId, claimId, held.job_id, held.job_attempt,
+      userId, owner.jobId, owner.attempt,
+      userId, held.job_id, held.job_attempt, toInstant(rt.clock()),
+    ),
+  ).first<ClaimRow>());
+  if (!took) return { status: "busy" };
+  if (took.settled_at) {
+    // The search completed (or failed) and was settled with what it returned: recorded from that, not searched again.
+    const storedPages = json<DiscoveryCandidatePage[]>(took.pages_json, []);
+    return {
+      status: "recovered", seconds: took.seconds, sessions: took.browser_sessions ?? 0, pages: took.pages_examined ?? storedPages.length, storedPages,
+      error: took.detail, retryable: took.detail !== null && took.retryable !== 0,
+    };
+  }
+  // It stopped during the search: recorded as interrupted, with its reserved seconds and sessions counted as spent.
+  const reservedSessions = took.browser_sessions ?? 0;
+  await settleClaim(rt, userId, claimId, owner, { seconds: took.seconds, sessions: reservedSessions, pages: [], examined: 0, detail: "the search was interrupted when its run stopped", retryable: true }, g);
+  return { status: "recovered", seconds: took.seconds, sessions: reservedSessions, pages: 0, storedPages: [], retryable: true, error: "the search was interrupted when its run stopped; it is tried again later" };
+}
+
+/** Record at once what a search used and returned, so neither the time, the search nor its results are lost if the job stops before recording its attempts. Only the claim's owner settles it. */
+async function settleClaim(rt: MediaRuntime, userId: string, claimId: string, owner: ClaimOwner, used: { seconds: number; sessions: number; pages: DiscoveryCandidatePage[]; examined: number; detail: string | null; retryable: boolean }, g: Gate = ungated): Promise<void> {
+  const nowMs = rt.clock();
+  // Kept (and counted against the allowance) until the attempt is recorded; two days covers any retry of the job.
+  await g(() => prepare(
+    rt.db,
+    stmt("UPDATE media_browser_reservations SET settled_at = ?, seconds = ?, browser_sessions = ?, pages_examined = ?, pages_json = ?, detail = ?, retryable = ?, expires_at = ? WHERE user_id = ? AND reservation_id = ? AND job_id = ? AND job_attempt = ?",
+      toInstant(nowMs), Math.max(0, Math.round(used.seconds)), used.sessions, used.examined, JSON.stringify(used.pages), used.detail?.slice(0, 300) ?? null, used.retryable ? 1 : 0, toInstant(nowMs + 2 * 86_400_000), userId, claimId, owner.jobId, owner.attempt),
+  ).run());
+}
+
+/** Seconds held by open claims of this owner (in flight, or spent and not yet recorded). */
+async function reservedOpen(rt: MediaRuntime, userId: string): Promise<number> {
+  const now = toInstant(rt.clock());
+  const row = await first<{ s: number }>(rt.db, `SELECT ${OPEN_CLAIM_SECONDS} AS s`, userId, now, now);
+  return row?.s ?? 0;
+}
+
+/** Run a browser search within its time allowance: past it, the search is abandoned and reported as stopped. */
+async function searchWithin(provider: DiscoveryProvider, query: Parameters<DiscoveryProvider["search"]>[0], budget: Parameters<DiscoveryProvider["search"]>[1]): Promise<DiscoveryProviderResult> {
+  const allowance = budget.maxBrowserSeconds;
+  if (!provider.usesBrowser || allowance === undefined) return provider.search(query, budget);
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const stopped = new Promise<DiscoveryProviderResult>((resolve) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      resolve({ pages: [], browserSessions: budget.maxBrowserSessions, browserSeconds: allowance, error: "the browser search ran past its time allowance and was stopped" });
+    }, allowance * 1000);
+  });
+  try {
+    return await Promise.race([provider.search(query, { ...budget, signal: controller.signal }), stopped]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function runDiscoveryJob(rt: MediaRuntime, job: JobRow): Promise<void> {
   const userId = job.user_id;
   const limits = limitsOf(rt.deps).discovery;
   const garment = await loadDiscoveryGarment(rt, userId, job.subject_id);
   if (!garment || garment.removed || garment.acquisition === "disposed") {
-    await execSystem(rt, userId, "media.complete_job", { jobId: job.job_id, result: { skipped: "the garment is no longer in the collection" } }, `job-done:${job.job_id}`);
+    await execSystem(rt, userId, "media.complete_job", { jobId: job.job_id, attempt: job.attempts, result: { skipped: "the garment is no longer in the collection" } }, `job-done:${job.job_id}:${job.attempts}`);
     return;
   }
   const record = (body: Pick<RecordDiscoveryPayload, "attempts" | "candidates" | "conclusion" | "note">) =>
-    execSystem(rt, userId, "media.record_discovery", { garmentId: garment.garmentId, jobId: job.job_id, ...body }, `discovered:${job.job_id}`);
+    execSystem(rt, userId, "media.record_discovery", { garmentId: garment.garmentId, jobId: job.job_id, attempt: job.attempts, ...body }, `discovered:${job.job_id}:${job.attempts}`);
 
   const current = await loadGarmentMediaRow(rt.db, userId, garment.garmentId);
   // The owner may ask for a product photo of a garment that so far only has their own photograph.
@@ -125,12 +328,30 @@ export async function runDiscoveryJob(rt: MediaRuntime, job: JobRow): Promise<vo
   // The owner's own photographs of this garment, loaded once, only when a candidate needs comparing.
   let ownerReferences: OwnerReferences | null = null;
 
-  const prior = await all<{ strategy: string; query_hash: string; pages_examined: number; browser_sessions: number }>(rt.db, "SELECT strategy, query_hash, pages_examined, browser_sessions FROM media_discovery_attempts WHERE user_id = ? AND garment_id = ?", userId, garment.garmentId);
-  const tried = new Set(prior.map((p) => p.query_hash));
-  let strategiesUsed = prior.length;
+  // Within a job run, the claim writes below go through the run's gate, and each search or candidate fetch is
+  // started only while the run is live: after its deadline or a lost lease nothing more is claimed, settled,
+  // released or searched (a claim left open is recovered by the next run as interrupted).
+  const gate = rt.gate ?? (<T>(effect: () => Promise<T>) => effect());
+  const admit = rt.admit ?? (() => undefined);
+  const prior = await all<{ attempt_id: string; strategy: string; query_hash: string; query_json: string; pages_examined: number; browser_sessions: number; outcome: string }>(rt.db, "SELECT attempt_id, strategy, query_hash, query_json, pages_examined, browser_sessions, outcome FROM media_discovery_attempts WHERE user_id = ? AND garment_id = ?", userId, garment.garmentId);
+  // A retried search is recorded under its own hash (the ledger never holds the same search twice for a garment),
+  // naming the search it retries; it is counted against that search.
+  const searchOf = (p: { query_hash: string; query_json: string }): string => {
+    const base = json<{ retryOf?: unknown }>(p.query_json, {}).retryOf;
+    return typeof base === "string" && /^[0-9a-f]{64}$/.test(base) ? base : p.query_hash;
+  };
+  // Claims whose attempts a stopped run did record are released.
+  await gate(() => prepare(rt.db, stmt("DELETE FROM media_browser_reservations WHERE user_id = ? AND garment_id = ? AND attempt_id IN (SELECT attempt_id FROM media_discovery_attempts WHERE user_id = ? AND garment_id = ?)", userId, garment.garmentId, userId, garment.garmentId)).run());
+  // A search that could not be completed because its provider was unavailable (recorded as provider_unavailable)
+  // was not a completed search: it is tried again, at most MAX_PROVIDER_ATTEMPTS times in all, and does not use
+  // up one of the garment's strategies. A final failure is recorded as provider_error and counts as tried.
+  const providerErrors = new Map<string, number>();
+  for (const p of prior) if (p.outcome === "provider_unavailable") providerErrors.set(searchOf(p), (providerErrors.get(searchOf(p)) ?? 0) + 1);
+  const tried = new Set(prior.filter((p) => p.outcome !== "provider_unavailable").map(searchOf));
+  let strategiesUsed = prior.filter((p) => p.outcome !== "provider_unavailable").length;
   let pagesUsed = prior.reduce((n, p) => n + p.pages_examined, 0);
   let sessionsUsed = prior.reduce((n, p) => n + p.browser_sessions, 0);
-  let browserSeconds = await browserSecondsAvailable(rt, userId);
+  let browserSeconds = Math.max(0, (await browserSecondsAvailable(rt, userId)) - (await reservedOpen(rt, userId)));
 
   const providers: DiscoveryProvider[] = [...(rt.deps.discoveryProviders ?? [])];
   if (!providers.some((p) => p.strategies.includes("purchase_source"))) providers.unshift(createPurchaseLinkProvider({ now: rt.clock }));
@@ -142,12 +363,19 @@ export async function runDiscoveryJob(rt: MediaRuntime, job: JobRow): Promise<vo
   let adopted = false;
   let reviews = 0;
   let untriedQueries = 0;
+  let retryableErrors = 0;
+  /** Claims this run made or recovered, released once their attempts are recorded. */
+  const claims: string[] = [];
+  const claimOwner: ClaimOwner = { jobId: job.job_id, attempt: job.attempts };
 
   outer: for (const strategy of STRATEGY_ORDER) {
     const text = queryTextFor(strategy, garment);
     if (!text) continue;
     const capable = providers.filter((p) => p.strategies.includes(strategy));
     if (capable.length === 0) {
+      // A search this garment could have, that no configured provider can make yet: work still outstanding,
+      // so the investigation is deferred rather than concluded.
+      untriedQueries++;
       deferrals.push(`no provider is configured for ${strategy.replace(/_/g, " ")}`);
       continue;
     }
@@ -156,21 +384,70 @@ export async function runDiscoveryJob(rt: MediaRuntime, job: JobRow): Promise<vo
       const queryHash = await sha256Hex(`${strategy}\u001f${provider.name}\u001f${text}`);
       if (tried.has(queryHash)) continue; // never repeat the same unsuccessful search
       untriedQueries++;
-      if (provider.usesBrowser && (sessionsUsed >= limits.maxBrowserSessions || browserSeconds <= 0)) {
-        deferrals.push(sessionsUsed >= limits.maxBrowserSessions ? "this garment's two browser sessions are used" : "today's browser allowance for backfill is used; interactive browsing is kept in reserve");
+      const retry = providerErrors.get(queryHash) ?? 0;
+      const claimId = `${garment.garmentId}:${queryHash.slice(0, 32)}:${retry}`;
+      // A claim a stopped run left for this search is recovered whatever the allowance now shows: its own reservation
+      // may be what used the allowance up, and its results or usage must be recorded, not skipped.
+      const heldClaim = await first<{ n: number }>(rt.db, "SELECT 1 AS n FROM media_browser_reservations WHERE user_id = ? AND reservation_id = ?", userId, claimId);
+      if (!heldClaim && provider.usesBrowser && sessionsUsed >= limits.maxBrowserSessions) {
+        // The garment's browser sessions are used for good (they never come back): this search can never be made, so
+        // it is not outstanding work that keeps the investigation deferred.
+        untriedQueries--;
+        continue;
+      }
+      if (!heldClaim && provider.usesBrowser && browserSeconds <= 0) {
+        deferrals.push("today's browser allowance for backfill is used; interactive browsing is kept in reserve");
         continue;
       }
       tried.add(queryHash);
-      const attemptId = await stableId("att", userId, garment.garmentId, queryHash);
-      const result = await provider.search({ strategy, garment, text }, { maxPages: limits.maxCandidatePages - pagesUsed, maxBrowserSessions: limits.maxBrowserSessions - sessionsUsed });
+      const attemptId = retry === 0 ? await stableId("att", userId, garment.garmentId, queryHash) : await stableId("att", userId, garment.garmentId, queryHash, `retry-${retry}`);
+      const budget: Parameters<DiscoveryProvider["search"]>[1] = { maxPages: limits.maxCandidatePages - pagesUsed, maxBrowserSessions: limits.maxBrowserSessions - sessionsUsed };
+      // Claimed durably first (browser searches also reserve their seconds), so concurrent jobs cannot each spend
+      // the same allowance and a run that stops after the search neither loses its usage nor repeats it.
+      const claim = await gate(() => claimSearch(rt, { userId, owner: claimOwner, garmentId: garment.garmentId, queryHash, attemptId, claimId, wanted: Math.min(browserSeconds, budget.maxBrowserSessions * BROWSER_SECONDS_PER_SESSION), browser: provider.usesBrowser, sessions: budget.maxBrowserSessions }, gate));
+      if (claim.status === "no_budget" || claim.status === "busy") {
+        tried.delete(queryHash);
+        deferrals.push(claim.status === "busy" ? "another run is making this search now" : "today's browser allowance for backfill is used; interactive browsing is kept in reserve");
+        continue;
+      }
+      claims.push(claimId);
+      let result: DiscoveryProviderResult;
+      /** Pages a stopped run's search already examined: counted against the garment's page allowance though their results were not kept. */
+      let recoveredPages = 0;
+      if (claim.status === "recovered") {
+        const storedPages = claim.storedPages.slice(0, limits.maxCandidatePages - pagesUsed);
+        result = { pages: storedPages, browserSessions: claim.sessions, browserSeconds: claim.seconds, ...(claim.error ? { error: claim.error, retryable: claim.retryable } : {}) };
+        // Pages it examined that it did not return (a failed search) still count against the garment's page allowance.
+        recoveredPages = Math.max(0, Math.min(claim.pages - storedPages.length, limits.maxCandidatePages - pagesUsed - storedPages.length));
+      } else {
+        if (provider.usesBrowser) budget.maxBrowserSeconds = claim.seconds;
+        admit();
+        try {
+          result = await searchWithin(provider, { strategy, garment, text }, budget);
+        } catch (e) {
+          // A provider that throws spent what it reserved, as far as anyone can tell: every reserved second and session.
+          result = { pages: [], browserSessions: provider.usesBrowser ? budget.maxBrowserSessions : 0, browserSeconds: claim.seconds, error: `the search failed: ${String((e as Error)?.message ?? e)}`.slice(0, 300) };
+        }
+        const returned = result.pages.slice(0, limits.maxCandidatePages - pagesUsed);
+        await settleClaim(rt, userId, claimId, claimOwner, { seconds: result.browserSeconds, sessions: result.browserSessions, pages: returned, examined: returned.length, detail: result.error ?? null, retryable: !!result.error && result.retryable !== false }, gate);
+      }
       const pages = result.pages.slice(0, limits.maxCandidatePages - pagesUsed);
-      strategiesUsed++;
-      pagesUsed += pages.length;
+      // A failed search is tried again later only if it can be: within its provider attempts and, for a browser
+      // search, while the garment still has a browser session left (a failure charged with the last ones is final).
+      const retryLater = !!result.error && result.retryable !== false && retry + 1 < MAX_PROVIDER_ATTEMPTS
+        && !(provider.usesBrowser && sessionsUsed + result.browserSessions >= limits.maxBrowserSessions);
+      if (!retryLater) strategiesUsed++;
+      else {
+        // Not a completed search: tried again later instead of being counted as investigated.
+        retryableErrors++;
+        deferrals.push(`the ${strategy.replace(/_/g, " ")} search could not be completed (${result.error!.slice(0, 120)}); it is tried again later`);
+      }
+      pagesUsed += pages.length + recoveredPages;
       sessionsUsed += result.browserSessions;
       browserSeconds -= result.browserSeconds;
       const attempt: Attempt = {
-        attemptId, strategy, queryHash, query: { text: text.slice(0, 500) }, provider: provider.name, pagesExamined: pages.length,
-        browserSessions: result.browserSessions, browserSeconds: Math.max(0, Math.round(result.browserSeconds)), outcome: result.error ? "provider_error" : "no_match", detail: result.error?.slice(0, 500) ?? null,
+        attemptId, strategy, queryHash: retry === 0 ? queryHash : await sha256Hex(`${queryHash}\u001fretry-${retry}`), query: { text: text.slice(0, 500), ...(retry === 0 ? {} : { retryOf: queryHash, retry }) }, provider: provider.name, pagesExamined: pages.length + recoveredPages,
+        browserSessions: result.browserSessions, browserSeconds: Math.max(0, Math.round(result.browserSeconds)), outcome: result.error ? (retryLater ? "provider_unavailable" : "provider_error") : "no_match", detail: result.error?.slice(0, 500) ?? null,
       };
       attempts.push(attempt);
 
@@ -189,6 +466,7 @@ export async function runDiscoveryJob(rt: MediaRuntime, job: JobRow): Promise<vo
           candidates.push(base);
           continue;
         }
+        admit();
         const image = await fetchAndCheckImage(rt, fetcher, page.imageUrl);
         if (!image.ok) {
           candidates.push({ ...base, rejectionReasons: [image.reason], evidence: { ...evaluation.evidence, imageCheck: image.detail } });
@@ -239,18 +517,25 @@ export async function runDiscoveryJob(rt: MediaRuntime, job: JobRow): Promise<vo
   }
 
   const investigated = prior.length + attempts.length > 0;
+  await conclude(investigated);
+  // The attempts, with the browser time they actually used, are recorded: their claims are released.
+  for (const id of claims) await gate(() => prepare(rt.db, stmt("DELETE FROM media_browser_reservations WHERE user_id = ? AND reservation_id = ? AND job_id = ? AND job_attempt = ?", userId, id, claimOwner.jobId, claimOwner.attempt)).run());
+
+  async function conclude(investigated: boolean): Promise<void> {
   if (adopted) await record({ attempts, candidates, conclusion: "adopted", note: null });
   else if (reviews > 0) await record({ attempts, candidates, conclusion: "needs_review", note: null });
   else if (seekingBesideOwnerPhoto) {
     // Nothing verified was found, and the garment is not short of a picture: the owner's own photo stays.
     await record({ attempts, candidates, conclusion: "already_resolved", note: "no verified product photo was found; the owner's own photo is kept" });
   }
-  else if (deferrals.length > 0 && (attempts.length === 0 || strategiesUsed < limits.maxStrategies) && untriedQueries > attempts.length) {
-    // Something could still be tried later (a provider or more allowance): not a failed investigation yet.
+  else if (retryableErrors > 0 || (deferrals.length > 0 && (attempts.length === 0 || strategiesUsed < limits.maxStrategies) && untriedQueries > attempts.length)) {
+    // Something could still be tried later (a provider, a search that failed at its provider, or more
+    // allowance): not a failed investigation yet.
     await record({ attempts, candidates, conclusion: "deferred", note: [...new Set(deferrals)].join("; ") });
   } else if (!investigated) {
     await record({ attempts, candidates, conclusion: "deferred", note: deferrals.length > 0 ? [...new Set(deferrals)].join("; ") : "there is no purchase link, maker or product code to search with and no search provider is configured" });
   } else {
     await record({ attempts, candidates, conclusion: "photos_needed", note: attempts.length === 0 ? "every available source was already tried" : null });
+  }
   }
 }

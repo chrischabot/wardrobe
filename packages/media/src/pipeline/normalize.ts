@@ -40,9 +40,9 @@ export async function runNormalizeJob(rt: MediaRuntime, job: JobRow): Promise<vo
   }
   const asset = await loadAsset(rt.db, userId, job.subject_id);
   const done = (body: { outcome: "normalized" | "kept_original" | "failed"; renditions?: RecordedRendition[]; fidelity?: RecordedFidelity[]; note?: string | null }) =>
-    execSystem(rt, userId, "media.record_normalization", { assetId: job.subject_id, jobId: job.job_id, outcome: body.outcome, renditions: body.renditions ?? [], fidelity: body.fidelity ?? [], note: body.note ?? null }, `normalized:${job.job_id}`);
+    execSystem(rt, userId, "media.record_normalization", { assetId: job.subject_id, jobId: job.job_id, attempt: job.attempts, outcome: body.outcome, renditions: body.renditions ?? [], fidelity: body.fidelity ?? [], note: body.note ?? null }, `normalized:${job.job_id}:${job.attempts}`);
   if (!asset) {
-    await execSystem(rt, userId, "media.complete_job", { jobId: job.job_id, result: { skipped: "asset no longer exists" } }, `job-done:${job.job_id}`);
+    await execSystem(rt, userId, "media.complete_job", { jobId: job.job_id, attempt: job.attempts, result: { skipped: "asset no longer exists" } }, `job-done:${job.job_id}:${job.attempts}`);
     return;
   }
   const existing = await loadRenditions(rt.db, userId, asset.asset_id);

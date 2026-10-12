@@ -5,6 +5,7 @@ import {
   authorizeUpload, dispatchMediaJobs, getComposition, getGarmentMedia, getMediaStorageStatus, openCompositePreview, receiveUploadContent, requestCompositePreview, runMediaJob, runMediaMaintenance,
 } from "../src/index.ts";
 import { execSystem } from "../src/exec.ts";
+import { compositeKey } from "../src/keys.ts";
 import { encodePng } from "../src/image/index.ts";
 import { createMediaHarness, syntheticShirt, syntheticTrousers, type MediaHarness } from "../src/testing/index.ts";
 
@@ -73,13 +74,15 @@ describe("review H1: a preview rendered across a deletion is never stored or ser
     const requested = await owner.exec("media.request_composite_preview", { slots: [...OUTFIT] });
     const hash = String(requested.result.manifestHash);
     const jobId = String(requested.result.jobId);
-    // A render that raced the deletion has already written its files...
-    const png = `u/${owner.userId}/composites/${hash}.png`, svg = `u/${owner.userId}/composites/${hash}.svg`;
+    // A render that raced the deletion has already written its files (under its own generation's keys)...
+    const png = compositeKey(owner.userId, hash, "image/png", "a".repeat(64), jobId), svg = compositeKey(owner.userId, hash, "image/svg+xml", "a".repeat(64), jobId);
     await h.bindings.MEDIA_BUCKET.put(png, await encodePng(syntheticShirt({ size: 64 })));
     await h.bindings.MEDIA_BUCKET.put(svg, "<svg/>");
     // ...case 1: the image is deleted and the composite was invalidated by that deletion.
     await owner.exec("media.delete_asset", { assetId: shirt.asset!.assetId });
-    const recorded = await execSystem(h.rt, owner.userId, "media.record_composite", { manifestHash: hash, jobId, previewSha256: "a".repeat(64), previewBytes: 100, hasSvg: true, renderer: "raced" }, `raced-record:${jobId}`);
+    // TEST SETUP: the render job is running under its first claim, as it would be while it rendered.
+    await h.db.prepare("UPDATE media_jobs SET state = 'running', attempts = 1, lease_until = ? WHERE user_id = ? AND job_id = ?").bind(new Date(h.clock.now() + 300_000).toISOString(), owner.userId, jobId).run();
+    const recorded = await execSystem(h.rt, owner.userId, "media.record_composite", { manifestHash: hash, jobId, attempt: 1, previewSha256: "a".repeat(64), previewBytes: 100, hasSvg: true, renderer: "raced" }, `raced-record:${jobId}`);
     expect(recorded.summary).toBe("The outfit preview was discarded: an image it used was deleted");
     expect(recorded.result).toMatchObject({ discarded: true });
     await h.settle(owner);
@@ -94,9 +97,11 @@ describe("review H1: a preview rendered across a deletion is never stored or ser
     const again = await second.exec("media.request_composite_preview", { slots: [...OUTFIT] });
     const hash2 = String(again.result.manifestHash);
     await h.db.prepare("UPDATE media_renditions SET status = 'superseded' WHERE user_id = ? AND kind = 'cutout'").bind(second.userId).run();
-    const key2 = `u/${second.userId}/composites/${hash2}.png`;
+    const key2 = compositeKey(second.userId, hash2, "image/png", "b".repeat(64), String(again.result.jobId));
     await h.bindings.MEDIA_BUCKET.put(key2, await encodePng(syntheticShirt({ size: 64 })));
-    const stale = await execSystem(h.rt, second.userId, "media.record_composite", { manifestHash: hash2, jobId: String(again.result.jobId), previewSha256: "b".repeat(64), previewBytes: 100, hasSvg: false, renderer: "raced" }, `raced-record:${again.result.jobId}`);
+    // TEST SETUP: the render job is running under its first claim.
+    await h.db.prepare("UPDATE media_jobs SET state = 'running', attempts = 1, lease_until = ? WHERE user_id = ? AND job_id = ?").bind(new Date(h.clock.now() + 300_000).toISOString(), second.userId, String(again.result.jobId)).run();
+    const stale = await execSystem(h.rt, second.userId, "media.record_composite", { manifestHash: hash2, jobId: String(again.result.jobId), attempt: 1, previewSha256: "b".repeat(64), previewBytes: 100, hasSvg: false, renderer: "raced" }, `raced-record:${again.result.jobId}`);
     expect(stale.result).toMatchObject({ discarded: true, reason: "an image it used was deleted or replaced while the preview was being prepared" });
     await h.settle(second);
     expect(await compositesOf(second)).toEqual([]);

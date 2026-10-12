@@ -6,6 +6,7 @@ import { z } from "zod";
 import { all, allIn, CommandError, define, first, loadGarment, stmt, type CommandContext, type CommandDefinition, type CommandPlan, type Stmt } from "@garderobe/domain";
 import { FidelityCheckResult, FidelityCheckName, MEDIA_COMMANDS as C, MediaRenditionKind, TransformationStep } from "@garderobe/contracts/ext/media";
 import { assertOwnedKey, renditionKey } from "../keys.ts";
+import { cleanupFence } from "../write-intents.ts";
 import { limitsOf, resolveDeps, type MediaDepsSource } from "../runtime.ts";
 import { enqueueJob, insertRendition, isRealGarmentImage, loadAsset, loadGarmentMediaRow, loadRenditions, upsertGarmentMedia, type AssetRow, type GarmentMediaRow } from "../store.ts";
 
@@ -212,6 +213,8 @@ export function assetCommands(depsSource: MediaDepsSource): CommandDefinition<an
               ? `The photo is kept as supplied: ${p.note ?? "no derivative could be made"}`
               : `The photo could not be used: ${p.note ?? "unreadable"}${garmentSummary}`,
         statements: [...statements, ...purge.statements],
+        // The files this result names are not being removed by the abandoned-write sweep now (write-intents.ts).
+        preconditions: [cleanupFence(ctx.userId, p.renditions.map((r) => renditionKey(ctx.userId, p.assetId, r.kind, r.version, r.sha256, r.contentType)), ctx.now)],
         affected: [{ kind: "media_asset", id: p.assetId, version: asset.version + 1 }],
         outbox: [{ topic: "media.asset", entityKind: "media_asset", entityId: p.assetId, revision: asset.version + 1 }, ...purge.outbox],
         result: { assetId: p.assetId, outcome: p.outcome, status: nextStatus, fidelityFailures: failedChecks.map((f) => ({ subject: f.subject, failed: f.failed })) },

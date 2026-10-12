@@ -218,7 +218,7 @@ describe("re-review N5: no command record holds a storage location", () => {
     const { manifestHash } = await requestCompositePreview(h.rt, owner.principal(), { slots: [{ role: "top", garmentId: "shirt-moss" }, { role: "bottom", garmentId: "trouser-olive" }] });
     await h.settle(owner);
     // The rendered preview is where the key scheme puts it, although the command that recorded it named no location.
-    expect((await keysOf(h, owner, "composites/")).sort()).toEqual([`u/${owner.userId}/composites/${manifestHash}.png`, `u/${owner.userId}/composites/${manifestHash}.svg`]);
+    expect((await keysOf(h, owner, "composites/")).sort()).toEqual([expect.stringMatching(new RegExp(`^u/${owner.userId}/composites/${manifestHash}\\.job_[0-9a-f]+\\.[0-9a-f]{16}\\.png$`)), expect.stringMatching(new RegExp(`^u/${owner.userId}/composites/${manifestHash}\\.job_[0-9a-f]+\\.[0-9a-f]{16}\\.svg$`))]);
     await owner.exec("media.delete_asset", { assetId: shirt.asset!.assetId });
     await h.settle(owner);
 

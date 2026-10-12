@@ -113,6 +113,13 @@ export interface MediaRuntime {
   service: CommandService;
   deps: MediaDeps;
   clock: () => number;
+  /**
+   * Set only for one job run's work (jobs.ts): `gate` admits and tracks an effect (a ledger write the work makes
+   * directly) only while the run is live; `admit` throws once it is not, before work such as a provider search
+   * is started. Outside a job run both are absent and effects run directly.
+   */
+  gate?: <T>(effect: () => Promise<T>) => Promise<T>;
+  admit?: () => void;
 }
 
 export function createMediaRuntime(input: { db: Db; service: CommandService; deps: MediaDepsSource; clock?: () => number }): MediaRuntime {

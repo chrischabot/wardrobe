@@ -725,6 +725,15 @@ export function heifWithoutMetadata(bytes: Uint8Array): HeifClean {
       }
     }
     if (marked.size > 0 && !iloc) return { ok: false, reason: "the file has metadata items but no item locations" };
+    // Without item information and item locations no picture can be told apart from other bytes, so nothing could
+    // be kept or cleared with certainty.
+    if (!iinf || !iloc) return { ok: false, reason: "the file has no item information or no item locations, so its pictures cannot be located" };
+    // A data reference index names an entry of the file's own data reference box (each one checked above to be
+    // self-contained); 0 means this file. An index past the entries refers to data the file does not have.
+    const dref = children.filter((x) => x.type === "dinf").flatMap((d) => boxesIn(out, d.body, d.end)).find((x) => x.type === "dref");
+    const drefEntries = dref ? u32be(out, dref.body + 4) : 0;
+    /** Picture items with at least one located extent. */
+    const picturesLocated = new Set<number>();
 
     // Where each item's bytes are. Every extent is collected and checked before anything is changed: a
     // file-offset extent must lie inside an image-data (mdat) payload, an item-data extent inside the item data,
@@ -755,7 +764,9 @@ export function heifWithoutMetadata(bytes: Uint8Array): HeifClean {
           // 0: file offset, 1: item data, 2: another item. Any other method places bytes where this cleaner cannot tell.
           if (method > 2) return { ok: false, reason: "an item is stored in a way that is not read here" };
         }
+        const dataRef = (out[p]! << 8) | out[p + 1]!;
         p += 2; // data reference index
+        if (dataRef > drefEntries) return { ok: false, reason: "an item refers to a data reference the file does not have" };
         const base = uintN(out, p, baseOffsetSize, iloc.end);
         p += baseOffsetSize;
         if (p + 2 > iloc.end) throw new Error("truncated item location");
@@ -783,12 +794,20 @@ export function heifWithoutMetadata(bytes: Uint8Array): HeifClean {
           const areas: [number, number][] = method === 1 ? [[idat!.body, idat!.end]] : payloads;
           if (from < 0 || !inside(from, from + length, areas)) return { ok: false, reason: isMeta ? "a metadata item lies outside the file's data" : "a picture item lies outside the file's data" };
           (isMeta ? metaRanges : method === 1 ? keepIdat : keepFile).push([from, from + length]);
-          if (!isMeta) pictureRanges.push({ type: pictures.get(itemId)!, from, to: from + length });
+          if (!isMeta) {
+            pictureRanges.push({ type: pictures.get(itemId)!, from, to: from + length });
+            picturesLocated.add(itemId);
+          }
         }
         if (isMeta) located.add(itemId);
       }
       // The location box must be exactly what it declares: bytes after the last item could hold anything.
       if (p !== iloc.end) return { ok: false, reason: "the item locations are followed by bytes that are not read here" };
+    }
+    // Every picture item that carries data must have been located: one without a location cannot be kept, and its
+    // bytes would be cleared as unused. An identity item carries no data of its own.
+    for (const [itemId, type] of pictures) {
+      if (type !== "iden" && !picturesLocated.has(itemId)) return { ok: false, reason: "a picture item has no location in the file, so it cannot be kept" };
     }
     const overlaps = ([a, b]: [number, number], [c, d]: [number, number]) => a < d && c < b;
     if (metaRanges.some((m) => [...keepFile, ...keepIdat].some((k) => overlaps(m, k)))) return { ok: false, reason: "a metadata item shares bytes with a picture, so it cannot be removed without damaging the picture" };
