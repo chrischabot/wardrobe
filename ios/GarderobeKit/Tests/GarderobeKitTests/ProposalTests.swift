@@ -101,8 +101,12 @@ struct ProposalBoundaryTests {
         let model = ProposalsModel(environment: env)
         await model.open()
         let pending = try #require(model.pending.first)
-        #expect(model.effect(pending).map(\.label) == ["Command", "Lifted", "Restriction id"])   // a null field is not shown as a value
+        #expect(model.effect(pending).map(\.label) == ["Command", "Lifted", "Note", "Restriction id"])   // a null field clears a value: shown, never hidden
+        #expect(model.effect(pending).first { $0.label == "Note" }?.value == "Cleared (set to nothing)")
         #expect(model.effect(pending).first { $0.label == "Lifted" }?.value == "Yes")
+        // A null inside a nested value is a clearing too, and is named as one.
+        let nested = try proposal("prp_test_n", payload: ["garmentId": "gmt_test_1", "changes": ["colour": .null, "name": "Test shirt"]]).decoded(as: Proposal.self)
+        #expect(model.effect(nested).first { $0.label == "Changes" }?.value == "Colour: Cleared (set to nothing); Name: Test shirt")
 
         let receipt = await model.confirm(pending)
         #expect(receipt == nil)

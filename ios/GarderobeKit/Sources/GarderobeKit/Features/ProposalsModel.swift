@@ -103,13 +103,17 @@ public final class ProposalsModel {
     public func canReject(_ p: Proposal) -> Bool { p.state == .pending || p.state == .expired }
 
     /// The proposed command, field by field, exactly as the backend holds it. Nothing is
-    /// interpreted: nested values are shown as written.
+    /// interpreted: nested values are shown as written. A field set to null is a change too: it
+    /// clears that value, and is shown as cleared rather than hidden.
     public func effect(_ p: Proposal) -> [EffectLine] {
         [EffectLine(label: "Command", value: p.type)] + p.payload.keys.sorted().compactMap { key in
-            guard let value = p.payload[key], value != .null else { return nil }
+            guard let value = p.payload[key] else { return nil }
             return EffectLine(label: ProposalsModel.label(key), value: ProposalsModel.text(value))
         }
     }
+
+    /// What a null value means in a proposed command.
+    static let clearedText = "Cleared (set to nothing)"
 
     static func label(_ key: String) -> String {
         var out = ""
@@ -123,7 +127,7 @@ public final class ProposalsModel {
         case .bool(let b): return b ? "Yes" : "No"
         case .integer(let i): return String(i)
         case .number(let n): return n == n.rounded() && abs(n) < 1e15 ? String(Int(n)) : String(n)
-        case .null: return "None"
+        case .null: return clearedText
         case .array(let items): return items.isEmpty ? "None" : items.map(text).joined(separator: ", ")
         case .object(let fields): return fields.keys.sorted().map { "\(label($0)): \(text(fields[$0] ?? .null))" }.joined(separator: "; ")
         }
