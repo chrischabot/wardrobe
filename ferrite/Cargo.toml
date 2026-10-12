@@ -1,0 +1,18 @@
+[package]
+name = "wardrobe"
+version = "0.1.0"
+edition = "2021"
+
+# The ONE dependency a Ferrite application names. Locally this resolves to
+# the vendored mirror SDK that `ferrite new` writes (compile + run against the
+# Forge runtime); on Ferrite Cloud the attested build REDIRECTS it to the
+# platform's vetted crate. `vendor/` is not committed: see README.md.
+[dependencies]
+ferrite-app = { path = "vendor/ferrite-app" }
+
+[workspace]
+exclude = ["vendor"]
+
+[dev-dependencies]
+ferrite-app-test = { path = "vendor/ferrite-app-test" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

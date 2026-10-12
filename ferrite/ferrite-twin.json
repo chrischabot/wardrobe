@@ -1,0 +1,9 @@
+{
+  "bytes": 339231,
+  "cli_version": "0.1.20",
+  "contract": "ferrite-sdk-twin-v1",
+  "digest": "sha256:c8d10a97d9414c84ea6b015d199b18b6e452adcbad108ecd732976e2a3b78296",
+  "files": 12,
+  "lines": 9039,
+  "vendor": "vendor/ferrite-app"
+}
