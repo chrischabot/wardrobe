@@ -44,20 +44,22 @@ export async function runRenderJob(rt: MediaRuntime, job: JobRow): Promise<void>
   if (ids.length > 0) {
     const marks = ids.map(() => "?").join(",");
     // Only this owner's ACTIVE renditions can be drawn; a deleted or foreign rendition renders as missing.
-    const renditions = await all<{ rendition_id: string; object_key: string; content_type: string; sha256: string }>(rt.db, `SELECT rendition_id, object_key, content_type, sha256 FROM media_renditions WHERE user_id = ? AND status = 'active' AND rendition_id IN (${marks})`, userId, ...ids);
+    const renditions = await all<{ rendition_id: string; kind: string; object_key: string; content_type: string; sha256: string }>(rt.db, `SELECT rendition_id, kind, object_key, content_type, sha256 FROM media_renditions WHERE user_id = ? AND status = 'active' AND rendition_id IN (${marks})`, userId, ...ids);
     for (const r of renditions) {
       assertOwnedKey(userId, r.object_key);
       const object = await rt.deps.bucket.get(r.object_key);
       if (!object) continue;
-      // Read into bytes only within the upload size limit; a larger stored file is drawn as a missing image.
-      if (object.size > limitsOf(rt.deps).maxUploadBytes) continue;
+      // Read into bytes only within its limit (an original: the upload limit; a generated file: the generated-file
+      // limit); a larger stored file is drawn as a missing image.
+      const byteLimit = r.kind === "original" ? limitsOf(rt.deps).maxUploadBytes : limitsOf(rt.deps).maxDerivedBytes;
+      if (object.size > byteLimit) continue;
       const bytes = new Uint8Array(await object.arrayBuffer());
       try {
         images.set(r.rendition_id, (await decodeImage(bytes, { maxPixels: limitsOf(rt.deps).maxPixels })).raster);
       } catch {
         if (rt.deps.transcoder) {
           // The converter gets the picture without its metadata (HEIC: metadata items blanked); one that cannot be cleaned is not sent.
-          const clean = withoutLocationForConversion(bytes, limitsOf(rt.deps).maxUploadBytes);
+          const clean = withoutLocationForConversion(bytes, byteLimit);
           const out = clean.ok ? await rt.deps.transcoder.toPng({ bytes: clean.bytes, contentType: r.content_type, maxEdge: 1200 }) : null;
           if (out?.ok) {
             // The converter's output is held to the same pixel limit as any decoded image; an oversized or corrupt one renders as missing.

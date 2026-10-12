@@ -24,6 +24,11 @@ export interface MediaLimits {
   /** Upload authorization lifetime. */
   uploadTtlSeconds: number;
   maxUploadBytes: number;
+  /**
+   * Byte ceiling for files this service generates (catalogue views, cutouts, edited renditions, previews). They
+   * are lossless PNGs bounded by `maxPixels`, so they can legitimately be larger than any accepted upload.
+   */
+  maxDerivedBytes: number;
   /** Decoded pixel ceiling, checked from the header before any pixel is decoded. */
   maxPixels: number;
   minDimension: number;
@@ -44,6 +49,7 @@ export interface MediaLimits {
 export const DEFAULT_MEDIA_LIMITS: MediaLimits = {
   uploadTtlSeconds: 600,
   maxUploadBytes: 20 * 1024 * 1024,
+  maxDerivedBytes: 128 * 1024 * 1024,
   maxPixels: 25_000_000,
   minDimension: 64,
   maxDimension: 8192,

@@ -701,7 +701,7 @@ export async function importMediaData(
     // Content validation, as for an upload: what the bytes ARE, within the same size, dimension and animation
     // limits, and (for the formats read here) a picture that actually decodes.
     const probe = probeImage(bytes);
-    if (!probe || !IMPORTABLE_TYPES.has(probe.contentType) || bytes.length > limits.maxUploadBytes || probe.animated) {
+    if (!probe || !IMPORTABLE_TYPES.has(probe.contentType) || bytes.length > (file.kind === "original" ? limits.maxUploadBytes : limits.maxDerivedBytes) || probe.animated) {
       rejected.push(name);
       continue;
     }
@@ -793,6 +793,10 @@ export async function importMediaData(
   const liveAssetIds = new Set(assets.filter((a) => a.status !== "deleted").map((a) => String(a.asset_id)));
   usable = usable.filter((r) => assetIds.has(String(r.asset_id)));
   const renditionIds = new Set(usable.map((r) => String(r.rendition_id)));
+  // Only files of live renditions in the final plan are written: a verified file whose rendition was dropped (its
+  // source did not come through) or whose image is not imported live would otherwise be stored with no record.
+  const plannedFiles = new Set(usable.filter((r) => r.status !== "deleted" && liveAssetIds.has(String(r.asset_id))).map((r) => String(r.rendition_id)));
+  for (let i = verified.length - 1; i >= 0; i--) if (!plannedFiles.has(verified[i]!.file.renditionId)) verified.splice(i, 1);
   const tombstoned = imported.filter((a) => a.status === "deleted").length;
   const originalsPurged = usable.filter((r) => purgedRenditionIds.has(String(r.rendition_id)) && liveAssetIds.has(String(r.asset_id))).length;
   /** The image a garment shows when the one recorded for it did not come through: its newest remaining real photo, else any remaining image, else none. */
@@ -835,15 +839,42 @@ export async function importMediaData(
       fidelityChecks: data.records.fidelityChecks.filter((f) => ids.has(String(f.asset_id))).map((f) => (f.rendition_id && !renditionIds.has(String(f.rendition_id)) ? { ...f, rendition_id: null } : f)),
     };
   };
-  // Images are packed with every image an image was derived from ahead of it, so a derived image's source
-  // renditions are always committed by the same or an earlier command.
-  const derivedFrom = new Map(assets.map((a) => [String(a.asset_id), a.derived_from_asset_id ? String(a.derived_from_asset_id) : null]));
-  const depth = (id: string): number => {
-    let d = 0;
-    for (let at = derivedFrom.get(id) ?? null; at !== null && derivedFrom.has(at) && d <= assets.length; at = derivedFrom.get(at) ?? null) d++;
-    return d;
+  // Images are packed so that every image holding a rendition another image's rendition is made from comes first:
+  // a rendition's source is always committed by the same or an earlier command, and so is the image an image was
+  // derived from. Dependencies follow both each rendition's own source and the image-level link; images that
+  // depend on each other in a cycle are refused here, before anything is written.
+  const assetOfRendition = new Map(usable.map((r) => [String(r.rendition_id), String(r.asset_id)]));
+  const needs = new Map<string, Set<string>>();
+  const need = (own: string, from: string) => {
+    if (from === own) return;
+    if (!needs.has(own)) needs.set(own, new Set());
+    needs.get(own)!.add(from);
   };
-  const packedAssets = assets.map((a, i) => ({ a, i, d: depth(String(a.asset_id)) })).sort((x, y) => x.d - y.d || x.i - y.i).map((x) => x.a);
+  // An image comes after the image it was derived from (the image-level link kept on its row) ...
+  for (const a of assets) {
+    if (!a.derived_from_asset_id) continue;
+    // An image derived from itself is the smallest cycle: refused, like any other, before anything is written.
+    if (String(a.derived_from_asset_id) === String(a.asset_id)) throw new CommandError("invalid_command", "the package's images are made from each other in a cycle and cannot be imported; nothing was written");
+    if (assetIds.has(String(a.derived_from_asset_id))) need(String(a.asset_id), String(a.derived_from_asset_id));
+  }
+  // ... and after every image holding a rendition one of its renditions is made from.
+  for (const r of usable) {
+    if (r.source_rendition_id === null || r.source_rendition_id === undefined) continue;
+    const from = assetOfRendition.get(String(r.source_rendition_id));
+    if (from) need(String(r.asset_id), from);
+  }
+  const packedAssets: Row[] = [];
+  const placed = new Set<string>();
+  let waiting = assets;
+  while (waiting.length > 0) {
+    const ready = waiting.filter((a) => [...(needs.get(String(a.asset_id)) ?? [])].every((d) => placed.has(d)));
+    if (ready.length === 0) throw new CommandError("invalid_command", "the package's images are made from each other in a cycle and cannot be imported; nothing was written");
+    for (const a of ready) {
+      packedAssets.push(a);
+      placed.add(String(a.asset_id));
+    }
+    waiting = waiting.filter((a) => !placed.has(String(a.asset_id)));
+  }
   pack("assets", "assets", packedAssets.map((a) => (a.derived_from_asset_id && !assetIds.has(String(a.derived_from_asset_id)) ? { ...a, derived_from_asset_id: null } : a)), 25, assetRows);
   pack(
     "garmentMedia",
@@ -886,15 +917,24 @@ export async function importMediaData(
   // images, which an earlier run may have stopped before (its records committed, its clean-up not yet run);
   // the clean-up decides from the committed ledger only, so running it again is always safe.
   const planDigest = (await sha256Hex(JSON.stringify(calls.map((c) => [c.key, c.rows])))).slice(0, 32);
-  /** Marks that this import's records are in and its clean-up listing starts now (see migration 0404). */
-  const markCleanupStarted = () =>
-    prepare(rt.db, stmt("UPDATE media_import_locks SET cleanup_started_at = COALESCE(cleanup_started_at, ?) WHERE user_id = ? AND package_digest = ? AND plan_digest = ?", toInstant(rt.clock()), u, packageDigest, planDigest)).run();
+  /**
+   * Marks that this import's records are in and its clean-up listing starts now (see migration 0404), and says
+   * whether clean-up may run: only when this import has committed records (so the owner is no longer empty and
+   * the lock cannot be taken over) and the lock, read after the marker, still names this package and plan.
+   */
+  const startCleanup = async (): Promise<boolean> => {
+    if (calls.length === 0) return false;
+    await prepare(rt.db, stmt("UPDATE media_import_locks SET cleanup_started_at = COALESCE(cleanup_started_at, ?) WHERE user_id = ? AND package_digest = ? AND plan_digest = ?", toInstant(rt.clock()), u, packageDigest, planDigest)).run();
+    const now = await first<{ package_digest: string; plan_digest: string; cleanup_started_at: string | null }>(rt.db, "SELECT package_digest, plan_digest, cleanup_started_at FROM media_import_locks WHERE user_id = ?", u);
+    return !!now && now.package_digest === packageDigest && now.plan_digest === planDigest && now.cleanup_started_at !== null;
+  };
   if ((existing?.n ?? 0) > 0 && calls.length > 0) {
     const done = await allIn<{ idempotency_key: string }>(rt.db, "SELECT idempotency_key FROM commands WHERE user_id = ? AND idempotency_key IN (:ids)", [u], calls.map((c) => c.key));
     if (done.length === calls.length) {
-      await markCleanupStarted();
-      await removeWithheldFiles(rt, u, withheldAssetIds, { absentIsWithheld: true });
-      await removeAbandonedImportFiles(rt, u, planDigest);
+      if (await startCleanup()) {
+        await removeWithheldFiles(rt, u, withheldAssetIds, { absentIsWithheld: true });
+        await removeAbandonedImportFiles(rt, u, planDigest);
+      }
       throw new CommandError("precondition_failed", "this package has already been imported for this owner; media can only be imported into an owner that has none yet");
     }
   }
@@ -971,10 +1011,13 @@ export async function importMediaData(
   // An image this package withholds must not be left in storage by anyone: a superseded run of another package or
   // plan may have written its file before it noticed it had lost the lock. Once this import's records are
   // committed, such files are removed (see removeWithheldFiles). So is every file a superseded run imported for
-  // an image this import has no record of, whether or not this package mentions that image.
-  await markCleanupStarted();
-  await removeWithheldFiles(rt, u, withheldAssetIds, { absentIsWithheld: true });
-  await removeAbandonedImportFiles(rt, u, planDigest);
+  // an image this import has no record of, whether or not this package mentions that image. An import that wrote
+  // nothing (no commands) runs no clean-up: the owner is still empty and another import may already hold the lock.
+  if (calls.length > 0) {
+    if (!(await startCleanup())) throw new CommandError("precondition_failed", "this import's records are in, but another import now holds the owner's import lock, so its clean-up was not run");
+    await removeWithheldFiles(rt, u, withheldAssetIds, { absentIsWithheld: true });
+    await removeAbandonedImportFiles(rt, u, planDigest);
+  }
   return { imported: { assets: liveAssetIds.size, renditions: usable.filter((r) => r.status !== "deleted").length, files: filesStored }, missing, mismatched, rejected, deletionsApplied: { assetsDeleted: tombstoned, tombstonesImported: tombstones.length, originalsPurged, filesWithheld } };
 }
 

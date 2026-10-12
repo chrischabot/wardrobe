@@ -95,28 +95,40 @@ describe("review of 232af57f: packages never lose a photograph silently, and imp
     }
   });
 
-  it("a derived file whose metadata cannot be checked is refused on import, not stored to be served as it is", async () => {
+  it("a derived file that carries metadata is refused on import, not stored to be served as it is", async () => {
     const h = await createMediaHarness();
     const source = await h.createSyntheticOwner({ displayName: "Synthetic owner (review 232af57f, import source)" });
     const up = await h.upload(source, { garmentId: "shirt-moss", raster: syntheticShirt({ size: 256 }), demo: true });
     await h.settle(source);
     const me = source.principal();
     const data = await exportMediaData(h.rt, me);
-    // A JPEG of headers only: it probes as a JPEG of the right kind (so the type checks pass), but its
-    // metadata cannot be checked because it holds no scan. Only the fail-closed check can refuse it.
+    // A complete, decodable JPEG declared as JPEG everywhere (file name, file entry and rendition record), so every
+    // type, shape, decode and scan check passes; it carries an Exif block, which a file this service generated never
+    // does. Only the metadata check can refuse it. The control: the same JPEG without the block is accepted.
     const plain = encodeJpeg(syntheticShirt({ size: 256 }), 90);
-    const unreadable = concat(plain.subarray(0, plain.findIndex((b, i) => b === 0xff && plain[i + 1] === 0xda)), new Uint8Array([0xff, 0xd9]));
-    expect(probeImage(unreadable)).toMatchObject({ format: "jpeg", contentType: "image/jpeg" });
-    expect(withoutLocation(unreadable)).toMatchObject({ ok: false });
-    const forged = { ...data, assets: data.assets.map((f) => ({ ...f })), records: { ...data.records, renditions: data.records.renditions.map((r) => ({ ...r })) } };
-    const target = forged.assets.find((f) => f.assetId === up.asset!.assetId && f.kind === "catalogue")!;
-    target.sha256 = await sha256(unreadable);
-    target.byteLength = unreadable.length;
-    Object.assign(forged.records.renditions.find((r) => r.rendition_id === target.renditionId)!, { sha256: target.sha256, byte_length: target.byteLength });
+    const tagged = concat(plain.subarray(0, 2), segment(0xe1, concat(ascii("Exif\0\0"), ascii("MM\0*\0\0\0\x08\0\0"), ascii("TEST-DERIVED-EXIF-POSITION"))), plain.subarray(2));
+    expect(probeImage(tagged)).toMatchObject({ format: "jpeg", contentType: "image/jpeg" });
+    expect(decodeJpeg(tagged).width).toBe(256);
+    expect(withoutLocation(tagged)).toMatchObject({ ok: true, changed: true });
+    expect(withoutLocation(plain)).toMatchObject({ ok: true, changed: false });
+    const forge = async (bytes: Uint8Array) => {
+      const forged = { ...data, assets: data.assets.map((f) => ({ ...f })), records: { ...data.records, renditions: data.records.renditions.map((r) => ({ ...r })) } };
+      const target = forged.assets.find((f) => f.assetId === up.asset!.assetId && f.kind === "catalogue")!;
+      const sha = await sha256(bytes);
+      Object.assign(target, { sha256: sha, byteLength: bytes.length, contentType: "image/jpeg", file: target.file.replace(/-[0-9a-f]{16}\.[a-z0-9]+$/, `-${sha.slice(0, 16)}.jpg`) });
+      Object.assign(forged.records.renditions.find((r) => r.rendition_id === target.renditionId)!, { sha256: sha, byte_length: bytes.length, content_type: "image/jpeg", file: target.file });
+      return { forged, target };
+    };
+    const read = (target: { file: string }, bytes: Uint8Array) => async (file: string) => (file === target.file ? bytes : readExportFile(h.rt, me, file));
+    const bad = await forge(tagged);
     const into = await h.createSyntheticOwner({ displayName: "Synthetic owner (review 232af57f, import target)" });
-    const result = await importMediaData(h.rt, into.principal({ channel: "import", actor: "system", scopes: ["read", "write", "admin"] }), forged, async (file) => (file === target.file ? unreadable : readExportFile(h.rt, me, file)));
-    expect(result.rejected).toEqual([target.file]);
+    const result = await importMediaData(h.rt, into.principal({ channel: "import", actor: "system", scopes: ["read", "write", "admin"] }), bad.forged, read(bad.target, tagged));
+    expect(result.rejected).toEqual([bad.target.file]);
     expect(result.mismatched).toEqual([]);
+    const good = await forge(plain);
+    const control = await h.createSyntheticOwner({ displayName: "Synthetic owner (review 232af57f, import control)" });
+    const accepted = await importMediaData(h.rt, control.principal({ channel: "import", actor: "system", scopes: ["read", "write", "admin"] }), good.forged, read(good.target, plain));
+    expect([accepted.rejected, accepted.mismatched, accepted.missing]).toEqual([[], [], []]);
   });
 
   it("a thumbnail cached under the old key is never served, a fresh one is made without metadata, and purging clears both keys", async () => {
