@@ -84,11 +84,12 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `GET /v1/connections`, `POST /v1/connections/{grantId}/disconnect` (owner only) | Settings › Connected assistants: the OAuth grants, and disconnecting one, effective on its next request |
 | `POST /mcp` (OAuth) | the MCP server of `apps/worker/src/mcp`, see below |
 | `GET /v1/meta` | `MetaResponse`: API and contract versions, mounted modules (media is reported as not mounted), server time, the MCP endpoint and its protocol versions. Without a valid `WARDROBE_PUBLIC_ORIGIN` it is refused by that secret's name |
-| `GET /v1/command-types` | `CommandTypeList`, as `describeCommandTypes`: the nine command types this port executes, each with the class, required scope and payload JSON Schema the TypeScript registry gives it (`src/seed/command-types.json`, written by `scripts/build-command-types.mjs`), narrowed to this port: only the payload fields its handler accepts, with `additionalProperties: false` (so `board.publish` has no `requestFingerprint`), only the `owner_tap` and `owner_statement` authorizations (a publication by schedule is not ported), and `consequential` from the port's own connected-assistant rule, under which none of the nine waits for the owner. A field whose other values the port always refuses is published as the value it accepts: `wear.record` `tripId` null only; `board.publish` `scope` `"home"`, `brief` the default day brief, `weatherSnapshotId` and `calendarSnapshotId` null only; `board.swap_slot` `weatherSnapshotId` is left out (no value is accepted). Size bounds (list and text lengths) are not restated; the command names them when it refuses |
+| `GET /v1/command-types` | `CommandTypeList`, as `describeCommandTypes`: the eleven command types this port executes, each with the class, required scope and payload JSON Schema the TypeScript registry gives it (`src/seed/command-types.json`, written by `scripts/build-command-types.mjs`), narrowed to this port: only the payload fields its handler accepts, with `additionalProperties: false` (so `board.publish` has no `requestFingerprint`), only the `owner_tap` and `owner_statement` authorizations (a publication by schedule is not ported), and `consequential` from the port's own connected-assistant rule, under which none of the eleven waits for the owner. A field whose other values the port always refuses is published as the value it accepts: `wear.record` `tripId` null only; `board.publish` `scope` `"home"`, `brief` the default day brief, `weatherSnapshotId` and `calendarSnapshotId` null only; `board.swap_slot` `weatherSnapshotId` is left out (no value is accepted). Size bounds (list and text lengths) are not restated; the command names them when it refuses |
 | `POST /v1/commands/batch` | the phone's offline replay (`CommandBatchResponse`): 1 to 50 envelopes in order, each run as `POST /v1/commands` runs it, independent of the others, with `retryable` from the error code as `isRetryable` decides it |
 | `POST /v1/recommendations` | `RecommendResponse`. `preview` (default): the recommender's validated options, nothing published. `board`: those options published as the day's home board through `board.publish` under the key `board-compose:{clientRequestId}`, answered with the board. A retransmission answers from the saved run and the publication's receipt. `date` is required (no owner timezone); `lockedGarmentIds` and `occasionOnly: true` are refused as not ported |
 | `POST /v1/boards/{id}/swap` | `SwapSlotResponse`: `board.swap_slot` under the key `board-swap:{clientRequestId}`, `expectedRevision` sent as the board's expected version, answered with the receipt and the board as it now stands. No fresher forecast is fetched first (weather is not ported) |
 | `GET /v1/laundry` | `LaundryStateResponse` as `getLaundryState`: the hamper by care channel (service, hand wash), sorted by name, and the newest 12 laundry bags not withdrawn, newest first. `returnBasis` is null; `exceptions` and `cycles` are empty (laundry exceptions and weekly cycles are not ported) |
+| `GET /v1/feedback[?garmentId=]` | `FeedbackList` as `listComfortFeedback`: the comfort notes still active, newest first, or those naming one garment, see "Comfort feedback" |
 | `GET /v1/studio[?mode=for_today\|explore][&date=]` | `StudioResponse`: Studio's selectors and opening outfit for the day (the owner's day now when none is named), see "Studio". `combinations` and `dayPlans` are always empty (the Studio commands are not ported) |
 | `POST /v1/studio/validate` | `StudioValidation` for a `StudioOutfitRequest`: the daily validator's verdict on the outfit for the day, with Studio's shopping-candidate rule, see "Studio" |
 | `POST /v1/studio/compose` | `Composition`: the deterministic layout of the outfit's garments (`buildManifest`) and its hash, with every garment a labelled text tile (no media) and the preview `none` |
@@ -101,7 +102,7 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` | the authorization server of the MCP endpoint and of the owner's app, see below |
 
 Commands: `care.mark_dirty`, `care.washed`, `board.publish`, `board.select`,
-`board.swap_slot`, `laundry.collect`, `laundry.return`, `wear.record` and `command.undo`. Each applies at once and
+`board.swap_slot`, `feedback.record`, `feedback.retract`, `laundry.collect`, `laundry.return`, `wear.record` and `command.undo`. Each applies at once and
 answers with the receipt of `CommandReceipt` (contract 1.1.0): summary built
 from the ledger, affected entity versions, repairs, result, undo
 availability, wardrobe revision, actor and channel. The same idempotency key
@@ -366,6 +367,29 @@ collected or washed (as `collectableQuantities`), and neither is a further
 unit recorded for those days; with no owner timezone
 ported, that day is the UTC date of the report. The ledger keeps at most 60
 batches; the oldest returned or withdrawn ones make room.
+
+## Comfort feedback
+
+`feedback.record` keeps one unsolicited comfort observation ("too warm on the
+train", "these shoes hurt after an hour"), as `commands/feedback.ts` does: the
+owner's words verbatim, its kind, the garments it names (each must exist; an
+unknown one refuses the whole note and nothing is written), and only the
+context actually known (wearing date, activity, layer, conditions, scope;
+missing context stays null). It applies at once with a receipt and an undo,
+from the app or relayed by a connected assistant (2026-10-05 contract). The
+receipt names the kind and the garments, never the owner's words: "Noted: NB
+990v4 — grey was painful (walking to the station). Applied to that context
+only". A note already recorded under the `feedbackId` the payload names is a
+noop, whatever the new payload says; nothing in it is looked up. A note with
+no `feedbackId` gets `cfb_<command>`, or the next free `cfb_<command>_<n>`
+when a caller already named a note that, so it never overwrites one.
+
+Undo withdraws the note. `feedback.retract` withdraws one for good (it has no
+undo; the owner records the observation again instead), and a second
+withdrawal is a noop. `GET /v1/feedback` lists the notes still active, newest
+first, or those naming one garment (`?garmentId=`). `tests/feedback.rs` covers
+the owner's and an assistant's notes, the repeat, the undo, the withdrawal,
+the bounds and a tampered record.
 
 ## Wear records
 
@@ -857,9 +881,11 @@ milestone, and outside the lines of the milestone in hand:
     and punctuated candidate IDs against the TypeScript composer). Ferrite apps
     have no collation tables, so in a shopping-candidate ID any other character
     sorts by code point after every printable-ASCII character (`localeCompare`
-    would place, say, `é` beside `e`). The order is still total, so a request's
-    slot order never changes the result, but such an ID can be laid out and
-    hashed differently from the TypeScript composer.
+    would place, say, `é` beside `e`). The order is still total, so the order
+    of slots with distinct same-role IDs never changes the result (two
+    same-role candidates sharing one ID compare equal and keep the request's
+    order, as JavaScript's stable sort keeps them), but such an ID can be laid
+    out and hashed differently from the TypeScript composer.
   - A request carries at most 24 slots (the contract sets no maximum): the
     validator compares slots pairwise, and the bound keeps one request's work
     small. Ten roles with one garment each fit well inside it.
@@ -868,6 +894,18 @@ milestone, and outside the lines of the milestone in hand:
   - No weather, Calendar or brief is read.
   - The neckwear flourish is not counted in the neutral limit, so a tie can
     sink an otherwise valid candidate.
+- **Comfort feedback.**
+  - A painful note does not yet repair future outfits or steer the
+    recommender (repair.ts is not ported), and notes are not indexed for
+    search.
+  - At most 100 notes are active at once (a further note is refused until
+    one is withdrawn), a note names at most 50 garments, its `conditions` are
+    at most 4096 bytes of JSON and a withdrawal's `reason` at most 2000
+    characters; the contract sets none of these bounds. The ledger indexes the
+    active notes, and a note is its own record, which keeps both within the
+    store's record size.
+  - A withdrawn note's record stays, marked `retracted`; forgetting
+    (`conversation.forget_source`) is not ported.
 
 ## Ferrite limits and what they mean for Wardrobe
 

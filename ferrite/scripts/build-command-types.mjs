@@ -1,7 +1,8 @@
 // Writes src/seed/command-types.json: how the TypeScript service describes each command type this port
 // executes (`describeCommandTypes` in apps/worker/src/routes/core.ts): its class, required scope,
 // allowed authorizations and payload JSON Schema, from the same registry the Worker composes
-// (packages/domain's foundation registry plus packages/daily's board commands). The Rust app embeds
+// (packages/domain's foundation registry plus packages/daily's board and trip commands and
+// packages/assistant's commands). The Rust app embeds
 // the file and narrows it to what the port's own handlers accept (src/command_types.rs), so the
 // schemas are never retyped in Rust.
 //
@@ -20,14 +21,16 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, "../..");
 const { createFoundationRegistry } = await import(path.join(repo, "packages/domain/src/index.ts"));
 const { registerDaily } = await import(path.join(repo, "packages/daily/src/index.ts"));
+const { registerAssistant } = await import(path.join(repo, "packages/assistant/src/commands/index.ts"));
 // The zod the command schemas were built with, as the Worker resolves it.
 const { z } = await import(createRequire(path.join(repo, "apps/worker/package.json")).resolve("zod"));
 
 // `ledger::COMMAND_TYPES` in src/ledger.rs; tests/command_types.rs holds the two lists equal.
-const PORTED = ["care.mark_dirty", "care.washed", "command.undo", "board.publish", "board.select", "board.swap_slot", "laundry.collect", "laundry.return", "wear.record"];
+const PORTED = ["care.mark_dirty", "care.washed", "command.undo", "board.publish", "board.select", "board.swap_slot", "feedback.record", "feedback.retract", "laundry.collect", "laundry.return", "wear.record"];
 
 const registry = createFoundationRegistry();
 registerDaily(registry);
+registerAssistant(registry);
 const types = PORTED.slice()
   .sort()
   .map((type) => {
@@ -39,7 +42,7 @@ const types = PORTED.slice()
 
 const text =
   "{\n" +
-  `  "generatedBy": ${JSON.stringify("ferrite/scripts/build-command-types.mjs from the Worker's command registry (packages/domain, packages/daily)")},\n` +
+  `  "generatedBy": ${JSON.stringify("ferrite/scripts/build-command-types.mjs from the Worker's command registry (packages/domain, packages/daily, packages/assistant)")},\n` +
   '  "types": [\n' +
   types.map((t) => `    ${JSON.stringify(t)}`).join(",\n") +
   "\n  ]\n}\n";

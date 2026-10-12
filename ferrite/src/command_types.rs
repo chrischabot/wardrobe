@@ -19,7 +19,7 @@ use ferrite_app::serde_json::{self, json, Map, Value};
 
 use crate::api::{self, CONTRACT_VERSION};
 use crate::ledger::{self, CmdError};
-use crate::{board, laundry, wear};
+use crate::{board, feedback, laundry, wear};
 
 const GENERATED: &str = include_str!("seed/command-types.json");
 
@@ -32,6 +32,8 @@ pub fn accepted_fields(kind: &str) -> Option<&'static [&'static str]> {
         "board.publish" => board::PUBLISH_FIELDS,
         "board.select" => board::SELECT_FIELDS,
         "board.swap_slot" => board::SWAP_FIELDS,
+        "feedback.record" => feedback::RECORD_FIELDS,
+        "feedback.retract" => feedback::RETRACT_FIELDS,
         "laundry.collect" => laundry::COLLECT_FIELDS,
         "laundry.return" => laundry::RETURN_FIELDS,
         "wear.record" => wear::RECORD_FIELDS,

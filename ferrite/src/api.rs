@@ -6,6 +6,7 @@
 //!   `ledger`     the owner's ledger (`crate::ledger::Ledger`), the commit guard;
 //!   `b/<id>`     a day board (`crate::board::Board`), written with the ledger;
 //!   `c/<id>`     a command: its stored receipt, payload hash and undo data;
+//!   `fb/<id>`    a comfort note (`crate::feedback::Note`), written with the ledger;
 //!   `i/<sha256>` an idempotency key → command ID and request hash.
 //! Every command rewrites `ledger`, and the receipt and marker are committed
 //! in the same guarded write, so two requests that read the same ledger can
@@ -19,6 +20,7 @@ use ferrite_app::serde_json::{self, json, Value};
 use ferrite_app::IngressRequest;
 
 use crate::board::{self, Board};
+use crate::feedback::{self, Note};
 use crate::laundry;
 use crate::wear;
 use crate::canonical::{canonical, keys_are_plain, numbers_are_whole, whole, MAX_SAFE};
@@ -322,6 +324,7 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
         ("POST", "/v1/sessions/revoke") => sign_out_everywhere(store, principal, now_ms).await,
         ("POST", "/v1/identities/link" | "/v1/identities/unlink" | "/v1/recovery-kit" | "/v1/account/delete") => Err(identity_unavailable()),
         ("GET", "/v1/laundry") => crate::app_routes::laundry(store, now_ms).await,
+        ("GET", "/v1/feedback") => read_feedback(store, query.iter().find(|(k, _)| k == "garmentId").map(|(_, v)| v.as_str())).await,
         ("GET", "/v1/studio") => {
             let q = |name: &str| query.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
             crate::studio::read(store, now_ms, q("mode"), q("date")).await
@@ -421,6 +424,46 @@ async fn indexed_board<S: Store>(store: &mut S, r: Option<&BoardRef>) -> Result<
         Some(b) => Ok(Some(b)),
         None => Err(CmdError::with("internal", "the day's board is listed but its record is missing; nothing was changed", json!({"retryable": false, "boardId": r.board_id}))),
     }
+}
+
+/// Read one comfort note. Absent is `Ok(None)`; a record that is not a note this code wrote is an error.
+async fn load_note<S: Store>(store: &mut S, id: &str) -> Result<Option<Note>, CmdError> {
+    if id.is_empty() || id.chars().count() > 128 {
+        return Ok(None);
+    }
+    let bytes = store.get(&feedback::key(id)).await.map_err(|_| internal("the comfort note could not be read just now; try again"))?;
+    match bytes {
+        None => Ok(None),
+        Some(b) => serde_json::from_slice::<Value>(&b)
+            .ok()
+            .and_then(|v| Note::from_json(&v, id))
+            .map(Some)
+            .ok_or_else(|| CmdError::with("internal", "the stored comfort note is unreadable; nothing was changed", json!({"retryable": false, "feedbackId": id}))),
+    }
+}
+
+/// A generated note ID that no stored note (active or withdrawn) and no note in this commit holds.
+async fn free_feedback_id<S: Store>(store: &mut S, ctx: &Ctx<'_>, next: &Ledger) -> Result<String, CmdError> {
+    for attempt in 0..feedback::ID_ATTEMPTS {
+        let id = feedback::new_id(ctx, attempt);
+        if !next.feedback.iter().any(|f| *f == id) && load_note(store, &id).await?.is_none() {
+            return Ok(id);
+        }
+    }
+    Err(CmdError::with("conflict", "no free ID for the comfort note; send a feedbackId of your own. Nothing was written", json!({"reason": "feedback_id_taken"})))
+}
+
+/// `GET /v1/feedback`: the active comfort notes, newest first, optionally those naming one garment.
+pub async fn read_feedback<S: Store>(store: &mut S, garment: Option<&str>) -> Result<Value, CmdError> {
+    let (_, l) = read_ledger(store).await?;
+    let mut notes = Vec::with_capacity(l.feedback.len());
+    for id in &l.feedback {
+        match load_note(store, id).await? {
+            Some(n) => notes.push(n),
+            None => return Err(CmdError::with("internal", "a comfort note is listed but its record is missing", json!({"retryable": false, "feedbackId": id}))),
+        }
+    }
+    Ok(feedback::listing(notes, garment))
 }
 
 fn idempotency_key(key: &str) -> Vec<u8> {
@@ -581,6 +624,27 @@ pub fn validate_record(bytes: &[u8], command_id: &str) -> Option<Record> {
                 return None;
             }
         }
+        (Value::Null, "feedback.record") => {
+            // Committed: the note, its garments, whether it reports pain and its scope; a repeat: the ID only.
+            let id = result.get("feedbackId").and_then(Value::as_str).map_or(false, |s| !s.is_empty());
+            let committed = result.len() == 4
+                && result.get("garmentIds").and_then(Value::as_array).map_or(false, |a| a.iter().all(|x| x.as_str().map_or(false, |s| !s.is_empty())))
+                && result.get("pain").map_or(false, Value::is_boolean)
+                && matches!(result.get("scope"), Some(Value::Null) | Some(Value::String(_)));
+            let consistent = match rc["outcome"].as_str() {
+                Some("committed") => committed,
+                Some("noop") => result.len() == 1,
+                _ => false,
+            };
+            if !id || !consistent {
+                return None;
+            }
+        }
+        (Value::Null, "feedback.retract") => {
+            if result.len() != 1 || !result.get("feedbackId").and_then(Value::as_str).map_or(false, |s| !s.is_empty()) {
+                return None;
+            }
+        }
         _ => return None,
     }
     // Exactly one of: undo data (offered by the receipt), or the reason the
@@ -599,9 +663,13 @@ pub fn validate_record(bytes: &[u8], command_id: &str) -> Option<Record> {
         ("laundry.collect" | "laundry.return" | "care.washed", Ok(_)) if rc["outcome"] == "committed" => {}
         ("laundry.collect" | "laundry.return" | "care.washed", Err(_)) if rc["outcome"] == "noop" => {}
         ("wear.record", Ok(_)) if rc["outcome"] == "committed" || rc["outcome"] == "merged" => {}
+        // A comfort note can be withdrawn by undo; a repeat changed nothing, and a withdrawal is not undone.
+        ("feedback.record", Ok(_)) if rc["outcome"] == "committed" => {}
+        ("feedback.record", Err(_)) if rc["outcome"] == "noop" => {}
+        ("feedback.retract", Err(_)) => {}
         _ => return None,
     }
-    if rc["outcome"] == "noop" && !kind.starts_with("laundry.") && kind != "care.washed" {
+    if rc["outcome"] == "noop" && !kind.starts_with("laundry.") && !kind.starts_with("feedback.") && kind != "care.washed" {
         return None;
     }
     if rc["outcome"] == "merged" && kind != "wear.record" {
@@ -682,6 +750,7 @@ fn undo_data_ok(kind: &str, data: &Value) -> bool {
     let event_ids = |d: &ferrite_app::serde_json::Map<String, Value>| d.get("stockEventIds").and_then(Value::as_array).map_or(false, |ids| !ids.is_empty() && ids.iter().all(|x| x.as_str().map_or(false, |s| !s.is_empty())));
     match kind {
         "care.mark_dirty" | "care.washed" => keys(&["stockEventIds"]) && event_ids(d),
+        "feedback.record" => keys(&["feedbackId"]) && id("feedbackId"),
         "wear.record" => {
             // Each list names each ID once: undo matches them against the journal as sets.
             let list = |k: &str, nonempty: bool| {
@@ -1022,7 +1091,8 @@ async fn expected_boards<S: Store>(store: &mut S, env: &Envelope) -> Result<Vec<
 
 /// The owner's observations: `expectedVersions` is not checked for them (they are rebased), and the
 /// boards it names are not even read, so an unrelated board can never refuse a wash or wear report.
-const OBSERVATIONS: &[&str] = &["care.mark_dirty", "care.washed", "laundry.collect", "laundry.return", "wear.record"];
+/// A comfort note is an observation too (`class: "observation"` in feedback.ts).
+const OBSERVATIONS: &[&str] = &["care.mark_dirty", "care.washed", "feedback.record", "feedback.retract", "laundry.collect", "laundry.return", "wear.record"];
 
 /// Client-stated versions, checked for every command but an observation
 /// (a wash report, a laundry pickup or return is rebased instead, section 5 of the specification).
@@ -1055,14 +1125,20 @@ struct Planned {
     plan: Plan,
     board: Option<board::Outcome>,
     original: Option<Record>,
+    /// Further records the command writes in the same commit (a comfort note).
+    docs: Vec<(Vec<u8>, Value)>,
 }
 
 impl Planned {
     fn stock(plan: Plan) -> Planned {
-        Planned { plan, board: None, original: None }
+        Planned { plan, board: None, original: None, docs: Vec::new() }
     }
     fn board(out: board::Outcome) -> Planned {
-        Planned { plan: out.plan.clone(), board: Some(out), original: None }
+        Planned { plan: out.plan.clone(), board: Some(out), original: None, docs: Vec::new() }
+    }
+    fn note((plan, note): (Plan, Option<Note>)) -> Planned {
+        let docs = note.map(|n| vec![(feedback::key(&n.feedback_id), n.to_json())]).unwrap_or_default();
+        Planned { plan, board: None, original: None, docs }
     }
 }
 
@@ -1087,6 +1163,21 @@ async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envel
         ("laundry.collect", _) => Ok(Planned::stock(laundry::collect(ctx, next, &env.payload)?)),
         ("laundry.return", _) => Ok(Planned::stock(laundry::return_batch(ctx, next, &env.payload)?)),
         ("wear.record", _) => Ok(Planned::stock(wear::record(ctx, next, &env.payload, principal.channel, env.occurred_at.is_some())?)),
+        ("feedback.record", _) => {
+            let input = feedback::parse_record(&env.payload)?;
+            // The final ID is settled before anything is read, so a generated ID never lands on a
+            // note a caller already recorded under that name.
+            let (id, existing) = match &input.feedback_id {
+                Some(id) => (id.clone(), load_note(store, id).await?),
+                None => (free_feedback_id(store, ctx, next).await?, None),
+            };
+            Ok(Planned::note(feedback::record(ctx, next, input, id, existing.as_ref())?))
+        }
+        ("feedback.retract", _) => {
+            let id = feedback::parse_retract(&env.payload)?;
+            let existing = load_note(store, &id).await?;
+            Ok(Planned::note(feedback::retract(next, &id, existing.as_ref())?))
+        }
         ("board.publish", _) => {
             let input = board::publish_input(&env.payload)?;
             let existing = indexed_board(store, current.board_for(&input.scope, &input.local_date)).await?;
@@ -1119,6 +1210,10 @@ async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envel
                 "laundry.collect" => Planned::stock(laundry::undo_collect(ctx, next, &record.command, &data, target)?),
                 "laundry.return" => Planned::stock(laundry::undo_return(ctx, next, &record.command, &data, target)?),
                 "wear.record" => Planned::stock(wear::undo_record(ctx, next, &record.command, &data, target)?),
+                "feedback.record" => {
+                    let existing = load_note(store, feedback::undo_target_note(&data).unwrap_or_default()).await?;
+                    Planned::note(feedback::undo_record(next, existing.as_ref(), &summary, target)?)
+                }
                 kind @ ("board.select" | "board.swap_slot") => {
                     let b = load_board(store, data["boardId"].as_str().unwrap_or_default()).await?;
                     Planned::board(if kind == "board.select" {
@@ -1280,7 +1375,7 @@ pub async fn execute<S: Store>(store: &mut S, principal: Principal, now_ms: u64,
                 };
             }
         };
-        let Planned { plan, board: board_out, original: original_record } = planned;
+        let Planned { plan, board: board_out, original: original_record, docs } = planned;
         if let Some(out) = &board_out {
             if out.created {
                 // Index entries for long-past days are dropped (their records stay); the index stays bounded.
@@ -1328,6 +1423,9 @@ pub async fn execute<S: Store>(store: &mut S, principal: Principal, now_ms: u64,
         ];
         if let Some(out) = &board_out {
             entries.push((board_key(&out.board.board_id), out.board.to_json().to_string().into_bytes()));
+        }
+        for (key, doc) in &docs {
+            entries.push((key.clone(), doc.to_string().into_bytes()));
         }
         if let (Some(target), Some(original)) = (undo_target.as_deref(), original_record) {
             let mut original = original.value;

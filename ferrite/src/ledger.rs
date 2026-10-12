@@ -31,7 +31,7 @@ pub const MAX_QUANTITY: u64 = 999;
 pub const RECENT_LIMIT: usize = 200;
 
 /// The command types this port executes. Anything else is `unknown_command`.
-pub const COMMAND_TYPES: &[&str] = &["care.mark_dirty", "care.washed", "command.undo", "board.publish", "board.select", "board.swap_slot", "laundry.collect", "laundry.return", "wear.record"];
+pub const COMMAND_TYPES: &[&str] = &["care.mark_dirty", "care.washed", "command.undo", "board.publish", "board.select", "board.swap_slot", "feedback.record", "feedback.retract", "laundry.collect", "laundry.return", "wear.record"];
 /// Laundry batches kept in the ledger; the oldest closed ones make room.
 pub const MAX_BATCHES: usize = 60;
 
@@ -160,6 +160,8 @@ pub struct Ledger {
     pub wears: Vec<Wear>,
     /// Every wear report, in the order recorded.
     pub observations: Vec<Observation>,
+    /// The comfort notes still active (`crate::feedback`), oldest first; each is stored under `fb/<id>`.
+    pub feedback: Vec<String>,
 }
 
 /// Where a day's board is stored: one entry per (scope, day).
@@ -203,6 +205,7 @@ impl Ledger {
                 "id": o.id, "garmentId": o.garment_id, "wearingDate": o.wearing_date, "occurredAtMs": o.occurred_at_ms, "reportedAtMs": o.reported_at_ms,
                 "timezone": o.timezone, "channel": o.channel, "segment": o.segment, "note": o.note, "commandId": o.command_id, "retractedBy": o.retracted_by, "additionalUnits": o.additional_units,
             })).collect::<Vec<_>>(),
+            "feedback": self.feedback,
         })
     }
 
@@ -341,7 +344,18 @@ impl Ledger {
                 });
             }
         }
-        Some(Ledger { revision: u(v, "revision")?, next_seq: u(v, "nextSeq")?, events, versions, recent, boards, batches, wears, observations })
+        // Ledgers written before comfort feedback was ported have no active notes.
+        let mut feedback: Vec<String> = Vec::new();
+        if let Some(list) = v.get("feedback") {
+            for id in list.as_array()? {
+                let id = id.as_str().filter(|s| !s.is_empty())?.to_string();
+                if feedback.contains(&id) {
+                    return None;
+                }
+                feedback.push(id);
+            }
+        }
+        Some(Ledger { revision: u(v, "revision")?, next_seq: u(v, "nextSeq")?, events, versions, recent, boards, batches, wears, observations, feedback })
     }
 
     /// The counted wear of a garment on a date, if there is one (active or retracted).

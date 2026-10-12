@@ -79,7 +79,7 @@ async fn the_list_names_exactly_the_ported_commands_as_the_typescript_registry_d
     }
     // The owner's reports are observations; a choice, a swap and an undo are edits (handlers in
     // packages/domain and packages/daily).
-    for kind in ["care.mark_dirty", "care.washed", "laundry.collect", "laundry.return", "wear.record"] {
+    for kind in ["care.mark_dirty", "care.washed", "feedback.record", "feedback.retract", "laundry.collect", "laundry.return", "wear.record"] {
         assert_eq!(type_of(&list, kind)["class"], "observation", "{kind}");
     }
     for kind in ["board.select", "board.swap_slot", "command.undo"] {
@@ -313,6 +313,16 @@ async fn payloads_the_published_schemas_accept_run_and_the_values_they_refuse_ar
     run.refused("care.washed", with(&washed, "notPublished", json!(true)), "notPublished: not a field of this command").await;
     run.accepted("care.washed", washed).await;
     run.accepted("care.washed", json!({"allOfChannel": "handwash"})).await;
+
+    let note = json!({
+        "feedbackId": "cfb_command_types", "text": "Too warm on the train", "kind": "too_warm", "garmentIds": [OXFORD_PINK],
+        "wearingDate": "2026-09-09", "activity": "commute", "layer": "top", "conditions": {"heating": true}, "scope": "commute by train", "sourceRef": null,
+    });
+    run.refused("feedback.record", with(&note, "kind", json!("itchy")), "kind: expected one of").await;
+    run.accepted("feedback.record", note).await;
+    let retract = json!({"feedbackId": "cfb_command_types", "reason": "It was the heating"});
+    run.refused("feedback.retract", with(&retract, "notPublished", json!(true)), "notPublished: not a field of this command").await;
+    run.accepted("feedback.retract", retract).await;
 
     // Together the accepted payloads used every published field of every type.
     for t in run.list["types"].as_array().unwrap() {
