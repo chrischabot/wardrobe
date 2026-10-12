@@ -198,11 +198,13 @@ provider and consent page:
   record slots named by the first four hex digits of their IDs, and a new
   registration takes over a slot its index no longer names, because the APE
   binding has no delete. Grants have no index: the 100 slot records are the
-  grant store. A new grant takes the first slot that is empty or holds a
-  grant that can no longer produce tokens, by compare-and-swap on that slot
-  record's exact bytes, so an exchange, refresh or disconnect that commits
-  in between makes the overwrite fail and the next attempt re-reads the
-  slots. An ID whose slot was reused is not found.
+  grant store. Every write to a slot commits guarded on one grant-store
+  version record (`o/grants/epoch`) and advances it. A new grant takes the
+  first slot that is empty or holds a grant that can no longer produce
+  tokens; an exchange, refresh, disconnect or another delivery of the same
+  consent that commits in between makes the write fail, and the next
+  attempt re-reads the slots (and finds that consent's grant if it was
+  created). An ID whose slot was reused is not found.
 
 The app needs its public origin (`WARDROBE_PUBLIC_ORIGIN`) for the metadata
 and challenges, because the gateway forwards no `Host` header. Without it,

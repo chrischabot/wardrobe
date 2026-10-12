@@ -15,7 +15,7 @@ use std::io;
 use ferrite_app::serde_json::{self, json, Value};
 use ferrite_app::IngressRequest;
 use wardrobe::api::{self, Store, Tokens};
-use wardrobe::oauth::{b64url, pct_encode, ACCESS_TTL_MS, MAX_CLIENTS, MAX_GRANTS, MAX_SUCCESSORS, PREVIOUS_RETRY_MS, CONSENT_FORM_TTL_MS, CLOCK_SKEW_MS, consent_form_mac, REFRESH_IDLE_MS};
+use wardrobe::oauth::{b64url, pct_encode, ACCESS_TTL_MS, MAX_CLIENTS, MAX_GRANTS, MAX_SUCCESSORS, PREVIOUS_RETRY_MS, CONSENT_FORM_TTL_MS, CLOCK_SKEW_MS, GRANTS_EPOCH_KEY, consent_form_mac, REFRESH_IDLE_MS};
 use wardrobe::sha256::digest;
 
 const ORIGIN: &str = "http://127.0.0.1:8787";
@@ -28,8 +28,9 @@ const T0: u64 = 1_789_000_000_000;
 struct MemStore {
     data: BTreeMap<Vec<u8>, Vec<u8>>,
     /// Applied just before the first commit guarded on this key, as if
-    /// another request committed between this request's read and write.
-    interleave: Option<(Vec<u8>, Vec<u8>)>,
+    /// another request committed these records between this request's read
+    /// and write.
+    interleave: Option<(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>)>,
 }
 
 impl Store for MemStore {
@@ -48,9 +49,13 @@ impl MemStore {
     fn same_records(&self, other: &MemStore) -> bool {
         self.data == other.data
     }
+    /// The records `self` holds that `before` does not hold identically.
+    fn changes_since(&self, before: &MemStore) -> Vec<(Vec<u8>, Vec<u8>)> {
+        self.data.iter().filter(|(k, v)| before.data.get(*k) != Some(*v)).map(|(k, v)| (k.clone(), v.clone())).collect()
+    }
     fn apply(&mut self, guard: &[u8], expected: Option<&[u8]>, entries: &[(&[u8], &[u8])]) -> Result<(), Option<Vec<u8>>> {
-        if let Some((k, v)) = self.interleave.take_if(|(k, _)| k.as_slice() == guard) {
-            self.data.insert(k, v);
+        if let Some((_, records)) = self.interleave.take_if(|(k, _)| k.as_slice() == guard) {
+            self.data.extend(records);
         }
         let current = self.data.get(guard).cloned();
         if current.as_deref() != expected {
@@ -487,7 +492,7 @@ async fn pruning_and_refresh_at_the_idle_boundary_never_lose_the_refreshed_grant
     // One millisecond later a consent prunes: by its clock slot 0 is idle
     // too long, so it reads slot 0 as free. The refresh commits between that
     // read and the compare-and-swap.
-    store.interleave = Some((b"o/grant/0".to_vec(), committed.clone()));
+    store.interleave = Some((GRANTS_EPOCH_KEY.to_vec(), other.changes_since(&store)));
     let at_prune = at_refresh + 1;
     let ch = challenge();
     let mut params = authorize_params(&client, &ch, "wardrobe.read");
@@ -505,6 +510,35 @@ async fn pruning_and_refresh_at_the_idle_boundary_never_lose_the_refreshed_grant
     let list = send(&mut store, at_prune + 1, "GET", "/v1/connections", Some(&owner), vec![]).await;
     let active = list.json["connections"].as_array().unwrap().iter().filter(|c| c["status"] == "active").count();
     assert_eq!(active, 2, "the refreshed grant and the new one");
+}
+
+#[tokio::test]
+async fn concurrent_deliveries_of_one_consent_create_one_grant() {
+    let mut store = MemStore::default();
+    let owner = format!("Bearer {OWNER}");
+    // Slot 0: an older live connection.
+    let (client, _) = connect(&mut store, false).await;
+    let list = send(&mut store, T0, "GET", "/v1/connections", Some(&owner), vec![]).await;
+    let old = list.json["connections"][0]["grantId"].as_str().unwrap().to_string();
+    let t = T0 + CONSENT_FORM_TTL_MS + CLOCK_SKEW_MS + 10;
+    let ch = challenge();
+    let mut params = authorize_params(&client, &ch, "wardrobe.read");
+    params.extend([("owner_token", OWNER), ("decision", "allow")]);
+
+    // Delivery B, on a copy: the owner disconnects the old connection, which
+    // frees slot 0, and B creates its grant there.
+    let mut other = store.clone();
+    assert_eq!(send(&mut other, t, "POST", &format!("/v1/connections/{old}/disconnect"), Some(&owner), vec![]).await.status, 200);
+    let b = send_as(&mut other, t, "POST", "/oauth/authorize", None, signed(&params, t), "consent-c").await;
+    assert!(b.header("location").unwrap().contains("code=wac.grt_0000"), "{:?}", b.header("location"));
+
+    // Delivery A of the same consent read slot 0 as live and chose slot 1;
+    // B's records commit between A's read and A's write.
+    store.interleave = Some((GRANTS_EPOCH_KEY.to_vec(), other.changes_since(&store)));
+    let a = send_as(&mut store, t, "POST", "/oauth/authorize", None, signed(&params, t), "consent-c").await;
+    assert!(store.interleave.is_none(), "B committed mid-allocation");
+    assert_eq!(a.header("location"), b.header("location"), "A answers with B's code");
+    assert_eq!(store.count(b"o/grant/"), 1, "one grant, in slot 0");
 }
 
 #[tokio::test]

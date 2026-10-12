@@ -539,27 +539,58 @@ fn free_slot(index: &[(String, u64)], max: usize) -> Option<usize> {
     (0..max).find(|s| !used.contains(s))
 }
 
-pub async fn load_grant<S: Store>(store: &mut S, id: &str) -> Result<Option<(Vec<u8>, Grant)>, Fault> {
+/// The grant store's version. Every write to a grant slot (creation,
+/// exchange, refresh, revocation, disconnect) commits guarded on it and
+/// advances it, so a write commits only if no slot changed since its reader
+/// read the version. That makes "look for this request's grant, else pick a
+/// free slot and write it" one atomic step across all slots.
+pub const GRANTS_EPOCH_KEY: &[u8] = b"o/grants/epoch";
+
+async fn read_epoch<S: Store>(store: &mut S) -> Result<Option<Vec<u8>>, Fault> {
+    store.get(GRANTS_EPOCH_KEY).await.map_err(|_| Fault::Unavailable)
+}
+
+fn next_epoch(old: Option<&[u8]>) -> Result<Vec<u8>, Fault> {
+    let n = match old {
+        None => 0,
+        Some(b) => std::str::from_utf8(b).ok().and_then(|s| s.parse::<u64>().ok()).ok_or(Fault::Corrupt)?,
+    };
+    Ok((n + 1).to_string().into_bytes())
+}
+
+/// Commit `entries` (grant slot records) if the grant store's version is
+/// still `epoch`, advancing it. `Ok(false)` = some slot changed meanwhile.
+async fn commit_grants<S: Store>(store: &mut S, epoch: &Option<Vec<u8>>, entries: &[(&[u8], &[u8])]) -> Result<bool, Fault> {
+    let next = next_epoch(epoch.as_deref())?;
+    let mut all: Vec<(&[u8], &[u8])> = vec![(GRANTS_EPOCH_KEY, &next)];
+    all.extend_from_slice(entries);
+    match store.commit_n_if(GRANTS_EPOCH_KEY, epoch.as_deref(), &all).await {
+        Ok(Ok(())) => Ok(true),
+        Ok(Err(_)) => Ok(false),
+        Err(_) => Err(Fault::Unavailable),
+    }
+}
+
+/// A grant and the grant store's version read before it.
+pub async fn load_grant<S: Store>(store: &mut S, id: &str) -> Result<Option<(Option<Vec<u8>>, Grant)>, Fault> {
     let Some(key) = grant_key(id).filter(|_| is_grant_id(id)) else { return Ok(None) };
+    let epoch = read_epoch(store).await?;
     match store.get(&key).await.map_err(|_| Fault::Unavailable)? {
         None => Ok(None),
         Some(bytes) => {
             let grant = serde_json::from_slice::<Value>(&bytes).ok().and_then(|v| Grant::from_json(&v)).ok_or(Fault::Corrupt)?;
             // The slot was reused by a later grant: this one no longer exists.
-            Ok((grant.id == id).then_some((bytes, grant)))
+            Ok((grant.id == id).then_some((epoch, grant)))
         }
     }
 }
 
-/// Write `grant` if its record still holds `old`. `Ok(false)` = changed meanwhile.
-async fn save_grant<S: Store>(store: &mut S, old: &[u8], grant: &Grant) -> Result<bool, Fault> {
+/// Write `grant` if no grant changed since `epoch` was read. `Ok(false)` =
+/// changed meanwhile.
+async fn save_grant<S: Store>(store: &mut S, epoch: &Option<Vec<u8>>, grant: &Grant) -> Result<bool, Fault> {
     let key = grant_key(&grant.id).ok_or(Fault::Corrupt)?;
     let new = grant.to_json().to_string().into_bytes();
-    match store.commit_n_if(&key, Some(old), &[(&key, &new)]).await {
-        Ok(Ok(())) => Ok(true),
-        Ok(Err(_)) => Ok(false),
-        Err(_) => Err(Fault::Unavailable),
-    }
+    commit_grants(store, epoch, &[(&key, &new)]).await
 }
 
 /// The index records: a list of `[id, createdAtMs]`.
@@ -929,10 +960,11 @@ enum GrantRefusal {
     Fault(Fault),
 }
 
-/// Every grant slot: its number, the record's exact bytes, and the grant.
+/// The grant store's version, then every grant slot: its number and grant.
 /// The slot records are the whole grant store; there is no separate index
 /// whose updates could race the records.
-async fn read_grant_slots<S: Store>(store: &mut S) -> Result<Vec<(usize, Option<Vec<u8>>, Option<Grant>)>, Fault> {
+async fn read_grant_slots<S: Store>(store: &mut S) -> Result<(Option<Vec<u8>>, Vec<(usize, Option<Grant>)>), Fault> {
+    let epoch = read_epoch(store).await?;
     let mut out = Vec::with_capacity(MAX_GRANTS);
     for slot in 0..MAX_GRANTS {
         let key = format!("o/grant/{slot}").into_bytes();
@@ -941,16 +973,16 @@ async fn read_grant_slots<S: Store>(store: &mut S) -> Result<Vec<(usize, Option<
             None => None,
             Some(b) => Some(serde_json::from_slice::<Value>(b).ok().and_then(|v| Grant::from_json(&v)).filter(|g| slot_of(&g.id) == Some(slot)).ok_or(Fault::Corrupt)?),
         };
-        out.push((slot, bytes, grant));
+        out.push((slot, grant));
     }
-    Ok(out)
+    Ok((epoch, out))
 }
 
 async fn create_grant<S: Store>(store: &mut S, now: u64, r: &AuthRequest, scopes: Vec<String>, mint: &Mint) -> Result<String, GrantRefusal> {
     for _ in 0..ATTEMPTS {
-        let slots = read_grant_slots(store).await.map_err(GrantRefusal::Fault)?;
+        let (epoch, slots) = read_grant_slots(store).await.map_err(GrantRefusal::Fault)?;
         // A redelivery of a consent that already committed gets its code again.
-        if let Some(g) = slots.iter().filter_map(|(_, _, g)| g.as_ref()).find(|g| mint.is(g.created_by.as_deref())) {
+        if let Some(g) = slots.iter().filter_map(|(_, g)| g.as_ref()).find(|g| mint.is(g.created_by.as_deref())) {
             return Ok(mint.code(&g.id));
         }
         // A slot is free when it is empty, or its grant can no longer produce
@@ -959,7 +991,7 @@ async fn create_grant<S: Store>(store: &mut S, now: u64, r: &AuthRequest, scopes
         // late redelivery of that consent still finds its grant here and is
         // answered from it, and can never create a grant again.
         let reusable = |g: &Grant| !g.live(now) && now > g.created_at + CONSENT_FORM_TTL_MS + CLOCK_SKEW_MS;
-        let Some((slot, expected)) = slots.into_iter().find(|(_, _, g)| g.as_ref().map_or(true, reusable)).map(|(s, b, _)| (s, b)) else {
+        let Some(slot) = slots.into_iter().find(|(_, g)| g.as_ref().map_or(true, reusable)).map(|(s, _)| s) else {
             return Err(GrantRefusal::Full);
         };
         let id = format!("grt_{slot:04x}{}", token(14));
@@ -982,15 +1014,16 @@ async fn create_grant<S: Store>(store: &mut S, now: u64, r: &AuthRequest, scopes
         };
         let Some(gkey) = grant_key(&id) else { return Err(GrantRefusal::Fault(Fault::Corrupt)) };
         let gval = grant.to_json().to_string().into_bytes();
-        // Compare-and-swap on the slot record itself: written only if the slot
-        // still holds exactly the bytes judged free above. An exchange,
-        // refresh or disconnect that committed since changed those bytes, so
-        // this write is refused and the attempt starts over from fresh slots.
-        match store.commit_n_if(&gkey, expected.as_deref(), &[(&gkey, &gval)]).await {
-            Ok(Ok(())) => return Ok(code),
-            Ok(Err(_)) => continue,
+        // Guarded on the grant store's version read with the slots: written
+        // only if no slot changed since. An exchange, refresh or disconnect
+        // that committed since, or another delivery of this same consent that
+        // created its grant first, advanced the version, so this write is
+        // refused and the attempt starts over (and then finds that grant).
+        match commit_grants(store, &epoch, &[(&gkey, &gval)]).await {
+            Ok(true) => return Ok(code),
+            Ok(false) => continue,
             // A lost answer leaves at most an unused grant, which the owner sees and can disconnect.
-            Err(_) => return Err(GrantRefusal::Fault(Fault::Unavailable)),
+            Err(f) => return Err(GrantRefusal::Fault(f)),
         }
     }
     Err(GrantRefusal::Fault(Fault::Unavailable))
@@ -1351,7 +1384,7 @@ pub fn insufficient_scope(origin: &str) -> Reply {
 
 /// Settings › Connected assistants: every grant still in a slot, newest first.
 pub async fn list_grants<S: Store>(store: &mut S, now: u64) -> Result<Value, Fault> {
-    let mut grants: Vec<Grant> = read_grant_slots(store).await?.into_iter().filter_map(|(_, _, g)| g).collect();
+    let mut grants: Vec<Grant> = read_grant_slots(store).await?.1.into_iter().filter_map(|(_, g)| g).collect();
     grants.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| b.id.cmp(&a.id)));
     Ok(json!({"connections": grants.iter().map(|g| g.summary(now)).collect::<Vec<_>>()}))
 }
