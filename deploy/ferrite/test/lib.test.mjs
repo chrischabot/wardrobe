@@ -6,7 +6,7 @@ import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { STEPS, abortChildren, accountState, appSpec, cliDiagnostics, cliEvidence, exitPolicy, localTokens, probeEndpoint, spawnAsync } from "../lib/cli.mjs";
 import { GuardRefusal, assertTarget } from "../lib/guard.mjs";
-import { allStoredTokens, ensureTokens, readTokens, removeTokens, tokensFile, withTargetLock } from "../lib/state.mjs";
+import { allStoredTokens, ensureTokens, readTokens, removeTokens, tokensFile, withCredentialSnapshot, withTargetLock } from "../lib/state.mjs";
 
 const DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // Every temporary directory (state directories with generated token files among them) is removed once the file's
@@ -19,6 +19,34 @@ const tmp = (p) => {
 };
 after(() => {
   for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
+});
+
+test("credential snapshot: a private 0600 copy bound through HOME, unaffected by a later login, removed afterwards", async () => {
+  const home = tmp("wardrobe-home-");
+  const state = tmp("wardrobe-state-");
+  const cfg = path.join(home, ".config", "ferrite");
+  const { mkdirSync } = await import("node:fs");
+  mkdirSync(cfg, { recursive: true });
+  writeFileSync(path.join(cfg, "credentials.toml"), "account_id = \"first\"\n");
+  let seen = null;
+  const out = await withCredentialSnapshot(async (env) => {
+    const copy = path.join(env.HOME, ".config", "ferrite", "credentials.toml");
+    assert.notEqual(env.HOME, home);
+    assert.ok(env.HOME.startsWith(state), "the copy lives under the state directory");
+    assert.equal(statSync(copy).mode & 0o777, 0o600);
+    assert.equal(statSync(env.HOME).mode & 0o777, 0o700);
+    // Another `ferrite login` rewrites the real document meanwhile: the run keeps its own credential.
+    writeFileSync(path.join(cfg, "credentials.toml"), "account_id = \"second\"\n");
+    assert.equal(readFileSync(copy, "utf8"), "account_id = \"first\"\n");
+    assert.ok(env.CARGO_HOME && env.RUSTUP_HOME, "the toolchain still resolves");
+    seen = env.HOME;
+    return 7;
+  }, { realHome: home, dir: state });
+  assert.equal(out, 7);
+  assert.equal(existsSync(seen), false, "the snapshot is removed when the run settles");
+  await assert.rejects(withCredentialSnapshot(async () => { throw new Error("boom"); }, { realHome: home, dir: state }), /boom/);
+  assert.deepEqual(readdirSync(state).filter((n) => n.startsWith("cred-")), [], "removed after a failure too");
+  await assert.rejects(withCredentialSnapshot(async () => 1, { realHome: tmp("wardrobe-empty-"), dir: state }), (e) => e instanceof GuardRefusal);
 });
 
 test("CLI evidence holds the command, exit status, timing and sizes only; diagnostics are redacted", () => {

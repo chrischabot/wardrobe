@@ -5,10 +5,11 @@
  * generate different tokens for the same target; a teardown removes only its own target's file.
  */
 import { randomBytes } from "node:crypto";
-import { chmodSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
+import { chmodSync, closeSync, copyFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { STATE_DIR, exitPolicy, killTree, localTokens, lockScope } from "./cli.mjs";
-import { APP_NAME } from "./guard.mjs";
+import { APP_NAME, GuardRefusal } from "./guard.mjs";
 
 /** An account name: lower-case letters, digits and `_.-`, at most 64 characters, no whitespace or control characters. */
 export const ACCOUNT = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
@@ -23,6 +24,35 @@ export function isTarget(target) {
 export function assertTargetName(target) {
   if (!isTarget(target)) throw new Error(`not a target of this project: ${JSON.stringify(target)}`);
   return target;
+}
+
+/**
+ * Bind a run's remote commands to ONE credential: the CLI reads its account from `$HOME/.config/ferrite/credentials.toml`
+ * (and nowhere else), so the document is copied once, byte for byte, into a private 0700 directory under the state
+ * directory, and every remote command of the run gets an environment whose HOME is that copy. A `ferrite login` or
+ * account switch elsewhere during the run then changes the global document, never the one this run's writes use.
+ * CARGO_HOME and RUSTUP_HOME keep pointing at the real toolchain. The copy is removed when `fn` settles, and at exit.
+ */
+export async function withCredentialSnapshot(fn, { realHome = process.env.HOME || os.homedir(), dir = STATE_DIR } = {}) {
+  const source = path.join(realHome, ".config", "ferrite", "credentials.toml");
+  if (!existsSync(source)) throw new GuardRefusal(`no Ferrite credential document at ${source}; nothing remote was changed`);
+  secureDir(dir);
+  const home = mkdtempSync(path.join(dir, "cred-"));
+  chmodSync(home, 0o700);
+  const remove = () => rmSync(home, { recursive: true, force: true });
+  process.once("exit", remove);
+  try {
+    const config = path.join(home, ".config", "ferrite");
+    mkdirSync(config, { recursive: true, mode: 0o700 });
+    const copy = path.join(config, "credentials.toml");
+    copyFileSync(source, copy);
+    chmodSync(copy, 0o600);
+    const env = { ...process.env, HOME: home, CARGO_HOME: process.env.CARGO_HOME ?? path.join(realHome, ".cargo"), RUSTUP_HOME: process.env.RUSTUP_HOME ?? path.join(realHome, ".rustup") };
+    return await fn(env);
+  } finally {
+    remove();
+    process.removeListener("exit", remove);
+  }
 }
 
 export function tokensFile(target, dir = STATE_DIR) {

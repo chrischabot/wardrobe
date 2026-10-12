@@ -1,6 +1,6 @@
 {
   "mode": "dry run: nothing remote was written",
-  "at": "2026-10-12T13:14:25.343Z",
+  "at": "2026-10-12T14:57:01.239Z",
   "app": {
     "name": "wardrobe",
     "routes": [
@@ -50,9 +50,9 @@
       "what": "the app's origin before and after its first deploy"
     },
     {
-      "step": "ferrite secrets set WARDROBE_OWNER_TOKEN / WARDROBE_ASSISTANT_TOKEN",
+      "step": "ferrite secrets set WARDROBE_OWNER_TOKEN / WARDROBE_ASSISTANT_TOKEN / WARDROBE_PUBLIC_ORIGIN",
       "needsAccount": true,
-      "what": "the app's bearer tokens, from stdin"
+      "what": "the app's bearer tokens and its public origin, from stdin"
     },
     {
       "step": "ferrite deploy",
@@ -79,7 +79,7 @@
     "command": "ferrite check",
     "exit": 0,
     "signal": null,
-    "ms": 230,
+    "ms": 237,
     "stdoutBytes": 1409,
     "stderrBytes": 0,
     "spawnFailed": false

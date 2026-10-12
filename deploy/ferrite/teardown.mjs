@@ -16,7 +16,7 @@ import { pathToFileURL } from "node:url";
 import { EVIDENCE_DIR, abortChildren, accountState, appSpec, cliDiagnostics, cliEvidence, exitPolicy, ferriteAsync } from "./lib/cli.mjs";
 import { GuardRefusal, assertTarget } from "./lib/guard.mjs";
 import { redactError } from "./lib/redact.mjs";
-import { knownSecrets, removeTokens, withTargetLock } from "./lib/state.mjs";
+import { knownSecrets, removeTokens, withCredentialSnapshot, withTargetLock } from "./lib/state.mjs";
 import { installInterruptHandlers, interrupted } from "./verify.mjs";
 
 const SECRET_NAMES = Object.freeze(["WARDROBE_OWNER_TOKEN", "WARDROBE_ASSISTANT_TOKEN", "WARDROBE_PUBLIC_ORIGIN"]);
@@ -53,12 +53,17 @@ export async function main(argv) {
   const account = accountState(await ferriteAsync(["account"], { timeoutMs: 60_000 }));
   if (interrupted()) throw new Error("interrupted before anything was changed");
   const target = assertTarget({ appName: spec.name, account, argv });
-  return withTargetLock(target, async () => {
-    // Read the account and the spec again under the lock: they must still be exactly the confirmed target before
-    // any secret is deleted or any local token file removed.
-    const now = accountState(await ferriteAsync(["account"], { timeoutMs: 60_000 }));
-    const nowTarget = now.state === "signed_in" ? `${now.account}/${appSpec().name}` : null;
-    if (nowTarget !== target) throw new GuardRefusal(`the signed-in account or the app changed since ${target} was confirmed; nothing was changed`);
+  return withTargetLock(target, () => withCredentialSnapshot(async (env) => {
+    // Every remote command runs with `env`, whose HOME holds a private copy of the credential document: a login
+    // elsewhere during the run cannot redirect a deletion. Before EVERY command the account (read through the
+    // snapshot) and the spec's app must still be exactly the confirmed target; otherwise nothing further is sent and
+    // no local token file is removed.
+    const app = target.split("/")[1];
+    const accountNow = async () => {
+      const now = accountState(await ferriteAsync(["account"], { timeoutMs: 60_000, env }));
+      return now.state === "signed_in" ? `${now.account}/${appSpec().name}` : null;
+    };
+    if ((await accountNow()) !== target) throw new GuardRefusal(`the signed-in account or the app changed since ${target} was confirmed; nothing was changed`);
     const done = [];
     let stopped = null;
     // Commands run asynchronously, so a signal is handled while one runs; it finishes and no further one starts.
@@ -67,7 +72,20 @@ export async function main(argv) {
         stopped ??= `ferrite ${args.join(" ")}`;
         return;
       }
-      const r = await ferriteAsync(args, { timeoutMs });
+      if (appSpec().name !== app) {
+        stopped ??= `ferrite/ferrite.json no longer names ${app}`;
+        return;
+      }
+      if ((await accountNow()) !== target) {
+        stopped ??= `the signed-in account no longer matches ${target}`;
+        return;
+      }
+      // A signal that arrived during the account read stops this command too.
+      if (interrupted()) {
+        stopped ??= `ferrite ${args.join(" ")}`;
+        return;
+      }
+      const r = await ferriteAsync(args, { timeoutMs, env });
       if (r.status !== 0 || r.error) console.error(cliDiagnostics(r, known()));
       done.push(cliEvidence(r));
       if (r.timedOut) {
@@ -82,7 +100,7 @@ export async function main(argv) {
     if (ok) removeTokens(target);
     evidence("teardown.json", { at: new Date().toISOString(), target, steps: done, interruptedBefore: stopped, localStateRemoved: ok });
     return ok ? 0 : 1;
-  });
+  }));
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {

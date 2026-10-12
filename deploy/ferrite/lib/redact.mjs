@@ -51,17 +51,20 @@ const LONG_RUN = /[A-Za-z0-9+/_-]{40,}={0,2}/g;
 const DIGEST_KEY = /^(sha256|digest)$|(Sha256|Digest)$/;
 const HEX64 = /^[0-9a-f]{64}$/;
 // (URL credentials: see markUrlCredentials below.)
-const URL_SCHEME = /[a-z][a-z0-9+.-]*:/gi;
-const SPECIAL_SCHEME = /^(?:https?|wss?|ftp|file):$/i;
+const SCHEME_CHAR = /[A-Za-z0-9+.-]/;
+const LETTER = /[A-Za-z]/;
 /**
  * Credentials carried in anything a URL parser might read as a URL, found structurally rather than by one URL
  * spelling. The scan runs on a view of the text without ASCII tab, LF and CR (the parser removes them anywhere, even
- * inside the scheme), with every position mapped back to the original. After every `scheme:` (matched anywhere, even
- * glued to a preceding word) it skips whatever slashes, backslashes and spaces follow (a parser accepts `https:u:p@h`,
- * `https:/u:p@h`, `https:///u:p@h`, `https:\\u:p@h`), then marks everything up to the LAST `@` before the authority
- * ends: at `/`, `?` or `#`, and also at `\` for the special schemes, where the parser reads it as `/` (elsewhere a
- * backslash can sit inside userinfo). Spaces, quotes and a second `@` inside a password are therefore covered.
- * Over-redaction (an `@` in prose after a `word:`) is accepted.
+ * inside the scheme), with every position mapped back to the original. Every `:` that ends a valid scheme starts a
+ * candidate: a scheme is a letter followed by scheme characters, so a `:` qualifies when the run of scheme characters
+ * before it contains a letter (any suffix starting at that letter is a scheme, so `1https:`, `x.https:` and
+ * `a-b+https:` all count, glued to whatever precedes them). After it, whatever slashes, backslashes and spaces follow
+ * are skipped (a parser accepts `https:u:p@h`, `https:/u:p@h`, `https:///u:p@h`, `https:\\u:p@h`), then everything
+ * up to the LAST `@` before `/`, `?` or `#` is marked. A backslash never ends the authority here: special schemes read
+ * it as `/`, others as part of userinfo, and taking the longer reading only ever redacts more. Spaces, quotes and a
+ * second `@` inside a password are therefore covered. Over-redaction (an `@` in prose after a `word:`) is accepted.
+ * Everything is precomputed in single passes, so the scan is linear however many `word:` occurrences the text holds.
  */
 function markUrlCredentials(text, mark) {
   const map = [];
@@ -71,14 +74,33 @@ function markUrlCredentials(text, mark) {
     map.push(i);
     view += text[i];
   }
-  for (const m of view.matchAll(URL_SCHEME)) {
-    const start = m.index + m[0].length;
-    const ends = SPECIAL_SCHEME.test(m[0]) ? /[/?#\\]/ : /[/?#]/;
+  const n = view.length;
+  const end = new Int32Array(n + 1);
+  end[n] = n;
+  for (let k = n - 1; k >= 0; k--) {
+    const c = view[k];
+    end[k] = c === "/" || c === "?" || c === "#" ? k : end[k + 1];
+  }
+  const lastAt = new Int32Array(n + 1);
+  lastAt[0] = -1;
+  for (let k = 0; k < n; k++) lastAt[k + 1] = view[k] === "@" ? k : lastAt[k];
+  // Whether the current run of scheme characters holds a letter yet.
+  let letterInRun = false;
+  for (let c = 0; c < n; c++) {
+    const ch = view[c];
+    if (ch !== ":") {
+      letterInRun = SCHEME_CHAR.test(ch) ? letterInRun || LETTER.test(ch) : false;
+      continue;
+    }
+    const valid = letterInRun;
+    letterInRun = false;
+    if (!valid) continue;
+    const start = c + 1;
     let i = start;
-    while (i < view.length && /[/\\ ]/.test(view[i])) i++;
-    let at = -1;
-    for (let j = i; j < view.length && !ends.test(view[j]); j++) if (view[j] === "@") at = j;
-    if (at > start) mark(map[start], map[at - 1] + 1);
+    while (i < n && (view[i] === "/" || view[i] === "\\" || view[i] === " ")) i++;
+    // The last `@` before the authority ends (at index < end[i]), if it is at or after i.
+    const at = lastAt[end[i]];
+    if (at >= i && at > start) mark(map[start], map[at - 1] + 1);
   }
 }
 const VALUE_RULES = [HEADER_LINE, NAMED_ESCAPED, NAMED_QUOTED, NAMED_UNQUOTED, BEARER];

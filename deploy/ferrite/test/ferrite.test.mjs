@@ -114,6 +114,9 @@ test("inventory comparisons: exact balance changes and identical reads", () => {
   assert.equal(sameInventory(before, other), false, "same count, different garments");
   assert.equal(sameInventory(before, { ...before, wardrobeRevision: 1 }), false);
   assert.equal(sameInventory(before, { ...before, source: { sha256: "t" } }), false);
+  // Two readers that serialise the same balances and counts in another key order see the same inventory.
+  const reordered = { ...before, counts: Object.fromEntries(Object.entries(before.counts ?? { garments: 3, ownedUnits: 3 }).reverse()), items: before.items.map((i) => ({ ...i, balances: Object.fromEntries(Object.entries(i.balances).reverse()) })) };
+  assert.ok(sameInventory({ ...before, counts: before.counts ?? { garments: 3, ownedUnits: 3 } }, reordered), "key order does not matter");
 });
 
 test("verification judgements and the verify run's structure", () => {
@@ -136,7 +139,7 @@ test("verification judgements and the verify run's structure", () => {
  * client commit a command in the middle of the run; `leakWriteTool` offers and runs the write tool for read-only grants.
  */
 const PUBLIC = "https://wardrobe.example";
-function fakeApp({ failReceiptList = false, foreignAfter = null, brokenIdempotency = false, staleKeySuffix = null, mcp = true, leakWriteTool = false, breakToken = false, failFirstDisconnect = false, refreshAfterEnd = false, refreshUnavailable = false, forbiddenUnanswered = false, accessSurvivesEnd = false, readOnlyCannotRead = false, grantOnWrongToken = false } = {}) {
+function fakeApp({ failReceiptList = false, foreignAfter = null, brokenIdempotency = false, staleKeySuffix = null, mcp = true, leakWriteTool = false, breakToken = false, failFirstDisconnect = false, refreshAfterEnd = false, refreshUnavailable = false, forbiddenUnanswered = false, accessSurvivesEnd = false, readOnlyCannotRead = false, grantOnWrongToken = false, commitThenUnavailable = false } = {}) {
   const OWNER = "owner-token-for-the-fake-app-0001";
   const ASSISTANT = "assistant-token-for-the-fake-app-01";
   // 127 garments, 144 owned units: seventeen garments are owned twice.
@@ -225,6 +228,11 @@ function fakeApp({ failReceiptList = false, foreignAfter = null, brokenIdempoten
       // Another client (the real owner on his phone) commits a change of his own while the run is going on.
       state.foreign = commit("care.mark_dirty", "owner", "ios", markDirty(["gmt_100"], 1), { units: 1 });
       state.foreign.undoIds = ["gmt_100"];
+    }
+    // A gateway that loses the answer of the first mark-dirty AFTER it committed: the replay then finds the receipt.
+    if (commitThenUnavailable && c.type === "care.mark_dirty" && !state.unavailableOnce) {
+      state.unavailableOnce = true;
+      return [503, "<p>gateway timeout</p>"];
     }
     return [200, receipt];
   };
@@ -433,6 +441,19 @@ test("a replay refused for a request whose original send got no definitive answe
   assert.ok(c.unresolvedReplays >= 1, "the refused replay does not settle the unanswered original");
   const { cleanupUnresolved } = await import("../verify.mjs");
   assert.equal(cleanupUnresolved(report.results), true);
+});
+
+test("a send that committed but was answered 503 is undone through its replayed receipt, yet stays unresolved and keeps the lock", async () => {
+  const app = fakeApp({ commitThenUnavailable: true });
+  const report = await runAgainst(app);
+  const c = report.results.find((r) => r.group === "cleanup");
+  assert.equal(c.status, "fail", "a receipt from the replay does not prove the unanswered send settled");
+  assert.ok(c.unresolvedReplays >= 1);
+  assert.ok(app.state.receipts.filter((r) => r.type !== "command.undo").every((r) => r.undo.available === false), "the committed receipt was still undone");
+  assert.ok(app.items.every((i) => i.balances.clean === i.quantity && i.balances.dirty === 0), "the wardrobe is back as it began");
+  const { cleanupUnresolved } = await import("../verify.mjs");
+  assert.equal(cleanupUnresolved(report.results), true);
+  assert.equal(report.passed, false);
 });
 
 test("a grant whose access token still works after it was ended is ended every other way and probed again; the check still fails", async () => {

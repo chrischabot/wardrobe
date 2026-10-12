@@ -26,7 +26,7 @@ export const STEPS = Object.freeze([
   { step: "ferrite dev + node deploy/ferrite/verify.mjs --local", needsAccount: false, what: "the HTTP verification against the local plane" },
   { step: "ferrite account", needsAccount: true, what: "confirms the signed-in account with the platform" },
   { step: "ferrite host", needsAccount: true, what: "the app's origin before and after its first deploy" },
-  { step: "ferrite secrets set WARDROBE_OWNER_TOKEN / WARDROBE_ASSISTANT_TOKEN", needsAccount: true, what: "the app's bearer tokens, from stdin" },
+  { step: "ferrite secrets set WARDROBE_OWNER_TOKEN / WARDROBE_ASSISTANT_TOKEN / WARDROBE_PUBLIC_ORIGIN", needsAccount: true, what: "the app's bearer tokens and its public origin, from stdin" },
   { step: "ferrite deploy", needsAccount: true, what: "one charged build and rollout" },
   { step: "ferrite status / ferrite logs", needsAccount: true, what: "running instances and recent logs" },
   { step: "node deploy/ferrite/verify.mjs --deployed", needsAccount: true, what: "the same HTTP verification against the deployed origin (needs the host and the deployed tokens)" },

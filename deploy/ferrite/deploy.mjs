@@ -20,7 +20,7 @@ import { pathToFileURL } from "node:url";
 import { EVIDENCE_DIR, FERRITE_TOOLING_DIR, REPO_DIR, STEPS, abortChildren, accountState, appSpec, cliDiagnostics, cliEvidence, deployedOrigin, exitPolicy, ferriteAsync, killTree, originForEvidence, probeEndpoint, spawnAsync } from "./lib/cli.mjs";
 import { GuardRefusal, assertTarget } from "./lib/guard.mjs";
 import { redactError } from "./lib/redact.mjs";
-import { ensureTokens, knownSecrets, withTargetLock } from "./lib/state.mjs";
+import { ensureTokens, knownSecrets, withCredentialSnapshot, withTargetLock } from "./lib/state.mjs";
 import { installInterruptHandlers, interrupted, keepLocksForWritesInFlight, signalListeners, verifyAndRecord } from "./verify.mjs";
 
 const SECRET_NAMES = Object.freeze(["WARDROBE_OWNER_TOKEN", "WARDROBE_ASSISTANT_TOKEN"]);
@@ -206,23 +206,41 @@ export async function main(argv) {
   let created = false;
   let origin = null;
   let verified = null;
-  await withTargetLock(target, async () => {
-    // The local checks take minutes: the signed-in account and the spec are read again right before the first remote
-    // write, and must still be exactly the confirmed target.
-    const now = accountState(await ferriteAsync(["account"], { timeoutMs: 60_000 }));
+  await withTargetLock(target, () => withCredentialSnapshot(async (env) => {
+    // Every remote command below runs with `env`, whose HOME holds a private copy of the credential document taken
+    // just now: a `ferrite login` elsewhere during the run cannot redirect any of these writes. The local checks took
+    // minutes, so before EVERY remote command the account (read through the snapshot) and the spec's app must still be
+    // exactly the confirmed target; otherwise no further remote command is sent.
+    const confirmedTarget = async () => {
+      if (appSpec().name !== target.split("/")[1]) {
+        progress.failedStep = "target revalidation";
+        throw new GuardRefusal(`ferrite/ferrite.json no longer names the confirmed app ${target}; no further remote command was sent`);
+      }
+      const now = accountState(await ferriteAsync(["account"], { timeoutMs: 60_000, env }));
+      const nowTarget = now.state === "signed_in" ? `${now.account}/${appSpec().name}` : null;
+      if (nowTarget !== target) {
+        progress.failedStep = "target revalidation";
+        throw new GuardRefusal(`the signed-in account or the app changed since ${target} was confirmed; no further remote command was sent`);
+      }
+    };
+    const remote = async (args, opts) => {
+      if (appSpec().name !== target.split("/")[1]) {
+        progress.failedStep = "target revalidation";
+        throw new GuardRefusal(`ferrite/ferrite.json no longer names the confirmed app ${target}; no further remote command was sent`);
+      }
+      await confirmedTarget();
+      checkpoint(`before ferrite ${args.join(" ")}`);
+      return ferriteAsync(args, { ...opts, env });
+    };
+    await confirmedTarget();
     checkpoint("before the first remote write");
-    const nowTarget = now.state === "signed_in" ? `${now.account}/${appSpec().name}` : null;
-    if (nowTarget !== target) {
-      progress.failedStep = "target revalidation";
-      throw new GuardRefusal(`the signed-in account or the app changed since ${target} was confirmed; nothing remote was written`);
-    }
     // The public origin is settled before any remote write: from --public-origin=, else what the platform reports.
     let publicOrigin;
     try {
       let hostStdout = null;
       if (!argv.some((a) => a.startsWith("--public-origin="))) {
         checkpoint("before ferrite host");
-        const pre = await ferriteAsync(["host", "--json"], { timeoutMs: 60_000 });
+        const pre = await remote(["host", "--json"], { timeoutMs: 60_000 });
         steps.push({ name: "ferrite host --json (before deploy)", ...cliEvidence(pre) });
         hostStdout = pre.status === 0 ? pre.stdout : null;
       }
@@ -233,14 +251,14 @@ export async function main(argv) {
     }
     const t = ensureTokens(target);
     created = t.created;
-    await step(`ferrite secrets set ${SECRET_NAMES[0]}`, () => ferriteAsync(["secrets", "set", SECRET_NAMES[0]], { input: t.tokens.owner, timeoutMs: 120_000 }));
-    await step(`ferrite secrets set ${SECRET_NAMES[1]}`, () => ferriteAsync(["secrets", "set", SECRET_NAMES[1]], { input: t.tokens.assistant, timeoutMs: 120_000 }));
-    await step(`ferrite secrets set ${PUBLIC_ORIGIN_SECRET}`, () => ferriteAsync(["secrets", "set", PUBLIC_ORIGIN_SECRET], { input: publicOrigin, timeoutMs: 120_000 }));
+    await step(`ferrite secrets set ${SECRET_NAMES[0]}`, () => remote(["secrets", "set", SECRET_NAMES[0]], { input: t.tokens.owner, timeoutMs: 120_000 }));
+    await step(`ferrite secrets set ${SECRET_NAMES[1]}`, () => remote(["secrets", "set", SECRET_NAMES[1]], { input: t.tokens.assistant, timeoutMs: 120_000 }));
+    await step(`ferrite secrets set ${PUBLIC_ORIGIN_SECRET}`, () => remote(["secrets", "set", PUBLIC_ORIGIN_SECRET], { input: publicOrigin, timeoutMs: 120_000 }));
     // One charged build: never retried here. An interrupted deploy is reattached with `ferrite deploy resume`.
     checkpoint("before ferrite deploy");
     progress.chargedDeployAttempted = true;
-    await step("ferrite deploy", () => ferriteAsync(["deploy"], { timeoutMs: 3_600_000 }));
-    const host = await step("ferrite host --json", () => ferriteAsync(["host", "--json"], { timeoutMs: 60_000 }));
+    await step("ferrite deploy", () => remote(["deploy"], { timeoutMs: 3_600_000 }));
+    const host = await step("ferrite host --json", () => remote(["host", "--json"], { timeoutMs: 60_000 }));
     try {
       origin = deployedOrigin(JSON.parse(host.stdout || "{}").origin);
     } catch (error) {
@@ -254,7 +272,7 @@ export async function main(argv) {
     // The deployed verification changes the owner's wardrobe and takes it back: it runs in this process, inside the
     // same lock, so no teardown or second deploy of this target can run between its commands and its cleanup.
     verified = await verifyAndRecord({ origin, tokens: t.tokens, target: "deployed" });
-  });
+  }));
   evidence("deploy.json", { at: new Date().toISOString(), target, origin: originForEvidence(origin), tokensCreated: created, secrets: [...SECRET_NAMES, PUBLIC_ORIGIN_SECRET], steps, chargedDeployAttempted: progress.chargedDeployAttempted, verification: verified === 0 ? "passed: deploy/ferrite/evidence/verify-deployed.json" : `failed (exit ${verified})` });
   return verified === 0 ? 0 : 1;
 }

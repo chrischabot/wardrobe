@@ -1,5 +1,5 @@
 {
-  "at": "2026-10-12T13:14:33.249Z",
+  "at": "2026-10-12T14:56:53.408Z",
   "result": "blocked",
   "deployed": false,
   "app": "wardrobe",
@@ -11,12 +11,12 @@
     "status": 401,
     "error": "unauthenticated",
     "accountTokenRequired": true,
-    "ms": 158
+    "ms": 134
   },
   "needsOwnerAccount": [
     "ferrite account",
     "ferrite host",
-    "ferrite secrets set WARDROBE_OWNER_TOKEN / WARDROBE_ASSISTANT_TOKEN",
+    "ferrite secrets set WARDROBE_OWNER_TOKEN / WARDROBE_ASSISTANT_TOKEN / WARDROBE_PUBLIC_ORIGIN",
     "ferrite deploy",
     "ferrite status / ferrite logs",
     "node deploy/ferrite/verify.mjs --deployed",

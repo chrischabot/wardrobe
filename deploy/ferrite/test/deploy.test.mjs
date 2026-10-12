@@ -38,8 +38,18 @@ test("the public origin: from --public-origin or the platform's report, a bare h
   const src = readFileSync(path.join(DIR, "deploy.mjs"), "utf8");
   const pos = (fragment) => at(src, fragment, "deploy.mjs");
   assert.ok(pos("publicOriginFrom({ argv, hostStdout })") < pos("ensureTokens(target)"), "settled before any remote write");
-  assert.ok(pos("secrets\", \"set\", PUBLIC_ORIGIN_SECRET") < pos('ferriteAsync(["deploy"]'), "set before the deploy");
-  assert.ok(pos("if (origin !== publicOrigin)") > pos('ferriteAsync(["deploy"]'), "the deployed origin must equal it");
+  assert.ok(pos("secrets\", \"set\", PUBLIC_ORIGIN_SECRET") < pos('remote(["deploy"]'), "set before the deploy");
+  assert.ok(pos("if (origin !== publicOrigin)") > pos('remote(["deploy"]'), "the deployed origin must equal it");
+  // Every remote command runs inside the credential snapshot, with its environment, and rechecks the spec's app.
+  assert.ok(pos("withTargetLock(target, () => withCredentialSnapshot(async (env)") < pos("const remote = async (args, opts)"));
+  assert.ok(pos("return ferriteAsync(args, { ...opts, env })") > pos("if (appSpec().name !== target.split(\"/\")[1])"));
+  const inLock = src.slice(pos("const remote = async (args, opts)"), pos("verified = await verifyAndRecord("));
+  assert.equal(/ferriteAsync\(\[/.test(inLock), false, "no remote command inside the lock bypasses remote()");
+  // remote() rechecks the account through the snapshot before every command.
+  assert.ok(pos("await confirmedTarget();\n      checkpoint(`before ferrite ${args.join(\" \")}`);\n      return ferriteAsync(args, { ...opts, env })") > pos("const confirmedTarget = async () =>"), "an interrupt during the account read stops the command");
+  const td = readFileSync(path.join(DIR, "teardown.mjs"), "utf8");
+  assert.ok(at(td, "if ((await accountNow()) !== target) {", "teardown.mjs") < at(td, "// A signal that arrived during the account read stops this command too.", "teardown.mjs"));
+  assert.ok(at(td, "// A signal that arrived during the account read stops this command too.", "teardown.mjs") < at(td, "const r = await ferriteAsync(args, { timeoutMs, env })", "teardown.mjs"), "teardown rechecks the account, then the interrupt, before each command");
 });
 
 test("teardown: the plan deletes the app's secrets, scales to zero and removes only this target's state", () => {

@@ -31,7 +31,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { APP_DIR, EVIDENCE_DIR, REPO_DIR, STATE_DIR, abortChildren, accountState, activeChildren, appSpec, deployedOrigin, exitPolicy, ferriteAsync, killTree, localOrigin, localTokens, lockScope, originForEvidence, signalTree } from "./lib/cli.mjs";
 import { redact, redactError, redactText } from "./lib/redact.mjs";
-import { knownSecrets, readTokens, withTargetLock } from "./lib/state.mjs";
+import { knownSecrets, readTokens, withCredentialSnapshot, withTargetLock } from "./lib/state.mjs";
 
 export const EXPECTED = Object.freeze({ garments: 127, ownedUnits: 144 });
 export const CSV_PATH = path.join(REPO_DIR, "requirements", "wardrobe_inventory_clean.csv");
@@ -96,11 +96,12 @@ export function exactlyChanged(before, after, changes = {}) {
   return Object.keys(changes).every((id) => b.has(id));
 }
 
-/** The parts of an inventory read that two readers must see identically. */
+/** The parts of an inventory read that two readers must see identically; object keys are put in one order. */
 export function inventoryView(page) {
+  const sorted = (o) => (o && typeof o === "object" && !Array.isArray(o) ? Object.fromEntries(Object.keys(o).sort().map((k) => [k, o[k]])) : o ?? null);
   return {
-    items: (page?.items ?? []).map((i) => ({ garmentId: i.garmentId, category: i.category, careChannel: i.careChannel, quantity: i.quantity, version: i.version, balances: i.balances })).sort((x, y) => String(x.garmentId).localeCompare(String(y.garmentId))),
-    counts: page?.counts ?? null,
+    items: (page?.items ?? []).map((i) => ({ garmentId: i.garmentId, category: i.category, careChannel: i.careChannel, quantity: i.quantity, version: i.version, balances: sorted(i.balances) })).sort((x, y) => String(x.garmentId).localeCompare(String(y.garmentId))),
+    counts: sorted(page?.counts),
     sourceSha256: page?.source?.sha256 ?? null,
     wardrobeRevision: page?.wardrobeRevision ?? null,
   };
@@ -624,6 +625,9 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
      */
     let oauthUnanswered = 0;
     const oauthWrite = async (send) => {
+      // Registration, consent and token exchange create credentials: none starts after an interrupt (grant-ending
+      // requests do not come through here, so cleanup still completes).
+      if (interruption.requested) throw new Error("the run was interrupted; no further OAuth request is sent");
       let r;
       try {
         r = await send();
@@ -961,11 +965,12 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
         } else if (!REPLAY_REFUSALS.some(([status, code]) => refusal(r, status, code))) {
           // Anything that is neither a receipt nor a documented refusal leaves the request's outcome unknown.
           unresolved.push({ httpStatus: r.status });
-        } else if (answeredSends < sent) {
-          // A refused replay proves only that the replay wrote nothing: an original send that got no definitive answer
-          // may still be executing and commit later, so it stays unresolved and the lock is kept.
-          unresolved.push({ httpStatus: r.status });
+          continue;
         }
+        // Whatever the replay answered (a receipt, even a fresh one, or a refusal), it says nothing about an original
+        // send that got no definitive answer: that send may still be executing and commit later. It stays unresolved,
+        // so cleanup fails and the lock is kept; any receipt the replay named is still undone above.
+        if (answeredSends < sent) unresolved.push({ httpStatus: r.status });
       }
       const undone = [];
       const failed = [];
@@ -1198,16 +1203,19 @@ async function main(argv) {
     const confirmed = `${account.account}/${app}`;
     // Deployed verification changes the owner's real wardrobe and then takes it back: it holds the target's lock so
     // no deploy or teardown of the same target can run in between.
-    return withTargetLock(confirmed, async () => {
+    return withTargetLock(confirmed, () => withCredentialSnapshot(async (env) => {
       const stored = readTokens(confirmed);
       if (!stored) throw new Error(`no stored tokens for ${confirmed}; deploy it with deploy/ferrite/deploy.mjs first`);
+      // The account is read again from this run's private credential copy, which also answers the host lookup.
+      const now = accountState(await ferriteAsync(["account"], { timeoutMs: 60_000, env }));
+      if (now.state !== "signed_in" || `${now.account}/${appSpec().name}` !== confirmed) throw new Error(`the signed-in account or the app changed since ${confirmed} was read; nothing was sent`);
       if (!origin) {
-        const host = await ferriteAsync(["host", "--json"], { timeoutMs: 60_000 });
+        const host = await ferriteAsync(["host", "--json"], { timeoutMs: 60_000, env });
         origin = deployedOrigin(JSON.parse(host.stdout || "{}").origin);
       }
       if (interruption.requested) throw new Error("interrupted before the deployed verification started");
       return verifyAndRecord({ origin, tokens: stored, target });
-    });
+    }));
   }
   tokens = localTokens();
   if (!tokens.owner || !tokens.assistant) throw new Error("ferrite/ferrite.local.toml has no WARDROBE_OWNER_TOKEN and WARDROBE_ASSISTANT_TOKEN under [secrets]");

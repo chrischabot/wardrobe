@@ -6,6 +6,24 @@ import { isCredentialKey, redact, redactError, redactText } from "../lib/redact.
 // Credential-like literals are built by concatenation so no tool or scanner mistakes a fixture for a real secret.
 const PW = "pass" + "word";
 
+test("redaction: URL-credential scanning stays linear on long colon-free runs and many scheme-like words", () => {
+  const cases = ["a".repeat(4 << 20), "a:".repeat(1 << 20), `${"ab:".repeat(300_000)}x@y`, `${"https:".repeat(200_000)}u@h`];
+  for (const text of cases) {
+    const t0 = Date.now();
+    redactText(text, [], 50);
+    assert.ok(Date.now() - t0 < 4000, `took ${Date.now() - t0} ms for ${text.slice(0, 12)}… (${text.length} chars)`);
+  }
+  // Behaviour is unchanged: userinfo is still removed, ordinary URLs and times are kept.
+  assert.equal(redactText("see https://user:pw-value@host.example/x").includes("pw-value"), false);
+  assert.equal(redactText("at 10:30 see https://host.example/a"), "at 10:30 see https://host.example/a");
+  // A scheme glued to a preceding digit, dot, plus or hyphen is still a scheme a parser may read.
+  for (const prefix of ["1", "x.", "a-", "+", "9.9-"]) {
+    const out = redactText(`see ${prefix}https://shortsecret@host.example/`);
+    assert.equal(out.includes("shortsecret"), false, out);
+  }
+  assert.equal(redactText("time 12:30@noon").includes("30"), true, "a colon after digits only is no scheme");
+});
+
 test("redaction: credential names in strings and keys alike, whatever case or separator", () => {
   const s = "short-secret";
   const inputs = [
