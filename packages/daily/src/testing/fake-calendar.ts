@@ -7,12 +7,18 @@
  *   - every write gives the event a new etag;
  *   - an insert whose ID already exists fails with reason "duplicate" (HTTP 409), also when the existing
  *     event is deleted, and an ID outside Google's rules is rejected (HTTP 400);
- *   - a patch carrying a stale etag fails with reason "precondition" (HTTP 412);
+ *   - a patch or delete carrying a stale etag fails with reason "precondition" (HTTP 412);
  *   - a patch changes only the supplied fields (private properties merge key by key) and keeps the rest;
  *   - a deleted event is kept with status "cancelled" and is still returned by getEvent.
  * ASSUMPTIONS where the documentation is silent and no real grant was available to check:
  *   - a patch of a cancelled event without `status: "confirmed"` is applied and leaves it cancelled;
- *   - a patch with `status: "confirmed"` restores a cancelled event.
+ *   - a patch with `status: "confirmed"` restores a cancelled event;
+ *   - `externalDelete(..., { reserveId: true })` models a deleted event Google no longer returns (404) while
+ *     its ID stays taken: getEvent returns null, an insert with the ID fails as "duplicate" (HTTP 409).
+ *
+ * getEvent reports the stored start/end and reminder as `time` and `reminderMinutesBefore`, as the real
+ * adapter reads them back. `callDeadlineMs` is the deadline the fake promises per call (default 30 s);
+ * the fake itself never times out, and tests may change the value.
  *
  * listEvents returns exactly what `seedReadEvents` stored for the requested calendars (timed events are
  * filtered to the requested window; all-day events carry no date in CalendarEventRaw and are always
@@ -70,8 +76,13 @@ export class FakeGoogleCalendar implements CalendarReader, CalendarWriter {
   /** Every call in order, including failed ones. */
   readonly log: FakeCalendarLogEntry[] = [];
 
+  /** TEST FAKE: the per-call deadline this writer promises (see CalendarWriter.callDeadlineMs). */
+  callDeadlineMs = 30_000;
+
   private readonly revisionProperty: string;
   private readonly events = new Map<string, Map<string, FakeStoredEvent>>();
+  /** IDs of events removed by `externalDelete(..., { reserveId: true })`: absent, but an insert is a duplicate. */
+  private readonly reservedIds = new Set<string>();
   private readonly readEvents = new Map<string, CalendarEventRaw[]>();
   private readonly disconnected = new Set<string>();
   private readonly failures = new Map<FakeCalendarOp, { remaining: number; error: Error }[]>();
@@ -132,13 +143,16 @@ export class FakeGoogleCalendar implements CalendarReader, CalendarWriter {
   /**
    * The owner deletes the event in Google. By default it stays retrievable as "cancelled" (what Google
    * does); `purge: true` removes it entirely, as Google eventually does, so getEvent returns null.
+   * `reserveId: true` removes it as `purge` does but keeps its ID taken, so an insert with the same ID
+   * still fails as a duplicate (an ASSUMPTION about Google, see the file header).
    */
-  externalDelete(userId: string, calendarId: string, eventId: string, options: { purge?: boolean } = {}): void {
+  externalDelete(userId: string, calendarId: string, eventId: string, options: { purge?: boolean; reserveId?: boolean } = {}): void {
     const calendar = this.calendar(userId, calendarId);
     const event = calendar.get(eventId);
     if (!event) return;
-    if (options.purge) {
+    if (options.purge || options.reserveId) {
       calendar.delete(eventId);
+      if (options.reserveId) this.reservedIds.add(`${this.key(userId, calendarId)}\u0000${eventId}`);
       return;
     }
     event.status = "cancelled";
@@ -185,7 +199,7 @@ export class FakeGoogleCalendar implements CalendarReader, CalendarWriter {
         throw new CalendarApiError("TEST FAKE: invalid event ID (HTTP 400)", { status: 400, retryable: false, reason: "invalid" });
       }
       const calendar = this.calendar(userId, calendarId);
-      if (calendar.has(eventId)) {
+      if (calendar.has(eventId) || this.reservedIds.has(`${this.key(userId, calendarId)}\u0000${eventId}`)) {
         throw new CalendarApiError("TEST FAKE: the requested identifier already exists (HTTP 409)", { status: 409, retryable: false, reason: "duplicate" });
       }
       const event: FakeStoredEvent = {
@@ -235,11 +249,14 @@ export class FakeGoogleCalendar implements CalendarReader, CalendarWriter {
     });
   }
 
-  async deleteEvent(userId: string, calendarId: string, eventId: string): Promise<void> {
-    return this.run("deleteEvent", userId, calendarId, eventId, {}, () => {
+  async deleteEvent(userId: string, calendarId: string, eventId: string, etag: string | null = null): Promise<void> {
+    return this.run("deleteEvent", userId, calendarId, eventId, { ifMatch: etag }, () => {
       const event = this.calendar(userId, calendarId).get(eventId);
       // Missing (404) and already deleted (410) are both success for the port.
       if (!event || event.status === "cancelled") return;
+      if (etag !== null && etag !== event.etag) {
+        throw new CalendarApiError("TEST FAKE: precondition failed (HTTP 412)", { status: 412, retryable: false, reason: "precondition" });
+      }
       event.status = "cancelled";
       this.touch(event);
     });
@@ -336,6 +353,8 @@ export class FakeGoogleCalendar implements CalendarReader, CalendarWriter {
       description: event.description,
       privateProperties: { ...event.privateProperties },
       attendeeCount: event.attendees.length,
+      time: event.time ? { ...event.time } : null,
+      reminderMinutesBefore: event.reminderMinutesBefore,
     };
   }
 }

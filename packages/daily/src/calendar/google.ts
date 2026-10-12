@@ -29,19 +29,29 @@
  *
  * NOT VERIFIED: we have no Google OAuth grant, so no request in this file has ever been sent to the real
  * service. In particular these behaviours rest on documentation or general Google API convention only:
- *   - that events.patch honours `If-Match` and answers 412 exactly as the guide describes;
+ *   - that events.patch honours `If-Match` and answers 412 exactly as the guide describes, and that
+ *     events.delete does the same (the projector sends it on every delete so a late delete cannot remove a
+ *     newer write);
  *   - that PATCH merges `extendedProperties.private` key by key and leaves unsent fields untouched;
  *   - that a PATCH changing a timed event to all-day (or back) needs the other form nulled explicitly,
  *     which is why start/end are sent with `date: null` or `dateTime: null, timeZone: null`;
  *   - that a PATCH with `status: "confirmed"` restores an event deleted earlier;
  *   - that an insert reusing the ID of a deleted event answers 409;
+ *   - that a deleted event's ID can also answer 404 (not 410) on events.get while an insert with it still
+ *     answers 409; the projector then moves the event to a replacement ID derived from the old one;
+ *   - that events.list on a calendar this grant cannot see (deleted, unshared, wrong ID) answers 404, which
+ *     is how getEvent tells "this event does not exist" from "the whole calendar is not accessible";
+ *   - that events.get returns start/end with the `timeZone` that was written and `reminders` as written
+ *     (`useDefault: false` with the overrides), which the projector compares to verify a write;
+ *   - that the invisible marker characters around the managed text (U+2060, U+2063, U+200B) are kept
+ *     in a description as written, also after the owner edits the event in Google's own editors;
  *   - the exact `reason` strings of a 403 for a revoked or under-scoped grant (`insufficientPermissions`
  *     and the newer `ACCESS_TOKEN_SCOPE_INSUFFICIENT` are handled; neither appears in the errors guide);
  *   - the shape of attendee entries under the `fields` selector used by listEvents.
  *
  * Runs in the Cloudflare Workers runtime: only the injected `fetch`; no Node APIs.
  */
-import { CalendarApiError, CalendarNotConnectedError, DeadlineError, withDeadline, withRequestTimeout } from "../ports.ts";
+import { CalendarApiError, CalendarNotConnectedError, DEFAULT_REQUEST_TIMEOUT_MS, DeadlineError, withDeadline, withRequestTimeout } from "../ports.ts";
 import type { CalendarEventRaw, CalendarReader, CalendarWriter, FetchLike, ManagedEvent, ManagedEventWrite } from "../ports.ts";
 
 const DEFAULT_BASE_URL = "https://www.googleapis.com/calendar/v3";
@@ -156,7 +166,7 @@ function toManagedEvent(eventId: string, body: JsonObject, headerEtag: string | 
   const source = asObject(asObject(body.extendedProperties)?.private);
   if (source) for (const [key, value] of Object.entries(source)) if (typeof value === "string") privateProperties[key] = value;
   const status = body.status === "cancelled" || body.status === "tentative" ? body.status : "confirmed";
-  return {
+  const event: ManagedEvent = {
     eventId: asString(body.id) ?? eventId,
     etag: asString(body.etag) ?? headerEtag,
     status,
@@ -165,6 +175,45 @@ function toManagedEvent(eventId: string, body: JsonObject, headerEtag: string | 
     privateProperties,
     attendeeCount: Array.isArray(body.attendees) ? body.attendees.length : 0,
   };
+  const time = managedTimeOf(body);
+  if (time !== undefined) event.time = time;
+  const reminder = reminderOf(body);
+  if (reminder !== undefined) event.reminderMinutesBefore = reminder;
+  return event;
+}
+
+/**
+ * start/end in the form the projector writes: all-day when start and end are dates one day apart; timed
+ * when both carry a date-time and the start a time zone (the end's, when present, the same). Any other
+ * form is null (not one the projector wrote); no start or end at all is undefined (not read).
+ */
+function managedTimeOf(body: JsonObject): ManagedEventWrite["time"] | null | undefined {
+  const start = asObject(body.start);
+  const end = asObject(body.end);
+  if (!start || !end) return undefined;
+  const startDate = asString(start.date);
+  const endDate = asString(end.date);
+  if (startDate !== null || endDate !== null) {
+    if (startDate === null || endDate === null || !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) return null;
+    return endDate === nextLocalDate(startDate) ? { kind: "all_day", localDate: startDate } : null;
+  }
+  const startsAt = toInstant(start.dateTime);
+  const endsAt = toInstant(end.dateTime);
+  const timezone = asString(start.timeZone);
+  const endZone = asString(end.timeZone);
+  if (startsAt === null || endsAt === null || timezone === null || (endZone !== null && endZone !== timezone)) return null;
+  return { kind: "timed", startsAt, endsAt, timezone };
+}
+
+/** The reminder configuration as the projector writes it (see ManagedEvent.reminderMinutesBefore). */
+function reminderOf(body: JsonObject): number | null | "other" | undefined {
+  const reminders = asObject(body.reminders);
+  if (!reminders) return undefined;
+  if (reminders.useDefault === true) return "other";
+  const overrides = Array.isArray(reminders.overrides) ? reminders.overrides : [];
+  if (overrides.length === 0) return null;
+  const only = overrides.length === 1 ? asObject(overrides[0]) : null;
+  return only?.method === "popup" && typeof only.minutes === "number" ? only.minutes : "other";
 }
 
 function remindersBody(reminderMinutesBefore: number | null): JsonObject {
@@ -216,15 +265,23 @@ export function createGoogleCalendar(opts: {
 }): CalendarReader & CalendarWriter {
   const baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
   const fetchFn = withRequestTimeout(opts.fetch, opts.timeoutMs);
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+  // One call is at most an access-token lookup and a request, each with its own deadline (insert, patch,
+  // delete); getEvent, which can make two of each, is held to the same total and aborted when it is up.
+  // Without a per-request deadline there is no bound, and the outfit-calendar projector refuses the writer.
+  const callDeadlineMs = timeoutMs > 0 && Number.isFinite(timeoutMs) ? 2 * timeoutMs : Number.POSITIVE_INFINITY;
+  const networkError = (op: CallSpec["op"]): CalendarApiError => new CalendarApiError(`Google Calendar ${op} failed: network error`, { status: null, retryable: true, reason: "network" });
 
   const eventsPath = (calendarId: string): string => `/calendars/${encodeURIComponent(calendarId)}/events`;
   const eventPath = (calendarId: string, eventId: string): string => `${eventsPath(calendarId)}/${encodeURIComponent(eventId)}`;
 
   /**
    * One authorised request. Error messages are built only from the operation name, the HTTP status and a
-   * short machine reason: never from the token, the URL, a response message or event text.
+   * short machine reason: never from the token, the URL, a response message or event text. `signal`
+   * aborts the request in flight, and once it has fired no further request is started.
    */
-  async function call(userId: string, spec: CallSpec): Promise<CallResult> {
+  async function call(userId: string, spec: CallSpec, signal?: AbortSignal): Promise<CallResult> {
+    if (signal?.aborted) throw networkError(spec.op);
     // The access-token lookup (a refresh against Google's token endpoint) has a deadline of the same
     // length as the request that follows it: a silent token service must not hold a phase either. A
     // lookup that fails for any other reason keeps its own error.
@@ -232,19 +289,21 @@ export function createGoogleCalendar(opts: {
     try {
       token = await withDeadline(opts.getAccessToken(userId), opts.timeoutMs);
     } catch (e) {
-      if (e instanceof DeadlineError) throw new CalendarApiError(`Google Calendar ${spec.op} failed: network error`, { status: null, retryable: true, reason: "network" });
+      if (e instanceof DeadlineError) throw networkError(spec.op);
       throw e;
     }
     if (token === null || token === "") throw new CalendarNotConnectedError();
+    if (signal?.aborted) throw networkError(spec.op);
 
     const query = new URLSearchParams(spec.query ?? {}).toString();
     const url = `${baseUrl}${spec.path}${query ? `?${query}` : ""}`;
     const headers: Record<string, string> = { Authorization: `Bearer ${token}`, Accept: "application/json", ...spec.headers };
-    const init: { method: string; headers: Record<string, string>; body?: string } = { method: spec.method, headers };
+    const init: { method: string; headers: Record<string, string>; body?: string; signal?: AbortSignal } = { method: spec.method, headers };
     if (spec.body !== undefined) {
       headers["Content-Type"] = "application/json";
       init.body = JSON.stringify(spec.body);
     }
+    if (signal) init.signal = signal;
 
     let response: Response;
     let text: string;
@@ -253,7 +312,7 @@ export function createGoogleCalendar(opts: {
       text = await response.text();
     } catch {
       // The outcome of a write is unknown here: the projector reads the event back before retrying.
-      throw new CalendarApiError(`Google Calendar ${spec.op} failed: network error`, { status: null, retryable: true, reason: "network" });
+      throw networkError(spec.op);
     }
 
     const status = response.status;
@@ -282,7 +341,23 @@ export function createGoogleCalendar(opts: {
     throw new CalendarApiError(`Google Calendar ${spec.op} failed: HTTP ${status}${reason !== undefined ? ` (${reason})` : ""}`, detail);
   }
 
+  /**
+   * events.get, and on a 404 a one-item events.list of the same calendar: Google answers 404 for every
+   * event of a calendar that was deleted or that this grant can no longer see, and such a calendar must
+   * never read as "the owner deleted the event". 410 is a deleted event and needs no probe.
+   */
+  async function readEvent(userId: string, calendarId: string, eventId: string, signal: AbortSignal): Promise<ManagedEvent | null> {
+    const result = await call(userId, { op: "events.get", method: "GET", path: eventPath(calendarId, eventId), allow: [404, 410] }, signal);
+    if (result.ok) return toManagedEvent(eventId, result.body, result.etag);
+    if (result.status === 410) return null;
+    const probe = await call(userId, { op: "events.list", method: "GET", path: eventsPath(calendarId), query: { maxResults: "1", fields: "kind" }, allow: [404] }, signal);
+    if (!probe.ok) throw new CalendarApiError("Google Calendar events.get failed: the calendar is not accessible", { status: 404, retryable: false, reason: "calendar_inaccessible" });
+    return null;
+  }
+
   return {
+    callDeadlineMs,
+
     async listEvents(userId, request) {
       const events: CalendarEventRaw[] = [];
       for (const calendarId of request.calendarIds) {
@@ -318,8 +393,15 @@ export function createGoogleCalendar(opts: {
     },
 
     async getEvent(userId, calendarId, eventId) {
-      const result = await call(userId, { op: "events.get", method: "GET", path: eventPath(calendarId, eventId), allow: [404, 410] });
-      return result.ok ? toManagedEvent(eventId, result.body, result.etag) : null;
+      // The whole read (up to two token lookups and two requests) is held to one deadline. When it is up
+      // the request in flight is aborted, not merely abandoned, and no further request starts.
+      const controller = new AbortController();
+      try {
+        return await withDeadline(readEvent(userId, calendarId, eventId, controller.signal), callDeadlineMs, () => controller.abort());
+      } catch (e) {
+        if (e instanceof DeadlineError) throw networkError("events.get");
+        throw e;
+      }
     },
 
     async insertEvent(userId, calendarId, eventId, write) {
@@ -352,8 +434,10 @@ export function createGoogleCalendar(opts: {
       return toManagedEvent(eventId, result.body, result.etag);
     },
 
-    async deleteEvent(userId, calendarId, eventId) {
-      await call(userId, { op: "events.delete", method: "DELETE", path: eventPath(calendarId, eventId), query: { sendUpdates: "none" }, allow: [404, 410], expectJson: false });
+    async deleteEvent(userId, calendarId, eventId, etag = null) {
+      const spec: CallSpec = { op: "events.delete", method: "DELETE", path: eventPath(calendarId, eventId), query: { sendUpdates: "none" }, allow: [404, 410], expectJson: false };
+      if (etag !== null) spec.headers = { "If-Match": etag };
+      await call(userId, spec);
     },
   };
 }

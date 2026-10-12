@@ -46,7 +46,17 @@ describe("FakeGoogleCalendar (TEST FAKE)", () => {
     expect(await fake.getEvent(USER, CAL, ID)).toBeNull();
 
     const inserted = await fake.insertEvent(USER, CAL, ID, write("1"));
-    expect(inserted).toEqual({ eventId: ID, etag: inserted.etag, status: "confirmed", summary: "Outfits for Thursday", description: "Board revision 1", privateProperties: { boardId: "b1", revision: "1" }, attendeeCount: 0 });
+    expect(inserted).toEqual({
+      eventId: ID,
+      etag: inserted.etag,
+      status: "confirmed",
+      summary: "Outfits for Thursday",
+      description: "Board revision 1",
+      privateProperties: { boardId: "b1", revision: "1" },
+      attendeeCount: 0,
+      time: { kind: "timed", startsAt: "2026-10-01T05:00:00Z", endsAt: "2026-10-01T05:15:00Z", timezone: "Europe/Zurich" },
+      reminderMinutesBefore: null,
+    });
     expect((await fake.getEvent(USER, CAL, ID))?.etag).toBe(inserted.etag);
 
     const patched = await fake.patchEvent(USER, CAL, ID, { description: "Board revision 2", privateProperties: { revision: "2" } }, inserted.etag);
@@ -184,6 +194,20 @@ describe("FakeGoogleCalendar (TEST FAKE)", () => {
     fake.externalDelete(USER, CAL, ID, { purge: true });
     expect(await fake.getEvent(USER, CAL, ID)).toBeNull();
     expect(fake.allEvents(USER, CAL)).toHaveLength(0);
+  });
+
+  it("an external delete that keeps the ID reserved reads as absent while an insert with that ID stays a duplicate", async () => {
+    const fake = new FakeGoogleCalendar();
+    await fake.insertEvent(USER, CAL, ID, write("1"));
+    fake.externalDelete(USER, CAL, ID, { reserveId: true });
+    expect(await fake.getEvent(USER, CAL, ID)).toBeNull();
+    expect(fake.allEvents(USER, CAL)).toHaveLength(0);
+    expect(reasonOf(await caught(fake.insertEvent(USER, CAL, ID, write("2"))))).toBe("duplicate");
+    expect(reasonOf(await caught(fake.patchEvent(USER, CAL, ID, { status: "confirmed" }, null)))).toBe("not_found");
+    // Only that ID in that calendar is taken.
+    await fake.insertEvent(USER, "other", ID, write("1"));
+    await fake.insertEvent(USER, CAL, "gdbreplacement", write("2"));
+    expect(fake.allEvents(USER, CAL).map((event) => event.eventId)).toEqual(["gdbreplacement"]);
   });
 
   it("throws CalendarNotConnectedError on every call of a disconnected user only", async () => {

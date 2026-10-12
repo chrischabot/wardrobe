@@ -309,10 +309,19 @@ describe("getEvent", () => {
     expect(await calendar.getEvent("user-1", "cal", EVENT_ID)).toEqual({ eventId: EVENT_ID, etag: '"9"', status: "cancelled", summary: null, description: null, privateProperties: {}, attendeeCount: 0 });
   });
 
-  it("returns null for 404 and 410", async () => {
-    const { calendar } = adapter([googleError(404, "notFound"), googleError(410, "deleted")]);
+  it("returns null for 410, and for 404 once a probe shows the calendar itself is accessible", async () => {
+    const { calendar, requests } = adapter([googleError(404, "notFound"), { status: 200, json: { kind: "calendar#events" } }, googleError(410, "deleted")]);
     expect(await calendar.getEvent("user-1", "cal", EVENT_ID)).toBeNull();
     expect(await calendar.getEvent("user-1", "cal", EVENT_ID)).toBeNull();
+    expect(requests.map((sent) => `${sent.method} ${sent.url.pathname}`)).toEqual([`GET /calendar/v3/calendars/cal/events/${EVENT_ID}`, "GET /calendar/v3/calendars/cal/events", `GET /calendar/v3/calendars/cal/events/${EVENT_ID}`]);
+    expect(Object.fromEntries(request(requests, 1).url.searchParams)).toEqual({ maxResults: "1", fields: "kind" });
+  });
+
+  it("reports a 404 for the calendar itself as an inaccessible calendar, never as a missing event", async () => {
+    const { calendar } = adapter([googleError(404, "notFound"), googleError(404, "notFound")]);
+    const error = await caught(calendar.getEvent("user-1", "deleted-calendar", EVENT_ID));
+    expect(error).toBeInstanceOf(CalendarApiError);
+    expect((error as CalendarApiError).detail).toEqual({ status: 404, retryable: false, reason: "calendar_inaccessible" });
   });
 });
 

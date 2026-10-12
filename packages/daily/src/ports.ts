@@ -185,6 +185,19 @@ export interface ManagedEvent {
   /** extendedProperties.private */
   privateProperties: Record<string, string>;
   attendeeCount: number;
+  /**
+   * start/end as read back, in the form the projector writes (`ManagedEventWrite["time"]`); null when
+   * the event has a form the projector never writes (a multi-day span, a timed event without a time
+   * zone); absent when the adapter did not read it. The projector only reports an event current when
+   * this equals what it wrote, so an absent value never verifies.
+   */
+  time?: ManagedEventWrite["time"] | null;
+  /**
+   * The calendar reminder as read back: the minutes of a single popup override; null for no reminder
+   * at all; "other" for any other configuration (the calendar's default reminders, several overrides,
+   * another method); absent when the adapter did not read it (never verifies).
+   */
+  reminderMinutesBefore?: number | null | "other";
 }
 
 export interface ManagedEventWrite {
@@ -197,15 +210,38 @@ export interface ManagedEventWrite {
   reminderMinutesBefore: number | null;
 }
 
+/**
+ * Longest a CalendarWriter call may take (its `callDeadlineMs`). The projector holds a 60-second lease
+ * on each managed event and renews it before every call; a writer whose calls can outlast the lease
+ * (an infinite, absent or longer deadline) is refused, so a call can never outlive the lease it ran under.
+ */
+export const MAX_CALENDAR_CALL_MS = 45_000;
+
 export interface CalendarWriter {
-  /** null when the event does not exist (404). A deleted event is returned with status "cancelled" when the API reports it so. */
+  /**
+   * Longest time one call of this writer takes, every request it makes and every access-token lookup
+   * included. A call that has not settled by then has failed and its requests are aborted (a retryable
+   * network failure). Finite and at most MAX_CALENDAR_CALL_MS for the outfit-calendar projector.
+   */
+  readonly callDeadlineMs: number;
+  /** null when the event does not exist (404, or 410 gone). A deleted event is returned with status "cancelled" when the API reports it so. */
   getEvent(userId: string, calendarId: string, eventId: string): Promise<ManagedEvent | null>;
   /** Insert with a caller-supplied ID. Throws CalendarApiError with reason "duplicate" on 409. Never sends invitations. */
   insertEvent(userId: string, calendarId: string, eventId: string, write: ManagedEventWrite): Promise<ManagedEvent>;
   /** Conditional update (If-Match when etag given). Throws CalendarApiError with reason "precondition" on 412. Only managed fields are sent. */
   patchEvent(userId: string, calendarId: string, eventId: string, write: Partial<ManagedEventWrite> & { status?: "confirmed" }, etag: string | null): Promise<ManagedEvent>;
-  /** Delete the managed event (pause / suppression). A missing event is not an error. */
-  deleteEvent(userId: string, calendarId: string, eventId: string): Promise<void>;
+  /**
+   * Delete the managed event (pause / suppression). A missing event is not an error. With `etag`, the delete
+   * is conditional (If-Match) and throws CalendarApiError with reason "precondition" on 412, so a delete
+   * that lands late cannot remove a newer write.
+   */
+  deleteEvent(userId: string, calendarId: string, eventId: string, etag?: string | null): Promise<void>;
+}
+
+/** True when every call of `writer` is bounded by a finite deadline of at most MAX_CALENDAR_CALL_MS. */
+export function hasBoundedCallDeadline(writer: Pick<CalendarWriter, "callDeadlineMs">): boolean {
+  const ms = writer.callDeadlineMs;
+  return typeof ms === "number" && Number.isFinite(ms) && ms > 0 && ms <= MAX_CALENDAR_CALL_MS;
 }
 
 /* ------------------------------ composition ---------------------------- */
