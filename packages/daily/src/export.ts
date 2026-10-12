@@ -54,11 +54,13 @@ export async function importDailyData(db: Db, principal: Principal, data: DailyE
     if ((row?.n ?? 0) > 0) throw new CommandError("precondition_failed", `this owner already has ${table} records; daily data is imported only into an empty owner`);
   }
   const imported: Record<string, number> = {};
+  // One batch, so one transaction: a row that fails a constraint leaves the owner exactly as empty as
+  // before, and the import can simply be retried.
+  const statements = [];
   for (const table of DAILY_TABLES) {
     const rows = data.tables[table] ?? [];
     const info = await all<{ name: string }>(db, `PRAGMA table_info(${table})`);
     const known = new Set(info.map((c) => c.name));
-    const statements = [];
     for (const row of rows) {
       const columns = Object.keys(row).filter((c) => known.has(c) && c !== "user_id");
       // Calendar delivery is not replayed, and nothing is assumed about the importing owner's calendar: a
@@ -68,8 +70,8 @@ export async function importDailyData(db: Db, principal: Principal, data: DailyE
       const values = columns.map((c) => (c in reset ? reset[c] : row[c]));
       statements.push(prepare(db, stmt(`INSERT INTO ${table} (user_id, ${columns.join(", ")}) VALUES (?, ${columns.map(() => "?").join(", ")})`, principal.userId, ...values)));
     }
-    for (let i = 0; i < statements.length; i += 40) await db.batch(statements.slice(i, i + 40));
     imported[table] = rows.length;
   }
+  if (statements.length > 0) await db.batch(statements);
   return { imported };
 }

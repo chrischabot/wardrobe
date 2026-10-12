@@ -25,6 +25,15 @@ export function occasionSnapshot(trip: TripDay, localDate: string, segment: "day
   return { snapshotId: newId("cal"), localDate, status: "ok", readAt: toInstant(nowMs), ageMinutes: 0, events, limitation: null };
 }
 
+/** A recorded, uncancelled trip by its ID, as a day's recommendation needs it (null when unknown or cancelled). */
+export async function tripDayById(db: Db, userId: string, tripId: string): Promise<TripDay | null> {
+  const row = await first<{ trip_id: string; destinations_json: string; occasions_json: string }>(db, "SELECT trip_id, destinations_json, occasions_json FROM trips WHERE user_id = ? AND trip_id = ? AND status = 'planned'", userId, tripId);
+  if (!row) return null;
+  const destinations = json<TripDestination[]>(row.destinations_json, []);
+  if (destinations.length === 0) return null;
+  return { tripId: row.trip_id, destinations, occasions: json(row.occasions_json, []) };
+}
+
 /**
  * The trip the owner is away on that day: a recorded, uncancelled trip whose dates cover the day AND
  * for which something is physically packed. Until he says pieces are packed, a trip is only a plan

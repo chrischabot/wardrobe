@@ -17,7 +17,7 @@ import { parseScope, type RecommendationContext } from "./model.ts";
 import { repairOptions } from "./repair.ts";
 import { SYSTEM_BUDGET_CLOCK } from "./ports.ts";
 import { fetchWeatherSnapshot, readCalendarSnapshot } from "./snapshots.ts";
-import { destinationFor, occasionSnapshot, packedTripOn } from "./trip-day.ts";
+import { destinationFor, occasionSnapshot, packedTripOn, tripDayById } from "./trip-day.ts";
 import { garmentViolations, validateCandidate } from "./validate.ts";
 
 /* ------------------------------------------------------------------ */
@@ -48,7 +48,9 @@ export async function suggestOutfits(db: Db, principal: Principal, input: Sugges
   const result = await composeBoard(rc, { locked: p.locked, count: p.limit, reserveCount: 0, validate: { ignoreBriefInclusions: true, explicitGarmentIds: lockedIds } });
   const keepRoles = new Set<Role>(["top", "bottom", "footwear", "socks", ...p.locked.map((s) => s.role), ...p.openRoles]);
   const seen = new Set<string>();
-  return result.options.flatMap((o) => {
+  // Every suggestion carries every locked piece in its locked role; one that does not is not offered.
+  const holdsLocks = (o: { slots: OutfitSlot[] }) => p.locked.every((l) => o.slots.some((s) => s.role === l.role && s.garmentId === l.garmentId));
+  return result.options.filter(holdsLocks).flatMap((o) => {
     const slots = p.openRoles.length > 0 ? o.slots.filter((s) => keepRoles.has(s.role)) : o.slots;
     // Options that differed only in a role the caller did not ask for are one suggestion, not two.
     const key = slots.map((s) => `${s.role}:${s.garmentId}`).sort().join("|");
@@ -346,12 +348,26 @@ export async function recommend(deps: DailyDeps, principal: Principal, input: Re
   }
 }
 
-/** Rebuild the whole day with fresh sources; the brief persists unless a new one is given. */
+/**
+ * Rebuild the whole day with fresh sources; the brief persists unless a new one is given. A trip board
+ * is rebuilt for the trip's destination and against the trip's own stated occasions, as it was composed.
+ */
 export async function rebuildDay(deps: DailyDeps, principal: Principal, input: { date: string; scope?: string; clientRequestId: string; brief?: DayBrief; nowMs?: number }): Promise<PrepareBoardResult> {
   const scope = input.scope ?? "home";
   const existing = await loadBoard(deps.db, principal.userId, { date: input.date, scope });
   const revision = existing ? await loadRevision(deps.db, principal.userId, existing.board_id, existing.current_revision) : null;
-  return prepareBoard(deps, principal, { localDate: input.date, scope, reason: existing ? "rebuild" : "compose", brief: input.brief ?? revision?.brief, purpose: "adhoc", idempotencyKey: `rebuild-day:${input.clientRequestId}`, nowMs: input.nowMs });
+  const brief = input.brief ?? revision?.brief;
+  const parsed = parseScope(scope);
+  let tripSources: Pick<PrepareBoardOptions, "location" | "calendar"> = {};
+  if (parsed.tripId) {
+    const trip = await tripDayById(deps.db, principal.userId, parsed.tripId);
+    if (!trip) throw new CommandError("not_found", `no active trip '${parsed.tripId}'`);
+    const nowMs = nowOf(deps, input.nowMs);
+    const calendar = occasionSnapshot(trip, input.date, parsed.evening ? "evening" : "day", nowMs);
+    await execAs(deps, principal, "calendar.record_snapshot", { snapshot: calendar }, `calendar-snapshot:${calendar.snapshotId}`);
+    tripSources = { location: destinationFor(trip, input.date), calendar };
+  }
+  return prepareBoard(deps, principal, { localDate: input.date, scope, reason: existing ? "rebuild" : "compose", brief, purpose: parsed.tripId ? "trip" : "adhoc", idempotencyKey: `rebuild-day:${input.clientRequestId}`, nowMs: input.nowMs, ...tripSources });
 }
 
 function storedToPublish(o: StoredOption) {
@@ -467,8 +483,11 @@ export async function decisionContext(deps: DailyDeps, principal: Principal, inp
   const owner = await loadOwner(deps.db, principal.userId);
   const localDate = input.localDate ?? localDateOf(nowMs, owner.settings.timezone);
   const canWrite = principal.scopes.includes("write") || principal.scopes.includes("admin");
-  const weather = await fetchWeatherSnapshot(deps, principal, { localDate, purpose: input.tripId ? "trip" : "adhoc", nowMs, record: canWrite });
-  const rc = await assembleContext(deps.db, principal, { localDate, nowMs, scope: input.tripId ? `trip:${input.tripId}` : "home", weather, withoutProfileText: true, comfort: await loadComfort(deps, principal) });
+  // A trip day is answered for the trip's destination and against the trip's own stated occasions.
+  const trip = input.tripId ? await tripDayById(deps.db, principal.userId, input.tripId) : null;
+  if (input.tripId && !trip) throw new CommandError("not_found", `no active trip '${input.tripId}'`);
+  const weather = await fetchWeatherSnapshot(deps, principal, { localDate, purpose: trip ? "trip" : "adhoc", nowMs, record: canWrite, ...(trip ? { location: destinationFor(trip, localDate) } : {}) });
+  const rc = await assembleContext(deps.db, principal, { localDate, nowMs, scope: trip ? `trip:${trip.tripId}` : "home", weather, withoutProfileText: true, comfort: await loadComfort(deps, principal), ...(trip ? { calendar: occasionSnapshot(trip, localDate, "day", nowMs) } : {}) });
   const others = input.outfit.filter((s) => s.role !== input.role);
   const outfit = input.outfit.map((s) => {
     const g = rc.garments.get(s.garmentId);
@@ -547,18 +566,31 @@ export async function reviseBoard(deps: DailyDeps, principal: Principal, board: 
       if (board.needs_replenishment === 1) await prepare(deps.db, stmt("UPDATE boards SET needs_replenishment = 0 WHERE user_id = ? AND board_id = ? AND current_revision = ?", principal.userId, board.board_id, board.current_revision)).run();
       return { boardId: board.board_id, localDate: board.local_date, action: "none", revision: board.current_revision, offered: 0 };
     }
-    const withdrawn = await execAs(deps, principal, "board.publish", {
-      localDate: board.local_date, scope: board.scope, reason: opts.reason === "refresh" ? "refresh" : "repair", options: [], reserves: [], brief: revision.brief, requestedCount: revision.requested_count,
-      weatherSnapshotId: weather?.snapshotId ?? null, calendarSnapshotId: calendar?.snapshotId ?? null, notice,
-    }, opts.idempotencyKey);
+    // Pinned to the revision this repair read: a board revised meanwhile is newer and is left as it is.
+    let withdrawn: CommandReceipt;
+    try {
+      withdrawn = await execAs(deps, principal, "board.publish", {
+        localDate: board.local_date, scope: board.scope, reason: opts.reason === "refresh" ? "refresh" : "repair", options: [], reserves: [], brief: revision.brief, requestedCount: revision.requested_count,
+        weatherSnapshotId: weather?.snapshotId ?? null, calendarSnapshotId: calendar?.snapshotId ?? null, notice,
+      }, opts.idempotencyKey, { expectedVersions: { [`board:${board.board_id}`]: board.current_revision } });
+    } catch (e) {
+      if (isCommandError(e) && e.code === "conflict") return { boardId: board.board_id, localDate: board.local_date, action: "none", revision: board.current_revision, offered: -1 };
+      throw e;
+    }
     return { boardId: board.board_id, localDate: board.local_date, action: "repaired", revision: Number((withdrawn.result as { revision?: number }).revision ?? board.current_revision), offered: 0 };
   }
   // A revision that only tops up options or reserves is a replenishment; "repair" means a shown option changed.
   const reason = opts.reason === "refresh" || opts.reason === "resume" ? opts.reason : added > 0 || !outcome.changed ? "replenish" : "repair";
-  const receipt = await execAs(deps, principal, "board.publish", {
-    localDate: board.local_date, scope: board.scope, reason, options: options.map(toPublishOption), reserves: reserves.map(toPublishOption), brief: revision.brief, requestedCount: revision.requested_count,
-    weatherSnapshotId: weather?.snapshotId ?? null, calendarSnapshotId: calendar?.snapshotId ?? null, notice,
-  }, opts.idempotencyKey);
+  let receipt: CommandReceipt;
+  try {
+    receipt = await execAs(deps, principal, "board.publish", {
+      localDate: board.local_date, scope: board.scope, reason, options: options.map(toPublishOption), reserves: reserves.map(toPublishOption), brief: revision.brief, requestedCount: revision.requested_count,
+      weatherSnapshotId: weather?.snapshotId ?? null, calendarSnapshotId: calendar?.snapshotId ?? null, notice,
+    }, opts.idempotencyKey, { expectedVersions: { [`board:${board.board_id}`]: board.current_revision } });
+  } catch (e) {
+    if (isCommandError(e) && e.code === "conflict") return { boardId: board.board_id, localDate: board.local_date, action: "none", revision: board.current_revision, offered: -1 };
+    throw e;
+  }
   const result = receipt.result as { revision?: number; offered?: number };
   return { boardId: board.board_id, localDate: board.local_date, action: reason === "refresh" || reason === "resume" ? "refreshed" : reason === "replenish" ? "replenished" : "repaired", revision: Number(result.revision ?? board.current_revision), offered: Number(result.offered ?? options.length) };
 }

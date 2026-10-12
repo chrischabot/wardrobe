@@ -15,7 +15,7 @@
 import type { Role } from "@garderobe/contracts";
 import { OutfitCandidate } from "@garderobe/contracts/ext/daily";
 import type { CalendarEventContext, OutfitSlot, OutfitValidation } from "@garderobe/contracts/ext/daily";
-import { jointAvailability } from "@garderobe/domain";
+import { CommandError, jointAvailability } from "@garderobe/domain";
 import { COOL_FAMILIES, NEUTRAL_FAMILIES, WARM_FAMILIES, neutralFamiliesOf, seededUnit, type PoolGarment, type RecommendationContext } from "./model.ts";
 import { SYSTEM_BUDGET_CLOCK, type BudgetClock, type CompositionModel } from "./ports.ts";
 import { EXPLORE_ADVISORY, garmentViolations, roleAccepts, validateCandidate, type ValidateOptions } from "./validate.ts";
@@ -454,7 +454,9 @@ export async function composeBoard(ctx: RecommendationContext, opts: ComposeOpti
   const locked = new Map<Role, PoolGarment>();
   for (const s of opts.locked ?? []) {
     const g = ctx.garments.get(s.garmentId);
-    if (g) locked.set(s.role, g);
+    // A locked piece the ledger does not know is refused, never silently dropped from the request.
+    if (!g) throw new CommandError("invalid_command", `the locked piece '${s.garmentId}' is not in the wardrobe`, { garmentId: s.garmentId, role: s.role });
+    locked.set(s.role, g);
   }
   // Pieces the request names as ones that must stay are part of every outfit the composer builds: each
   // takes the first of its roles that is still free. They are still validated like any other piece
@@ -671,8 +673,10 @@ export async function composeBoard(ctx: RecommendationContext, opts: ComposeOpti
   }
   for (const distinct of [true, false]) fill(total, distinct, false);
 
-  const options = chosen.slice(0, requestedCount);
-  const reserves = chosen.slice(requestedCount, total).map((o) => ({ ...o, source: o.source === "deterministic" ? ("reserve" as const) : o.source }));
+  // An explicit occasion-only request keeps unsuitable outfits off the board: they may only be reserves.
+  const options = restRequireSuitable ? chosen.filter(suitsEvent).slice(0, requestedCount) : chosen.slice(0, requestedCount);
+  const rest = restRequireSuitable ? chosen.filter((o) => !options.includes(o)) : chosen.slice(requestedCount);
+  const reserves = rest.slice(0, total - options.length).map((o) => ({ ...o, source: o.source === "deterministic" ? ("reserve" as const) : o.source }));
   for (const o of options) if (primaryEvent && suitsEvent(o) && o.suitsEventIds.length === 0) o.suitsEventIds = [primaryEvent.eventId];
 
   let notice: string | null = null;
@@ -767,11 +771,13 @@ export function findReplacement(
       if (role === "top" && bottom) score += pairScore(ctx, g, bottom);
       if (role === "bottom" && top) score += pairScore(ctx, top, g);
       if (original && g.attributes.fabricClass && g.attributes.fabricClass === original.attributes.fabricClass) score += 0.6; // keep the register of the piece it replaces
-      if (ctx.rules.navySwap && g.colourFamily === ctx.rules.navySwap.family) score -= 50;
-      if (exceedsNeutralLimit(ctx, g, kept) && role !== "neckwear" && role !== "accessory") score -= 20;
-      return { g, score };
+      // Strict tiers, not score penalties: every non-navy piece is tried before any navy one, and within
+      // each colour tier a piece that keeps the neutral limit before one that breaks it.
+      const navy = !!ctx.rules.navySwap && g.colourFamily === ctx.rules.navySwap.family;
+      const overNeutral = exceedsNeutralLimit(ctx, g, kept) && role !== "neckwear" && role !== "accessory";
+      return { g, score, tier: (navy ? 2 : 0) + (overNeutral ? 1 : 0) };
     })
-    .sort((a, b) => b.score - a.score || a.g.garmentId.localeCompare(b.g.garmentId));
+    .sort((a, b) => a.tier - b.tier || b.score - a.score || a.g.garmentId.localeCompare(b.g.garmentId));
   for (const { g } of ranked) {
     const swapped = option.slots.some((s) => s.role === role) ? option.slots.map((s) => (s.role === role ? { role, garmentId: g.garmentId } : s)) : [...option.slots, { role, garmentId: g.garmentId }];
     // An option published before the paired-shoe format came into force gains its alternative here: a

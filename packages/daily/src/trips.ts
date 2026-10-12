@@ -426,6 +426,14 @@ async function planPacking(
           else reuse.set(s.role, { garmentId: s.garmentId, uses: 1 });
         }
       }
+      // The alternative shoe of the paired format is part of the day's outfit, so it is packed (once) and
+      // counted against the luggage limit like any other piece.
+      for (const id of option.footwearAlternatives ?? []) {
+        if (option.slots.some((s) => s.garmentId === id)) continue;
+        const g = rc.garments.get(id);
+        if (!g) continue;
+        items.set(id, { ...(items.get(id) ?? { garmentId: id, name: g.name, role: "footwear" as Role }), quantity: 1 });
+      }
     }
   }
   const pieces = [...items.values()].reduce((n, i) => n + i.quantity, 0);

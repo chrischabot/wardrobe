@@ -26,6 +26,8 @@ export interface BoardRow {
   selected_option_id: string | null;
   selected_footwear_id: string | null;
   selected_at: string | null;
+  /** Advanced by every choice, every undo of one and every revision that drops one (migration 0102). */
+  selection_version: number;
   exposure_id: string | null;
   needs_replenishment: number;
   created_at: string;

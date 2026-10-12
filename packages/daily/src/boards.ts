@@ -239,13 +239,23 @@ export async function planRevisionWrite(ctx: CommandContext, draft: RevisionDraf
 
   if (existing) {
     preconditions.push({ label: `board ${boardId} unchanged since read`, sql: "(SELECT current_revision FROM boards WHERE user_id = ? AND board_id = ?) = ?", params: [ctx.userId, boardId, existing.current_revision], class: "internal" });
-    // Choosing an option does not advance the revision, so the selection this plan read is pinned too:
-    // a choice that lands between the read and the commit makes the command plan again from the new state.
-    preconditions.push({ label: `board ${boardId} selection unchanged since read`, sql: "(SELECT COALESCE(selected_option_id, '') FROM boards WHERE user_id = ? AND board_id = ?) = ?", params: [ctx.userId, boardId, existing.selected_option_id ?? ""], class: "internal" });
+    // Choosing an option does not advance the revision, so the choice this plan read is pinned by its
+    // version together with the board's status: a choice made or a day recorded between the read and the
+    // commit makes the command plan again from the new state.
+    const selectionVersion = existing.selection_version ?? 0;
+    preconditions.push({
+      label: `board ${boardId} selection unchanged since read`,
+      sql: "(SELECT selection_version || '|' || status FROM boards WHERE user_id = ? AND board_id = ?) = ?",
+      params: [ctx.userId, boardId, `${selectionVersion}|${existing.status}`],
+      class: "internal",
+    });
+    // Dropping (or narrowing) the choice is itself a change of choice: it advances the version, so an undo
+    // of the earlier choice cannot bring it back over the revision that withdrew its option.
+    const selectionChanged = (existing.selected_option_id ?? null) !== (selected?.optionId ?? null) || (existing.selected_footwear_id ?? null) !== selectedFootwear;
     statements.push(
       stmt(
-        "UPDATE boards SET current_revision = ?, selected_option_id = ?, selected_footwear_id = ?, selected_at = ?, exposure_id = ?, needs_replenishment = ?, updated_at = ? WHERE user_id = ? AND board_id = ?",
-        revision, selected ? selected.optionId : null, selectedFootwear, selected ? existing.selected_at : null, exposureId, draft.needsReplenishment, ctx.now, ctx.userId, boardId,
+        "UPDATE boards SET current_revision = ?, selected_option_id = ?, selected_footwear_id = ?, selected_at = ?, selection_version = ?, exposure_id = ?, needs_replenishment = ?, updated_at = ? WHERE user_id = ? AND board_id = ?",
+        revision, selected ? selected.optionId : null, selectedFootwear, selected ? existing.selected_at : null, selectionVersion + (selectionChanged ? 1 : 0), exposureId, draft.needsReplenishment, ctx.now, ctx.userId, boardId,
       ),
     );
   } else {
@@ -502,10 +512,16 @@ export const boardSelect = define({
       footwear = p.footwearGarmentId ?? (option.footwearAlternatives.length === 0 ? main : null);
       if (footwear && footwear !== main && !option.footwearAlternatives.includes(footwear)) throw new CommandError("invalid_command", "that shoe is not one of this option's footwear choices");
     }
+    const version = board.selection_version ?? 0;
     const statements: Stmt[] = [
-      stmt("UPDATE boards SET selected_option_id = ?, selected_footwear_id = ?, selected_at = ?, updated_at = ? WHERE user_id = ? AND board_id = ?", option?.optionId ?? null, footwear, option ? ctx.now : null, ctx.now, ctx.userId, board.board_id),
+      stmt("UPDATE boards SET selected_option_id = ?, selected_footwear_id = ?, selected_at = ?, selection_version = ?, updated_at = ? WHERE user_id = ? AND board_id = ?", option?.optionId ?? null, footwear, option ? ctx.now : null, version + 1, ctx.now, ctx.userId, board.board_id),
     ];
-    const preconditions: Precondition[] = [{ label: `board ${board.board_id} unchanged since read`, sql: "(SELECT current_revision FROM boards WHERE user_id = ? AND board_id = ?) = ?", params: [ctx.userId, board.board_id, board.current_revision], class: "internal" }];
+    const preconditions: Precondition[] = [
+      { label: `board ${board.board_id} unchanged since read`, sql: "(SELECT current_revision FROM boards WHERE user_id = ? AND board_id = ?) = ?", params: [ctx.userId, board.board_id, board.current_revision], class: "internal" },
+      // The choice this one replaces is the one it read: a concurrent choice that committed first makes this
+      // one plan again, so its undo names the choice it actually replaced.
+      { label: `board ${board.board_id} choice unchanged since read`, sql: "(SELECT selection_version || '|' || status FROM boards WHERE user_id = ? AND board_id = ?) = ?", params: [ctx.userId, board.board_id, `${version}|active`], class: "internal" },
+    ];
     let bump = false;
     if (board.exposure_id) {
       const exposure = await first<{ status: string }>(ctx.db, "SELECT status FROM exposure_sets WHERE user_id = ? AND exposure_id = ?", ctx.userId, board.exposure_id);
@@ -525,19 +541,59 @@ export const boardSelect = define({
       outbox: [{ topic: "board.selection", entityKind: "board", entityId: board.board_id, revision: board.current_revision }],
       result: { boardId: board.board_id, revision: board.current_revision, selectedOptionId: option?.optionId ?? null, footwearGarmentId: footwear },
       bumpWardrobe: bump,
-      undo: { data: { boardId: board.board_id, previousOptionId: board.selected_option_id, previousFootwearId: board.selected_footwear_id, previousAt: board.selected_at } },
+      undo: { data: { boardId: board.board_id, previousOptionId: board.selected_option_id, previousFootwearId: board.selected_footwear_id, previousAt: board.selected_at, wrote: { version: version + 1 } } },
     };
   },
+  /**
+   * Undoing a choice restores the earlier choice only while the board is still active and still holds the
+   * choice this command made, identified by the selection version it wrote (two clears, or the same option
+   * chosen twice, are still different choices). A choice recorded before choices were versioned cannot be
+   * told apart from a newer one, so its undo is refused. The earlier option comes back only if the current
+   * revision still offers it, and its shoe only if that shoe is still one of the option's footwear choices;
+   * the exposure set's chosen alternatives are rebuilt to match.
+   */
   async planUndo(ctx, _original, data): Promise<CommandPlan> {
     const board = await requireBoard(ctx, data.boardId);
-    const options = (await loadOptions(ctx.db, ctx.userId, board.board_id, board.current_revision)).filter((o) => o.state === "offered");
-    const restorable = data.previousOptionId === null || options.some((o) => o.optionId === data.previousOptionId);
-    const optionId = restorable ? data.previousOptionId : null;
-    const statements: Stmt[] = [stmt("UPDATE boards SET selected_option_id = ?, selected_footwear_id = ?, selected_at = ?, updated_at = ? WHERE user_id = ? AND board_id = ?", optionId, restorable ? data.previousFootwearId : null, restorable ? data.previousAt : null, ctx.now, ctx.userId, board.board_id)];
-    if (board.exposure_id) {
-      statements.push(stmt("UPDATE exposure_sets SET selected_option_id = ?, chosen_alternatives_json = '[]', status = ?, updated_at = ? WHERE user_id = ? AND exposure_id = ? AND status IN ('open', 'selected')", optionId, optionId ? "selected" : "open", ctx.now, ctx.userId, board.exposure_id));
+    if (board.status !== "active") throw new CommandError("precondition_failed", board.status === "worn" ? "the day's outfit is already recorded; the choice is history" : "this day's board was removed");
+    const wrote = data.wrote as { version?: unknown } | undefined;
+    if (typeof wrote?.version !== "number") {
+      throw new CommandError("precondition_failed", "this choice was recorded before choices were versioned, so it cannot be told apart from a newer one; choose again instead of undoing", { selectionUnversioned: true });
     }
-    return { summary: "Selection restored to what it was", statements, affected: [{ kind: "board", id: board.board_id, version: board.current_revision }], bumpWardrobe: !!board.exposure_id, undo: { unavailableReason: "this is already an undo" } };
+    const version = board.selection_version ?? 0;
+    if (version !== wrote.version) throw new CommandError("conflict", "the choice changed after this one; undo the newer choice first", { selectedOptionId: board.selected_option_id });
+    const options = (await loadOptions(ctx.db, ctx.userId, board.board_id, board.current_revision)).filter((o) => o.state === "offered");
+    const option = data.previousOptionId === null ? null : options.find((o) => o.optionId === data.previousOptionId) ?? null;
+    const restorable = data.previousOptionId === null || option !== null;
+    const optionId = restorable ? data.previousOptionId : null;
+    let footwear: string | null = null;
+    if (option) {
+      const main = slotOf(option, "footwear");
+      const previous = data.previousFootwearId as string | null;
+      footwear = previous && (previous === main || option.footwearAlternatives.includes(previous)) ? previous : option.footwearAlternatives.length === 0 ? main : null;
+    }
+    const chosen = option && footwear && option.footwearAlternatives.length > 0 ? [footwear] : [];
+    const statements: Stmt[] = [stmt("UPDATE boards SET selected_option_id = ?, selected_footwear_id = ?, selected_at = ?, selection_version = ?, updated_at = ? WHERE user_id = ? AND board_id = ?", optionId, footwear, optionId ? data.previousAt : null, version + 1, ctx.now, ctx.userId, board.board_id)];
+    if (board.exposure_id) {
+      statements.push(stmt("UPDATE exposure_sets SET selected_option_id = ?, chosen_alternatives_json = ?, status = ?, updated_at = ? WHERE user_id = ? AND exposure_id = ? AND status IN ('open', 'selected')", optionId, JSON.stringify(chosen), optionId ? "selected" : "open", ctx.now, ctx.userId, board.exposure_id));
+    }
+    const preconditions: Precondition[] = [
+      { label: `board ${board.board_id} unchanged since read`, sql: "(SELECT current_revision FROM boards WHERE user_id = ? AND board_id = ?) = ?", params: [ctx.userId, board.board_id, board.current_revision], class: "internal" },
+      {
+        label: `board ${board.board_id} selection is still the one being undone`,
+        sql: "(SELECT selection_version || '|' || status FROM boards WHERE user_id = ? AND board_id = ?) = ?",
+        params: [ctx.userId, board.board_id, `${version}|active`],
+        class: "internal",
+      },
+    ];
+    return {
+      summary: restorable ? "Selection restored to what it was" : "Selection cleared: the earlier choice is no longer on the board",
+      statements,
+      preconditions,
+      affected: [{ kind: "board", id: board.board_id, version: board.current_revision }],
+      bumpWardrobe: !!board.exposure_id,
+      result: { boardId: board.board_id, revision: board.current_revision, selectedOptionId: optionId, footwearGarmentId: footwear },
+      undo: { unavailableReason: "this is already an undo" },
+    };
   },
 });
 
@@ -586,12 +642,16 @@ async function swapWeatherBasis(ctx: CommandContext, board: BoardRow, revision: 
   }
   const newest = usable(supplied) ? supplied : await latestWeatherSnapshot(ctx.db, ctx.userId, board.local_date, parseScope(board.scope).base === "trip");
   const storedUsable = usable(stored);
+  const maxAge = dailySettings(ctx.settings).weatherMaxAgeMinutes;
   if (usable(newest) && newest.snapshotId !== stored?.snapshotId && (!storedUsable || newest.fetchedAt > stored.fetchedAt)) {
-    return { kind: "refreshed", snapshot: newest, ageMinutes: Math.max(0, Math.round((ctx.nowMs - Date.parse(newest.fetchedAt)) / 60_000)) };
+    const age = Math.max(0, Math.round((ctx.nowMs - Date.parse(newest.fetchedAt)) / 60_000));
+    // Newer than the board's forecast is not the same as fresh: a newer snapshot past the threshold
+    // still governs the swap, but it is stated as stale and the board is rechecked.
+    return { kind: age > maxAge ? "stale" : "refreshed", snapshot: newest, ageMinutes: age };
   }
   if (!storedUsable) return { kind: "unavailable", snapshot: null, ageMinutes: null };
   const ageMinutes = Math.max(0, Math.round((ctx.nowMs - Date.parse(stored.fetchedAt)) / 60_000));
-  return { kind: ageMinutes > dailySettings(ctx.settings).weatherMaxAgeMinutes ? "stale" : "current", snapshot: null, ageMinutes };
+  return { kind: ageMinutes > maxAge ? "stale" : "current", snapshot: null, ageMinutes };
 }
 
 export const boardSwapSlot = define({
@@ -670,7 +730,7 @@ export const boardSwapSlot = define({
     for (const statement of repeatStatements(offered)) carried = carried.replace(statement, "");
     carried = carried.replace(/\s+/g, " ").trim();
     const staleNote = basis.kind === "stale" ? `The forecast behind this board is ${formatAge(basis.ageMinutes ?? 0)} old. The swap was checked against it and is rechecked when a fresh forecast is read.` : null;
-    const notice = basis.snapshot ? boardNotice(rc, shortage, nextOffered) : [carried, ...repeatStatements(nextOffered), staleNote].filter(Boolean).join(" ") || null;
+    const notice = (basis.snapshot ? [boardNotice(rc, shortage, nextOffered), staleNote] : [carried, ...repeatStatements(nextOffered), staleNote]).filter(Boolean).join(" ") || null;
     const write = await planRevisionWrite(ctx, {
       existing: board,
       scope: board.scope,
@@ -742,19 +802,23 @@ export const boardSwapSlot = define({
     const rc = basis.snapshot
       ? await assembleContext(ctx.db, ctx.principal, { localDate: board.local_date, nowMs: ctx.nowMs, scope: board.scope, brief: revisionNow.brief, weather: basis.snapshot, calendar: base.rc.calendar, withoutProfileText: true, repeatExceptions: honoursRepeatExceptions(revisionNow) })
       : base.rc;
+    // Every earlier outfit is validated now, and its evidence is rebuilt from that validation: the old
+    // revision's availability and weather evidence is never copied into the new revision.
+    const evidenceNow = new Map<string, OptionEvidence>();
     for (const o of beforeOptions.filter((x) => x.state === "offered" || x.state === "reserve")) {
       const v = validateCandidate(rc, { slots: o.slots, footwearAlternatives: o.footwearAlternatives }, { requirePairedFootwear: true, explicitGarmentIds: o.evidence.explicitGarmentIds ?? [], ignoreBriefInclusions: true });
       if (!v.valid) {
         const blockers = v.violations.filter((x) => x.severity === "blocking");
         throw new CommandError("precondition_failed", `the board as it was before the swap is no longer valid${o.state === "reserve" ? " (one of its reserve outfits)" : ""}: ${blockers.map((x) => x.message).join("; ")}; nothing was changed`, { violations: blockers, optionId: o.optionId });
       }
+      evidenceNow.set(o.optionId, optionEvidence(v, Number((v.evidence as any).availability.jointAvailability), { source: o.evidence.source, explanationSource: o.evidence.explanationSource, removedClaims: o.evidence.removedClaims ?? [], explicitGarmentIds: o.evidence.explicitGarmentIds ?? [] }));
     }
     const requestedCount = revisionNow.requested_count;
     const offered = base.options.filter((o) => o.state === "offered");
     // The outfits come back as they were; which of them suit the day's event is judged again in the
     // current context, never carried from the earlier revision.
-    const nextOffered = beforeOptions.filter((o) => o.state === "offered").map((o) => ({ ...storedToDraft(o, o.optionId === before.optionId), suitsEventIds: suitsEventIdsFor(rc, o) }));
-    const nextReserves = beforeOptions.filter((o) => o.state === "reserve").map((o) => ({ ...storedToDraft(o), suitsEventIds: [] }));
+    const nextOffered = beforeOptions.filter((o) => o.state === "offered").map((o) => ({ ...storedToDraft(o, o.optionId === before.optionId), suitsEventIds: suitsEventIdsFor(rc, o), evidence: evidenceNow.get(o.optionId)! }));
+    const nextReserves = beforeOptions.filter((o) => o.state === "reserve").map((o) => ({ ...storedToDraft(o), suitsEventIds: [], evidence: evidenceNow.get(o.optionId)! }));
     const shortage = nextOffered.length < requestedCount ? `${nextOffered.length} valid ${nextOffered.length === 1 ? "outfit" : "outfits"} instead of ${requestedCount}.` : null;
     const staleNote = basis.kind === "stale" ? `The forecast behind this board is ${formatAge(basis.ageMinutes ?? 0)} old. The undo was checked against it and is rechecked when a fresh forecast is read.` : null;
     const notice = [boardNotice(rc, shortage, nextOffered), staleNote].filter(Boolean).join(" ") || null;
