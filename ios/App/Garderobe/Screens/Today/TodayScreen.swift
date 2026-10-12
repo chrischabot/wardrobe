@@ -46,6 +46,11 @@ struct TodayScreen: View {
                 .font(.largeTitle.weight(.bold))
                 .accessibilityAddTraits(.isHeader)
                 .accessibilityIdentifier(AXID.todayDate)
+            if today.viewedDate != nil {
+                // Opened from a link for another day: say so, and offer the way back.
+                Button("Back to today's board") { Task { await app.returnToToday() } }
+                    .frame(minHeight: Metrics.touch)
+            }
             if let weather = today.board?.weatherLine {
                 Button { showsWeather = true } label: {
                     HStack(alignment: .firstTextBaseline, spacing: Metrics.unit * 2) {

@@ -148,17 +148,52 @@ public final class AppModel {
 
     /// Opens a link from the Calendar event or the web board: `/board`, `/board/{date}` with an
     /// optional `#optionId` or `?option=`. The same stable option identity is used on every surface.
+    /// A malformed date is not a board link. The linked day's board is loaded first and the option
+    /// is marked only on it, never on another day's board.
     @discardableResult
     public func open(url: URL) -> Bool {
-        let parts = url.pathComponents.filter { $0 != "/" }
-        guard parts.first == "board" else { return false }
-        let option = url.fragment ?? URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "option" }?.value
-        highlightedOptionId = option.flatMap { $0.isEmpty ? nil : $0 }
+        guard let link = BoardLink(url: url) else { return false }
+        let generation = beginLink()
         sheet = nil
         setPath([], for: .today)
         selectedTab = .today
+        Task { @MainActor [weak self] in await self?.load(link, generation: generation) }
         return true
     }
+
+    /// Loads the board a link names, then marks its option. Only the latest link (or return to
+    /// today) counts: an earlier one that finishes later marks nothing.
+    public func follow(_ link: BoardLink) async {
+        await load(link, generation: beginLink())
+    }
+
+    /// Today's own board again, with no mark from a link for another day.
+    public func returnToToday() async {
+        _ = beginLink()
+        await today.show(date: nil)
+    }
+
+    /// Starts a link open or return to today: earlier ones lose their claim to the mark at once.
+    private func beginLink() -> Int {
+        linkGeneration += 1
+        highlightedOptionId = nil
+        return linkGeneration
+    }
+
+    /// Marks the option only when this is still the latest link and a board for the linked day is
+    /// on screen (just read, or cached when the read failed). A superseded link loads nothing; a
+    /// first read that fails, a stale cached day or a day with no board marks nothing.
+    private func load(_ link: BoardLink, generation: Int) async {
+        guard generation == linkGeneration else { return }
+        await today.show(date: link.date)
+        guard generation == linkGeneration, today.viewedDate == today.viewTarget(for: link.date),
+              let shown = today.today.value, shown.board != nil,
+              shown.localDate == (link.date ?? environment.today) else { return }
+        highlightedOptionId = link.optionId
+    }
+
+    /// Counts link opens and returns to today, so a slower earlier one cannot mark a later board.
+    private var linkGeneration = 0
 
     public func clearHighlight() { highlightedOptionId = nil }
 
@@ -386,5 +421,28 @@ public final class GarmentImageLoader {
         inFlight[key] = nil
         if let result, result.isEmpty { missing.insert(key); return nil }
         return result
+    }
+}
+
+/// A board link from the Calendar event or the web board: `/board` or `/board/{date}`, with an
+/// optional `#optionId` or `?option=`.
+public struct BoardLink: Sendable, Equatable {
+    /// The day the link names; nil for the current board.
+    public let date: LocalDate?
+    public let optionId: String?
+
+    public init?(url: URL) {
+        let parts = url.pathComponents.filter { $0 != "/" }
+        guard parts.first == "board", parts.count <= 2 else { return nil }
+        if parts.count == 2 {
+            // A calendar date that exists: 2026-02-30 is not one.
+            let day = parts[1]
+            guard Dates.isLocalDate(day), let noon = Dates.noon(of: day, in: Dates.utc), Dates.localDate(of: noon, in: Dates.utc) == day else { return nil }
+            date = day
+        } else {
+            date = nil
+        }
+        let option = url.fragment ?? URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first { $0.name == "option" }?.value
+        optionId = option.flatMap { $0.isEmpty ? nil : $0 }
     }
 }

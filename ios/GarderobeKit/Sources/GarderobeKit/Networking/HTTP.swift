@@ -179,7 +179,7 @@ public enum APIFailure: Error, Sendable, Equatable {
     /// A sentence for the owner. Backend messages are factual and are shown as written.
     public var ownerMessage: String {
         switch self {
-        case .transport: return "No connection. Nothing was sent."
+        case .transport: return "No answer from the server. Whether it received the request is not known."
         case .api(_, let e): return e.message
         case .status(let s): return "The server answered with status \(s)."
         case .decoding: return "The server's answer was not in the expected format. Update the app if this continues."

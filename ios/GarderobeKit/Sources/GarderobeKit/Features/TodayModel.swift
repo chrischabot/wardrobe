@@ -54,7 +54,11 @@ public enum AnotherOutfitState: Sendable, Equatable {
 @Observable
 public final class TodayModel {
     public let environment: AppEnvironment
-    public let today: Resource<TodayResponse>
+    public private(set) var today: Resource<TodayResponse>
+    /// Today's own board, kept while another day's board is shown.
+    private let todaysBoard: Resource<TodayResponse>
+    /// The day whose board is shown when it is not today (opened from a dated board link), or nil.
+    public private(set) var viewedDate: LocalDate?
     /// The hourly basis behind the weather line, loaded when the owner taps it.
     public let weather: Resource<WeatherSnapshot>
     /// Style context, read only to find the day's brief so it can be cleared.
@@ -91,7 +95,9 @@ public final class TodayModel {
         self.environment = environment
         self.sleep = sleep
         let api = environment.api
-        today = environment.resource("today") { try await api.today() }
+        let current = environment.resource("today") { try await api.today() }
+        todaysBoard = current
+        today = current
         weather = environment.resource("today.weather") { try await api.weather() }
         style = environment.resource("style") { try await api.style() }
         showsComparison = environment.restoration.load("today.comparison") ?? false
@@ -118,6 +124,29 @@ public final class TodayModel {
 
     public var board: BoardDocument? { today.value?.board }
 
+    /// Shows the board of `date`, read from the backend for that day and cached under its own
+    /// name, so today's cached board is never replaced by another day's. Nil, or today's date,
+    /// shows today's board again.
+    public func show(date: LocalDate?) async {
+        let target = viewTarget(for: date)
+        if target != viewedDate {
+            viewedDate = target
+            if let target {
+                let api = environment.api
+                today = environment.resource("today.\(target)") { try await api.today(date: target) }
+            } else {
+                today = todaysBoard
+            }
+            today.loadCached()
+        }
+        await refresh()
+    }
+
+    /// The day `show(date:)` keeps in `viewedDate` for a requested date: nil for today.
+    public func viewTarget(for date: LocalDate?) -> LocalDate? {
+        (date == nil || date == environment.today) ? nil : date
+    }
+
     /// The garments recorded as worn today. Once this is non-empty the day has a record and
     /// the board is history: nothing restyles it in the background.
     public var dayRecord: [BoardGarmentLine] { today.value?.dayRecord ?? [] }
@@ -125,7 +154,7 @@ public final class TodayModel {
 
     /// `Tuesday 15 September`.
     public var dateLine: String {
-        Phrases.weekdayDayMonth(today.value?.localDate ?? environment.today)
+        Phrases.weekdayDayMonth(today.value?.localDate ?? viewedDate ?? environment.today)
     }
 
     public var options: [OptionPresentation] {

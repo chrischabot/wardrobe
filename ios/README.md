@@ -210,7 +210,8 @@ configured on the backend, and an app icon for
 7. VoiceOver through Today, Wardrobe, an item, Laundry and Studio; the largest accessibility text size; dark
    mode; Reduce Motion; Increase Contrast; Reduce Transparency; denied photo access.
 8. Share a product page from Safari into Garderobe.
-9. Open a board link from Calendar: it opens the app when installed, the private web board otherwise.
+9. Open a board link from Calendar: it opens the app when installed, the private web board otherwise. A
+   link for another day (`/board/{date}`) shows that day's board with "Back to today's board".
 10. Confirm and reject a request from a connected assistant and one from Conversation (Settings, Requests
     to confirm, and the Review requests link under a reply).
 11. Turn notifications on (Settings, Notifications): the system prompt, the registration shown as the
