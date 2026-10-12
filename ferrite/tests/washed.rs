@@ -114,6 +114,25 @@ async fn a_listed_count_is_honoured_when_the_same_garment_is_also_in_the_named_c
 }
 
 #[tokio::test]
+async fn a_back_dated_channel_wash_covers_what_was_in_the_hamper_at_that_time() {
+    let mut store = MemStore::default();
+    let iso = |ms: u64| wardrobe::time::instant(ms);
+    run(&mut store, OWNER, T0, "care.mark_dirty", json!({"items": [{"garmentId": SOCK_BISCUIT, "quantity": 2}]}), "dirty-0001").await.unwrap();
+    // Later that day the socks are reported washed by name...
+    let later = run(&mut store, OWNER, T0 + 3 * HOUR, "care.washed", json!({"items": [{"garmentId": SOCK_BISCUIT}]}), "washed-0001").await.unwrap();
+    assert_eq!(later["result"], json!({"washed": [SOCK_BISCUIT], "units": 2}));
+    // ...and then "socks washed" is reported as of an hour after they went in the hamper.
+    let env = json!({"type": "care.washed", "payload": {"allOfChannel": "handwash"}, "idempotencyKey": "washed-0002", "occurredAt": iso(T0 + HOUR), "authorization": "owner_tap", "source": {"channel": "ios"}});
+    let early = api::execute(&mut store, OWNER, T0 + 4 * HOUR, &env).await.unwrap();
+    assert_eq!(early["outcome"], "committed", "the socks were awaiting a wash at the reported time: {}", early["summary"]);
+    assert_eq!(early["result"], json!({"washed": [SOCK_BISCUIT], "units": 2}));
+    assert_eq!(balances(&mut store, SOCK_BISCUIT).await, (2, 0, 0));
+    // Undoing the later report leaves the earlier wash in place: the socks stay clean.
+    undo(&mut store, T0 + 5 * HOUR, &later, "undo-0001").await;
+    assert_eq!(balances(&mut store, SOCK_BISCUIT).await, (2, 0, 0), "undoing the later report leaves the earlier wash in place");
+}
+
+#[tokio::test]
 async fn a_wash_of_what_was_not_awaiting_one_changes_nothing_and_writes_nothing() {
     let mut store = MemStore::default();
     // Nothing hand-washed is in the hamper.

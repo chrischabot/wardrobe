@@ -292,6 +292,35 @@ async fn the_codex_flow_reads_writes_with_a_receipt_and_undoes() {
     assert_eq!(init.json["result"]["serverInfo"]["name"], "garderobe");
     let note = send(&mut store, T0, "POST", "/mcp", Some(&format!("Bearer {access}")), br#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.to_vec()).await;
     assert_eq!(note.status, 202);
+    // A response to a server request is accepted; a message with neither a method nor a response's
+    // shape (no id, both or neither of result and error, a stray key, a non-string method) is refused.
+    let bearer = format!("Bearer {access}");
+    let reply = send(&mut store, T0, "POST", "/mcp", Some(&bearer), br#"{"jsonrpc":"2.0","id":7,"result":{}}"#.to_vec()).await;
+    assert_eq!(reply.status, 202);
+    for ok in [
+        r#"{"jsonrpc":"2.0","id":"a","error":{"code":-32601,"message":"no such method"}}"#,
+        r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"parse error","data":{}}}"#,
+        r#"{"jsonrpc":"2.0","id":8,"error":{"code":9223372036854775808,"message":"large"}}"#,
+    ] {
+        let r = send(&mut store, T0, "POST", "/mcp", Some(&bearer), ok.as_bytes().to_vec()).await;
+        assert_eq!(r.status, 202, "{ok}");
+    }
+    for bad in [
+        r#"{"jsonrpc":"2.0","id":7,"error":null}"#,
+        r#"{"jsonrpc":"2.0","id":7,"error":{}}"#,
+        r#"{"jsonrpc":"2.0","id":7,"error":{"code":1.5,"message":"x"}}"#,
+        r#"{"jsonrpc":"2.0","id":7,"error":{"code":1,"message":"x","extra":1}}"#,
+        r#"{"jsonrpc":"2.0","id":null,"result":{}}"#,
+        r#"{"jsonrpc":"2.0","id":7}"#,
+        r#"{"jsonrpc":"2.0"}"#,
+        r#"{"jsonrpc":"2.0","id":7,"result":{},"error":{}}"#,
+        r#"{"jsonrpc":"2.0","result":{}}"#,
+        r#"{"jsonrpc":"2.0","id":7,"result":{},"params":{}}"#,
+        r#"{"jsonrpc":"2.0","id":7,"method":42}"#,
+    ] {
+        let r = send(&mut store, T0, "POST", "/mcp", Some(&bearer), bad.as_bytes().to_vec()).await;
+        assert_eq!((r.status, r.json["error"]["code"].clone()), (400, json!(-32600)), "{bad}");
+    }
     let list = rpc(&mut store, T0, &access, 2, "tools/list", json!({})).await;
     let names: Vec<&str> = list.json["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
     assert_eq!(names, vec!["garderobe_today", "garderobe_recommend", "garderobe_inventory", "garderobe_run", "garderobe_ask", "garderobe_research", "garderobe_command"]);

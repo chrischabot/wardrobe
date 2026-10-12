@@ -836,7 +836,10 @@ pub fn washed(ctx: &Ctx<'_>, ledger: &mut Ledger, payload: &Value) -> Result<Pla
         asked.push((g, q.unwrap_or(0), q.is_none()));
     }
     if let Some(c) = &channel {
-        let mut of_channel: Vec<&Garment> = ctx.cat.garments.iter().filter(|g| &g.care_channel == c && before.of(&g.id).dirty > 0 && !asked.iter().any(|a| a.0.id == g.id)).collect();
+        // Which garments were awaiting a wash is read as the ledger stood at the reported time, so a
+        // back-dated report covers what was in the hamper then, even if a later event cleaned it.
+        let then = replay_until(ctx.cat, &ledger.events, ctx.occurred_at_ms);
+        let mut of_channel: Vec<&Garment> = ctx.cat.garments.iter().filter(|g| &g.care_channel == c && then.of(&g.id).dirty > 0 && !asked.iter().any(|a| a.0.id == g.id)).collect();
         of_channel.sort_by(|a, b| a.name.cmp(&b.name).then(a.id.cmp(&b.id)));
         asked.extend(of_channel.into_iter().map(|g| (g, 0, false)));
     }

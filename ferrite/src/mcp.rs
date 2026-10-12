@@ -99,7 +99,30 @@ pub async fn handle<S: Store, T: Transport>(store: &mut S, origin: &str, inferen
     }
     let id = obj.get("id").cloned();
     let Some(method) = obj.get("method").and_then(Value::as_str) else {
-        // A response to a server request; this server sends none.
+        // Without a method, only a well-formed JSON-RPC response (to a server request; this server
+        // sends none) is accepted: an id, exactly one of `result` or `error`, and nothing else. An
+        // error is `{code: integer, message: string, data?}`, and only an error may carry a null id
+        // (the request's id could not be read). Anything else is refused rather than swallowed.
+        let error_ok = match obj.get("error") {
+            None => true,
+            Some(Value::Object(e)) => {
+                e.get("code").map_or(false, |c| c.is_i64() || c.is_u64())
+                    && e.get("message").map_or(false, Value::is_string)
+                    && e.keys().all(|k| matches!(k.as_str(), "code" | "message" | "data"))
+            }
+            Some(_) => false,
+        };
+        let id_ok = match obj.get("id") {
+            Some(Value::String(_)) => true,
+            Some(Value::Number(n)) => n.is_i64() || n.is_u64(),
+            Some(Value::Null) => obj.contains_key("error"),
+            _ => false,
+        };
+        let one_outcome = obj.contains_key("result") != obj.contains_key("error");
+        let only_keys = obj.keys().all(|k| matches!(k.as_str(), "jsonrpc" | "id" | "result" | "error"));
+        if obj.contains_key("method") || !id_ok || !one_outcome || !only_keys || !error_ok {
+            return rpc_error(400, Value::Null, -32600, "expected a JSON-RPC request with a string method, a notification, or a response");
+        }
         return Reply::empty(202);
     };
     let Some(id) = id else {
