@@ -173,6 +173,9 @@ has it), with a repair on the receipt. A pickup or return given an earlier
 time is sized from the stock as it stood then, not as it stands now; one that
 would change what another bag's pickup or return moved (take a piece that bag
 is recorded with) is refused, so a batch's record always matches the stock.
+The same holds for a wash report given an earlier time (one at the present
+time always stands). An undo compares, for every other event, what it moved,
+which bag any unit it took back came from, and its repairs.
 The boards named in `expectedVersions` are not read for an observation, so an
 unrelated board can never refuse a wash report.
 

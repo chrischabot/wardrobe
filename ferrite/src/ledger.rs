@@ -303,6 +303,8 @@ pub struct Replay {
     pub service: BTreeMap<String, BTreeMap<String, Holding>>,
     /// Units each event moved.
     pub moved: BTreeMap<String, u32>,
+    /// Units a wash report took back from the laundry, by the batch each came from.
+    pub pulled: BTreeMap<String, BTreeMap<String, u32>>,
     /// Repairs by the event that needed them, in replay order.
     pub repairs: Vec<(String, String)>,
 }
@@ -405,6 +407,7 @@ pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
                     if h.quantity == 0 {
                         held.remove(&batch);
                     }
+                    *out.pulled.entry(e.id.clone()).or_default().entry(batch.clone()).or_default() += 1;
                     st.dirty += 1;
                     q += 1;
                     out.repairs.push((e.id.clone(), format!("{}: the ledger had this item at the laundry; the wash report establishes it is with the owner", g.name)));
@@ -560,6 +563,7 @@ pub fn mark_dirty(ctx: &Ctx<'_>, ledger: &mut Ledger, payload: &Value) -> Result
         touched.insert(g.id.clone());
     }
     let after = replay(ctx.cat, &ledger.events);
+    other_bags_changed(ctx, ledger, &before, &after)?;
     let units: u32 = event_ids.iter().map(|id| after.moved.get(id).copied().unwrap_or(0)).sum();
     let affected = affected(ledger, &touched);
     Ok(Plan {
@@ -669,16 +673,46 @@ pub fn void_events(ctx: &Ctx<'_>, ledger: &mut Ledger, data: &Value, target: &st
     Ok(Voided { before, after, touched })
 }
 
-/// Undo is exact or refused: voiding a command's events must not change what any other event moved or
-/// repaired, whether that event was recorded after it or happened after it (a back-dated report
-/// reinterprets one already on record; a pickup took the unit a wash report put in the hamper).
-/// Returns the names of the garments whose other records would read differently.
+/// Whether one event's effect differs between two replays: what it moved, which laundry batch any
+/// units it took back came from, and the repairs it needed.
+fn effect_changed(id: &str, before: &Replay, after: &Replay) -> bool {
+    let ids = [id.to_string()];
+    before.moved.get(id) != after.moved.get(id) || before.pulled.get(id) != after.pulled.get(id) || before.repairs_of(&ids) != after.repairs_of(&ids)
+}
+
+/// Batches record what their pickups and returns moved. An observation dated earlier must not change
+/// what another command's pickup or return moved, or that bag's record would disagree with the stock;
+/// such a report is refused (nothing is written) and names the pieces concerned. A report at the
+/// present time always sorts after them and is never refused here.
+pub(crate) fn other_bags_changed(ctx: &Ctx<'_>, ledger: &Ledger, before: &Replay, after: &Replay) -> Result<(), CmdError> {
+    let mut names: Vec<String> = Vec::new();
+    for e in ledger.events.iter().filter(|e| e.voided_by.is_none() && e.command_id != ctx.command_id && (e.kind == "pickup" || e.kind == "return")) {
+        if before.moved.get(&e.id) != after.moved.get(&e.id) {
+            let name = ctx.cat.get(&e.garment_id).map_or_else(|| e.garment_id.clone(), |g| g.name.clone());
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    if names.is_empty() {
+        return Ok(());
+    }
+    Err(CmdError::with(
+        "precondition_failed",
+        format!("at the time given, this would change what a laundry bag is recorded with ({}); give a later time, or undo that bag's record first; nothing was written", name_list(&names)),
+        json!({"reason": "changes_another_batch", "occurredAt": crate::time::instant(ctx.occurred_at_ms)}),
+    ))
+}
+
+/// Undo is exact or refused: voiding a command's events must not change what any other event moved,
+/// took back from which batch, or repaired, whether that event was recorded after it or happened
+/// after it (a back-dated report reinterprets one already on record; a pickup took the unit a wash
+/// report put in the hamper). Returns the names of the garments whose other records would read differently.
 pub(crate) fn others_changed(ctx: &Ctx<'_>, ledger: &Ledger, data: &Value, voided: &Voided) -> Vec<String> {
     let own: Vec<&str> = arr(data, "stockEventIds").iter().filter_map(Value::as_str).collect();
     let mut names: Vec<String> = Vec::new();
     for e in ledger.events.iter().filter(|e| e.voided_by.is_none() && !own.contains(&e.id.as_str())) {
-        let ids = [e.id.clone()];
-        let changed = voided.before.moved.get(&e.id) != voided.after.moved.get(&e.id) || voided.before.repairs_of(&ids) != voided.after.repairs_of(&ids);
+        let changed = effect_changed(&e.id, &voided.before, &voided.after);
         let name = ctx.cat.get(&e.garment_id).map_or_else(|| e.garment_id.clone(), |g| g.name.clone());
         if changed && !names.contains(&name) {
             names.push(name);

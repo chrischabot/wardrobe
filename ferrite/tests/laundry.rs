@@ -343,6 +343,43 @@ async fn an_observation_never_reads_the_boards_its_expected_versions_name() {
 }
 
 #[tokio::test]
+async fn a_back_dated_wash_report_never_rewrites_a_recorded_return() {
+    let mut store = MemStore::default();
+    dirty(&mut store, T0, &[OXFORD_BLUE], "dirty-0001").await;
+    run(&mut store, OWNER, T0 + HOUR, "laundry.collect", json!({"batchId": "bag-r"}), "collect-0001").await.unwrap();
+    run(&mut store, OWNER, T0 + 30 * HOUR, "laundry.return", json!({}), "return-0001").await.unwrap();
+    // Dated while the shirt was at the laundry, it would pull the shirt out of the bag and leave the
+    // recorded return having brought back nothing: refused, and nothing is written.
+    let before = store.clone();
+    let e = run_at(&mut store, OWNER, T0 + 31 * HOUR, Some(T0 + 10 * HOUR), "care.mark_dirty", json!({"items": [{"garmentId": OXFORD_BLUE}]}), "dirty-0002").await.unwrap_err();
+    assert_eq!((e.code, e.details["reason"].clone()), ("precondition_failed", json!("changes_another_batch")), "{}", e.message);
+    assert_eq!(store.data, before.data);
+    // At the present time the report stands, as the owner's word always does.
+    dirty(&mut store, T0 + 31 * HOUR, &[OXFORD_BLUE], "dirty-0003").await;
+    assert_eq!(balances(&mut store, OXFORD_BLUE).await, (0, 1, 0));
+}
+
+#[tokio::test]
+async fn a_pickup_is_not_withdrawn_when_a_report_would_then_take_its_unit_from_another_bag() {
+    const WALNUT: &str = "gmt_ff25dfaf5876e58a551fe11d"; // Di Sondrio walnut chino, two units, laundered by the service
+    let mut store = MemStore::default();
+    let one = || json!({"items": [{"garmentId": WALNUT}]});
+    run(&mut store, OWNER, T0, "care.mark_dirty", one(), "dirty-0001").await.unwrap();
+    let a = run(&mut store, OWNER, T0 + HOUR, "laundry.collect", json!({"batchId": "bag-a"}), "collect-a").await.unwrap();
+    run(&mut store, OWNER, T0 + 2 * HOUR, "care.mark_dirty", one(), "dirty-0002").await.unwrap();
+    run(&mut store, OWNER, T0 + 3 * HOUR, "laundry.collect", json!({"batchId": "bag-b"}), "collect-b").await.unwrap();
+    assert_eq!(balances(&mut store, WALNUT).await, (0, 0, 2));
+    // The owner has one pair in the hamper: it is taken back from the older bag, bag-a.
+    run(&mut store, OWNER, T0 + 4 * HOUR, "care.mark_dirty", one(), "dirty-0003").await.unwrap();
+    // Withdrawing bag-a would make that report take the pair from bag-b instead (same count, same
+    // words): bag-b's contents would change, so the withdrawal is refused.
+    let before = store.clone();
+    let e = run(&mut store, OWNER, T0 + 5 * HOUR, "command.undo", json!({"commandId": a["commandId"]}), "undo-a-0001").await.unwrap_err();
+    assert_eq!(e.code, "not_undoable", "{}", e.message);
+    assert_eq!(store.data, before.data);
+}
+
+#[tokio::test]
 async fn laundry_refusals_write_nothing() {
     let mut store = MemStore::default();
     // Nothing awaiting the service: a no-op with a receipt, nothing to undo.

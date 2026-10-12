@@ -137,28 +137,9 @@ fn relied_on(names: &[String], batch_id: Option<&str>) -> CmdError {
     )
 }
 
-/// Batches record what their pickups and returns moved. An observation dated earlier must not change
-/// what another bag's pickup or return moved, or that bag's record would disagree with the stock;
-/// such a report is refused (nothing is written) and names the pieces concerned.
-fn other_bags_changed(ctx: &Ctx<'_>, ledger: &Ledger, before: &crate::ledger::Replay, after: &crate::ledger::Replay) -> Result<(), CmdError> {
-    let mut names: Vec<String> = Vec::new();
-    for e in ledger.events.iter().filter(|e| e.voided_by.is_none() && e.command_id != ctx.command_id && (e.kind == "pickup" || e.kind == "return")) {
-        if before.moved.get(&e.id) != after.moved.get(&e.id) {
-            let name = ctx.cat.get(&e.garment_id).map_or_else(|| e.garment_id.clone(), |g| g.name.clone());
-            if !names.contains(&name) {
-                names.push(name);
-            }
-        }
-    }
-    if names.is_empty() {
-        return Ok(());
-    }
-    Err(CmdError::with(
-        "precondition_failed",
-        format!("at the time given, this would take pieces another laundry bag is recorded with ({}); give a later time, or undo that bag's record first; nothing was written", name_list(&names)),
-        json!({"reason": "changes_another_batch", "occurredAt": instant(ctx.occurred_at_ms)}),
-    ))
-}
+// Batches record what their pickups and returns moved: an observation dated earlier that would change
+// another bag's record is refused (see `ledger::other_bags_changed`).
+use crate::ledger::other_bags_changed;
 
 /// `laundry.collect`: the service picked up the laundry.
 pub fn collect(ctx: &Ctx<'_>, ledger: &mut Ledger, p: &Value) -> Result<Plan, CmdError> {
