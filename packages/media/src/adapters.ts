@@ -144,6 +144,12 @@ export interface DiscoveryProviderResult {
   browserSessions: number;
   browserSeconds: number;
   error?: string;
+  /**
+   * Whether an error is worth trying again later (the provider was unavailable, timed out or overloaded).
+   * Defaults to true; a provider sets false for a permanent refusal (an unsafe or missing page), which then
+   * counts as a completed search.
+   */
+  retryable?: boolean;
 }
 
 export interface DiscoveryProvider {
@@ -151,7 +157,17 @@ export interface DiscoveryProvider {
   strategies: DiscoveryStrategy[];
   /** True when the provider consumes Browser Run time (paced against the daily allowance). */
   usesBrowser: boolean;
-  search(query: DiscoveryQuery, budget: { maxPages: number; maxBrowserSessions: number }): Promise<DiscoveryProviderResult>;
+  search(query: DiscoveryQuery, budget: DiscoveryBudget): Promise<DiscoveryProviderResult>;
+}
+
+/** What one search may use. A browser provider must stop when `maxBrowserSeconds` is spent or `signal` aborts. */
+export interface DiscoveryBudget {
+  maxPages: number;
+  maxBrowserSessions: number;
+  /** Browser seconds reserved for this search (browser providers only); the search is abandoned past it. */
+  maxBrowserSeconds?: number;
+  /** Aborted when the time allowance is spent. */
+  signal?: AbortSignal;
 }
 
 /** Fetches one candidate image. The default implementation enforces destination, redirect, time and size limits. */

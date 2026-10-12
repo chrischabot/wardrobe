@@ -106,6 +106,7 @@ export function stripJpegMetadata(bytes: Uint8Array): Uint8Array {
   const parts: Uint8Array[] = [bytes.subarray(0, 2)];
   let o = 2;
   let sawScan = false;
+  let ended = false;
   while (o + 1 < bytes.length) {
     if (bytes[o] !== 0xff) throw new ImageDecodeError("corrupt", "invalid JPEG segment marker");
     const marker = bytes[o + 1]!;
@@ -113,7 +114,10 @@ export function stripJpegMetadata(bytes: Uint8Array): Uint8Array {
       o++;
       continue;
     }
-    if (marker === 0xd9) break;
+    if (marker === 0xd9) {
+      ended = true;
+      break;
+    }
     if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
       parts.push(bytes.subarray(o, o + 2));
       o += 2;
@@ -123,6 +127,9 @@ export function stripJpegMetadata(bytes: Uint8Array): Uint8Array {
     const len = (bytes[o + 2]! << 8) | bytes[o + 3]!;
     if (len < 2 || o + 2 + len > bytes.length) throw new ImageDecodeError("corrupt", "truncated JPEG segment");
     if (marker === 0xda) {
+      // The scan header: Ls, Ns (1 to 4 components), two bytes per component, then Ss, Se and Ah/Al.
+      const components = bytes[o + 4]!;
+      if (components < 1 || components > 4 || len !== 6 + 2 * components) throw new ImageDecodeError("corrupt", "malformed JPEG scan header");
       // A scan: its header, then entropy-coded data up to the next marker that is not a stuffed byte or a restart.
       let p = o + 2 + len;
       while (p < bytes.length) {
@@ -150,6 +157,8 @@ export function stripJpegMetadata(bytes: Uint8Array): Uint8Array {
     o += 2 + len;
   }
   if (!sawScan) throw new ImageDecodeError("corrupt", "the JPEG holds no image data");
+  // A file cut short before its end marker is refused rather than reported as cleaned.
+  if (!ended) throw new ImageDecodeError("corrupt", "the JPEG has no end marker");
   parts.push(new Uint8Array([0xff, 0xd9]));
   const total = parts.reduce((n, p) => n + p.length, 0);
   const out = new Uint8Array(total);

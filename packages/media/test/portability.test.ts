@@ -3,7 +3,7 @@ import { outfitValidator, registerDaily } from "@garderobe/daily";
 import { all, isCommandError } from "@garderobe/domain";
 import type { TestOwner } from "@garderobe/domain/testing";
 import {
-  exportMediaData, getComposition, getGarmentMedia, importMediaData, listMediaJobs, listPhotosNeeded, listStudioCombinations, listStudioDayPlans, openAssetImage, readExportFile, requestCompositePreview, type DiscoveryProvider, type MediaExport,
+  exportMediaData, getComposition, getGarmentMedia, importMediaData, listMediaDeletions, listMediaJobs, listPhotosNeeded, listStudioCombinations, listStudioDayPlans, openAssetImage, readExportFile, requestCompositePreview, type DiscoveryProvider, type MediaExport,
 } from "../src/index.ts";
 import { encodePng } from "../src/image/index.ts";
 import { createMediaHarness, syntheticShirt, syntheticTrousers, type MediaHarness } from "../src/testing/index.ts";
@@ -114,8 +114,9 @@ describe("portable export and clean import of the visual wardrobe", () => {
       read.push(key);
       return fromSource(key);
     });
-    expect(result).toEqual({ imported: { assets: data.records.assets.length, renditions: data.records.renditions.length, files: data.assets.length }, missing: [], mismatched: [], rejected: [], deletionsApplied: { assetsDeleted: 0, originalsPurged: 0, filesWithheld: 0 } });
-    expect(read.sort()).toEqual(data.assets.map((f) => f.file).sort());
+    expect(result).toEqual({ imported: { assets: data.records.assets.length, renditions: data.records.renditions.length, files: data.assets.length }, missing: [], mismatched: [], rejected: [], deletionsApplied: { assetsDeleted: 0, tombstonesImported: data.records.deletedAssets?.length ?? 0, originalsPurged: 0, filesWithheld: 0 } });
+    // Every file is read (once to verify it, once more just before writing it, when the bytes are re-checked).
+    expect([...new Set(read)].sort()).toEqual(data.assets.map((f) => f.file).sort());
 
     // The same asset and rendition identities, now under the importing owner's own prefix.
     const media = await getGarmentMedia(h.rt, target.principal(), "shirt-moss");
@@ -157,6 +158,10 @@ describe("portable export and clean import of the visual wardrobe", () => {
     const again = await exportMediaData(h.rt, target.principal());
     expect(again.records.renditions.map((r) => [r.rendition_id, r.sha256, r.file])).toEqual(data.records.renditions.map((r) => [r.rendition_id, r.sha256, r.file]));
     expect(again.records.combinations.map((c) => [c.combination_id, c.slots_json, c.signature])).toEqual(data.records.combinations.map((c) => [c.combination_id, c.slots_json, c.signature]));
+    // The tombstone of the image deleted before the export survives the round trip, so the restored owner's own
+    // deletion journal still names it and a restore of an older backup cannot bring it back.
+    expect(again.records.deletedAssets).toEqual(data.records.deletedAssets);
+    expect((await listMediaDeletions(h.rt, target.principal())).deletedAssets.map((d) => d.assetId)).toEqual([deletedAsset]);
   });
 
   it("reports missing and altered files, imports nothing that depends on them, and leaves the garment honestly without an image", async () => {
@@ -185,5 +190,33 @@ describe("portable export and clean import of the visual wardrobe", () => {
     expect(trousers).toMatchObject({ imageState: "not_started", image: { hasRealImage: false, renditionId: null, missingImageNote: "No photo yet" } });
     expect((await h.bindings.MEDIA_BUCKET.list({ prefix: `u/${target.userId}/assets/${trouserAsset}/original` })).objects).toHaveLength(0);
     expect(result.imported.assets).toBe(data.records.assets.length - 1);
+  });
+
+  it("an import that stopped part way is completed by running it again with the same package, and a finished one is not repeated", async () => {
+    const target = await newTarget("Synthetic owner (interrupted import)");
+    let calls = 0;
+    // TEST DOUBLE: the same command service, made to fail on its third import command (a process that stopped).
+    const failing = { ...h.rt, service: Object.assign(Object.create(Object.getPrototypeOf(h.rt.service)), h.rt.service, {
+      execute: async (...args: Parameters<typeof h.rt.service.execute>) => {
+        if (++calls === 3) throw new Error("TEST: the import stopped here");
+        return h.rt.service.execute(...args);
+      },
+    }) };
+    await expect(importMediaData(failing, importer(target), data, fromSource)).rejects.toThrow(/TEST: the import stopped here/);
+    expect((await all(h.db, "SELECT 1 FROM media_assets WHERE user_id = ?", target.userId)).length).toBeGreaterThan(0); // part of it committed
+    const resumed = await importMediaData(h.rt, importer(target), data, fromSource);
+    expect(resumed.imported).toEqual({ assets: data.records.assets.length, renditions: data.records.renditions.length, files: data.assets.length });
+    expect(await listStudioCombinations(h.rt, target.principal())).toEqual([expect.objectContaining({ combinationId })]);
+    expect((await listStudioDayPlans(h.rt, target.principal())).map((p) => p.planId)).toEqual([planId]);
+    expect(await code(importMediaData(h.rt, importer(target), data, fromSource))).toBe("precondition_failed");
+  });
+
+  it("does not store a file whose file-list entry disagrees with its record about what it is", async () => {
+    const target = await newTarget("Synthetic owner (relabelled file)");
+    const catalogue = data.assets.find((f) => f.assetId === shirtAsset && f.kind === "catalogue")!;
+    const relabelled = { ...data, assets: data.assets.map((f) => (f === catalogue ? { ...f, kind: "original" } : f)) };
+    const result = await importMediaData(h.rt, importer(target), relabelled, fromSource);
+    expect(result.mismatched).toEqual([catalogue.file]);
+    expect(await all(h.db, "SELECT 1 FROM media_renditions WHERE user_id = ? AND rendition_id = ?", target.userId, catalogue.renditionId)).toHaveLength(0);
   });
 });

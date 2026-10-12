@@ -253,6 +253,11 @@ export function uploadCommands(depsSource: MediaDepsSource): CommandDefinition<a
       return {
         summary: `${expired.length} unfinished upload${expired.length === 1 ? "" : "s"} expired; any bytes received were deleted`,
         statements: expired.map((id) => stmt("UPDATE media_uploads SET state = 'rejected', rejection_reason = 'the upload authorization expired before finalization', updated_at = ? WHERE user_id = ? AND upload_id = ? AND state = 'authorized'", ctx.now, ctx.userId, id)),
+        // Each upload is still unfinished when this commits: one that was finalized or rejected meanwhile refuses
+        // the whole command (the next sweep plans again without it), so the receipt never counts an upload that
+        // did not expire. The staging copy deleted above is never what a finalized upload keeps: finalization
+        // stores its own original under the asset's key before it commits.
+        preconditions: expired.map((id) => ({ label: `upload ${id} is still unfinished`, sql: "(SELECT state FROM media_uploads WHERE user_id = ? AND upload_id = ?) = 'authorized'", params: [ctx.userId, id], class: "state" as const })),
         result: { expired: expired.length },
         undo: { unavailableReason: "authorize a new upload instead" },
       };

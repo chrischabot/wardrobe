@@ -8,7 +8,7 @@
 import { json, stableId, sha256Hex } from "@garderobe/domain";
 import type { TransformationStep } from "@garderobe/contracts/ext/media";
 import {
-  catalogueView, checkFidelity, correctLighting, cropUniformBorders, decodeImage, decodePng, encodeJpeg, encodePng, fitWithin, ImageDecodeError, probeImage, resizeRaster, uniformBackgroundCutout, withoutLocation,
+  catalogueView, checkFidelity, correctLighting, cropUniformBorders, decodeImage, decodePng, encodeJpeg, encodePng, fitWithin, ImageDecodeError, probeImage, resizeRaster, uniformBackgroundCutout, withoutLocation, withoutLocationForConversion,
   FIDELITY_ALGORITHM_VERSION, PREPARE_ALGORITHM_VERSION, type FidelityReport as PixelFidelity, type Raster,
 } from "../image/index.ts";
 import { EDIT_CONSTRAINTS } from "../adapters.ts";
@@ -54,6 +54,11 @@ export async function runNormalizeJob(rt: MediaRuntime, job: JobRow): Promise<vo
   assertOwnedKey(userId, original.object_key);
   const object = await rt.deps.bucket.get(original.object_key);
   if (!object) throw new Error("the original image is missing from storage");
+  // Every stored original is read into bytes, within the upload size limit, before anything else sees it.
+  if (object.size > limits.maxUploadBytes) {
+    await done({ outcome: "kept_original", note: `The ${original.content_type} photo is stored, but is larger than the ${limits.maxUploadBytes}-byte limit for photos that are cleaned and converted` });
+    return;
+  }
   const originalBytes = new Uint8Array(await object.arrayBuffer());
   // The stored bytes must still be the bytes that were finalized.
   if ((await sha256Hex(originalBytes)) !== original.sha256) throw new Error("the stored original does not match its recorded checksum");
@@ -66,9 +71,14 @@ export async function runNormalizeJob(rt: MediaRuntime, job: JobRow): Promise<vo
       source = (await decodeImage(originalBytes, { maxPixels: limits.maxPixels })).raster;
       steps.push({ step: "decode", tool: "garderobe-image", version: NORMALIZER_VERSION, generative: false, params: { format: probe.format, exifOrientationApplied: probe.exif.orientation ?? 1 } });
     } else if (rt.deps.transcoder) {
-      // The converter gets the photograph without its location data wherever that can be left out first (WebP); a HEIC file can only be converted as it is.
-      const clean = withoutLocation(originalBytes);
-      const out = await rt.deps.transcoder.toPng({ bytes: clean.ok ? clean.bytes : originalBytes, contentType: original.content_type, maxEdge: limits.workingEdge });
+      // The converter gets the photograph without its location data: a JPEG, PNG or WebP rewritten without its
+      // metadata, a HEIC or AVIF with its Exif and XMP items blanked. One whose metadata cannot be removed is not sent.
+      const clean = withoutLocationForConversion(originalBytes, limits.maxUploadBytes);
+      if (!clean.ok) {
+        await done({ outcome: "kept_original", note: `The ${original.content_type} photo is stored, but was not sent for conversion because its location data could not be removed first: ${clean.reason}` });
+        return;
+      }
+      const out = await rt.deps.transcoder.toPng({ bytes: clean.bytes, contentType: original.content_type, maxEdge: limits.workingEdge });
       if (!out.ok) {
         await done({ outcome: "kept_original", note: `The ${original.content_type} photo is stored, but could not be converted for a catalogue view: ${out.reason}` });
         return;
@@ -136,7 +146,13 @@ export async function runNormalizeJob(rt: MediaRuntime, job: JobRow): Promise<vo
     if (out.reason === "background_not_uniform" && rt.deps.backgroundRemover) {
       const removed = await rt.deps.backgroundRemover.remove({ bytes: await encodePng(image), contentType: "image/png" });
       if (!removed.ok) return { declined: `background removal by ${rt.deps.backgroundRemover.name} failed: ${removed.reason}` };
-      const decoded = await decodePng(removed.png, { maxPixels: limits.maxPixels });
+      let decoded: Raster;
+      try {
+        decoded = await decodePng(removed.png, { maxPixels: limits.maxPixels });
+      } catch (e) {
+        // Unreadable or oversized provider output is discarded like any failed derivative; the job carries on to its fallback.
+        return { declined: `background removal by ${rt.deps.backgroundRemover.name} returned an image that could not be used (${String((e as Error)?.message ?? e).slice(0, 120)}); it was discarded` };
+      }
       const sized = decoded.width === image.width && decoded.height === image.height ? decoded : resizeRaster(decoded, image.width, image.height);
       return { raster: sized, steps: [{ step: "model_background_removal", tool: rt.deps.backgroundRemover.name, version: rt.deps.backgroundRemover.version, generative: false, params: {} }] };
     }
@@ -227,14 +243,19 @@ export async function runNormalizeJob(rt: MediaRuntime, job: JobRow): Promise<vo
           edited = true;
           attempt = await tryCutout(base);
           if ("raster" in attempt) {
+            // The cutout of an edited picture is checked twice: against the edit it was cut from, and against
+            // the photograph that was handed to the editor, so drift accumulated across both steps is caught.
             const cutReport = checkFidelity(base, attempt.raster, { mode: "cutout" });
-            if (cutReport.verdict === "passed") {
+            const toOriginal = checkFidelity(editInput, attempt.raster, { mode: "edit" });
+            if (cutReport.verdict === "passed" && toOriginal.verdict !== "failed") {
               cutout = attempt.raster;
               cutoutSteps = attempt.steps;
               fidelity.push(toRecorded(cutReport, "cutout", "pending"));
+              fidelity.push(toRecorded(toOriginal, "cutout", "pending"));
             } else {
               fidelity.push(toRecorded(cutReport, "cutout", null));
-              notes.push(describeFailure("The cutout of the edited rendition", cutReport));
+              fidelity.push(toRecorded(toOriginal, "cutout", null));
+              notes.push(cutReport.verdict !== "passed" ? describeFailure("The cutout of the edited rendition", cutReport) : describeFailure("The cutout of the edited rendition, compared with the photograph as taken,", toOriginal));
             }
           }
         }
@@ -246,8 +267,7 @@ export async function runNormalizeJob(rt: MediaRuntime, job: JobRow): Promise<vo
 
   if (cutout) {
     const cutRendition = await store("cutout", await encodePng(cutout), "image/png", cutout, baseRenditionId, [...baseSteps, ...cutoutSteps], edited);
-    const pending = fidelity.find((f) => f.renditionId === "pending");
-    if (pending) pending.renditionId = cutRendition.renditionId;
+    for (const f of fidelity) if (f.renditionId === "pending") f.renditionId = cutRendition.renditionId;
     const mask: Raster = { width: cutout.width, height: cutout.height, data: new Uint8ClampedArray(cutout.data.length) };
     for (let i = 0; i < cutout.data.length; i += 4) mask.data[i] = mask.data[i + 1] = mask.data[i + 2] = mask.data[i + 3] = cutout.data[i + 3]!;
     await store("mask", await encodePng(mask), "image/png", mask, cutRendition.renditionId, [...baseSteps, ...cutoutSteps, { step: "alpha_mask", tool: "garderobe-image", version: NORMALIZER_VERSION, generative: false, params: {} }], edited);

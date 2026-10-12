@@ -18,6 +18,21 @@ import { setQueueRuntime } from "./queue-runtime.ts";
 export * from "./fixtures.ts";
 export { getQueueRuntime, setQueueRuntime } from "./queue-runtime.ts";
 
+/**
+ * TEST SETUP for tests that send `media.import_records` directly (instead of through importMediaData): takes the
+ * owner's import lock for a fixed test package and plan, and returns the digests every such command must name and
+ * an idempotency key of that import.
+ */
+export async function holdTestImportLock(db: D1Database, userId: string, nowIso: string): Promise<{ importDigest: string; importPlanDigest: string; key: (suffix: string) => string }> {
+  const importDigest = "7e57".repeat(8);
+  const importPlanDigest = "9a1e".repeat(8);
+  await db
+    .prepare("INSERT INTO media_import_locks (user_id, package_digest, plan_digest, created_at, command_rowid) VALUES (?, ?, ?, ?, (SELECT COALESCE(MAX(rowid), 0) FROM commands WHERE user_id = ?)) ON CONFLICT (user_id) DO NOTHING")
+    .bind(userId, importDigest, importPlanDigest, nowIso, userId)
+    .run();
+  return { importDigest, importPlanDigest, key: (suffix) => `media-import:${userId}:${importDigest}:${suffix}` };
+}
+
 export interface MediaHarness extends Harness {
   rt: MediaRuntime;
   /** The live deps object: assign adapters on it (e.g. `h.deps.imageEditor = ...`) and they take effect at once. */

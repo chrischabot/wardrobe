@@ -116,7 +116,12 @@ export function createPurchaseLinkProvider(opts: { fetchImpl?: typeof fetch; now
       const link = query.garment.purchaseLink;
       if (!link) return { pages: [], browserSessions: 0, browserSeconds: 0 };
       const page = await safeFetch(link, { maxBytes: 2 * 1024 * 1024, accept: "text/html,application/xhtml+xml", contentTypes: /^(text\/html|application\/xhtml\+xml)$/, fetchImpl: opts.fetchImpl, ...(opts.resolver !== undefined ? { resolver: opts.resolver } : {}) });
-      if (!page.ok) return { pages: [], browserSessions: 0, browserSeconds: 0, error: `the recorded purchase link could not be read: ${page.reason}` };
+      if (!page.ok) {
+        // Only a network failure or an overloaded or failing server is tried again; a refusal (unsafe address,
+        // wrong content, missing page) is final.
+        const retryable = /^request failed|^HTTP (429|5\d\d)$/.test(page.reason);
+        return { pages: [], browserSessions: 0, browserSeconds: 0, error: `the recorded purchase link could not be read: ${page.reason}`, retryable };
+      }
       const html = new TextDecoder("utf-8", { fatal: false, ignoreBOM: false }).decode(page.bytes);
       const candidate = extractProductPage(html, page.finalUrl, new Date((opts.now ?? Date.now)()).toISOString().replace(/\.\d{3}Z$/, "Z"), link);
       return { pages: candidate ? [candidate] : [], browserSessions: 0, browserSeconds: 0 };

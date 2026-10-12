@@ -7,7 +7,7 @@ import { all, assertPrincipal, CommandError, first, requireScope, toInstant, typ
 import { MEDIA_THUMBNAIL_WIDTHS } from "@garderobe/contracts/ext/media";
 import type { MediaRenditionKind, SignedMediaUrl } from "@garderobe/contracts/ext/media";
 import { assertOwnedKey } from "./keys.ts";
-import { decodeImage, encodeJpeg, encodePng, withoutLocation } from "./image/index.ts";
+import { decodeImage, encodeJpeg, encodePng, withoutLocation, withoutLocationForConversion } from "./image/index.ts";
 import { limitsOf, type MediaRuntime } from "./runtime.ts";
 import { signClaims, verifyToken } from "./signing.ts";
 import { loadAsset, loadRenditions, pickDisplayRendition, type RenditionRow } from "./store.ts";
@@ -175,12 +175,16 @@ async function readRendition(rt: MediaRuntime, userId: string, row: RenditionRow
     const etag = `"${row.sha256.slice(0, 32)}-w${width}"`;
     const hit = cache ? await cache.match(cacheKey) : undefined;
     if (hit?.body) return { body: hit.body, contentType: hit.headers.get("content-type") ?? "image/webp", etag, byteLength: null, delivery: "resized" };
-    let input = (await stored()).data;
-    if (input instanceof Uint8Array) {
-      const clean = withoutLocation(input);
-      if (clean.ok) input = clean.bytes;
-    }
-    const result = await images.input(stream(input)).transform({ width, fit: "scale-down" }).output({ format: "image/webp", quality: 82 });
+    // Every file reaches the image service only as cleaned bytes, whatever kind of rendition it is and whether the
+    // owner asked for the photograph as supplied: read whole, then rewritten without its location data and other
+    // metadata (HEIC: metadata items blanked). One that cannot be cleaned is not sent: no thumbnail is made from it.
+    const object = await rt.deps.bucket.get(row.object_key);
+    if (!object) throw new CommandError("not_found", "no such image");
+    // Bounded by the upload size limit, like every image this service accepts; a larger object is not read or sent.
+    if (object.size > limitsOf(rt.deps).maxUploadBytes) throw new CommandError("not_found", NO_LOCATION_FREE_COPY, { reason: "too_large_to_clean" });
+    const clean = withoutLocationForConversion(new Uint8Array(await object.arrayBuffer()), limitsOf(rt.deps).maxUploadBytes);
+    if (!clean.ok) throw new CommandError("not_found", NO_LOCATION_FREE_COPY, { reason: "location_not_removable" });
+    const result = await images.input(stream(clean.bytes)).transform({ width, fit: "scale-down" }).output({ format: "image/webp", quality: 82 });
     const response = result.response({ headers: { "cache-control": "private, max-age=86400" } });
     if (strip) {
       // A thumbnail of an original: whatever the image service carried over is left out before it goes anywhere.

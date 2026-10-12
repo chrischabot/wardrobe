@@ -9,7 +9,7 @@ import { COMPOSITE_COLS, PREVIEW_INVALIDATED, staleCompositeItems, type Composit
 import { renderRaster } from "../compose/raster.ts";
 import { renderSvg } from "../compose/svg.ts";
 import { execSystem } from "../exec.ts";
-import { decodeImage, decodePng, encodePng, withoutLocation, type Raster } from "../image/index.ts";
+import { decodeImage, decodePng, encodePng, withoutLocation, withoutLocationForConversion, type Raster } from "../image/index.ts";
 import type { JobRow } from "../jobs.ts";
 import { assertOwnedKey, compositeKey } from "../keys.ts";
 import { limitsOf, type MediaRuntime } from "../runtime.ts";
@@ -49,14 +49,24 @@ export async function runRenderJob(rt: MediaRuntime, job: JobRow): Promise<void>
       assertOwnedKey(userId, r.object_key);
       const object = await rt.deps.bucket.get(r.object_key);
       if (!object) continue;
+      // Read into bytes only within the upload size limit; a larger stored file is drawn as a missing image.
+      if (object.size > limitsOf(rt.deps).maxUploadBytes) continue;
       const bytes = new Uint8Array(await object.arrayBuffer());
       try {
         images.set(r.rendition_id, (await decodeImage(bytes, { maxPixels: limitsOf(rt.deps).maxPixels })).raster);
       } catch {
         if (rt.deps.transcoder) {
-          const clean = withoutLocation(bytes);
-          const out = await rt.deps.transcoder.toPng({ bytes: clean.ok ? clean.bytes : bytes, contentType: r.content_type, maxEdge: 1200 });
-          if (out.ok) images.set(r.rendition_id, await decodePng(out.png));
+          // The converter gets the picture without its metadata (HEIC: metadata items blanked); one that cannot be cleaned is not sent.
+          const clean = withoutLocationForConversion(bytes, limitsOf(rt.deps).maxUploadBytes);
+          const out = clean.ok ? await rt.deps.transcoder.toPng({ bytes: clean.bytes, contentType: r.content_type, maxEdge: 1200 }) : null;
+          if (out?.ok) {
+            // The converter's output is held to the same pixel limit as any decoded image; an oversized or corrupt one renders as missing.
+            try {
+              images.set(r.rendition_id, await decodePng(out.png, { maxPixels: limitsOf(rt.deps).maxPixels }));
+            } catch {
+              /* drawn as a missing image */
+            }
+          }
         }
       }
     }

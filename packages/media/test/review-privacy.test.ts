@@ -6,7 +6,7 @@ import {
   suggestStudioOutfits, validateStudioOutfit, type MediaExport,
 } from "../src/index.ts";
 import { encodeJpeg, probeImage } from "../src/image/index.ts";
-import { createMediaHarness, syntheticShirt, syntheticTrousers, type MediaHarness } from "../src/testing/index.ts";
+import { createMediaHarness, holdTestImportLock, syntheticShirt, syntheticTrousers, type MediaHarness } from "../src/testing/index.ts";
 
 // Regression tests for the independent review of this package (findings M3, M4, M6 and L4 to L8).
 // SYNTHETIC TEST IMAGES. "Real" garments here are test records of a non-synthetic test owner.
@@ -43,8 +43,11 @@ describe("review M3 and M4: exports carry no storage keys; an import is authoriz
   const importer = (o: TestOwner) => o.principal({ channel: "import", actor: "system", scopes: ["read", "write", "admin"] });
   const fromSource = (file: string) => readExportFile(h.rt, source.principal(), file);
   const objectsOf = async (o: TestOwner) => (await h.bindings.MEDIA_BUCKET.list({ prefix: `u/${o.userId}/` })).objects.map((x) => x.key);
-  const record = (o: TestOwner, rows: Record<string, Record<string, unknown>[]>, key: string) =>
-    h.service.execute(importer(o), { type: "media.import_records", payload: { part: "assets", rows }, idempotencyKey: key, expectedVersions: {}, authorization: "data_import", source: { channel: "import" } });
+  const record = async (o: TestOwner, rows: Record<string, Record<string, unknown>[]>, key: string) => {
+    // TEST SETUP: a direct import command names the import holding the owner's lock.
+    const lock = await holdTestImportLock(h.db, o.userId, h.clock.iso());
+    return h.service.execute(importer(o), { type: "media.import_records", payload: { part: "assets", rows, importDigest: lock.importDigest, importPlanDigest: lock.importPlanDigest }, idempotencyKey: lock.key(key), expectedVersions: {}, authorization: "data_import", source: { channel: "import" } });
+  };
 
   beforeAll(async () => {
     h = await createMediaHarness();

@@ -84,11 +84,12 @@ describe("a deleted image does not come back from a backup taken before the dele
     await h.settle(target);
     expect(result.missing).toEqual([]);
     expect(result.mismatched).toEqual([]);
-    expect(result.deletionsApplied).toEqual({ assetsDeleted: 1, originalsPurged: 1, filesWithheld: 5 });
+    expect(result.deletionsApplied).toEqual({ assetsDeleted: 1, tombstonesImported: expect.any(Number), originalsPurged: 1, filesWithheld: 5 });
     // The deleted files were not even read from the package, and nothing of them is in storage.
     const withheld = new Set([...journal.deletedAssets[0]!.files, journal.purgedOriginals[0]!.file]);
     expect(read.some((key) => withheld.has(key))).toBe(false);
-    expect(read.length).toBe(backup.data.assets.length - 5);
+    // Each file is read once to verify it and once more just before it is written (the bytes written are re-checked).
+    expect(new Set(read).size).toBe(backup.data.assets.length - 5);
     expect(await objectsOf(target, shirtAsset)).toEqual([]);
     expect(await objectsOf(target, selfieAsset)).toEqual(["display"]);
 

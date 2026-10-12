@@ -1,5 +1,6 @@
+import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
-import { isCommandError } from "@garderobe/domain";
+import { first, isCommandError } from "@garderobe/domain";
 import type { TestOwner } from "@garderobe/domain/testing";
 import {
   exportMediaData, getAsset, getComposition, importMediaData, listMediaDeletions, openAssetImage, openCompositePreview, openRendition, readExportFile, requestCompositePreview, serveSignedMedia, signRenditionUrl, withoutLocation,
@@ -255,6 +256,33 @@ describe("signed and authenticated delivery: no location by default, the supplie
     carriesNothing(new Uint8Array(await (await serveSignedMedia(h.rt, tokenOf((await signRenditionUrl(h.rt, me, cutout, { withLocation: true })).url))).arrayBuffer()));
   });
 
+  it("every file handed to the image service for a thumbnail is a cleaned copy, original or derived, although storage returns each one as a stream", async () => {
+    const { h, owner, assetId, original } = await setup();
+    await h.settle(owner);
+    const me = owner.principal();
+    // TEST DOUBLE around the local runtime's Images binding: it records the bytes each request hands the service, then passes them on.
+    const real = (env as unknown as { IMAGES: ImagesBinding }).IMAGES;
+    const sent: Promise<Uint8Array>[] = [];
+    h.deps.images = {
+      info: (s: ReadableStream<Uint8Array>) => real.info(s),
+      input: (s: ReadableStream<Uint8Array>) => {
+        const [mine, theirs] = s.tee();
+        sent.push(new Response(mine).arrayBuffer().then((b) => new Uint8Array(b)));
+        return real.input(theirs);
+      },
+    } as unknown as ImagesBinding;
+    const renditions = (await getAsset(h.rt, me, assetId)).renditions;
+    // Storage hands back every object as a stream (the local R2 binding's body), never as bytes: checked here so the
+    // test cannot pass by a path that only cleans byte arrays.
+    const key = (await first<{ object_key: string }>(h.db, "SELECT object_key FROM media_renditions WHERE user_id = ? AND rendition_id = ?", owner.userId, original))!.object_key;
+    expect((await h.deps.bucket.get(key))!.body).toBeInstanceOf(ReadableStream);
+    for (const r of [original, ...renditions.filter((x) => x.kind !== "original").map((x) => x.renditionId)]) {
+      await bytesOf((await openRendition(h.rt, me, r, { width: 160 })).body);
+    }
+    expect(sent.length).toBeGreaterThan(0);
+    for (const bytes of await Promise.all(sent)) carriesNothing(bytes);
+  });
+
   it("nobody but the owner in their own app can ask for the location: not an assistant, not the MCP channel, not the system", async () => {
     const { h, owner, assetId, original } = await setup();
     await h.settle(owner);
@@ -390,11 +418,13 @@ describe("portable export: originals leave without their location unless the own
     expect((await exportMediaData(h.rt, backup, { originals: "as_supplied" })).originals).toBe("as_supplied");
     expect((await exportMediaData(h.rt, backup)).originals).toBe("location_removed");
 
-    // A package that passes off a file with metadata as a derived copy is refused that file.
-    const forged = { ...data, assets: data.assets.map((f) => (f.assetId === shirt && f.kind === "catalogue" ? { ...f, sha256: "", byteLength: 0 } : f)) };
+    // A package that passes off a file with metadata as a derived copy is refused that file, even when its
+    // file list and its records agree about it.
+    const forged = { ...data, assets: data.assets.map((f) => (f.assetId === shirt && f.kind === "catalogue" ? { ...f, sha256: "", byteLength: 0 } : f)), records: { ...data.records, renditions: data.records.renditions.map((r) => ({ ...r })) } };
     const catalogue = forged.assets.find((f) => f.assetId === shirt && f.kind === "catalogue")!;
     catalogue.sha256 = await sha256(tagged);
     catalogue.byteLength = tagged.length;
+    Object.assign(forged.records.renditions.find((r) => r.rendition_id === catalogue.renditionId)!, { sha256: catalogue.sha256, byte_length: catalogue.byteLength });
     const second = await h.createSyntheticOwner({ displayName: "Synthetic owner (location export, forged package)" });
     const forgedResult = await importMediaData(h.rt, second.principal({ channel: "import", actor: "system", scopes: ["read", "write", "admin"] }), forged, async (file) => (file === catalogue.file ? tagged : readExportFile(h.rt, me, file)));
     expect(forgedResult.rejected).toEqual([catalogue.file]);

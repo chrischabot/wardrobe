@@ -33,7 +33,7 @@ export function registerMedia(registry: CommandRegistry, deps: MediaDepsSource):
 }
 
 export { createMediaRuntime, depsFromBindings, DEFAULT_MEDIA_LIMITS, type MediaBindings, type MediaDeps, type MediaDepsSource, type MediaLimits, type MediaQueueMessage, type MediaRuntime } from "./runtime.ts";
-export type { BackgroundRemover, DiscoveryCandidatePage, DiscoveryGarment, DiscoveryProvider, DiscoveryProviderResult, DiscoveryQuery, ImageEditProvider, ImageEditRequest, ImageEditResult, ImageFetcher, ImageTranscoder, OutfitValidator, RasterPreviewExporter, ValidatorResult, ValidatorSlot, ValidatorViolation } from "./adapters.ts";
+export type { BackgroundRemover, DiscoveryBudget, DiscoveryCandidatePage, DiscoveryGarment, DiscoveryProvider, DiscoveryProviderResult, DiscoveryQuery, ImageEditProvider, ImageEditRequest, ImageEditResult, ImageFetcher, ImageTranscoder, OutfitValidator, RasterPreviewExporter, ValidatorResult, ValidatorSlot, ValidatorViolation } from "./adapters.ts";
 export { EDIT_CONSTRAINTS } from "./adapters.ts";
 export { authorizeUpload, finalizeUpload, getUploadStatus, importImageBytes, mintUploadAuthorization, receiveUploadContent } from "./uploads.ts";
 export { garmentImageRefs, getAsset, getBackfillEstimate, getGarmentMedia, listMediaReview, listPhotosNeeded } from "./reads.ts";
@@ -50,5 +50,5 @@ export { createPurchaseLinkProvider, extractProductPage, sameDocument } from "./
 export { createDohResolver, createSafeImageFetcher, isPrivateAddress, refuseUrl, safeFetch, type HostResolver } from "./pipeline/safe-fetch.ts";
 export { evaluateCandidate } from "./pipeline/evaluate.ts";
 export { exportMediaData, importMediaData, listMediaDeletions, readExportFile, replayMediaDeletions, MEDIA_DELETIONS_FORMAT, type ExportOriginals, type MediaDeletionJournal, type MediaExport, type MediaExportFile, type MediaExportOptions } from "./portability.ts";
-export { withoutLocation, type LocationFree } from "./image/location.ts";
+export { heifWithoutMetadata, withoutLocation, withoutLocationForConversion, type HeifClean, type LocationFree } from "./image/location.ts";
 export { ownerPrefix } from "./keys.ts";

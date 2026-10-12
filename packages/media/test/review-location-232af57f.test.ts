@@ -4,7 +4,7 @@ import { exportMediaData, getAsset, importMediaData, openRendition, purgeOwnerMe
 import { legacyThumbnailCacheUrl, thumbnailCacheUrl } from "../src/delivery.ts";
 import { decodeJpeg, encodeJpeg, probeImage } from "../src/image/index.ts";
 import { jpegScanDataBytes, stripJpegMetadata } from "../src/image/jpeg.ts";
-import { createMediaHarness, syntheticShirt } from "../src/testing/index.ts";
+import { createMediaHarness, holdTestImportLock, syntheticShirt } from "../src/testing/index.ts";
 
 // Regression tests for the review of commit 232af57f and for the adversarial defects MEDIA-ABUSE-1 and
 // MEDIA-ABUSE-2. SYNTHETIC TEST IMAGES on labelled demo fixture garments; the HEIC file is a structural TEST
@@ -108,10 +108,11 @@ describe("review of 232af57f: packages never lose a photograph silently, and imp
     const unreadable = concat(plain.subarray(0, plain.findIndex((b, i) => b === 0xff && plain[i + 1] === 0xda)), new Uint8Array([0xff, 0xd9]));
     expect(probeImage(unreadable)).toMatchObject({ format: "jpeg", contentType: "image/jpeg" });
     expect(withoutLocation(unreadable)).toMatchObject({ ok: false });
-    const forged = { ...data, assets: data.assets.map((f) => ({ ...f })) };
+    const forged = { ...data, assets: data.assets.map((f) => ({ ...f })), records: { ...data.records, renditions: data.records.renditions.map((r) => ({ ...r })) } };
     const target = forged.assets.find((f) => f.assetId === up.asset!.assetId && f.kind === "catalogue")!;
     target.sha256 = await sha256(unreadable);
     target.byteLength = unreadable.length;
+    Object.assign(forged.records.renditions.find((r) => r.rendition_id === target.renditionId)!, { sha256: target.sha256, byte_length: target.byteLength });
     const into = await h.createSyntheticOwner({ displayName: "Synthetic owner (review 232af57f, import target)" });
     const result = await importMediaData(h.rt, into.principal({ channel: "import", actor: "system", scopes: ["read", "write", "admin"] }), forged, async (file) => (file === target.file ? unreadable : readExportFile(h.rt, me, file)));
     expect(result.rejected).toEqual([target.file]);
@@ -152,8 +153,9 @@ describe("MEDIA-ABUSE-1: a direct image-state import over existing state is a ty
     expect(before.length).toBeGreaterThan(0);
     const importer = owner.principal({ channel: "import", actor: "system", scopes: ["read", "write", "admin"] });
     const record = { garment_id: "shirt-moss", image_state: "resolved", primary_asset_id: up.asset!.assetId, version: 99, updated_at: new Date().toISOString() };
+    const lock = await holdTestImportLock(h.db, owner.userId, h.clock.iso()); // TEST SETUP: the import holds the owner's lock
     const run = (garmentMedia: Record<string, unknown>[]) =>
-      h.service.execute(importer, { type: "media.import_records", payload: { part: "garmentMedia", rows: { garmentMedia } }, idempotencyKey: `abuse-1-${crypto.randomUUID()}`, expectedVersions: {}, authorization: "data_import", source: { channel: "import" } });
+      h.service.execute(importer, { type: "media.import_records", payload: { part: "garmentMedia", rows: { garmentMedia }, importDigest: lock.importDigest, importPlanDigest: lock.importPlanDigest }, idempotencyKey: lock.key(`abuse-1-${crypto.randomUUID()}`), expectedVersions: {}, authorization: "data_import", source: { channel: "import" } });
     expect(await code(run([record]))).toBe("precondition_failed");
     expect(await code(run([{ ...record, garment_id: "shirt-gold" }, { ...record, garment_id: "shirt-gold" }]))).toBe("invalid_command");
     expect(await code(run([{ ...record, garment_id: null }]))).toBe("invalid_command");
@@ -181,8 +183,14 @@ describe("automatic review of 56b53eac: metadata between scans, and finalization
     expect(latin1(out)).not.toMatch(/TEST-[A-Z-]*POSITION/);
     // Both scans are still there, byte for byte, and the file ends at its end marker.
     expect(out.filter((b, i) => b === 0xff && out[i + 1] === 0xda).length).toBe(2);
-    expect(latin1(out)).toContain(latin1(scan));
-    expect([...out.subarray(out.length - 2)]).toEqual([0xff, 0xd9]);
+    // The whole cleaned file equals the expected two-scan JPEG with the metadata removed: the same file built
+    // without the inter-scan segments and trailer, cleaned the same way. Everything from the first scan on is
+    // compared byte for byte against the source scans, so a damaged second scan fails.
+    const expected = stripJpegMetadata(concat(plain.subarray(0, eoi), scan, new Uint8Array([0xff, 0xd9])));
+    expect([...out]).toEqual([...expected]);
+    const tail = concat(scan, scan, new Uint8Array([0xff, 0xd9]));
+    expect([...out.subarray(out.length - tail.length)]).toEqual([...tail]);
+    expect(() => decodeJpeg(out)).not.toThrow();
     expect(() => stripJpegMetadata(concat(plain.subarray(0, sos), new Uint8Array([0xff, 0xd9])))).toThrow(/no image data/);
   });
 
