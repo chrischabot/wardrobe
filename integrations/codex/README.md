@@ -77,6 +77,8 @@ CODEX_BIN=$(command -v codex) node integrations/codex/scripts/verify-codex.mjs -
 
 Against a hosted deployment (a retargeted copy), also pass the owner's timezone from Garderobe settings, which picks the owner's day: `--marketplace ~/wardrobe-codex --timezone Europe/London`. The script refuses a hosted run without it. Against the local Worker it reads the timezone from the owner's settings.
 
+On the owner's real board (any run other than the local Worker or a declared disposable Ferrite instance at a loopback URL) the piece swap is sent only with `--allow-real-swap`, because a server may not offer its undo; without the flag the swap step is reported as not run. The MCP URL may have any path; the Worker and the Ferrite port serve it at `/mcp`.
+
 Against the Ferrite port of the app (`ferrite/`), pass `--app ferrite` and `--timezone`, with the app's owner token in `WARDROBE_OWNER_TOKEN` (never on the command line, never written out; Codex's own process does not receive it). Locally, start `ferrite dev --fresh` in `ferrite/` on the origin the app announces (http://127.0.0.1:8787 by default, which the committed `mcp.json` names), take the token from `[secrets]` in `ferrite/ferrite.local.toml`, and run:
 
 ```

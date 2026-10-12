@@ -23,6 +23,24 @@ export function authorizationUrlFrom(output) {
   return m ? new URL(m[1]) : null;
 }
 
+/**
+ * Is the board the verifier writes to the owner's real board? Only two runs use a board of their own: the local
+ * Worker (its run publishes the board as the owner) and a Ferrite instance the operator declared disposable
+ * (--disposable-test-instance) at a loopback URL. Every other run, hosted or not, works on the owner's real board.
+ */
+export const realBoardRun = ({ workerLocal, ferrite, loopback, disposable }) => !workerLocal && !(ferrite && loopback && disposable);
+
+/**
+ * May the verifier send a piece swap (`board.swap_slot`)? A swap rewrites an outfit on the board, and a server may
+ * not offer its undo (some answer `not_undoable`), so on the owner's real board it is sent only when the operator
+ * acknowledged that with --allow-real-swap. Returns { ok: true } or { ok: false, reason }.
+ */
+export function swapDecision({ realBoard, allowRealSwap = false }) {
+  if (!realBoard) return { ok: true };
+  if (allowRealSwap) return { ok: true };
+  return { ok: false, reason: "this run works on the owner's real board, where a swap may not be undoable; pass --allow-real-swap to send it, or run against a test account or a disposable instance" };
+}
+
 /** The owner's choice on a board (option and footwear), or null. */
 export const choiceOf = (board) =>
   JSON.stringify(board?.selection ? { optionId: board.selection.optionId ?? null, footwearGarmentId: board.selection.footwearGarmentId ?? null } : null);

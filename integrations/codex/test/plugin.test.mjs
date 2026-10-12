@@ -7,13 +7,14 @@
  * actions from the API Worker's allow-list, read from their source files.
  */
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { checkMcpUrl, retarget } from "../scripts/retarget.mjs";
-import { adoptAfterWrite, authorizationUrlFrom, balancesState, boardAbsence, boardState, cleanLaundered, movedToDirty, ownerDay, publishCommand, publishLostRace, sameWear, setupDecision, unchangedAfterUnapplied, versionsOf, within, writeDecision } from "../scripts/board-guard.mjs";
+import { adoptAfterWrite, authorizationUrlFrom, balancesState, boardAbsence, boardState, cleanLaundered, movedToDirty, ownerDay, publishCommand, publishLostRace, realBoardRun, sameWear, setupDecision, swapDecision, unchangedAfterUnapplied, versionsOf, within, writeDecision } from "../scripts/board-guard.mjs";
 import { ferriteConsent, formAction, hiddenFields } from "../scripts/ferrite-consent.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -67,27 +68,35 @@ test("the skill's routine actions are ones the server runs directly, and it defe
   assert.ok(routineLine, "the skill describes applied changes");
   const inSkill = [...routineLine.matchAll(/`([a-z]+\.[a-z_]+)`/g)].map((m) => m[1]).filter((t) => t !== "command.undo").sort();
   assert.deepEqual(inSkill, ["board.select", "laundry.collect", "laundry.return", "stock.pack", "stock.unpack"]);
-  // The server's typed-command policy (2026-10-05 contract) classifies every change with the assistant's
-  // classifyChange: only the section 3 types wait for the owner and restriction lifts are refused. Every
-  // parse below must succeed: if the policy's shape changes, this test fails instead of silently passing.
-  const policy = readFileSync(path.join(REPO, "apps/worker/src/mcp/policy.ts"), "utf8");
-  assert.match(policy, /forbiddenForConnectedAssistant\(type, payload\)/, "policy.ts no longer refuses restriction lifts through forbiddenForConnectedAssistant: update this test to the new policy");
-  assert.match(policy, /classifyChange\(type, payload, "mcp"\) === "confirm" \? "owner" : "direct"/, "policy.ts no longer decides through classifyChange: update this test to the new policy");
-  const classes = readFileSync(path.join(REPO, "packages/assistant/src/policy/classes.ts"), "utf8");
-  const setOf = (name) => {
-    const m = new RegExp(`export const ${name}: ReadonlySet<string> = new Set\\(\\[([^\\]]*)\\]\\)`).exec(classes);
-    assert.ok(m, `could not parse ${name} in packages/assistant/src/policy/classes.ts: update this test to the new policy`);
-    const types = [...m[1].matchAll(/"([a-z_]+\.[a-z_]+)"/g)].map((t) => t[1]);
-    assert.ok(types.length > 0, `${name} parsed as empty`);
-    return new Set(types);
-  };
-  const waits = setOf("SECTION3_CONFIRM_TYPES");
-  const refused = setOf("RESTRICTION_LIFT_TYPES");
-  assert.ok(refused.has("restriction.resolve"), "restriction.resolve is refused for a connected assistant");
+  // The server's typed-command policy (apps/worker/src/mcp/policy.ts, 2026-10-05 contract) refuses restriction lifts
+  // with forbiddenForConnectedAssistant and keeps for the owner what classifyChange calls "confirm" or what
+  // isUnboundedChange bounds. Those exported functions are run here (packages/assistant/src/policy/classes.ts, under
+  // Node's TypeScript transform in a child process) on the skill's actions: their answers, not their source text,
+  // decide. policy.ts itself is not imported: it loads the assistant package's index, which needs the Workers runtime;
+  // the Worker's own test (apps/worker/test/mcp-command-classes.test.ts) checks every type through the real registry.
+  const probe = `
+    const m = await import(${JSON.stringify(path.join(REPO, "packages/assistant/src/policy/classes.ts"))});
+    const types = ${JSON.stringify([...inSkill, "restriction.resolve", "assistant.lift_restriction", "style.save_document", "connection.register"])};
+    const out = {};
+    for (const t of types) out[t] = { cls: m.classifyChange(t, {}, "mcp"), unbounded: m.isUnboundedChange(t, {}), forbidden: m.forbiddenForConnectedAssistant(t, {}) };
+    out["undo of restriction.add"] = { forbidden: m.forbiddenForConnectedAssistant("command.undo", {}, { type: "restriction.add" }) };
+    out["undo of board.select"] = { forbidden: m.forbiddenForConnectedAssistant("command.undo", {}, { type: "board.select" }) };
+    console.log(JSON.stringify(out));`;
+  const ran = spawnSync(process.execPath, ["--experimental-transform-types", "--no-warnings", "--input-type=module", "-e", probe], { cwd: REPO, encoding: "utf8", timeout: 60_000 });
+  assert.equal(ran.status, 0, `the policy probe failed: ${ran.stderr}`);
+  const policy = JSON.parse(ran.stdout.trim().split("\n").at(-1));
   for (const t of inSkill) {
-    assert.ok(!waits.has(t), `${t} waits for the owner on the server, but the skill calls it applied`);
-    assert.ok(!refused.has(t), `${t} is refused on the server, but the skill calls it applied`);
+    assert.equal(policy[t].forbidden, null, `${t} is refused for a connected assistant, but the skill calls it applied`);
+    assert.notEqual(policy[t].cls, "confirm", `${t} waits for the owner on the server, but the skill calls it applied`);
+    assert.equal(policy[t].unbounded, false, `${t} with a named target is bounded`);
   }
+  // The probe really discriminates: lifts are refused, section 3 waits, and an undo of a restriction is refused.
+  assert.equal(policy["restriction.resolve"].forbidden, "restriction_lift_not_relayed");
+  assert.equal(policy["assistant.lift_restriction"].forbidden, "restriction_lift_not_relayed");
+  assert.equal(policy["style.save_document"].cls, "confirm");
+  assert.equal(policy["connection.register"].cls, "confirm");
+  assert.equal(policy["undo of restriction.add"].forbidden, "restriction_not_lifted_by_undo");
+  assert.equal(policy["undo of board.select"].forbidden, null);
   assert.match(skill, /confirmation_required/);
   assert.match(skill, /Only ask for a change the owner asked for/);
   assert.match(skill, /restriction can never be lifted/);
@@ -131,10 +140,33 @@ test("retarget refuses unsafe MCP URLs", () => {
   assert.throws(() => checkMcpUrl("https://wardrobe.example.org/mcp?token=x"), /query/);
   assert.throws(() => checkMcpUrl("ftp://wardrobe.example.org/mcp"), /http/);
   assert.throws(() => checkMcpUrl("not a url"), /absolute/);
-  assert.throws(() => checkMcpUrl("https://wardrobe.example.org"), /ending in \/mcp/);
-  assert.throws(() => checkMcpUrl("https://wardrobe.example.org/api"), /ending in \/mcp/);
+  assert.equal(checkMcpUrl("https://wardrobe.example.org"), "https://wardrobe.example.org/");
+  assert.equal(checkMcpUrl("https://wardrobe.example.org/api"), "https://wardrobe.example.org/api");
   assert.equal(checkMcpUrl("https://wardrobe.example.org/garderobe/mcp"), "https://wardrobe.example.org/garderobe/mcp");
   assert.equal(checkMcpUrl("http://127.0.0.1:8787/mcp"), "http://127.0.0.1:8787/mcp");
+});
+
+test("a piece swap on the owner's real board needs --allow-real-swap; the local Worker and a declared disposable loopback Ferrite instance use their own board", () => {
+  const runs = {
+    localWorker: { workerLocal: true, ferrite: false, loopback: true, disposable: false },
+    disposableFerrite: { workerLocal: false, ferrite: true, loopback: true, disposable: true },
+    loopbackFerriteNotDeclared: { workerLocal: false, ferrite: true, loopback: true, disposable: false },
+    declaredButNotLoopback: { workerLocal: false, ferrite: true, loopback: false, disposable: true },
+    hostedWorker: { workerLocal: false, ferrite: false, loopback: false, disposable: false },
+  };
+  assert.equal(realBoardRun(runs.localWorker), false);
+  assert.equal(realBoardRun(runs.disposableFerrite), false);
+  assert.equal(realBoardRun(runs.loopbackFerriteNotDeclared), true);
+  assert.equal(realBoardRun(runs.declaredButNotLoopback), true);
+  assert.equal(realBoardRun(runs.hostedWorker), true);
+  for (const run of [runs.loopbackFerriteNotDeclared, runs.declaredButNotLoopback, runs.hostedWorker]) {
+    const refused = swapDecision({ realBoard: realBoardRun(run) });
+    assert.equal(refused.ok, false);
+    assert.match(refused.reason, /--allow-real-swap/);
+    assert.equal(swapDecision({ realBoard: realBoardRun(run), allowRealSwap: true }).ok, true);
+  }
+  assert.equal(swapDecision({ realBoard: realBoardRun(runs.localWorker) }).ok, true);
+  assert.equal(swapDecision({ realBoard: realBoardRun(runs.disposableFerrite) }).ok, true);
 });
 
 // Synthetic boards (labelled test data, not owner data) for the verifier's write guard.

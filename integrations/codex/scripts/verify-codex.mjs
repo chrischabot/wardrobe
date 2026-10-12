@@ -2,7 +2,11 @@
 /**
  * End-to-end check of the Wardrobe Codex plugin with the real Codex CLI.
  *
- *   node integrations/codex/scripts/verify-codex.mjs [--marketplace <dir>] [--report <file.json>] [--registration dcr|cimd|auto] [--timezone <IANA zone>] [--app worker|ferrite] [--disposable-test-instance]
+ *   node integrations/codex/scripts/verify-codex.mjs [--marketplace <dir>] [--report <file.json>] [--registration dcr|cimd|auto] [--timezone <IANA zone>] [--app worker|ferrite] [--disposable-test-instance] [--allow-real-swap]
+ *
+ * --allow-real-swap acknowledges that the piece swap may be sent to the owner's real board (any run other than the
+ * local Worker or a declared disposable Ferrite instance at a loopback URL); without it the swap is reported as
+ * not run there.
  *
  * No model runs here. Codex can run only OpenAI models, and the project authorizes only claude-opus-5-5 for
  * inference, so there is no model-driven `codex exec` step; every check goes through `codex app-server`, which
@@ -38,7 +42,7 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import { adoptAfterWrite, authorizationUrlFrom, balancesState, boardState, choiceOf, cleanLaundered, movedToDirty, ownerDay, publishCommand, publishLostRace, sameWear, setupDecision, unchangedAfterUnapplied, versionsOf, within, writeDecision } from "./board-guard.mjs";
+import { adoptAfterWrite, authorizationUrlFrom, balancesState, boardState, choiceOf, cleanLaundered, movedToDirty, ownerDay, publishCommand, publishLostRace, realBoardRun, sameWear, setupDecision, swapDecision, unchangedAfterUnapplied, versionsOf, within, writeDecision } from "./board-guard.mjs";
 import { ferriteConsent } from "./ferrite-consent.mjs";
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -77,6 +81,8 @@ if (disposableInstance && !ferrite) {
   console.error("--disposable-test-instance applies only to --app ferrite");
   process.exit(2);
 }
+// A piece swap on the owner's real board needs the operator's explicit acknowledgement (see swapDecision).
+const allowRealSwap = args.includes("--allow-real-swap");
 const ownerToken = process.env.WARDROBE_OWNER_TOKEN ?? "";
 if (ferrite && !ownerToken) {
   console.error("--app ferrite needs WARDROBE_OWNER_TOKEN, the Ferrite app's owner token (locally: [secrets] in ferrite/ferrite.local.toml), to give the owner's consent.");
@@ -520,6 +526,11 @@ async function toolsThroughCodex() {
     }
 
     // The owner may have chosen or edited the board while this ran: stop before the swap if so.
+    const swapAllowed = swapDecision({ realBoard: realBoardRun({ workerLocal, ferrite, loopback, disposable: disposableInstance }), allowRealSwap });
+    if (!swapAllowed.ok) {
+      check("piece swap on the owner's real board", false, `not run: ${swapAllowed.reason}`);
+      return { date, timeZone, boardId: board.boardId };
+    }
     const boardNow = await guard("piece swap", lastSeen);
     if (!boardNow) return { date, timeZone, boardId: board.boardId };
     const pieces = (b) => JSON.stringify((b?.options?.find((o) => o.optionId === option.optionId)?.garments ?? []).map((g) => `${g.role}:${g.garmentId}`).sort());
