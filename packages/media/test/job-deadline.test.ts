@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { first } from "@garderobe/domain";
+import { all, first } from "@garderobe/domain";
 import type { BackgroundRemover } from "../src/index.ts";
 import { runMediaJob } from "../src/jobs.ts";
 import { execSystem } from "../src/exec.ts";
@@ -70,6 +70,55 @@ describe("a job whose provider never answers", () => {
     await new Promise((resolve) => setTimeout(resolve, 1500));
     expect(await snapshot()).toEqual(before);
     expect(await first(h.db, "SELECT state, attempts FROM media_jobs WHERE user_id = ? AND job_id = ?", owner.userId, jobId)).toEqual({ state: "queued", attempts: 1 });
+  }, 30_000);
+
+  it("a write whose run loses its lease while the write's intent is being registered never starts, and its intent is settled", async () => {
+    const h = await createMediaHarness();
+    h.deps.limits = { jobLeaseSeconds: 3 }; // renewal every second
+    const owner = await h.createSyntheticOwner({ displayName: "Synthetic owner (paused intent registration)" });
+    const jobId = (await h.upload(owner, { garmentId: "shirt-moss", raster: onPatternedBackground(160), demo: true })).jobId!;
+    let release: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => (release = resolve));
+    let reached: () => void = () => undefined;
+    const registering = new Promise<void>((resolve) => (reached = resolve));
+    // TEST DOUBLE around the real local D1: the run's first write-intent insert waits until released, then runs for real.
+    let paused = false;
+    const realDb = h.rt.db;
+    const db = new Proxy(realDb, {
+      get(target, key) {
+        const value = Reflect.get(target, key, target) as unknown;
+        if (key === "prepare") {
+          return (sql: string) => {
+            if (paused || !sql.includes("INSERT INTO media_write_intents")) return realDb.prepare(sql);
+            paused = true;
+            return { bind: (...params: unknown[]) => ({ run: async () => { reached(); await released; return realDb.prepare(sql).bind(...params).run(); } }) };
+          };
+        }
+        return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    // TEST DOUBLE around the real local R2 bucket: records every put that starts.
+    const puts: string[] = [];
+    const bucket = new Proxy(h.deps.bucket, {
+      get(target, key) {
+        const value = Reflect.get(target, key, target) as unknown;
+        if (key === "put") return (k: string, ...rest: unknown[]) => { puts.push(String(k)); return (value as (...a: unknown[]) => unknown).call(target, k, ...rest); };
+        return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    const run = runMediaJob({ ...h.rt, db: db as typeof realDb, deps: { ...h.rt.deps, bucket } }, owner.userId, jobId);
+    await registering; // the run is registering its first write
+    // TEST SETUP: another runner reclaims the job meanwhile; the paused run's next renewal (within a second) finds it gone.
+    await h.db.prepare("UPDATE media_jobs SET attempts = 2 WHERE user_id = ? AND job_id = ?").bind(owner.userId, jobId).run();
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    release();
+    await run;
+    const intents = await all<{ object_key: string; settled_at: string | null }>(h.db, "SELECT object_key, settled_at FROM media_write_intents WHERE user_id = ? AND job_id = ? AND job_attempt = 1", owner.userId, jobId);
+    expect(intents).toHaveLength(1);
+    expect(intents[0]!.settled_at).not.toBeNull(); // settled at once: it can never land later
+    expect(puts).not.toContain(intents[0]!.object_key); // the write was never started
+    expect(puts).toEqual([]);
+    expect(await first(h.db, "SELECT state, attempts FROM media_jobs WHERE user_id = ? AND job_id = ?", owner.userId, jobId)).toEqual({ state: "running", attempts: 2 });
   }, 30_000);
 
   it("a run whose lease renewal finds the job reclaimed stops at once and changes nothing afterwards", async () => {
