@@ -1559,8 +1559,8 @@ pub fn document(day: &Day<'_>, board: &Board, wardrobe_revision: u64) -> Value {
         "boardId": board.board_id,
         "scope": board.scope,
         "localDate": board.local_date,
-        // No owner timezone setting is ported yet.
-        "timezone": null,
+        // The owner's timezone is the default setting (no settings command is ported).
+        "timezone": crate::time::OWNER_TIMEZONE,
         "revision": r.revision,
         "publishedAt": instant(r.published_at_ms),
         "reason": r.reason,
@@ -1583,17 +1583,36 @@ pub fn document(day: &Day<'_>, board: &Board, wardrobe_revision: u64) -> Value {
     })
 }
 
-/// `TodayView` for one day; `day_record` is what was recorded as worn that day.
+/// `TodayResponse` for one day (`readToday` in apps/worker/src/routes/daily.ts: the daily service's
+/// `TodayView` with the API's status, freshness list and wardrobe revision); `day_record` is what was
+/// recorded as worn that day. The port composes no board in the background, so there is never a run.
 pub fn today(stock: &Day<'_>, day: &str, board: Option<&Board>, day_record: Vec<Value>, wardrobe_revision: u64, now_ms: u64) -> Value {
     let doc = board.map_or(Value::Null, |b| document(stock, b, wardrobe_revision));
     let empty = doc.is_null().then_some("No board has been published for this day yet.");
+    let mut freshness = Vec::new();
+    if !doc.is_null() {
+        let published = doc["publishedAt"].clone();
+        let changes: Vec<&str> = doc["changes"].as_array().map(|c| c.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+        freshness.push(json!({"source": "board", "state": "fresh", "checkedAt": published, "revision": doc["revision"], "detail": doc["notice"]}));
+        // Every read checks the board's options against the stock of the same commit, so the
+        // wardrobe revision shown is the current one.
+        freshness.push(json!({"source": "wardrobe", "state": "fresh", "checkedAt": published, "revision": wardrobe_revision, "detail": if changes.is_empty() { Value::Null } else { json!(changes.join(" ")) }}));
+        // No style command is ported: the style revision is always the one the board was built on.
+        freshness.push(json!({"source": "style", "state": "fresh", "checkedAt": published, "revision": doc["freshness"]["styleRevision"], "detail": null}));
+        freshness.push(json!({"source": "weather", "state": "unavailable", "checkedAt": null, "revision": null, "detail": "No usable forecast."}));
+        freshness.push(json!({"source": "calendar", "state": "not_connected", "checkedAt": null, "revision": null, "detail": "Calendar is not connected."}));
+    }
     let mut view = Map::new();
     view.insert("localDate".into(), json!(day));
-    view.insert("timezone".into(), Value::Null);
+    view.insert("timezone".into(), json!(crate::time::OWNER_TIMEZONE));
+    view.insert("status".into(), json!(if doc.is_null() { "none" } else { "ready" }));
     view.insert("board".into(), doc);
     view.insert("dayRecord".into(), Value::Array(day_record));
     view.insert("paused".into(), Value::Null);
     view.insert("emptyReason".into(), json!(empty));
+    view.insert("freshness".into(), Value::Array(freshness));
+    view.insert("runId".into(), Value::Null);
+    view.insert("wardrobeRevision".into(), json!(wardrobe_revision));
     view.insert("readAt".into(), json!(instant(now_ms)));
     Value::Object(view)
 }

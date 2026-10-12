@@ -134,6 +134,33 @@ pub fn latest_day(ms: u64) -> i64 {
     ((ms / 1000) as i64 + 14 * 3600).div_euclid(86_400)
 }
 
+/// The owner's timezone: the specification's default setting (`DEFAULT_OWNER_SETTINGS.timezone`),
+/// the one `GET /v1/settings` reports. No settings command is ported, so it is fixed.
+pub const OWNER_TIMEZONE: &str = "Europe/London";
+
+/// The last Sunday of month `m` of year `y`, as days since 1970-01-01 (a Thursday).
+fn last_sunday(y: i64, m: i64) -> i64 {
+    let last = days_from_civil(y, m, days_in_month(y, m));
+    last - (last + 4).rem_euclid(7)
+}
+
+/// Europe/London's offset from UTC at `ms`, in seconds: British Summer Time (UTC+1) from 01:00 UTC
+/// on the last Sunday of March to 01:00 UTC on the last Sunday of October (the rule in force since
+/// 1996), Greenwich Mean Time otherwise.
+pub fn london_offset_secs(ms: u64) -> i64 {
+    let secs = (ms / 1000) as i64;
+    let (y, _, _) = civil_from_days(secs.div_euclid(86_400));
+    let starts = last_sunday(y, 3) * 86_400 + 3600;
+    let ends = last_sunday(y, 10) * 86_400 + 3600;
+    if (starts..ends).contains(&secs) { 3600 } else { 0 }
+}
+
+/// The owner's calendar day at `ms` (in `OWNER_TIMEZONE`), as days since 1970-01-01: what
+/// `localDateOf(nowMs, owner.settings.timezone)` gives in the TypeScript service.
+pub fn owner_day(ms: u64) -> i64 {
+    ((ms / 1000) as i64 + london_offset_secs(ms)).div_euclid(86_400)
+}
+
 /// "Friday 16 October".
 pub fn day_line(days: i64) -> String {
     const WEEKDAYS: [&str; 7] = ["Thursday", "Friday", "Saturday", "Sunday", "Monday", "Tuesday", "Wednesday"];
@@ -156,6 +183,22 @@ mod tests {
         assert_eq!(day_line(parse_local_date("2026-10-16").unwrap()), "Friday 16 October");
         // The earliest calendar date anywhere at 2026-10-16T05:00Z is the 15th (UTC-12).
         assert_eq!(local_date(earliest_day(parse_instant("2026-10-16T05:00:00Z").unwrap())), "2026-10-15");
+    }
+
+    #[test]
+    fn the_owners_day_follows_british_summer_time() {
+        let at = |s: &str| parse_instant(s).unwrap();
+        // 2026: summer time from 29 March 01:00 UTC to 25 October 01:00 UTC.
+        assert_eq!(local_date(last_sunday(2026, 3)), "2026-03-29");
+        assert_eq!(local_date(last_sunday(2026, 10)), "2026-10-25");
+        assert_eq!(london_offset_secs(at("2026-03-29T00:59:59Z")), 0);
+        assert_eq!(london_offset_secs(at("2026-03-29T01:00:00Z")), 3600);
+        assert_eq!(london_offset_secs(at("2026-10-25T00:59:59Z")), 3600);
+        assert_eq!(london_offset_secs(at("2026-10-25T01:00:00Z")), 0);
+        // Half past eleven at night UTC is already tomorrow in London in summer, still today in winter.
+        assert_eq!(local_date(owner_day(at("2026-06-30T23:30:00Z"))), "2026-07-01");
+        assert_eq!(local_date(owner_day(at("2026-12-31T23:30:00Z"))), "2026-12-31");
+        assert_eq!(local_date(owner_day(at("2027-03-28T00:30:00Z"))), "2027-03-28");
     }
 
     #[test]

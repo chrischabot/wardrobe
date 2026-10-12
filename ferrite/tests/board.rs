@@ -102,7 +102,8 @@ async fn a_published_board_reads_back_as_the_today_document() {
     let mut store = MemStore::default();
     let empty = api::read_today(&mut store, T0, Some(DAY)).await.unwrap();
     assert_eq!((empty["board"].clone(), empty["emptyReason"].is_string()), (Value::Null, true));
-    assert_eq!(api::read_today(&mut store, T0, None).await.unwrap_err().code, "invalid_command", "no owner timezone: the day must be named");
+    assert_eq!(api::read_today(&mut store, T0, None).await.unwrap()["localDate"], "2026-09-10", "without a date, the owner's day now in London");
+    assert_eq!(api::read_today(&mut store, T0, Some("2026-09-31")).await.unwrap_err().code, "invalid_command");
 
     let r = run(&mut store, OWNER, T0, "board.publish", json!({"localDate": DAY, "requestedCount": 2, "options": two_outfits()}), "publish-0001", None).await.unwrap();
     assert_eq!(r["summary"], "Board for 2026-09-11 published (revision 1): 2 outfits");

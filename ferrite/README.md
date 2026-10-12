@@ -72,7 +72,8 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `GET /health` (public) | service status |
 | `GET /v1/wardrobe[?category=]` | the inventory: every imported garment with its balances (clean, dirty, at the laundry service) and version. A subset of `listInventory`: no availability estimate, aliases, colours or wear counts yet |
 | `POST /v1/commands` | the command envelope of `packages/contracts` (`type`, `payload`, `idempotencyKey`, `authorization`, `source.channel`, optional `occurredAt`, `expectedVersions`) |
-| `GET /v1/today?date=YYYY-MM-DD` | Today: the board published for that date (`TodayView`), or none. `date` is required, because the port has no timezone yet |
+| `GET /v1/today[?date=YYYY-MM-DD][&scope=home]` | `TodayResponse` as `readToday`: the home board for the day, or none, with the garments recorded worn that day. Without a date it is the owner's day now in his timezone (Europe/London, the default setting, with British Summer Time). `status` is `ready` or `none`; the source freshness list gives the board and wardrobe revisions, style, and then weather as `unavailable` and Calendar as `not_connected`; `runId` is null (nothing composes in the background) and `wardrobeRevision` is the current revision. A `trip:` scope is refused, since trips are not ported |
+| `GET /v1/weather[?date=YYYY-MM-DD]` | `WeatherSnapshot`, for the owner's day now when no date is named: what the TypeScript service answers for an owner with no home city (no settings command is ported, so `homeLocation` is null). There is no forecast: `freshness` is `unavailable`, every window and condition value is null (never zero, dry or calm), the line is "Weather unavailable" and the limitation is "No home city is set, so no forecast was requested." The snapshot is answered and not recorded (`weather.record_snapshot` is not ported) |
 | `GET /v1/days/{date}` (owner only) | the day's recorded wear (`DailyRecord`, as `getDailyRecord`): counted garments and every report with its status. Choosing an outfit never changes it |
 | `GET /v1/commands[?limit=]`, `GET /v1/commands/{id}` | receipts, newest first; an undo already used is no longer offered |
 | `GET /v1/connections`, `POST /v1/connections/{grantId}/disconnect` (owner only) | Settings › Connected assistants: the OAuth grants, and disconnecting one, effective on its next request |
@@ -85,7 +86,7 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `GET /v1/laundry` | `LaundryStateResponse` as `getLaundryState`: the hamper by care channel (service, hand wash), sorted by name, and the newest 12 laundry bags not withdrawn, newest first. `returnBasis` is null; `exceptions` and `cycles` are empty (laundry exceptions and weekly cycles are not ported) |
 | `GET /v1/service` | `ServiceState`: never paused (pause and resume are not ported) |
 | `GET /v1/me` | `MeResponse` for the one owner this port serves (`userId: "owner"`), with the caller's channel; no linked identities and no recovery kit (identity, linking and recovery are not ported) |
-| `GET /v1/settings` | `SettingsResponse`: the specification's default settings (`DEFAULT_OWNER_SETTINGS`) at version 1, since no settings command is ported; `defaultOptionCount` is the count the recommender uses. `profile` and `inference` are null. The port does not apply the timezone yet: dated routes take the day explicitly |
+| `GET /v1/settings` | `SettingsResponse`: the specification's default settings (`DEFAULT_OWNER_SETTINGS`) at version 1, since no settings command is ported; `defaultOptionCount` is the count the recommender uses. `profile` and `inference` are null. Its timezone is what Today, the weather and `garderobe_today` default to; the other dated routes still take the day explicitly |
 | `/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` | the MCP authorization server, see below |
 
 Commands: `care.mark_dirty`, `care.washed`, `board.publish`, `board.select`,
@@ -179,8 +180,8 @@ briefs, which are not ported (test
 
 Not ported yet: board-mode recommendations (the composer answers in preview
 mode, see "Recommendations"; a board is published through `board.publish`),
-weather, Calendar, the owner's timezone
-(`timezone` is null and the date is required), freshness (`unavailable`), and
+weather and Calendar (the board's `timezone` is the owner's default,
+Europe/London), freshness (`unavailable`), and
 scopes other than home. A board's validity is therefore reported as limited
 or degraded, never as fully checked.
 
@@ -392,7 +393,7 @@ revision is answered with 2025-11-25.
 
 Tools, with the TypeScript server's names, arguments and results:
 
-- `garderobe_today`: the board for `{date}` (required), as `/v1/today`.
+- `garderobe_today`: the board for `{date}`, as `/v1/today`; without a date, the owner's day now in Europe/London.
 - `garderobe_inventory`: views `items` (paged, `limit` and `nextCursor`),
   `snapshot` (complete), `receipts` and `history` (recorded wear, see "Wear
   records"). The response says whether it is the
@@ -671,8 +672,8 @@ cursor sent without a limit, and decomposed accents in search; later reviews
 raised the two findings above. The last prepared commit, 81ce6e91, is kept
 unlanded, and `/v1/wardrobe` keeps the subset shape above.
 
-Found by the automatic review of the whole port (2026-10-13), outside the
-lines of milestone C:
+Found by the automatic reviews of the whole port, or recorded with a later
+milestone, and outside the lines of the milestone in hand:
 
 - **Board.**
   - `board.select` undo cannot unwind successive choices (undoing B, then A,
@@ -684,9 +685,16 @@ lines of milestone C:
     does for `top` and `one_piece`.
   - A publication has no undo (as in the TypeScript service, which the
     reviewer counts as a gap under the 2026-10-05 contract).
+  - Automatic future-outfit repair is not ported: a later change to the
+    wardrobe does not revise published boards. Each read checks the board's
+    options against the current stock and qualifies any that no longer hold.
 - **Laundry.**
   - A return with no pickup that cleans everything leaves no return record
     to detect a repeat.
+  - Undoing a return raises the bag's version, so after a later return is
+    undone an earlier one can no longer be undone.
+  - Missed-cycle returns, lost or delayed exceptions and the weekly reset are
+    not ported.
   - A back-dated laundry report can change another bag's holdings without
     raising that bag's version.
   - A pickup's explicit `include` quantities are not held to the rule that a
@@ -696,7 +704,10 @@ lines of milestone C:
     board exposure sets (neither is ported).
   - Without an owner timezone, a wear date is checked against the earliest
     and latest timezones on Earth and ordered at noon UTC, not at the owner's
-    civil day.
+    civil day. (Today, the weather and `garderobe_today` now default to the
+    owner's day in Europe/London; wear dates, board publication and
+    recommendations do not use it yet, so `POST /v1/recommendations` still
+    needs a date.)
 - **Restrictions.** Only the import's restrictions exist, and no restriction
   command is ported, so the owner cannot yet end the healing restriction
   with a receipt (a connected assistant never can).
@@ -711,6 +722,20 @@ lines of milestone C:
     unreachable while the gateway secret is unset.
   - Applying owner changes from conversation (`garderobe_ask`) stays parked
     until the owner answers the assistant decision.
+- **Recommendations route.**
+  - The board-mode publication key `board-compose:{clientRequestId}` is not
+    namespaced by caller (the run is), so the owner and a connected assistant
+    sending the same request ID could meet on one publication.
+  - In `POST /v1/commands/batch`, a failure of the final ledger read discards
+    the results already collected instead of answering them.
+- **Daily reads.**
+  - The owner's timezone is fixed at the default setting, Europe/London, with
+    the British Summer Time rule written into the port (no timezone
+    database); another timezone needs the settings command.
+  - The weather snapshot is never a forecast (no home city, no provider
+    egress) and is not recorded, so its `snapshotId` names nothing kept.
+  - Pause and trips are not ported, so Today is never `paused` or
+    `preparing`, and a trip scope is refused.
 - **Recommender.**
   - Availability is binary (clean at home).
   - No weather, Calendar or brief is read.

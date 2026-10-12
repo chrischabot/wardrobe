@@ -234,8 +234,13 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
         }
         ("GET", "/v1/today") => {
             let date = query.iter().find(|(k, _)| k == "date").map(|(_, v)| v.as_str());
-            read_today(store, now_ms, date).await
+            match query.iter().find(|(k, _)| k == "scope").map(|(_, v)| v.as_str()) {
+                None | Some("home") => read_today(store, now_ms, date).await,
+                Some(s) if s.starts_with("trip:") => Err(CmdError::new("invalid_command", "scope: trips are not ported to this server yet; read the home board (scope home)")),
+                Some(_) => Err(CmdError::new("invalid_command", "scope: expected home or trip:<tripId>")),
+            }
         }
+        ("GET", "/v1/weather") => read_weather(now_ms, query.iter().find(|(k, _)| k == "date").map(|(_, v)| v.as_str())),
         ("GET", p) if p.starts_with("/v1/days/") => {
             if principal != OWNER {
                 Err(CmdError::new("forbidden", "the day's recorded wear is read by the owner"))
@@ -739,15 +744,14 @@ pub async fn read_day<S: Store>(store: &mut S, date: &str) -> Result<Value, CmdE
     Ok(wear::daily_record(catalogue(), &l, date))
 }
 
-/// `GET /v1/today?date=` (`TodayView`): the day's home board, read without inference. No owner
-/// timezone is ported yet, so the day must be named.
+/// `GET /v1/today[?date=]` (`TodayResponse`): the day's home board, read without inference. Without
+/// a date it is the owner's day now, in the owner's timezone (`time::OWNER_TIMEZONE`).
 pub async fn read_today<S: Store>(store: &mut S, now_ms: u64, date: Option<&str>) -> Result<Value, CmdError> {
-    let Some(date) = date.filter(|d| parse_local_date(d).is_some()) else {
-        return Err(CmdError::with(
-            "invalid_command",
-            "date: expected the day as YYYY-MM-DD; this server has no owner timezone yet, so the day must be named",
-            json!({"issues": ["date: expected YYYY-MM-DD"]}),
-        ));
+    let owner_today = crate::time::local_date(crate::time::owner_day(now_ms));
+    let date = match date {
+        None => owner_today.as_str(),
+        Some(d) if parse_local_date(d).is_some() => d,
+        Some(_) => return Err(CmdError::with("invalid_command", "date: expected the day as YYYY-MM-DD", json!({"issues": ["date: expected YYYY-MM-DD"]}))),
     };
     // The ledger and the board are separate records committed together; read the ledger again after
     // the board, so the board and the stock it is checked against belong to the same commit.
@@ -763,6 +767,17 @@ pub async fn read_today<S: Store>(store: &mut S, now_ms: u64, date: Option<&str>
         return Ok(board::today(&day, date, board.as_ref(), wear::day_record(cat, &l, date), l.revision, now_ms));
     }
     Err(CmdError::with("conflict", "the wardrobe kept changing while the board was read; try again", json!({"retryable": true})))
+}
+
+/// `GET /v1/weather[?date=]` (`WeatherSnapshot`), for the owner's day now when no date is named.
+/// See `weather.rs`: the port has no home city, so the snapshot says no forecast was requested.
+pub fn read_weather(now_ms: u64, date: Option<&str>) -> Result<Value, CmdError> {
+    let local_date = match date {
+        None => crate::time::local_date(crate::time::owner_day(now_ms)),
+        Some(d) if parse_local_date(d).is_some() => d.to_string(),
+        Some(_) => return Err(CmdError::with("invalid_command", "date: expected the day as YYYY-MM-DD", json!({"issues": ["date: expected YYYY-MM-DD"]}))),
+    };
+    Ok(crate::weather::snapshot(&local_date, now_ms, &format!("wxs_{}", crate::random::token(16))))
 }
 
 /// The board document of `board_id`, checked against the stock read in the same commit as the board.

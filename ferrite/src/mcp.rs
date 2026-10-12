@@ -175,12 +175,11 @@ pub fn tools(caller: &Caller) -> Vec<Value> {
         json!({
             "name": "garderobe_today",
             "title": "Read the day's board",
-            "description": "The owner's outfit board for one day: each option's pieces (role and garmentId), the owner's choice, the board revision to send as expectedVersions, and what the board could not take into account (forecast, Calendar). Name the day; this server has no owner timezone yet.",
+            "description": "The owner's outfit board for one day: each option's pieces (role and garmentId), the owner's choice, the board revision to send as expectedVersions, and what the board could not take into account (forecast, Calendar). Without a date it is the owner's day now, in his timezone (Europe/London).",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["date"],
-                "properties": {"date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "the owner's calendar day, YYYY-MM-DD"}}
+                "properties": {"date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "the owner's calendar day, YYYY-MM-DD (default: today)"}}
             },
             "annotations": {"title": "Read the day's board", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
         }),

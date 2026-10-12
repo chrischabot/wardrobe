@@ -20,6 +20,7 @@ pub mod runs;
 pub mod seed;
 pub mod sha256;
 pub mod time;
+pub mod weather;
 pub mod wear;
 
 use ferrite_app::{serde_json, AppContext, IngressRequest};

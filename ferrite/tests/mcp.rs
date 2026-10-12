@@ -435,7 +435,10 @@ async fn the_codex_verifier_board_steps_run_over_mcp() {
     let date = "2026-09-11";
     let none = call(&mut store, &access, "garderobe_today", json!({"date": date})).await;
     assert_eq!(none["structuredContent"]["board"], Value::Null);
-    assert_eq!(error_of(&call(&mut store, &access, "garderobe_today", json!({})).await)["code"], "invalid_command");
+    // Without a date it is the owner's day now in London (00:26 UTC on the 10th is 01:26 BST on the 10th).
+    let undated = call(&mut store, &access, "garderobe_today", json!({})).await;
+    assert_eq!((undated["structuredContent"]["localDate"].clone(), undated["structuredContent"]["timezone"].clone()), (json!("2026-09-10"), json!("Europe/London")));
+    assert_eq!(error_of(&call(&mut store, &access, "garderobe_today", json!({"date": "2026-9-11"})).await)["code"], "invalid_command");
 
     // The owner's app publishes the day's board (until the recommender is ported).
     let outfit = |top: &str, bottom: &str, socks: &str, shoes: &str| json!({"slots": [{"role": "top", "garmentId": top}, {"role": "bottom", "garmentId": bottom}, {"role": "socks", "garmentId": socks}, {"role": "footwear", "garmentId": shoes}], "reason": ""});
