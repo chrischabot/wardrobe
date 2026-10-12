@@ -8,8 +8,9 @@ directory is that port, built flow by flow. The TypeScript backend stays the
 behaviour reference until the port reaches parity.
 
 **Status: the MCP endpoint, the board and service laundry (milestone 1c).** The owner's
-real inventory can be read, and one undoable command runs end to end: "it is
-in the wash" (`care.mark_dirty`) with its receipt, and `command.undo` to take
+real inventory can be read, and the ported commands run end to end with
+their receipts and, where the TypeScript service has one, their undo: "it is
+in the wash" (`care.mark_dirty`) and `command.undo` to take
 it back, from the owner's app or a connected assistant, through Ferrite's
 request queue and APE store. A connected assistant such as the Codex plugin
 reaches the same commands through the MCP endpoint (`/mcp`), signing in with
@@ -269,9 +270,11 @@ provider and consent page:
   written before these fields existed still load. Narrowing the scope
   on refresh is permanent for the grant. A grant ends after
   90 idle days. Tokens are
-  opaque, name their grant, and are stored only as SHA-256 hashes. Their
-  entropy comes from `Ed25519SigningKey::generate_pkcs8()` (`src/random.rs`),
-  because the SDK exports no random function.
+  opaque, name their grant, and are stored only as SHA-256 hashes. Codes and
+  tokens are minted as described under "Queue redelivery" below; only a
+  request without a correlation ID (or a deployment without the owner token)
+  takes fresh entropy from `Ed25519SigningKey::generate_pkcs8()`
+  (`src/random.rs`), because the SDK exports no random function.
 - **Replayed codes.** A code is used once. Presenting it again, with or
   without the verifier, ends the grant and every token it issued; the client
   connects again.
@@ -355,7 +358,7 @@ From `docs/building-on-upstream-core.md` in `iGentAI/ferrite-labs`.
 | Stream routes get no headers; no session affinity | MCP Streamable HTTP's optional SSE stream and `Mcp-Session-Id` | The MCP endpoint is stateless with JSON responses: tools answer within one request, and `GET /mcp` is 405 |
 | No response headers on egress, no redirects followed, 1 MiB egress body, 10 s per call | Google Calendar (ETags for versioned replacement, `Retry-After`), owner-added MCP services (`Mcp-Session-Id`), research providers | Later: Calendar versions are read from the event body (`etag` is also a body field in the Calendar API), retries use our own backoff, and only MCP services that work without a session header can be connected; that last one is a real reduction and is listed as an upstream ask. Redirect refusal and bounded responses are what the TypeScript adapters already enforce |
 | No `OPTIONS`; CORS headers from the app dropped; stream routes GET-only without headers | Web client, assistant streaming | Later: the web client is served same-origin from the app; conversation streams authenticate with a short-lived ticket in the query string |
-| No randomness API; clock is `ctx.now_ms()` | IDs, tokens | Command IDs derive from the idempotency key and time (SHA-256 in `src/sha256.rs`). OAuth codes, tokens and client and grant IDs come from `Ed25519SigningKey::generate_pkcs8()` entropy (`src/random.rs`), as `packages/auth` does |
+| No randomness API; clock is `ctx.now_ms()` | IDs, tokens | Command IDs derive from the idempotency key and time (SHA-256 in `src/sha256.rs`). OAuth codes and tokens are the HMAC of the request's correlation ID (so a redelivery mints the same ones); client and grant IDs, and secrets for a request without a correlation ID, come from `Ed25519SigningKey::generate_pkcs8()` entropy (`src/random.rs`), as `packages/auth` does |
 | APE commits 1 to 64 keys and guards one key | The ledger | Slice: one guarded ledger record per owner, committed with the receipt and idempotency marker. Its event journal grows with use, so milestone 1 folds undo-expired events into the baseline and shards by garment |
 
 ## Milestones

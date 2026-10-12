@@ -421,7 +421,7 @@ fn return_without_batch(ctx: &Ctx<'_>, ledger: &mut Ledger, still_away: &[(Strin
         b.withdrawn_by.is_none() && b.status == "returned" && (recent(b.picked_up_at_ms) || b.returned_at_ms.map_or(false, recent))
     });
     if already {
-        return Ok(noop("That laundry is already recorded as back; anything put in the hamper since the pickup is still awaiting the service", empty));
+        return Ok(noop("That laundry is already recorded as back, so nothing was changed; anything put in the hamper since the pickup is still awaiting the service. If this is a new bag, record its pickup and then its return", empty));
     }
     let held_batch = new_batch_id(ctx, ledger);
     let mut washes = Vec::new();

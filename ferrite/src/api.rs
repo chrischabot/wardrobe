@@ -156,8 +156,7 @@ fn authenticate(req: &IngressRequest, tokens: &Tokens) -> Result<Principal, CmdE
         return Err(CmdError::new("internal", format!("the server has no {OWNER_TOKEN_SECRET} secret; set it and deploy again")));
     };
     let presented = header(req, "authorization")
-        .and_then(|h| h.strip_prefix("Bearer ").or_else(|| h.strip_prefix("bearer ")))
-        .map(str::trim)
+        .and_then(crate::oauth::bearer_credentials)
         .unwrap_or("");
     if presented.is_empty() {
         return Err(CmdError::new("unauthenticated", "sign in first: send Authorization: Bearer <token>"));

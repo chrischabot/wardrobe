@@ -1335,12 +1335,22 @@ pub enum BearerError {
     Fault(Fault),
 }
 
+/// The credentials of an `Authorization: Bearer …` header. The scheme name is case-insensitive
+/// (RFC 7235 section 2.1), and whitespace around the token is ignored.
+pub fn bearer_credentials(h: &str) -> Option<&str> {
+    let h = h.trim_start();
+    let (scheme, rest) = h.split_at_checked(6)?;
+    if !scheme.eq_ignore_ascii_case("bearer") || !rest.starts_with([' ', '\t']) {
+        return None;
+    }
+    Some(rest.trim())
+}
+
 /// Check an `Authorization` header against the grant its token names. The
 /// scopes are the token's, within the grant's (never wider).
 pub async fn authenticate<S: Store>(store: &mut S, header: Option<&str>, now: u64) -> Result<Caller, BearerError> {
     let presented = header
-        .and_then(|h| h.strip_prefix("Bearer ").or_else(|| h.strip_prefix("bearer ")))
-        .map(str::trim)
+        .and_then(bearer_credentials)
         .filter(|t| !t.is_empty())
         .ok_or(BearerError::Missing)?;
     let grant_id = grant_of_token(presented, "wat").ok_or(BearerError::Invalid("the access token is not a Garderobe grant"))?;
@@ -1428,6 +1438,16 @@ mod tests {
         assert!(valid_redirect_uri("https://client.example/cb?x=1"));
         for bad in ["http://client.example/cb", "https://client.example/cb#frag", "https://user@client.example/cb", "javascript:alert(1)", "https://client.example/a b"] {
             assert!(!valid_redirect_uri(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_bearer_scheme_is_case_insensitive() {
+        for h in ["Bearer abc", "bearer abc", "BEARER abc", "BeArEr  abc ", "Bearer\tabc"] {
+            assert_eq!(bearer_credentials(h), Some("abc"), "{h:?}");
+        }
+        for h in ["Bearerabc", "Basic abc", "Bear abc", "", "Bearer", "Bé abc"] {
+            assert_eq!(bearer_credentials(h).filter(|t| !t.is_empty()), None, "{h:?}");
         }
     }
 
