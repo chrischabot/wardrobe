@@ -2,7 +2,7 @@
 /**
  * End-to-end check of the Wardrobe Codex plugin with the real Codex CLI.
  *
- *   node integrations/codex/scripts/verify-codex.mjs [--marketplace <dir>] [--report <file.json>] [--registration dcr|cimd|auto] [--timezone <IANA zone>]
+ *   node integrations/codex/scripts/verify-codex.mjs [--marketplace <dir>] [--report <file.json>] [--registration dcr|cimd|auto] [--timezone <IANA zone>] [--app worker|ferrite] [--disposable-test-instance]
  *
  * No model runs here. Codex can run only OpenAI models, and the project authorizes only claude-opus-5-5 for
  * inference, so there is no model-driven `codex exec` step; every check goes through `codex app-server`, which
@@ -68,6 +68,15 @@ if (!["worker", "ferrite"].includes(app)) {
   process.exit(2);
 }
 const ferrite = app === "ferrite";
+// The synthetic care report (care.mark_dirty, then undo) leaves a test observation in the app's history: undo does
+// not erase it. A loopback URL is no proof of a throwaway instance (a persistent local app, or a tunnel to a
+// deployment, also answers on 127.0.0.1), so the write runs only when the operator states that this is a disposable
+// test instance started with `ferrite dev --fresh`, and the URL is loopback as well.
+const disposableInstance = args.includes("--disposable-test-instance");
+if (disposableInstance && !ferrite) {
+  console.error("--disposable-test-instance applies only to --app ferrite");
+  process.exit(2);
+}
 const ownerToken = process.env.WARDROBE_OWNER_TOKEN ?? "";
 if (ferrite && !ownerToken) {
   console.error("--app ferrite needs WARDROBE_OWNER_TOKEN, the Ferrite app's owner token (locally: [secrets] in ferrite/ferrite.local.toml), to give the owner's consent.");
@@ -337,13 +346,13 @@ async function toolsThroughCodex() {
     check("a restriction lift from Codex is refused", !lift.ok && lift.error?.code === "forbidden", lift.ok ? "applied" : `${lift.error?.code}: ${lift.error?.message}`);
 
     // The Ferrite port publishes the board tools only once they are ported. Until then the board steps are not run,
-    // and on a LOCAL ferrite dev (fresh state, nobody's real record) the routine write with receipt and undo is shown
-    // with the one write the port offers: a care report, undone at once. It is never sent to a Ferrite deployment,
-    // where it would record a wash the owner did not report.
+    // and the routine write with receipt and undo is shown with the one write the port offers, a care report undone
+    // at once, only on an instance the operator declared disposable (--disposable-test-instance, `ferrite dev
+    // --fresh`) at a loopback URL. Anywhere else it would record a wash the owner did not report, so it is not run.
     if (ferrite && !tools.includes("garderobe_today")) {
       check("board steps (choice, swap and their undos) on the Ferrite app", false, `not run: this Ferrite app publishes ${tools.join(", ")}; garderobe_today is not ported yet`);
-      if (!loopback) {
-        check("routine write with receipt and undo on the Ferrite deployment", false, "not run: the only write this Ferrite app offers is a care report (care.mark_dirty), which on the owner's real record would invent a wash event");
+      if (!loopback || !disposableInstance) {
+        check("routine write with receipt and undo on the Ferrite app", false, `not run: the only write this Ferrite app offers is a care report (care.mark_dirty), which leaves an observation in history even after undo; it is sent only to a disposable test instance (loopback URL and --disposable-test-instance, for \`ferrite dev --fresh\`)${loopback ? "; --disposable-test-instance was not given" : "; this URL is not loopback"}`);
         return null;
       }
       const items = snapshot.data?.data?.items ?? snapshot.data?.items ?? null;
