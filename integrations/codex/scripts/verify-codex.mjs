@@ -38,7 +38,7 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import { adoptAfterWrite, authorizationUrlFrom, balancesState, boardState, choiceOf, cleanLaundered, movedToDirty, ownerDay, sameWear, unchangedAfterUnapplied, versionsOf, within, writeDecision } from "./board-guard.mjs";
+import { adoptAfterWrite, authorizationUrlFrom, balancesState, boardState, choiceOf, cleanLaundered, movedToDirty, ownerDay, publishCommand, publishLostRace, sameWear, setupDecision, unchangedAfterUnapplied, versionsOf, within, writeDecision } from "./board-guard.mjs";
 import { ferriteConsent } from "./ferrite-consent.mjs";
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -341,28 +341,33 @@ const FERRITE_SEED_OUTFITS = [
   ["gmt_41c2da80e7f41e5dc6a4340b", "gmt_b8744c2627cd88a3b937f851", "gmt_67d3228f744d17138e400729", "gmt_185ccf753d109848f21f7cec"],
 ];
 async function ferriteBoardSetup(call, date) {
-  const existing = await call("garderobe_today", { date });
-  // Only an answer that explicitly shows no board establishes absence; a failed read proves nothing either way.
-  if (!existing.ok || existing.data === null || typeof existing.data !== "object" || !("board" in existing.data)) {
-    check("setup: whether tomorrow already has a board could be read", false, `not published: ${existing.ok ? "garderobe_today answered without a board field" : `${existing.error?.code}: ${existing.error?.message}`}`);
+  const decision = setupDecision({ outcome: await call("garderobe_today", { date }), loopback, disposable: disposableInstance });
+  if (decision.action === "unknown") {
+    check("setup: whether tomorrow already has a board could be read", false, `not published: ${decision.reason}`);
     return;
   }
-  if (existing.data.board !== null) return;
-  if (!loopback || !disposableInstance) {
-    console.log(`note: no board is published for ${date}; the verifier publishes one only on a disposable local instance (--disposable-test-instance), because a publication has no undo`);
+  if (decision.action === "exists") return;
+  if (decision.action === "not_disposable") {
+    console.log(`note: no board is published for ${date}; ${decision.reason}`);
     return;
   }
-  const options = FERRITE_SEED_OUTFITS.map(([top, bottom, socks, footwear]) => ({ slots: [{ role: "top", garmentId: top }, { role: "bottom", garmentId: bottom }, { role: "socks", garmentId: socks }, { role: "footwear", garmentId: footwear }], reason: "" }));
-  const body = { type: "board.publish", idempotencyKey: `codex-verify-publish-${date}`, authorization: "owner_tap", source: { channel: "ios" }, payload: { localDate: date, requestedCount: options.length, options } };
+  const body = publishCommand(date, FERRITE_SEED_OUTFITS);
   let status = "no answer";
   let ok = false;
+  let lostRace = false;
   try {
     const r = await fetch(new URL("/v1/commands", mcpUrl), { method: "POST", redirect: "manual", headers: { authorization: `Bearer ${ownerToken}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
     const json = await r.json().catch(() => null);
     ok = r.status === 200 && Boolean(json?.commandId ?? json?.receipt?.commandId);
+    lostRace = !ok && publishLostRace(json);
     status = `${r.status} ${json?.summary ?? json?.receipt?.summary ?? json?.error?.code ?? ""}`.trim();
   } catch (error) {
     status = error?.name === "TimeoutError" ? "timed out after 15 s" : "request failed";
+  }
+  // A board published meanwhile is left as it is (expectedBoardRevision 0 refused to replace it); the steps below use it.
+  if (lostRace) {
+    console.log(`note: another board for ${date} was published while the verifier was about to publish; it was not replaced (${status})`);
+    return;
   }
   check("setup (disposable local Ferrite app, as the owner in the app): tomorrow's board is published", ok, `${date}: ${status}`);
 }

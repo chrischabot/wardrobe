@@ -13,7 +13,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { checkMcpUrl, retarget } from "../scripts/retarget.mjs";
-import { adoptAfterWrite, authorizationUrlFrom, balancesState, boardState, cleanLaundered, movedToDirty, ownerDay, sameWear, unchangedAfterUnapplied, versionsOf, within, writeDecision } from "../scripts/board-guard.mjs";
+import { adoptAfterWrite, authorizationUrlFrom, balancesState, boardAbsence, boardState, cleanLaundered, movedToDirty, ownerDay, publishCommand, publishLostRace, sameWear, setupDecision, unchangedAfterUnapplied, versionsOf, within, writeDecision } from "../scripts/board-guard.mjs";
 import { ferriteConsent, formAction, hiddenFields } from "../scripts/ferrite-consent.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -336,6 +336,40 @@ test("care round trip helpers: pick a clean single laundered garment and require
   assert.equal(movedToDirty(items, items, "g_worn"), false);
   assert.equal(balancesState(items), balancesState([...items].reverse()));
   assert.notEqual(balancesState(items), balancesState(after));
+  // The port's balances also carry `service`: a unit that went to the laundry service is a change, and a move to
+  // dirty keeps the other balance keys.
+  const withService = items.map((i) => ({ ...i, balances: { ...i.balances, service: 0 } }));
+  const sent = withService.map((i) => (i.garmentId === "g_pair" ? { ...i, balances: { clean: 1, dirty: 0, service: 1 } } : i));
+  assert.notEqual(balancesState(withService), balancesState(sent));
+  const dirtied = withService.map((i) => (i.garmentId === "g_shirt" ? { ...i, balances: { clean: 0, dirty: 1, service: 0 } } : i));
+  assert.equal(movedToDirty(withService, dirtied, "g_shirt"), true);
+  assert.equal(movedToDirty(withService, dirtied.map((i) => (i.garmentId === "g_shirt" ? { ...i, balances: { clean: 0, dirty: 0, service: 1 } } : i)), "g_shirt"), false);
+});
+
+test("Ferrite board setup publishes only when the day is known to have no board, on a declared disposable loopback instance", () => {
+  // Synthetic garderobe_today outcomes (labelled test data).
+  const none = { ok: true, data: { board: null, emptyReason: "SYNTHETIC: nothing published" } };
+  const some = { ok: true, data: { board: { boardId: "brd_synthetic", revision: 1, options: [] } } };
+  assert.equal(setupDecision({ outcome: none, loopback: true, disposable: true }).action, "publish");
+  assert.equal(setupDecision({ outcome: some, loopback: true, disposable: true }).action, "exists");
+  // A failed or malformed read establishes nothing: never a publication.
+  for (const outcome of [{ ok: false, error: { code: "unauthenticated", message: "SYNTHETIC" } }, { ok: true, data: null }, { ok: true, data: {} }, { ok: true, data: "board: null" }, undefined]) {
+    assert.equal(setupDecision({ outcome, loopback: true, disposable: true }).action, "unknown", JSON.stringify(outcome));
+    assert.equal(boardAbsence(outcome).absent, false);
+  }
+  // Without the disposable declaration, or away from loopback, a missing board is reported, not published.
+  assert.equal(setupDecision({ outcome: none, loopback: true, disposable: false }).action, "not_disposable");
+  assert.equal(setupDecision({ outcome: none, loopback: false, disposable: true }).action, "not_disposable");
+  // The publication can never replace a board published meanwhile, and such a refusal is told apart from others.
+  const cmd = publishCommand("2026-10-13", [["g_top", "g_bottom", "g_socks", "g_shoes"]]);
+  assert.equal(cmd.type, "board.publish");
+  assert.equal(cmd.payload.expectedBoardRevision, 0);
+  assert.equal(cmd.payload.localDate, "2026-10-13");
+  assert.deepEqual(cmd.payload.options[0].slots.map((s) => s.role), ["top", "bottom", "socks", "footwear"]);
+  assert.equal(publishLostRace({ error: { code: "precondition_failed", details: { boardChanged: true, currentRevision: 1 } } }), true);
+  assert.equal(publishLostRace({ error: { code: "precondition_failed", details: {} } }), false);
+  assert.equal(publishLostRace({ error: { code: "invalid_command", details: { boardChanged: true } } }), false);
+  assert.equal(publishLostRace(null), false);
 });
 
 test("choosing is not wearing: the day's wear must be unchanged, not merely empty", () => {

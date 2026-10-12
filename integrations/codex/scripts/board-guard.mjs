@@ -59,15 +59,58 @@ export function within(promise, ms, message, stop) {
 /** The first garment in an inventory snapshot that is laundered by service, held once and clean now, or null. */
 export const cleanLaundered = (items) => (items ?? []).find((i) => i?.careChannel === "service" && Number(i.quantity) === 1 && Number(i.balances?.clean) >= 1)?.garmentId ?? null;
 
-/** Every garment's balances in an inventory snapshot, as a comparable string (order-independent). */
-export const balancesState = (items) => JSON.stringify((items ?? []).map((i) => `${i.garmentId}:${Number(i.balances?.clean ?? 0)}/${Number(i.balances?.dirty ?? 0)}`).sort());
+/** Every garment's balances in an inventory snapshot (every balance key, e.g. clean, dirty, service), as a comparable string (order-independent). */
+export const balancesState = (items) =>
+  JSON.stringify(
+    (items ?? [])
+      .map((i) => {
+        const b = { clean: 0, dirty: 0, ...(i.balances ?? {}) };
+        return `${i.garmentId}:${Object.keys(b).sort().map((k) => `${k}=${Number(b[k] ?? 0)}`).join(",")}`;
+      })
+      .sort(),
+  );
+
+/**
+ * Whether a garderobe_today answer establishes that the day has no board: only an answer that carries a `board`
+ * field set to null does. A failed or malformed read establishes nothing, so nothing may be published on it.
+ */
+export function boardAbsence(outcome) {
+  if (!outcome?.ok) return { known: false, absent: false, reason: `garderobe_today failed: ${outcome?.error?.code ?? "unknown"}: ${outcome?.error?.message ?? ""}`.trim() };
+  const data = outcome.data;
+  if (data === null || typeof data !== "object" || !("board" in data)) return { known: false, absent: false, reason: "garderobe_today answered without a board field" };
+  return data.board === null ? { known: true, absent: true, reason: "no board for that day" } : { known: true, absent: false, reason: `board ${data.board?.boardId ?? "(unnamed)"} already published` };
+}
+
+/**
+ * What the verifier's board setup on the Ferrite port may do, from the garderobe_today answer: publish only when the
+ * day is known to have no board and the instance was declared disposable at a loopback URL.
+ */
+export function setupDecision({ outcome, loopback, disposable }) {
+  const absence = boardAbsence(outcome);
+  if (!absence.known) return { action: "unknown", reason: absence.reason };
+  if (!absence.absent) return { action: "exists", reason: absence.reason };
+  if (!loopback || !disposable) return { action: "not_disposable", reason: "a publication has no undo, so it is sent only to a disposable local instance (--disposable-test-instance at a loopback URL)" };
+  return { action: "publish", reason: absence.reason };
+}
+
+/**
+ * The owner's board.publish for `date`: `expectedBoardRevision: 0` makes the server refuse it (precondition_failed,
+ * boardChanged) when a board was published meanwhile, instead of replacing that board.
+ */
+export function publishCommand(date, outfits) {
+  const options = outfits.map(([top, bottom, socks, footwear]) => ({ slots: [{ role: "top", garmentId: top }, { role: "bottom", garmentId: bottom }, { role: "socks", garmentId: socks }, { role: "footwear", garmentId: footwear }], reason: "" }));
+  return { type: "board.publish", idempotencyKey: `codex-verify-publish-${date}`, authorization: "owner_tap", source: { channel: "ios" }, payload: { localDate: date, requestedCount: options.length, options, expectedBoardRevision: 0 } };
+}
+
+/** Whether a refused publication was refused only because another board was published meanwhile. */
+export const publishLostRace = (json) => json?.error?.code === "precondition_failed" && json?.error?.details?.boardChanged === true;
 
 /** Whether `after` is `before` with exactly one unit of `garmentId` moved from clean to dirty, nothing else changed. */
 export function movedToDirty(before, after, garmentId) {
   // Exactly one item must be that garment, with a clean unit to move; otherwise nothing proves a move.
   const matching = (before ?? []).filter((i) => i.garmentId === garmentId);
   if (matching.length !== 1 || !(Number(matching[0].balances?.clean) >= 1)) return false;
-  const shifted = before.map((i) => (i.garmentId === garmentId ? { ...i, balances: { clean: Number(i.balances?.clean) - 1, dirty: Number(i.balances?.dirty ?? 0) + 1 } } : i));
+  const shifted = before.map((i) => (i.garmentId === garmentId ? { ...i, balances: { ...i.balances, clean: Number(i.balances?.clean) - 1, dirty: Number(i.balances?.dirty ?? 0) + 1 } } : i));
   return balancesState(shifted) === balancesState(after);
 }
 
