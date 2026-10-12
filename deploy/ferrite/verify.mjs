@@ -16,6 +16,12 @@
  * receipt the run itself created, never anyone else's) and undoes those receipts only. A command another client sent
  * meanwhile is never touched; it leaves the balances changed, and the cleanup check then fails and says so. Evidence
  * holds statuses, ids, counts and timings only, redacted.
+ *
+ * The MCP endpoint is verified as a client would use it: discovery from the 401 challenge, dynamic registration, the
+ * consent page (its form fetched first, so the server-issued `issued` and `form_mac` fields are posted back), the PKCE
+ * code exchange, a session (initialize, initialized, tools/list, one read, one routine write with receipt and undo),
+ * a read-only grant refused the write tool with `insufficient_scope`, and the run's grants ended at the end (owner
+ * disconnect and RFC 7009 revocation) with their tokens refused on the next request.
  */
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -118,6 +124,41 @@ export function command(type, payload, idempotencyKey, authorization, channel) {
   return { type, payload, idempotencyKey, authorization, source: { channel } };
 }
 
+/** The MCP revision the run asks for (the port offers 2025-11-25 and 2025-06-18). */
+export const MCP_VERSION = "2025-11-25";
+/** The redirect URI the run's OAuth client registers: a loopback port nothing listens on, never fetched. */
+export const REDIRECT_URI = "http://127.0.0.1:9/wardrobe-verify/callback";
+
+/** A PKCE S256 verifier and its challenge (RFC 7636). */
+export function pkcePair() {
+  const verifier = randomBytes(32).toString("base64url");
+  return { verifier, challenge: createHash("sha256").update(verifier).digest("base64url") };
+}
+
+const HTML_ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'" };
+
+/** The hidden fields of a consent page's form, unescaped (the server writes them as `<input type="hidden" ...>`). */
+export function hiddenFields(html) {
+  const out = {};
+  for (const m of String(html ?? "").matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)) {
+    out[m[1]] = m[2].replace(/&(amp|lt|gt|quot|#39);/g, (_, e) => HTML_ENTITIES[e]);
+  }
+  return out;
+}
+
+/** The `key="value"` parameters of a `WWW-Authenticate` challenge. */
+export function authParams(header) {
+  const out = {};
+  for (const m of String(header ?? "").matchAll(/([A-Za-z_]+)="([^"]*)"/g)) out[m[1]] = m[2];
+  return out;
+}
+
+/** The path and query of an absolute URL the app advertised; requests go to the origin under test. */
+function pathOf(url) {
+  const u = new URL(url);
+  return `${u.pathname}${u.search}`;
+}
+
 /**
  * Write requests (anything but GET) sent and not yet answered: their remote effect may still be committing. A write
  * that ended without any answer (a client timeout or a connection error) is counted as `unanswered`: the server may
@@ -138,17 +179,23 @@ export function keepLocksForWritesInFlight(cleanupConfirmed = false) {
   return true;
 }
 
+/**
+ * `call(token, method, route, body, scheme, { form, headers })`: `body` is sent as JSON, `form` (a string) as
+ * `application/x-www-form-urlencoded`. The answer holds the status, the parsed JSON, the text and the lower-cased
+ * response headers; none of the last two ever reaches evidence.
+ */
 export function httpClient(origin) {
-  return async (token, method, route, body, scheme = "Bearer") => {
+  return async (token, method, route, body, scheme = "Bearer", opts = {}) => {
     const started = Date.now();
     const write = method !== "GET";
     let answered = false;
     if (write) inFlight.writes += 1;
     try {
+      const form = typeof opts.form === "string" ? opts.form : null;
       const res = await fetch(`${origin}${route}`, {
         method,
-        headers: { ...(token ? { authorization: `${scheme} ${token}` } : {}), ...(body ? { "content-type": "application/json" } : {}) },
-        body: body ? JSON.stringify(body) : undefined,
+        headers: { ...(token ? { authorization: `${scheme} ${token}` } : {}), ...(body ? { "content-type": "application/json" } : {}), ...(form !== null ? { "content-type": "application/x-www-form-urlencoded" } : {}), ...(opts.headers ?? {}) },
+        body: form !== null ? form : body ? JSON.stringify(body) : undefined,
         redirect: "manual",
         signal: AbortSignal.timeout(15_000),
       });
@@ -162,7 +209,7 @@ export function httpClient(origin) {
       } catch {
         json = null;
       }
-      return { status: res.status, json, ms: Date.now() - started };
+      return { status: res.status, json, text, headers: Object.fromEntries(res.headers), ms: Date.now() - started };
     } finally {
       if (write) {
         inFlight.writes -= 1;
@@ -230,6 +277,7 @@ export const EVIDENCE_PATHS = new Set([
   "outcomes", "outcomes[].what", "outcomes[].httpStatus", "outcomes[].code", "outcomes[].expected", "outcomes[].ok",
   "ownReceipts", "ownReceiptsStillOpen", "undoneByCleanup", "undoneByCleanup[].commandId", "undoneByCleanup[].httpStatus",
   "failedAttempts", "failedAttempts[].commandId", "failedAttempts[].httpStatus", "unresolvedReplays", "keyCollisions", "balancesRestored",
+  "protocolVersion", "tools", "scopes", "step", "grants", "grants[].grantId", "grants[].endedBy", "grants[].httpStatus", "grants[].tokenRefused", "grants[].refreshRefused", "grants[].listedAs",
 ]);
 export function evidenceValue(value, at = "") {
   if (value === null || value === undefined || typeof value === "boolean") return value ?? null;
@@ -248,9 +296,16 @@ export function evidenceValue(value, at = "") {
 }
 
 /** Run every check against `origin`; returns the redacted results. */
-export async function runVerification({ origin, tokens, target, runId = `${Date.now().toString(36)}-${randomBytes(8).toString("hex")}`, sourceSha256 = csvSha256(), knownExtra = [] }) {
+export async function runVerification({ origin, tokens, target, runId = `${Date.now().toString(36)}-${randomBytes(8).toString("hex")}`, sourceSha256 = csvSha256(), knownExtra = [], publicOrigin = null }) {
   // Every secret the run may meet: the tokens in use and the shared collector's (local, stored, platform tokens).
+  // OAuth codes and tokens the run is given are added the moment they arrive.
   const known = [tokens.owner, tokens.assistant, ...knownExtra].filter((v) => typeof v === "string" && v.length > 0);
+  const remember = (...secrets) => {
+    for (const s of secrets) if (typeof s === "string" && s.length > 0 && !known.includes(s)) known.push(s);
+  };
+  // The origin the app advertises in its OAuth metadata: its WARDROBE_PUBLIC_ORIGIN. Deployed, that is the verified
+  // origin itself; locally it is the dev secret, which may name another port than the one under test.
+  const expectedOrigin = publicOrigin ?? origin;
   const call = client(origin);
   const results = [];
   const record = (group, name, status, detail = {}, ms = null, required = true) => {
@@ -495,8 +550,285 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
       const outcomes = tries.map(([what, r, status, code]) => ({ what, httpStatus: r.status, code: r.json?.error?.code ?? null, expected: `${status} ${code}`, ok: refusal(r, status, code) }));
       return { pass: outcomes.every((o) => o.ok) && exactlyChanged(start, end) && end.wardrobeRevision === start.wardrobeRevision && (await newestReceipt()) === top, outcomes };
     });
+
+    await verifyMcp({ ready, unready });
   } finally {
     await cleanUp();
+  }
+
+  /**
+   * OAuth and the MCP endpoint, as a client uses them. The run's grants are ended in a `finally` block whatever
+   * happened, and that ending is itself a check: each token is refused on its next request.
+   */
+  async function verifyMcp({ ready, unready }) {
+    const grants = [];
+    let meta = null;
+    let client = null;
+    let rpcId = 0;
+    const unserved = "the app does not serve OAuth and MCP at this origin (milestone 1a of the Ferrite port)";
+    const mcp = (grant, method, params, { notification = false, version = MCP_VERSION } = {}) =>
+      call(grant.access, "POST", "/mcp", { jsonrpc: "2.0", ...(notification ? {} : { id: ++rpcId }), method, ...(params ? { params } : {}) }, "Bearer", { headers: { accept: "application/json, text/event-stream", ...(version ? { "mcp-protocol-version": version } : {}) } });
+    const authorizeQuery = (scope, pkce, state) => new URLSearchParams({ response_type: "code", client_id: client, redirect_uri: REDIRECT_URI, scope, code_challenge: pkce.challenge, code_challenge_method: "S256", state, resource: meta.resource }).toString();
+    /** GET the consent page, as a browser would, and return its form's hidden fields. */
+    const consentForm = async (scope, pkce, state) => {
+      const r = await call(null, "GET", `${meta.authorize}?${authorizeQuery(scope, pkce, state)}`);
+      return { status: r.status, fields: r.status === 200 ? hiddenFields(r.text) : {} };
+    };
+    const postForm = (route, fields) => call(null, "POST", route, undefined, "Bearer", { form: new URLSearchParams(fields).toString() });
+    /** The owner allows the connection on the consent page (with or without "Make changes"); the client exchanges the code. */
+    const connect = async (write) => {
+      const pkce = pkcePair();
+      const state = randomBytes(12).toString("hex");
+      const form = await consentForm("wardrobe.read wardrobe.write", pkce, state);
+      if (form.status !== 200 || !form.fields.issued || !form.fields.form_mac) return { step: "consent_page", httpStatus: form.status };
+      const post = await postForm(meta.authorize, { ...form.fields, owner_token: tokens.owner, decision: "allow", ...(write ? { write: "on" } : {}) });
+      let loc = null;
+      try {
+        loc = post.headers?.location ? new URL(post.headers.location) : null;
+      } catch {
+        loc = null;
+      }
+      const code = loc?.searchParams.get("code") ?? null;
+      remember(code);
+      // The code names its grant (`wac.<grant>.<secret>`): from here on the grant exists and is ended at the end,
+      // whatever the rest of the exchange does. A grant created without a usable code is found by its client id.
+      const codeGrant = typeof code === "string" ? code.split(".")[1] ?? null : null;
+      const grant = /^grt_[0-9a-f]{32}$/.test(codeGrant ?? "") ? { grantId: codeGrant, access: null, refresh: null, scopes: [] } : null;
+      if (grant) grants.push(grant);
+      if (post.status !== 302 || !code || `${loc.origin}${loc.pathname}` !== REDIRECT_URI || loc.searchParams.get("state") !== state || loc.searchParams.get("iss") !== expectedOrigin) return { step: "consent", httpStatus: post.status };
+      const tok = await postForm(meta.token, { grant_type: "authorization_code", code, redirect_uri: REDIRECT_URI, code_verifier: pkce.verifier, client_id: client, resource: meta.resource });
+      remember(tok.json?.access_token, tok.json?.refresh_token);
+      const access = tok.json?.access_token;
+      if (grant && typeof access === "string") grant.access = access;
+      if (grant && typeof tok.json?.refresh_token === "string") grant.refresh = tok.json.refresh_token;
+      const grantId = typeof access === "string" ? access.split(".")[1] ?? null : null;
+      if (tok.status !== 200 || !grant || typeof access !== "string" || typeof tok.json?.refresh_token !== "string" || tok.json?.token_type !== "Bearer" || grantId !== grant.grantId) return { step: "token", httpStatus: tok.status };
+      grant.scopes = String(tok.json.scope ?? "").split(" ").filter(Boolean);
+      return { grant };
+    };
+    const toolNames = (r) => (Array.isArray(r.json?.result?.tools) ? r.json.result.tools.map((t) => t?.name).filter((n) => typeof n === "string") : []);
+    let writer = null;
+    let reader = null;
+    try {
+      await check("oauth", "an MCP request without a token gets 401 naming the protected-resource metadata, which names this app as its authorization server (S256, both scopes)", async () => {
+        const r = await call(null, "POST", "/mcp", { jsonrpc: "2.0", id: ++rpcId, method: "tools/list" }, "Bearer", { headers: { accept: "application/json, text/event-stream" } });
+        // Not served: no such route, or the first slice's API refusal (an error object) instead of an OAuth challenge.
+        if (r.status === 404 || (r.json?.error && typeof r.json.error === "object")) return { notRun: unserved, httpStatus: r.status };
+        const challenge = authParams(r.headers?.["www-authenticate"]);
+        const prm = await call(null, "GET", "/.well-known/oauth-protected-resource/mcp");
+        const asm = await call(null, "GET", "/.well-known/oauth-authorization-server");
+        const a = asm.json ?? {};
+        const endpoints = ["authorization_endpoint", "token_endpoint", "registration_endpoint", "revocation_endpoint"];
+        const pass =
+          r.status === 401 && r.json?.error === "invalid_token" && challenge.resource_metadata === `${expectedOrigin}/.well-known/oauth-protected-resource/mcp` &&
+          prm.status === 200 && prm.json?.resource === `${expectedOrigin}/mcp` && Array.isArray(prm.json?.authorization_servers) && prm.json.authorization_servers.includes(expectedOrigin) &&
+          asm.status === 200 && a.issuer === expectedOrigin && endpoints.every((k) => typeof a[k] === "string" && a[k].startsWith(`${expectedOrigin}/`)) &&
+          Array.isArray(a.code_challenge_methods_supported) && a.code_challenge_methods_supported.includes("S256") &&
+          Array.isArray(a.scopes_supported) && a.scopes_supported.includes("wardrobe.read") && a.scopes_supported.includes("wardrobe.write");
+        if (pass) meta = { resource: prm.json.resource, authorize: pathOf(a.authorization_endpoint), token: pathOf(a.token_endpoint), register: pathOf(a.registration_endpoint), revoke: pathOf(a.revocation_endpoint) };
+        return { pass, statuses: [r.status, prm.status, asm.status], scopes: Array.isArray(a.scopes_supported) ? a.scopes_supported : null };
+      });
+      const noMeta = () => (meta ? null : "OAuth discovery did not succeed");
+      await check("oauth", "dynamic client registration accepts a public client", async () => {
+        if (noMeta()) return { notRun: noMeta() };
+        const r = await call(null, "POST", meta.register, { client_name: `wardrobe-verify ${runId}`, redirect_uris: [REDIRECT_URI], token_endpoint_auth_method: "none", grant_types: ["authorization_code", "refresh_token"], response_types: ["code"] });
+        client = r.status === 201 && typeof r.json?.client_id === "string" ? r.json.client_id : null;
+        return { pass: Boolean(client) && r.json?.token_endpoint_auth_method === "none", httpStatus: r.status };
+      });
+      const noClient = () => noMeta() ?? (client ? null : "no OAuth client was registered");
+      await check("oauth", "the consent page refuses a wrong owner token and a form it did not issue: nothing granted, no redirect", async () => {
+        if (noClient()) return { notRun: noClient() };
+        const form = await consentForm("wardrobe.read wardrobe.write", pkcePair(), randomBytes(12).toString("hex"));
+        const { issued, form_mac: mac, ...unissued } = form.fields;
+        if (form.status !== 200 || !issued || !mac) return { pass: false, step: "consent_page", httpStatus: form.status };
+        // "Nothing granted" is read from the owner's own list: the run's fresh client must hold no grant afterwards.
+        const grantsOfClient = async () => {
+          const r = await owner("GET", "/v1/connections");
+          return r.status === 200 && Array.isArray(r.json?.connections) ? r.json.connections.filter((c) => c?.clientId === client).length : null;
+        };
+        const before = await grantsOfClient();
+        const wrong = await postForm(meta.authorize, { ...form.fields, owner_token: `not-the-owner-${runId}`, decision: "allow", write: "on" });
+        const forged = await postForm(meta.authorize, { ...unissued, owner_token: tokens.owner, decision: "allow", write: "on" });
+        const after = await grantsOfClient();
+        return { pass: before === 0 && after === 0 && wrong.status === 401 && !wrong.headers?.location && forged.status === 400 && !forged.headers?.location, statuses: [form.status, wrong.status, forged.status], items: after };
+      });
+      await check("oauth", 'the owner allows "Make changes": the code returns with state and issuer, and the PKCE exchange grants read and write', async () => {
+        if (noClient()) return { notRun: noClient() };
+        const out = await connect(true);
+        writer = out.grant ?? null;
+        return { pass: Boolean(writer) && JSON.stringify(writer.scopes) === JSON.stringify(["wardrobe.read", "wardrobe.write"]), step: out.step ?? null, httpStatus: out.httpStatus ?? null, scopes: writer?.scopes ?? null };
+      });
+      await check("oauth", 'the owner leaves "Make changes" off: the same request is granted read only', async () => {
+        if (noClient()) return { notRun: noClient() };
+        const out = await connect(false);
+        reader = out.grant ?? null;
+        return { pass: Boolean(reader) && JSON.stringify(reader.scopes) === JSON.stringify(["wardrobe.read"]), step: out.step ?? null, httpStatus: out.httpStatus ?? null, scopes: reader?.scopes ?? null };
+      });
+
+      await check("mcp", "an MCP client session: initialize, initialized, tools/list offers the read and write tools, and a snapshot read equals the owner's inventory", async () => {
+        if (!writer) return { notRun: noClient() ?? "no read-write grant was obtained" };
+        const init = await mcp(writer, "initialize", { protocolVersion: MCP_VERSION, capabilities: {}, clientInfo: { name: "wardrobe-verify", version: "1" } }, { version: null });
+        const note = await mcp(writer, "notifications/initialized", undefined, { notification: true });
+        const list = await mcp(writer, "tools/list", {});
+        const names = toolNames(list);
+        const snap = await mcp(writer, "tools/call", { name: "garderobe_inventory", arguments: { view: "snapshot" } });
+        const sc = snap.json?.result?.structuredContent;
+        const now = await page();
+        return {
+          pass: init.status === 200 && init.json?.result?.protocolVersion === MCP_VERSION && init.json?.result?.serverInfo?.name === "garderobe" && note.status === 202 && list.status === 200 && names.includes("garderobe_inventory") && names.includes("garderobe_command") && snap.status === 200 && snap.json?.result?.isError !== true && sc?.complete === true && sameInventory(sc?.data, now),
+          protocolVersion: init.json?.result?.protocolVersion ?? null,
+          tools: names,
+          statuses: [init.status, note.status, list.status, snap.status],
+          items: Array.isArray(sc?.data?.items) ? sc.data.items.length : null,
+        };
+      });
+      await check("mcp", 'over MCP the assistant relays "it is in the wash": a committed receipt with undo moves exactly that balance, and command.undo over MCP takes it back', async () => {
+        if (!writer) return { notRun: noClient() ?? "no read-write grant was obtained" };
+        if (!ready) return { notRun: unready };
+        const before = await page();
+        const [garment] = launderableClean(before, 1);
+        if (!garment) return { notRun: "no clean, single, laundered garment is left for the MCP write" };
+        // The same envelope the MCP tool builds (assistant, owner_statement, channel mcp): cleanup can replay it on
+        // the assistant's /v1 channel to find its receipt, and the answered receipt is recorded as the run's own too.
+        const body = command("care.mark_dirty", { items: [{ garmentId: garment }] }, `verify-${runId}-mcp`, "owner_statement", "mcp");
+        track(assistant, body);
+        if (interruption.requested) throw new Error("the run was interrupted; no further command is sent");
+        const r = await mcp(writer, "tools/call", { name: "garderobe_command", arguments: { type: body.type, payload: body.payload, idempotencyKey: body.idempotencyKey } });
+        const receipt = r.json?.result?.structuredContent?.receipt ?? null;
+        if (r.status === 200 && typeof receipt?.commandId === "string") answeredIds.set(receipt.commandId, receipt.wardrobeRevision);
+        const owned = r.status === 200 && ownedByRun(receipt?.commandId, receipt?.wardrobeRevision);
+        const mid = await page();
+        let undo = null;
+        let after = null;
+        if (owned && !interruption.requested) {
+          const u = await mcp(writer, "tools/call", { name: "garderobe_command", arguments: { type: "command.undo", payload: { commandId: receipt.commandId }, idempotencyKey: `verify-${runId}-mcp-undo` } });
+          undo = u.status === 200 ? u.json?.result?.structuredContent?.receipt ?? null : null;
+          after = await page();
+        }
+        return {
+          pass: owned && committedWithUndo(receipt) && receipt.actor === "assistant" && receipt.channel === "mcp" && exactlyChanged(before, mid, { [garment]: { clean: -1, dirty: 1 } }) && undo?.outcome === "committed" && undo?.result?.undoneCommandId === receipt.commandId && exactlyChanged(before, after),
+          httpStatus: r.status,
+          commandId: receipt?.commandId ?? null,
+          ownedByRun: r.status === 200 ? owned : null,
+          undoCommandId: undo?.commandId ?? null,
+        };
+      });
+      await check("scopes", "a read-only grant reads, is not offered the write tool, and calling it is refused with 403 insufficient_scope; nothing is written", async () => {
+        if (!reader) return { notRun: noClient() ?? "no read-only grant was obtained" };
+        if (!ready) return { notRun: unready };
+        const list = await mcp(reader, "tools/list", {});
+        const names = toolNames(list);
+        const read = await mcp(reader, "tools/call", { name: "garderobe_inventory", arguments: { view: "receipts", limit: 1 } });
+        // A real read: a JSON-RPC result (not an error) whose structured content holds the receipts.
+        const readOk = read.status === 200 && read.json?.error === undefined && read.json?.result?.isError !== true && Array.isArray(read.json?.result?.structuredContent?.data?.receipts);
+        const before = await page();
+        const top = await newestReceipt();
+        const [garment] = launderableClean(before, 1);
+        if (!garment) return { notRun: "no clean, single, laundered garment is left for the refused write" };
+        const body = command("care.mark_dirty", { items: [{ garmentId: garment }] }, `verify-${runId}-readonly`, "owner_statement", "mcp");
+        if (interruption.requested) throw new Error("the run was interrupted; no further command is sent");
+        // Tracked before it is sent: a refusal does not prove nothing was written (this check exists because scope
+        // enforcement may be broken), so cleanup always replays it and undoes any receipt it names.
+        track(assistant, body);
+        const r = await mcp(reader, "tools/call", { name: "garderobe_command", arguments: { type: body.type, payload: body.payload, idempotencyKey: body.idempotencyKey } });
+        const leaked = r.json?.result?.structuredContent?.receipt;
+        if (typeof leaked?.commandId === "string") answeredIds.set(leaked.commandId, leaked.wardrobeRevision);
+        const challenge = authParams(r.headers?.["www-authenticate"]);
+        const now = await page();
+        return {
+          pass: list.status === 200 && names.includes("garderobe_inventory") && !names.includes("garderobe_command") && readOk && r.status === 403 && r.json?.error === "insufficient_scope" && challenge.error === "insufficient_scope" && exactlyChanged(before, now) && now.wardrobeRevision === before.wardrobeRevision && (await newestReceipt()) === top,
+          tools: names,
+          statuses: [list.status, read.status, r.status],
+          code: typeof r.json?.error === "string" ? r.json.error : null,
+          scopes: reader.scopes,
+        };
+      });
+      await check("isolation", "the owner's API token is not an MCP access token (401 invalid_token)", async () => {
+        if (noMeta()) return { notRun: noMeta() };
+        const r = await mcp({ access: tokens.owner }, "tools/list", {});
+        return { pass: r.status === 401 && r.json?.error === "invalid_token" && r.json?.result === undefined, httpStatus: r.status };
+      });
+    } finally {
+      await endGrants(grants, client, meta);
+    }
+  }
+
+  /**
+   * End every grant the run obtained, whatever happened. The run's client is registered fresh, so every grant the
+   * owner's connection list shows for that client is the run's own, including one whose code or token exchange
+   * failed; those and every grant whose code arrived are ended. A grant with a refresh token (after the first) is ended
+   * by RFC 7009 revocation, any other by the owner's disconnect (Settings › Connected assistants). Each grant is
+   * handled on its own, so one failure never leaves the others active. Each token is then probed, and the final list
+   * must show every grant of the client revoked.
+   */
+  async function endGrants(grants, client, meta) {
+    const started = Date.now();
+    const name = "the run's OAuth grants end (owner disconnect, RFC 7009 revocation): their access and refresh tokens are refused on the next request and they are listed as revoked";
+    const safe = async (fn) => {
+      try {
+        return await fn();
+      } catch (error) {
+        console.error(`        oauth: ${redactError(error, known)}`);
+        return { status: null, json: null };
+      }
+    };
+    const listed = async () => {
+      const r = await safe(() => call(tokens.owner, "GET", "/v1/connections"));
+      const rows = r.status === 200 && Array.isArray(r.json?.connections) ? r.json.connections : null;
+      return { status: r.status, rows };
+    };
+    const before = client ? await listed() : { status: null, rows: [] };
+    const all = [...grants];
+    for (const c of before.rows ?? []) {
+      if (client && c?.clientId === client && typeof c.grantId === "string" && !all.some((g) => g.grantId === c.grantId)) all.push({ grantId: c.grantId, access: null, refresh: null });
+    }
+    if (all.length === 0) {
+      // A list that could not be read cannot show there is nothing to end.
+      if (client && before.rows === null) record("oauth", name, "fail", { reason: "the owner's connection list could not be read, so the run's grants could not be confirmed ended", httpStatus: before.status }, Date.now() - started);
+      else record("oauth", name, "not_run", { reason: "no grant was obtained" }, null, false);
+      return;
+    }
+    const out = [];
+    const disconnect = (g) => safe(() => call(tokens.owner, "POST", `/v1/connections/${encodeURIComponent(g.grantId)}/disconnect`));
+    const revokeToken = (t) => safe(() => call(null, "POST", meta.revoke, undefined, "Bearer", { form: new URLSearchParams({ token: t, client_id: client ?? "" }).toString() }));
+    for (const [i, g] of all.entries()) {
+      const byRevocation = i > 0 && meta && typeof g.refresh === "string";
+      let ended = byRevocation ? await revokeToken(g.refresh) : await disconnect(g);
+      // A failed first attempt falls back to the other way of ending it, so a grant is never left on one failure.
+      if (ended.status !== 200) {
+        ended = byRevocation ? await disconnect(g) : meta && typeof g.refresh === "string" ? await revokeToken(g.refresh) : await disconnect(g);
+        if (meta && typeof g.access === "string") await revokeToken(g.access);
+      }
+      let refused = null;
+      if (typeof g.access === "string") {
+        const after = await safe(() => call(g.access, "POST", "/mcp", { jsonrpc: "2.0", id: 1, method: "tools/list" }, "Bearer", { headers: { accept: "application/json, text/event-stream", "mcp-protocol-version": MCP_VERSION } }));
+        refused = after.status === 401;
+      }
+      // An ended grant's refresh token must not mint new tokens either. If it does, whatever it minted is revoked
+      // at once (best effort) and the check fails.
+      let refreshRefused = null;
+      if (typeof g.refresh === "string" && meta) {
+        const again = await safe(() => call(null, "POST", meta.token, undefined, "Bearer", { form: new URLSearchParams({ grant_type: "refresh_token", refresh_token: g.refresh, client_id: client ?? "", resource: meta.resource }).toString() }));
+        remember(again.json?.access_token, again.json?.refresh_token);
+        refreshRefused = again.status === 400 && again.json?.error === "invalid_grant" && again.json?.access_token === undefined;
+        if (typeof again.json?.refresh_token === "string") await safe(() => call(null, "POST", meta.revoke, undefined, "Bearer", { form: new URLSearchParams({ token: again.json.refresh_token, client_id: client ?? "" }).toString() }));
+        if (typeof again.json?.access_token === "string") await safe(() => call(null, "POST", meta.revoke, undefined, "Bearer", { form: new URLSearchParams({ token: again.json.access_token, client_id: client ?? "" }).toString() }));
+      }
+      out.push({ grantId: g.grantId, endedBy: byRevocation ? "revocation" : "owner_disconnect", httpStatus: ended.status, tokenRefused: refused, refreshRefused });
+    }
+    let end = await listed();
+    // Any grant of the client still not revoked gets one more disconnect before the final read.
+    const stillActive = (end.rows ?? []).filter((c) => client && c?.clientId === client && c?.status !== "revoked" && typeof c?.grantId === "string");
+    if (stillActive.length > 0 || end.rows === null) {
+      for (const c of stillActive) await disconnect({ grantId: c.grantId });
+      for (const g of all) if (end.rows === null) await disconnect(g);
+      end = await listed();
+    }
+    const status = new Map((end.rows ?? []).map((c) => [c?.grantId, c?.status]));
+    for (const o of out) o.listedAs = status.get(o.grantId) ?? null;
+    const othersOfClient = (end.rows ?? []).filter((c) => client && c?.clientId === client && c?.status !== "revoked").length;
+    const pass = end.rows !== null && othersOfClient === 0 && out.every((o) => o.httpStatus === 200 && o.tokenRefused !== false && o.refreshRefused !== false && o.listedAs === "revoked");
+    record("oauth", name, pass ? "pass" : "fail", { grants: out, httpStatus: end.status }, Date.now() - started);
   }
 
   /**
@@ -704,10 +1036,10 @@ async function startDev(port, known, onSpawn = () => {}) {
 let devRef = null;
 
 /** Verify, write the evidence file for `target` and print the summary; returns the exit code. */
-export async function verifyAndRecord({ origin, tokens, target, dev = null }) {
+export async function verifyAndRecord({ origin, tokens, target, dev = null, publicOrigin = null }) {
   let report;
   try {
-    report = await runVerification({ origin, tokens, target, knownExtra: knownSecrets() });
+    report = await runVerification({ origin, tokens, target, knownExtra: knownSecrets(), publicOrigin });
   } catch (error) {
     // Nothing confirmed the run's writes: a held target lock stays while any of them may still commit.
     keepLocksForWritesInFlight(false);
@@ -764,7 +1096,7 @@ async function main(argv) {
   }
   tokens = localTokens();
   if (!tokens.owner || !tokens.assistant) throw new Error("ferrite/ferrite.local.toml has no WARDROBE_OWNER_TOKEN and WARDROBE_ASSISTANT_TOKEN under [secrets]");
-  return verifyLocal({ origin, tokens, startDev: argv.includes("--start-dev"), port: Number(argv.includes("--port") ? argv[argv.indexOf("--port") + 1] : 8790) });
+  return verifyLocal({ origin, tokens, publicOrigin: tokens.publicOrigin ? localOrigin(tokens.publicOrigin) : null, startDev: argv.includes("--start-dev"), port: Number(argv.includes("--port") ? argv[argv.indexOf("--port") + 1] : 8790) });
 }
 
 /**
@@ -775,7 +1107,7 @@ async function main(argv) {
 export const LOCAL_LOCK = Object.freeze({ target: "local/wardrobe", dir: path.join(STATE_DIR, "local-verify") });
 
 /** Verify against the local plane, holding the local lock throughout (dev server start, the run, its stop). */
-export function verifyLocal({ origin = null, tokens, startDev: start = false, port = 8790, lockDir = LOCAL_LOCK.dir }) {
+export function verifyLocal({ origin = null, tokens, publicOrigin = null, startDev: start = false, port = 8790, lockDir = LOCAL_LOCK.dir }) {
   return withTargetLock(LOCAL_LOCK.target, async () => {
     let dev = null;
     if (start) {
@@ -787,7 +1119,7 @@ export function verifyLocal({ origin = null, tokens, startDev: start = false, po
     }
     origin ??= "http://127.0.0.1:8790";
     try {
-      return await verifyAndRecord({ origin, tokens, target: "local", dev });
+      return await verifyAndRecord({ origin, tokens, target: "local", dev, publicOrigin });
     } finally {
       await dev?.stop();
     }

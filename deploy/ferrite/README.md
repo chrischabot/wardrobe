@@ -65,6 +65,26 @@ requests sent at once committing once (then undone); invalid, unknown and imposs
 commands refused with their codes and writing nothing. Cross-owner isolation is
 recorded as not run: the first slice serves one owner per deployment.
 
+The MCP endpoint is then verified as a client uses it (the port's milestone 1a,
+`ferrite/src/oauth.rs` and `ferrite/src/mcp.rs`): an unauthenticated `POST /mcp`
+answered 401 with a `WWW-Authenticate` naming the protected-resource metadata, which
+names the app as its authorization server (issuer, endpoints, S256, both scopes);
+dynamic registration of a public client; the consent page fetched first and its
+hidden `issued` and `form_mac` fields posted back, refusing a wrong owner token
+(401) and a form it did not issue (400) with no redirect; "Make changes" allowed
+(code with state and `iss`, PKCE exchange granting `wardrobe.read wardrobe.write`)
+and left off (read only); a session (initialize, initialized, tools/list, a snapshot
+read equal to the owner's inventory, then `care.mark_dirty` through
+`garderobe_command` with its receipt and `command.undo` taking it back); the
+read-only grant not offered the write tool and refused it with `403
+insufficient_scope` while nothing is written; the owner's API token refused as an MCP
+token. Whatever happens, the run's grants are ended at the end (owner disconnect and
+RFC 7009 revocation), each token must be refused on its next request and listed as
+revoked. The metadata must name `WARDROBE_PUBLIC_ORIGIN` (deployed: the verified
+origin; locally: the dev secret in `ferrite/ferrite.local.toml`); requests go to the
+origin under test. An app that does not serve MCP gets these checks recorded as not
+run, which fails the gate. OAuth codes and tokens are redacted and never written.
+
 A refusal passes only when the body is exactly `{"error":{code,message[,details]}}`,
 and a sign-in refusal's details are absent or empty. Every check is required except
 the cross-owner one; the run passes only when no check failed and no required check

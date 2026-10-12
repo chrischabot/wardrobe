@@ -272,9 +272,9 @@ export function localTokens(appDir = APP_DIR) {
   try {
     text = readFileSync(path.join(appDir, "ferrite.local.toml"), "utf8");
   } catch {
-    return { owner: null, assistant: null };
+    return { owner: null, assistant: null, publicOrigin: null };
   }
   const section = text.split(/^\[secrets\]\s*$/m)[1]?.split(/^\[/m)[0] ?? "";
   const value = (name) => new RegExp(`^\\s*${name}\\s*=\\s*"([^"]*)"`, "m").exec(section)?.[1] ?? null;
-  return { owner: value("WARDROBE_OWNER_TOKEN"), assistant: value("WARDROBE_ASSISTANT_TOKEN") };
+  return { owner: value("WARDROBE_OWNER_TOKEN"), assistant: value("WARDROBE_ASSISTANT_TOKEN"), publicOrigin: value("WARDROBE_PUBLIC_ORIGIN") };
 }

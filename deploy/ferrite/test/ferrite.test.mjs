@@ -7,7 +7,8 @@ import path from "node:path";
 import { test } from "node:test";
 import { exitPolicy } from "../lib/cli.mjs";
 import { redact } from "../lib/redact.mjs";
-import { balancesOf, committedWithUndo, csvSha256, evidenceValue, exactlyChanged, gatePasses, httpClient, installInterruptHandlers, keepLocksForWritesInFlight, launderableClean, lineTail, portFree, refusal, runVerification, sameInventory, verifyLocal, writesInFlight, writesUnanswered } from "../verify.mjs";
+import { balancesOf, committedWithUndo, csvSha256, evidenceValue, exactlyChanged, gatePasses, hiddenFields, authParams, pkcePair, httpClient, installInterruptHandlers, keepLocksForWritesInFlight, launderableClean, lineTail, portFree, refusal, runVerification, sameInventory, verifyLocal, writesInFlight, writesUnanswered } from "../verify.mjs";
+import { createHash } from "node:crypto";
 import { tokensFile } from "../lib/state.mjs";
 
 // The verification command's tests. The shared library (CLI, state, guard) is tested in lib.test.mjs, redaction and
@@ -119,10 +120,14 @@ test("verification judgements and the verify run's structure", () => {
 });
 
 /**
- * A fake of the port's first-slice HTTP contract (test double for `ferrite dev`; the real app is exercised by
- * `verify.mjs --local --start-dev`). `foreignAfter` lets another client commit a command in the middle of the run.
+ * A fake of the port's HTTP contract (test double for `ferrite dev`; the real app is exercised by
+ * `verify.mjs --local --start-dev`): the first slice's API and, unless `mcp` is false, the subset of milestone 1a's
+ * OAuth server and MCP endpoint the verification uses (ferrite/src/oauth.rs, ferrite/src/mcp.rs). Its metadata
+ * advertises PUBLIC, another origin than the one it listens on, as a local dev secret may. `foreignAfter` lets another
+ * client commit a command in the middle of the run; `leakWriteTool` offers and runs the write tool for read-only grants.
  */
-function fakeApp({ failReceiptList = false, foreignAfter = null, brokenIdempotency = false, staleKeySuffix = null } = {}) {
+const PUBLIC = "https://wardrobe.example";
+function fakeApp({ failReceiptList = false, foreignAfter = null, brokenIdempotency = false, staleKeySuffix = null, mcp = true, leakWriteTool = false, breakToken = false, failFirstDisconnect = false, refreshAfterEnd = false, readOnlyCannotRead = false, grantOnWrongToken = false } = {}) {
   const OWNER = "owner-token-for-the-fake-app-0001";
   const ASSISTANT = "assistant-token-for-the-fake-app-01";
   // 127 garments, 144 owned units: seventeen garments are owned twice.
@@ -151,21 +156,34 @@ function fakeApp({ failReceiptList = false, foreignAfter = null, brokenIdempoten
   const handle = (req, body) => {
     const url = new URL(req.url, "http://x");
     if (url.pathname === "/health") return [200, { status: "ok", host: "ferrite", contractVersion: "1.1.0" }];
+    if (mcp && (url.pathname.startsWith("/.well-known/") || url.pathname.startsWith("/oauth/") || url.pathname === "/mcp")) return oauthRoute(req, url, body);
     const auth = /^bearer (.+)$/i.exec(req.headers.authorization ?? "")?.[1];
     const who = auth === OWNER ? "owner" : auth === ASSISTANT ? "assistant" : null;
     if (!who) return err(401, "unauthenticated");
-    if (req.method === "GET" && url.pathname === "/v1/wardrobe") {
-      const cat = url.searchParams.get("category");
-      return [200, { items: items.filter((i) => !cat || i.category === cat).map((i) => ({ ...i, balances: { ...i.balances } })), counts: { garments: 127, ownedUnits: 144 }, source: { sha256: "f".repeat(64) }, wardrobeRevision: state.revision }];
-    }
+    if (req.method === "GET" && url.pathname === "/v1/wardrobe") return [200, wardrobePage(url.searchParams.get("category"))];
     if (req.method === "GET" && url.pathname === "/v1/commands") return failReceiptList ? err(500, "internal") : [200, { receipts: state.receipts.slice(0, Number(url.searchParams.get("limit") ?? 50)) }];
     if (req.method === "GET" && url.pathname.startsWith("/v1/commands/")) {
       const r = state.receipts.find((x) => x.commandId === decodeURIComponent(url.pathname.slice(13))) ?? (state.stale?.commandId === decodeURIComponent(url.pathname.slice(13)) ? state.stale : null);
       return r ? [200, r] : err(404, "not_found");
     }
+    if (mcp && who === "owner" && req.method === "GET" && url.pathname === "/v1/connections") return [200, { connections: [...oauth.grants.values()].map((g) => ({ grantId: g.id, clientId: g.clientId, status: g.active ? "active" : "revoked" })) }];
+    const disconnect = /^\/v1\/connections\/([^/]+)\/disconnect$/.exec(url.pathname);
+    if (mcp && who === "owner" && req.method === "POST" && disconnect) {
+      if (failFirstDisconnect && !oauth.failedOnce) {
+        oauth.failedOnce = true;
+        return err(503, "unavailable");
+      }
+      const g = oauth.grants.get(decodeURIComponent(disconnect[1]));
+      if (!g) return err(404, "not_found");
+      g.active = false;
+      return [200, { grantId: g.id, status: "revoked" }];
+    }
     if (req.method !== "POST" || url.pathname !== "/v1/commands") return err(404, "not_found");
+    return runCommand(who, JSON.parse(body));
+  };
+  const wardrobePage = (cat = null) => ({ items: items.filter((i) => !cat || i.category === cat).map((i) => ({ ...i, balances: { ...i.balances } })), counts: { garments: 127, ownedUnits: 144 }, source: { sha256: "f".repeat(64) }, wardrobeRevision: state.revision });
+  const runCommand = (who, c) => {
     state.posts++;
-    const c = JSON.parse(body);
     if (who === "assistant" && c.authorization === "owner_tap") return err(403, "forbidden");
     if (who === "owner" && c.source?.channel === "mcp") return err(403, "forbidden");
     const { idempotencyKey, ...rest } = c;
@@ -194,16 +212,110 @@ function fakeApp({ failReceiptList = false, foreignAfter = null, brokenIdempoten
     }
     return [200, receipt];
   };
+  // The OAuth server and MCP endpoint (a subset of milestone 1a, enough for the verification's client).
+  const oauth = { clients: new Set(), forms: new Set(), grants: new Map(), n: 0 };
+  const hex = (n) => createHash("sha256").update(`fake-${++oauth.n}`).digest("hex").slice(0, n);
+  const oerr = (status, error, headers = {}) => [status, { error, error_description: error }, headers];
+  const form = (body) => Object.fromEntries(new URLSearchParams(body));
+  const metadataUrl = `${PUBLIC}/.well-known/oauth-protected-resource/mcp`;
+  const consentPage = (p) => {
+    const issued = String(Date.now());
+    const mac = hex(64);
+    oauth.forms.add(`${issued}/${mac}`);
+    const fields = { issued, form_mac: mac, response_type: "code", client_id: p.client_id, redirect_uri: p.redirect_uri, scope: p.scope, code_challenge: p.code_challenge, code_challenge_method: "S256", state: p.state, resource: p.resource };
+    const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+    return `<form>${Object.entries(fields).map(([k, v]) => `<input type="hidden" name="${k}" value="${esc(v)}">`).join("")}</form>`;
+  };
+  const grantOf = (req) => {
+    const t = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1];
+    return [...oauth.grants.values()].find((g) => g.active && g.access === t) ?? null;
+  };
+  const tools = (g) => [{ name: "garderobe_inventory" }, ...(g.scopes.includes("wardrobe.write") || leakWriteTool ? [{ name: "garderobe_command" }] : [])];
+  const oauthRoute = (req, url, body) => {
+    const p = url.pathname;
+    if (req.method === "GET" && p === "/.well-known/oauth-protected-resource/mcp") return [200, { resource: `${PUBLIC}/mcp`, authorization_servers: [PUBLIC], scopes_supported: ["wardrobe.read", "wardrobe.write"] }];
+    if (req.method === "GET" && p === "/.well-known/oauth-authorization-server") {
+      return [200, { issuer: PUBLIC, authorization_endpoint: `${PUBLIC}/oauth/authorize`, token_endpoint: `${PUBLIC}/oauth/token`, registration_endpoint: `${PUBLIC}/oauth/register`, revocation_endpoint: `${PUBLIC}/oauth/revoke`, scopes_supported: ["wardrobe.read", "wardrobe.write"], code_challenge_methods_supported: ["S256"] }];
+    }
+    if (req.method === "POST" && p === "/oauth/register") {
+      const id = `cli_${hex(32)}`;
+      oauth.clients.add(id);
+      return [201, { client_id: id, token_endpoint_auth_method: "none", redirect_uris: JSON.parse(body).redirect_uris }];
+    }
+    if (req.method === "GET" && p === "/oauth/authorize") {
+      const q = Object.fromEntries(url.searchParams);
+      return oauth.clients.has(q.client_id) && q.resource === `${PUBLIC}/mcp` ? [200, consentPage(q)] : [400, "<p>Cannot connect</p>"];
+    }
+    if (req.method === "POST" && p === "/oauth/authorize") {
+      const f = form(body);
+      if (!oauth.forms.has(`${f.issued}/${f.form_mac}`)) return [400, "<p>This page expired. Nothing was granted.</p>"];
+      if (f.owner_token !== OWNER) {
+        // A broken server: the refused consent still creates a grant.
+        if (grantOnWrongToken) {
+          const id = `grt_${hex(32)}`;
+          oauth.grants.set(id, { id, clientId: f.client_id, scopes: ["wardrobe.read"], active: true, access: null, refresh: null });
+        }
+        return [401, "<p>That owner token is not valid.</p>"];
+      }
+      const id = `grt_${hex(32)}`;
+      const code = `wac.${id}.${hex(64)}`;
+      oauth.grants.set(id, { id, clientId: f.client_id, code, challenge: f.code_challenge, scopes: f.write === "on" ? ["wardrobe.read", "wardrobe.write"] : ["wardrobe.read"], active: true, access: null, refresh: null });
+      return [302, null, { location: `${f.redirect_uri}?code=${encodeURIComponent(code)}&state=${encodeURIComponent(f.state)}&iss=${encodeURIComponent(PUBLIC)}` }];
+    }
+    if (req.method === "POST" && p === "/oauth/token") {
+      const f = form(body);
+      if (breakToken) return [500, "<p>upstream error</p>"];
+      if (f.grant_type === "refresh_token") {
+        const r = oauth.grants.get(String(f.refresh_token).split(".")[1]);
+        if (!r || r.refresh !== f.refresh_token || (!r.active && !refreshAfterEnd)) return oerr(400, "invalid_grant");
+        // A broken server: an ended grant's refresh token still mints tokens.
+        r.refresh = `wrt.${r.id}.${hex(64)}`;
+        oauth.minted = (oauth.minted ?? 0) + 1;
+        return [200, { access_token: `wat.${r.id}.${hex(64)}`, token_type: "Bearer", refresh_token: r.refresh, scope: r.scopes.join(" ") }];
+      }
+      const g = oauth.grants.get(String(f.code).split(".")[1]);
+      if (!g || g.code !== f.code || createHash("sha256").update(f.code_verifier ?? "").digest("base64url") !== g.challenge || g.access) return oerr(400, "invalid_grant");
+      g.access = `wat.${g.id}.${hex(64)}`;
+      g.refresh = `wrt.${g.id}.${hex(64)}`;
+      return [200, { access_token: g.access, token_type: "Bearer", expires_in: 900, refresh_token: g.refresh, scope: g.scopes.join(" ") }];
+    }
+    if (req.method === "POST" && p === "/oauth/revoke") {
+      const t = form(body).token;
+      for (const g of oauth.grants.values()) if (g.refresh === t) g.active = false;
+      return [200, {}];
+    }
+    if (p !== "/mcp") return oerr(404, "not_found");
+    const g = grantOf(req);
+    if (!g) return oerr(401, "invalid_token", { "www-authenticate": `Bearer resource_metadata="${metadataUrl}", scope="wardrobe.read"` });
+    const msg = JSON.parse(body);
+    if (msg.id === undefined) return [202, null];
+    const ok = (result) => [200, { jsonrpc: "2.0", id: msg.id, result }];
+    if (msg.method === "initialize") return ok({ protocolVersion: msg.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "garderobe" } });
+    if (msg.method === "tools/list") return ok({ tools: tools(g) });
+    const { name, arguments: args = {} } = msg.params ?? {};
+    if (name === "garderobe_inventory" && readOnlyCannotRead && !g.scopes.includes("wardrobe.write")) return [200, { jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: "read failed" } }];
+    if (name === "garderobe_inventory") return ok({ structuredContent: args.view === "receipts" ? { complete: true, data: { receipts: state.receipts.slice(0, args.limit ?? 50) } } : { complete: true, data: wardrobePage() } });
+    if (name === "garderobe_command") {
+      if (!g.scopes.includes("wardrobe.write") && !leakWriteTool) return oerr(403, "insufficient_scope", { "www-authenticate": `Bearer error="insufficient_scope", scope="wardrobe.read wardrobe.write", resource_metadata="${metadataUrl}"` });
+      const [status, json] = runCommand("assistant", { type: args.type, payload: args.payload, idempotencyKey: args.idempotencyKey, authorization: "owner_statement", source: { channel: "mcp" } });
+      return ok(status === 200 ? { structuredContent: { receipt: json } } : { isError: true, content: [{ type: "text", text: JSON.stringify(json) }] });
+    }
+    return [200, { jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "unknown" } }];
+  };
   const server = createServer((req, res) => {
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", () => {
-      const [status, json] = handle(req, body);
-      res.writeHead(status, { "content-type": "application/json" });
-      res.end(JSON.stringify(json));
+      const [status, out, headers = {}] = handle(req, body);
+      if (out === null) {
+        res.writeHead(status, headers);
+        return res.end();
+      }
+      res.writeHead(status, { "content-type": typeof out === "string" ? "text/html" : "application/json", ...headers });
+      res.end(typeof out === "string" ? out : JSON.stringify(out));
     });
   });
-  return { server, state, items, tokens: { owner: OWNER, assistant: ASSISTANT } };
+  return { server, state, items, oauth, tokens: { owner: OWNER, assistant: ASSISTANT } };
 }
 
 async function runAgainst(app) {
@@ -211,7 +323,7 @@ async function runAgainst(app) {
   const log = console.log;
   console.log = () => {};
   try {
-    return await runVerification({ origin: `http://127.0.0.1:${app.server.address().port}`, tokens: app.tokens, target: "local", runId: "t1", sourceSha256: "f".repeat(64) });
+    return await runVerification({ origin: `http://127.0.0.1:${app.server.address().port}`, tokens: app.tokens, target: "local", runId: "t1", sourceSha256: "f".repeat(64), publicOrigin: PUBLIC });
   } finally {
     console.log = log;
     await new Promise((r) => app.server.close(r));
@@ -226,6 +338,88 @@ test("verification against a fake app: every check passes and cleanup leaves the
   assert.equal(report.passed, true);
   assert.ok(app.items.every((i) => i.balances.clean === i.quantity && i.balances.dirty === 0));
   assert.ok(app.state.receipts.filter((r) => r.type !== "command.undo").every((r) => r.undo.available === false));
+  // OAuth and MCP ran as a client would, and every grant the run obtained was ended.
+  for (const group of ["oauth", "mcp", "scopes"]) assert.ok(report.results.some((r) => r.group === group && r.status === "pass"), group);
+  assert.equal(app.oauth.grants.size, 2);
+  assert.ok([...app.oauth.grants.values()].every((g) => !g.active), "every grant of the run is ended");
+  assert.ok(app.state.receipts.some((r) => r.channel === "mcp" && r.type === "care.mark_dirty" && r.actor === "assistant"), "a write went through the MCP tool");
+  // No OAuth code or token reaches the report (the evidence file is this report).
+  const text = JSON.stringify(report);
+  for (const g of app.oauth.grants.values()) for (const secret of [g.code, g.access, g.refresh]) assert.equal(text.includes(secret.split(".")[2]), false);
+});
+
+test("a read-only grant that is offered and allowed the write tool fails the scope check; its write is still taken back", async () => {
+  const app = fakeApp({ leakWriteTool: true });
+  const report = await runAgainst(app);
+  const scope = report.results.find((r) => r.group === "scopes");
+  assert.equal(scope.status, "fail");
+  assert.ok(scope.tools.includes("garderobe_command"));
+  assert.equal(report.passed, false);
+  assert.ok(app.items.every((i) => i.balances.clean === i.quantity && i.balances.dirty === 0), "the leaked write was undone by cleanup");
+  assert.equal(report.results.find((r) => r.group === "cleanup").status, "pass");
+});
+
+test("a read-only grant that cannot actually read fails the scope check", async () => {
+  const app = fakeApp({ readOnlyCannotRead: true });
+  const report = await runAgainst(app);
+  assert.equal(report.results.find((r) => r.group === "scopes").status, "fail");
+  assert.equal(report.passed, false);
+});
+
+test("an ended grant whose refresh token still mints tokens fails the grant-ending check", async () => {
+  const app = fakeApp({ refreshAfterEnd: true });
+  const report = await runAgainst(app);
+  const end = report.results.find((r) => r.name.startsWith("the run's OAuth grants end"));
+  assert.equal(end.status, "fail");
+  assert.ok(end.grants.every((g) => g.refreshRefused === false));
+  assert.equal(app.oauth.minted, 2);
+  assert.equal(report.passed, false);
+});
+
+test("grants the consent created are ended even when the token exchange fails", async () => {
+  const app = fakeApp({ breakToken: true });
+  const report = await runAgainst(app);
+  assert.equal(report.passed, false);
+  assert.equal(app.oauth.grants.size, 2);
+  assert.ok([...app.oauth.grants.values()].every((g) => !g.active), "every grant the consent created is ended");
+  const end = report.results.find((r) => r.name.startsWith("the run's OAuth grants end"));
+  assert.equal(end.status, "pass");
+});
+
+test("a failed disconnect falls back to revocation, so the grant still ends", async () => {
+  const app = fakeApp({ failFirstDisconnect: true });
+  const report = await runAgainst(app);
+  assert.ok([...app.oauth.grants.values()].every((g) => !g.active), "both grants ended");
+  assert.equal(report.results.find((r) => r.name.startsWith("the run's OAuth grants end")).status, "pass");
+});
+
+test("a consent refused for a wrong owner token that still creates a grant fails the refusal check, and the grant is ended", async () => {
+  const app = fakeApp({ grantOnWrongToken: true });
+  const report = await runAgainst(app);
+  const refusal = report.results.find((r) => r.name.startsWith("the consent page refuses"));
+  assert.equal(refusal.status, "fail");
+  assert.equal(refusal.items, 1);
+  assert.ok([...app.oauth.grants.values()].every((g) => !g.active), "the wrongly created grant is ended too");
+  assert.equal(report.passed, false);
+});
+
+test("an app that does not serve MCP: the OAuth and MCP checks are not run, which fails the gate", async () => {
+  const app = fakeApp({ mcp: false });
+  const report = await runAgainst(app);
+  const discovery = report.results.find((r) => r.group === "oauth");
+  assert.equal(discovery.status, "not_run");
+  assert.equal(discovery.required, true);
+  assert.ok(report.results.filter((r) => r.group === "mcp" || r.group === "scopes").every((r) => r.status === "not_run"));
+  assert.equal(report.passed, false);
+  assert.ok(app.items.every((i) => i.balances.clean === i.quantity && i.balances.dirty === 0));
+});
+
+test("OAuth helpers: consent form fields, challenge parameters and PKCE", () => {
+  assert.deepEqual(hiddenFields('<form><input type="hidden" name="issued" value="17"><input type="hidden" name="state" value="a&amp;b&quot;c"><input type="password" name="owner_token"></form>'), { issued: "17", state: 'a&b"c' });
+  assert.deepEqual(authParams('Bearer error="insufficient_scope", scope="wardrobe.read wardrobe.write", resource_metadata="https://w.example/.well-known/oauth-protected-resource/mcp"'), { error: "insufficient_scope", scope: "wardrobe.read wardrobe.write", resource_metadata: "https://w.example/.well-known/oauth-protected-resource/mcp" });
+  const { verifier, challenge } = pkcePair();
+  assert.match(verifier, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(challenge, createHash("sha256").update(verifier).digest("base64url"));
 });
 
 test("cleanup undoes only this run's own receipts: a command another client sent meanwhile is left alone, and the run fails honestly", async () => {
