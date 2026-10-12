@@ -25,11 +25,16 @@ struct StudioActionsBar: View {
             .accessibilityIdentifier(AXID.studioFind)
 
             if let note = app.studio.suggestionNote { Text(note).font(.footnote).foregroundStyle(Color.supporting) }
+            // Pieces of a suggestion or saved combination that are no longer offered, said plainly.
+            if let note = app.studio.restoreNote {
+                Label(note, systemImage: "exclamationmark.circle").font(.footnote)
+                    .accessibilityElement(children: .combine)
+            }
             ForEach(Array(app.studio.suggestions.enumerated()), id: \.offset) { _, suggestion in
                 VStack(alignment: .leading, spacing: Metrics.unit) {
                     Text(suggestion.reason).font(.subheadline)
                     Text(suggestion.validation.valid ? "Checked: works" : "Checked: has problems").font(.caption).foregroundStyle(Color.supporting)
-                    Button("Show this on the canvas") { app.studio.apply(suggestion) }.touchTarget()
+                    Button("Show this on the canvas") { Task { await app.studio.applyAndCheck(suggestion) } }.touchTarget()
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentSurface(padding: Metrics.unit * 3)

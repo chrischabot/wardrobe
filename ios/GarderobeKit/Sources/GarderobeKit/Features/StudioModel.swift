@@ -20,7 +20,10 @@ public final class StudioModel {
 
     public let environment: AppEnvironment
     public private(set) var mode: StudioMode
-    public let studio: Resource<StudioResponse>
+    /// The Studio read for the mode shown. Each mode has its own read and cache entry
+    /// (`studio.for_today`, `studio.explore`), so one mode's selectors never stand for the other's.
+    public private(set) var studio: Resource<StudioResponse>
+    private var studioByMode: [StudioMode: Resource<StudioResponse>] = [:]
 
     /// The garment (or shopping candidate) shown in each role. Restored across launches.
     public private(set) var selection: [Role: StudioSelectorItem] = [:]
@@ -53,9 +56,22 @@ public final class StudioModel {
     }
     public private(set) var lastOutcome: SubmissionOutcome?
     public private(set) var isSubmitting = false
+    /// Sequence of validation requests: only the latest one's answer is shown.
     private var validationGeneration = 0
+    /// Counts changes to the combination (pieces, mode, reset). Preview and layout answers are
+    /// for one combination; asking for validation does not change it.
+    private var selectionGeneration = 0
 
-    private struct Saved: Codable { var mode: String; var slots: [String: String]; var locked: [String] }
+    private struct Saved: Codable { var mode: String; var slots: [String: String]; var locked: [String]; var cleared: [String]? = nil }
+
+    /// Roles the owner emptied on purpose in this mode: a refresh or relaunch never refills them
+    /// with the backend's opening outfit.
+    private var cleared: Set<Role> = []
+    /// Counts account endings: a read or submission answered after the account ended changes nothing.
+    private var accountGeneration = 0
+    /// True after a mode switch until that mode's selectors are known: the empty canvas shown
+    /// meanwhile is not the owner's, and never overwrites the mode's saved one.
+    private var selectionPending = false
 
     public init(environment: AppEnvironment, sleep: @escaping @Sendable (TimeInterval) async -> Void = { try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }) {
         self.environment = environment
@@ -64,55 +80,126 @@ public final class StudioModel {
         let initialMode = saved.flatMap { StudioMode(rawValue: $0.mode) } ?? .forToday
         mode = initialMode
         let api = environment.api
-        studio = environment.resource("studio.\(initialMode.rawValue)") { try await api.studio(mode: initialMode) }
+        let first = environment.resource("studio.\(initialMode.rawValue)") { try await api.studio(mode: initialMode) }
+        studio = first
+        studioByMode[initialMode] = first
         locked = Set((saved?.locked ?? []).compactMap(Role.init(rawValue:)))
+        cleared = Set((saved?.cleared ?? []).compactMap(Role.init(rawValue:)))
+        // The canvas is empty until the opening mode's selectors are known.
+        selectionPending = true
+    }
+
+    /// The read for `mode`, made once and kept, with a cache entry named for the mode.
+    private func resource(for mode: StudioMode) -> Resource<StudioResponse> {
+        if let made = studioByMode[mode] { return made }
+        let api = environment.api
+        let made = environment.resource("studio.\(mode.rawValue)") { try await api.studio(mode: mode) }
+        studioByMode[mode] = made
+        return made
+    }
+
+    /// What the owner had on the canvas in a mode, kept per mode so switching back restores it.
+    private func savedSelection(for mode: StudioMode) -> Saved? {
+        if let perMode: Saved = environment.restoration.load("studio.selection.\(mode.rawValue)") { return perMode }
+        let current: Saved? = environment.restoration.load("studio.state")
+        return current?.mode == mode.rawValue ? current : nil
     }
 
     // MARK: Loading
 
     public func open() async {
+        let mine = accountGeneration
         studio.loadCached()
         adoptSelectors()
-        if await studio.refresh() { adoptSelectors() }
+        if await studio.refresh(), mine == accountGeneration { adoptSelectors() }
     }
 
     /// For today: only eligible owned items. Explore: seasonal pieces and marked shopping candidates too.
     public func setMode(_ newMode: StudioMode) async {
         guard newMode != mode else { return }
+        // The mode being left keeps its own canvas; the new mode starts from its own saved one.
+        persist()
         mode = newMode
-        let api = environment.api
-        studio.clear()
-        studio.retarget { try await api.studio(mode: newMode) }
+        studio = resource(for: newMode)
+        selection = [:]
+        let destination = savedSelection(for: newMode)
+        locked = Set((destination?.locked ?? []).compactMap(Role.init(rawValue:)))
+        cleared = Set((destination?.cleared ?? []).compactMap(Role.init(rawValue:)))
+        selectionPending = true
+        // The other mode's verdict, layout, picture and suggestions never stand for this one.
+        invalidateVerdict()
         validation = .none
         suggestions = []
-        persist()
-        if await studio.refresh() { adoptSelectors() }
+        suggestionsGeneration = nil
+        suggestionNote = nil
+        studio.loadCached()
+        adoptSelectors()   // saves the new mode's canvas once its selectors are known
+        // Not known yet: the open mode is remembered now (its saved canvas untouched), so a
+        // relaunch reopens this mode even if its read never arrives.
+        if selectionPending { persist() }
+        let mine = accountGeneration
+        if await studio.refresh(), mode == newMode, mine == accountGeneration { adoptSelectors() }
     }
 
     /// Reconciles the on-screen selection with the selectors the backend returned: keeps the
     /// restored or current pick where it is still offered, otherwise uses the backend's opening outfit.
     private func adoptSelectors() {
         guard let value = studio.value else { return }
-        let saved: Saved? = environment.restoration.load("studio.state")
+        selectionPending = false
+        let saved = savedSelection(for: mode)
         var next: [Role: StudioSelectorItem] = [:]
         for selector in value.selectors {
-            let currentKey = selection[selector.role].map(StudioModel.key) ?? (saved?.mode == mode.rawValue ? saved?.slots[selector.role.rawValue] : nil)
+            let currentKey = selection[selector.role].map(StudioModel.key) ?? saved?.slots[selector.role.rawValue]
             if let currentKey, let item = selector.items.first(where: { StudioModel.key($0) == currentKey }) {
                 next[selector.role] = item
-            } else if let opening = value.opening.first(where: { $0.role == selector.role }),
-                      let item = selector.items.first(where: { $0.garmentId != nil && $0.garmentId == opening.garmentId }) {
+            } else if cleared.contains(selector.role) {
+                continue   // emptied on purpose: stays empty
+            } else if let opening = value.opening.first(where: { $0.role == selector.role }), let item = StudioModel.item(for: opening, in: selector.items) {
                 next[selector.role] = item
             }
         }
+        let changed = next.mapValues(StudioModel.key) != selection.mapValues(StudioModel.key)
+        let wasEmpty = selection.isEmpty
         selection = next
         locked = locked.filter { next[$0] != nil }
+        // A selection the backend's selectors changed is a new combination: nothing checked,
+        // composed or drawn for the old one stays standing.
+        if changed {
+            invalidateVerdict()
+            if wasEmpty { validation = .none }   // the first outfit on an empty canvas: nothing to retract
+        }
         persist()
     }
 
+    /// The selector item a slot names: the owned garment by its ID, or the shopping candidate by
+    /// its candidate ID. Nil when the selector no longer offers it.
+    static func item(for slot: StudioSlot, in items: [StudioSelectorItem]) -> StudioSelectorItem? {
+        if let garmentId = slot.garmentId { return items.first { $0.garmentId == garmentId } }
+        if let candidateId = slot.shoppingCandidate?.candidateId { return items.first { $0.garmentId == nil && $0.shoppingCandidate?.candidateId == candidateId } }
+        return nil
+    }
+
+    /// The key a slot would have on the canvas, to compare with what is shown.
+    static func key(_ slot: StudioSlot) -> String? {
+        slot.garmentId ?? slot.shoppingCandidate.map { "candidate:\($0.candidateId)" }
+    }
+
     private func persist() {
+        if selectionPending && selection.isEmpty {
+            // The mode's selectors are not known yet: only which mode is open is remembered;
+            // its saved canvas stays as it was.
+            let kept = savedSelection(for: mode) ?? Saved(mode: mode.rawValue, slots: [:], locked: locked.map(\.rawValue).sorted(), cleared: cleared.map(\.rawValue).sorted())
+            environment.restoration.save("studio.state", kept)
+            // Kept under the mode's own name too, so leaving the mode before its selectors
+            // arrive never loses a canvas saved only as the last state.
+            environment.restoration.save("studio.selection.\(mode.rawValue)", kept)
+            return
+        }
         var slots: [String: String] = [:]
         for (role, item) in selection { slots[role.rawValue] = StudioModel.key(item) }
-        environment.restoration.save("studio.state", Saved(mode: mode.rawValue, slots: slots, locked: locked.map(\.rawValue).sorted()))
+        let state = Saved(mode: mode.rawValue, slots: slots, locked: locked.map(\.rawValue).sorted(), cleared: cleared.map(\.rawValue).sorted())
+        environment.restoration.save("studio.state", state)
+        environment.restoration.save("studio.selection.\(mode.rawValue)", state)
     }
 
     static func key(_ item: StudioSelectorItem) -> String { item.garmentId ?? "candidate:\(item.shoppingCandidate?.candidateId ?? item.name)" }
@@ -132,6 +219,7 @@ public final class StudioModel {
     public func toggleLock(_ role: Role) {
         guard selection[role] != nil else { return }
         if locked.contains(role) { locked.remove(role) } else { locked.insert(role) }
+        suggestionGeneration += 1   // suggestions were found for the earlier locks
         persist()
     }
 
@@ -141,6 +229,7 @@ public final class StudioModel {
         guard !locked.contains(role), items(for: role).contains(where: { StudioModel.key($0) == StudioModel.key(item) }) else { return }
         guard selection[role].map(StudioModel.key) != StudioModel.key(item) else { return }
         selection[role] = item
+        cleared.remove(role)
         invalidateVerdict()
         persist()
     }
@@ -148,6 +237,7 @@ public final class StudioModel {
     public func clear(_ role: Role) {
         guard !locked.contains(role), selection[role] != nil else { return }
         selection[role] = nil
+        cleared.insert(role)
         invalidateVerdict()
         persist()
     }
@@ -162,12 +252,41 @@ public final class StudioModel {
     }
 
     private func invalidateVerdict() {
+        selectionGeneration += 1
         validationGeneration += 1
+        suggestionGeneration += 1
         validation = selection.isEmpty ? .none : .unchecked("Not checked yet.")
         composition = nil
         preview = .none
         previewHash = nil
         unansweredPreviewRequest = nil
+    }
+
+    /// Counts changes to the combination, its locks and the mode: suggestions answer one of them.
+    private var suggestionGeneration = 0
+    /// The combination the suggestions on screen were found for.
+    private var suggestionsGeneration: Int?
+
+    /// The account ended: no pick, lock, verdict or suggestion of it is left.
+    public func reset() {
+        accountGeneration += 1
+        selectionPending = false
+        // Every read made for the account is dropped with its value; a refresh still in flight
+        // publishes only into a read nothing shows any more.
+        for (_, made) in studioByMode { made.clear() }
+        studioByMode = [:]
+        studio = resource(for: mode)
+        restoreNote = nil
+        isSubmitting = false
+        selection = [:]
+        locked = []
+        cleared = []
+        suggestions = []
+        suggestionNote = nil
+        suggestionsGeneration = nil
+        lastOutcome = nil
+        invalidateVerdict()
+        validation = .none
     }
 
     // MARK: The combination
@@ -223,18 +342,19 @@ public final class StudioModel {
         guard !selection.isEmpty else { validation = .none; return }
         validationGeneration += 1
         let mine = validationGeneration
+        let selected = selectionGeneration
         validation = .checking
         do {
             let verdict = try await environment.api.validateStudio(StudioOutfitRequest(mode: mode, slots: slotInputs()))
-            guard mine == validationGeneration else { return }
+            guard mine == validationGeneration, selected == selectionGeneration else { return }
             validation = .checked(verdict)
             environment.center.noteRead(failure: nil)
         } catch let failure as APIFailure {
-            guard mine == validationGeneration else { return }
+            guard mine == validationGeneration, selected == selectionGeneration else { return }
             validation = .unchecked(failure.isTransport ? "Offline. This combination has not been checked." : failure.ownerMessage)
             environment.center.noteRead(failure: failure)
         } catch {
-            guard mine == validationGeneration else { return }
+            guard mine == validationGeneration, selected == selectionGeneration else { return }
             validation = .unchecked("This combination has not been checked.")
         }
     }
@@ -242,40 +362,110 @@ public final class StudioModel {
     /// Find something that works with this: the backend fills the unlocked roles.
     public func findSomethingThatWorks(limit: Int = 5) async {
         suggestionNote = nil
+        let asked = suggestionGeneration
         do {
             let response = try await environment.api.suggestStudio(StudioOutfitRequest(mode: mode, slots: slotInputs(), limit: limit))
+            // The combination changed while the backend looked: its answer is for another outfit.
+            guard asked == suggestionGeneration else { return }
             suggestions = response.suggestions
+            suggestionsGeneration = asked
             if suggestions.isEmpty { suggestionNote = "Nothing else works with the locked pieces right now." }
             environment.center.noteRead(failure: nil)
         } catch let failure as APIFailure {
+            guard asked == suggestionGeneration else { return }
             suggestions = []
             suggestionNote = failure.isTransport ? "Offline. Suggestions need a connection." : failure.ownerMessage
             environment.center.noteRead(failure: failure)
         } catch {
+            guard asked == suggestionGeneration else { return }
             suggestions = []
         }
     }
 
     /// Applies a suggestion to the unlocked roles only. Locked roles keep their garment even if
-    /// the suggestion names something else for them.
-    public func apply(_ suggestion: StudioSuggestion) {
-        var next = selection.filter { locked.contains($0.key) }
-        for slot in suggestion.slots where !locked.contains(slot.role) {
-            if let item = items(for: slot.role).first(where: { slot.garmentId != nil && $0.garmentId == slot.garmentId }) { next[slot.role] = item }
+    /// the suggestion names something else for them. The backend's verdict is shown as checked
+    /// only when the canvas ends up exactly as suggested; otherwise the result is unchecked.
+    /// A suggestion found for an earlier combination, lock or mode is refused: ask again.
+    @discardableResult
+    public func apply(_ suggestion: StudioSuggestion) -> Bool {
+        // Only a suggestion on screen now, found for this combination, locks and mode, is applied.
+        guard suggestionsGeneration == suggestionGeneration, suggestions.contains(suggestion) else {
+            suggestions = []
+            suggestionsGeneration = nil
+            suggestionNote = "These suggestions were for an earlier combination. Ask again."
+            return false
         }
+        var next = selection.filter { locked.contains($0.key) }
+        let missing = place(suggestion.slots, into: &next)
         selection = next
-        validationGeneration += 1
-        validation = .checked(suggestion.validation)
-        composition = nil
-        preview = .none
+        invalidateVerdict()
+        // The other suggestions answer the same locked pieces, so they stay applicable.
+        suggestionsGeneration = suggestionGeneration
+        var suggested: [Role: String] = [:]
+        for slot in suggestion.slots { if let key = StudioModel.key(slot) { suggested[slot.role] = key } }
+        if next.mapValues(StudioModel.key) == suggested { validation = .checked(suggestion.validation) }
+        restoreNote = StudioModel.notPlacedLine(missing)
         persist()
+        return true
+    }
+
+    /// Applies a suggestion, then has the backend check the canvas unless it is exactly what was
+    /// suggested (whose verdict is then the suggestion's own). This is what "Show this on the
+    /// canvas" does: a combination a locked role or a withdrawn piece changed is checked again.
+    @discardableResult
+    public func applyAndCheck(_ suggestion: StudioSuggestion) async -> Bool {
+        guard apply(suggestion) else { return false }
+        if case .checked = validation { return true }
+        // Nothing of the suggestion could be placed: there is no combination to check, and the
+        // canvas says so instead of showing no verdict at all.
+        guard !selection.isEmpty else {
+            validation = .unchecked("None of these pieces is offered here any more, so there is nothing to check.")
+            return true
+        }
+        await validate()
+        return true
+    }
+
+    /// Pieces of the last loaded suggestion or saved combination that are no longer offered and
+    /// so are not on the canvas, said plainly; nil when everything was placed.
+    public private(set) var restoreNote: String?
+
+    /// Puts each slot's piece on the canvas for its unlocked role: an owned garment by its ID, a
+    /// shopping candidate by its candidate ID. Unlocked roles the slots leave out become empty on
+    /// purpose (a refresh does not refill them). Returns the slots that could not be placed.
+    private func place(_ slots: [StudioSlot], into next: inout [Role: StudioSelectorItem]) -> [StudioSlot] {
+        var missing: [StudioSlot] = []
+        var named = Set<Role>()
+        for slot in slots where !locked.contains(slot.role) {
+            named.insert(slot.role)
+            if let item = StudioModel.item(for: slot, in: items(for: slot.role)) {
+                next[slot.role] = item
+                cleared.remove(slot.role)
+            } else {
+                missing.append(slot)
+            }
+        }
+        for selector in studio.value?.selectors ?? [] where !locked.contains(selector.role) && !named.contains(selector.role) {
+            cleared.insert(selector.role)
+        }
+        for slot in missing { cleared.insert(slot.role) }
+        return missing
+    }
+
+    static func notPlacedLine(_ missing: [StudioSlot]) -> String? {
+        guard !missing.isEmpty else { return nil }
+        let names = missing.map { slot -> String in
+            if slot.shoppingCandidate != nil { return "the shopping candidate for \(Phrases.role(slot.role).lowercased())" }
+            return "the \(Phrases.role(slot.role).lowercased())"
+        }
+        return "Not placed, because it is no longer offered here: \(Phrases.list(names))."
     }
 
     /// The backend's layout manifest for the current combination (positions of verified assets).
     public func loadComposition() async {
         guard !selection.isEmpty else { composition = nil; return }
-        let mine = validationGeneration
-        if let result = try? await environment.api.composeStudio(StudioComposeRequest(slots: slotInputs())), mine == validationGeneration { composition = result }
+        let mine = selectionGeneration
+        if let result = try? await environment.api.composeStudio(StudioComposeRequest(slots: slotInputs())), mine == selectionGeneration { composition = result }
     }
 
     /// The pieces the backend placed without a photograph, by name, for the line under the
@@ -299,7 +489,7 @@ public final class StudioModel {
         guard !selection.isEmpty, preview != .requesting else { return }
         // Already asked for and still being made: look for it, never ask a second time.
         if preview == .queued { await checkPreview(); return }
-        let mine = validationGeneration
+        let mine = selectionGeneration
         let requestId: String
         if let kept = unansweredPreviewRequest, kept.generation == mine {
             requestId = kept.id
@@ -310,25 +500,26 @@ public final class StudioModel {
         preview = .requesting
         do {
             let response = try await environment.api.requestStudioPreview(StudioPreviewRequest(clientRequestId: requestId, slots: slotInputs()))
+            guard mine == selectionGeneration else { return }
             environment.center.noteRead(failure: nil)
-            guard mine == validationGeneration else { return }
             unansweredPreviewRequest = nil
             previewHash = response.manifestHash
             preview = .queued
             for attempt in 0..<StudioModel.previewChecks {
                 if attempt > 0 { await sleep(StudioModel.previewInterval) }
-                guard mine == validationGeneration else { return }
+                guard mine == selectionGeneration else { return }
                 if await readPreview(manifestHash: response.manifestHash, generation: mine) { return }
             }
         } catch let failure as APIFailure {
+            guard mine == selectionGeneration else { return }
             environment.center.noteRead(failure: failure)
-            guard mine == validationGeneration else { return }
             // A refusal is an answer: the next request is a new one. Without an answer (no
-            // connection, a server fault) the identifier is kept for the retry.
-            if !failure.isRetryable { unansweredPreviewRequest = nil }
+            // connection, a server fault) or with one this build could not read (the backend may
+            // have started the picture), the identifier is kept, so a retry never starts a second job.
+            if case .decoding = failure {} else if !failure.isRetryable { unansweredPreviewRequest = nil }
             preview = .failed(failure.isTransport ? "Offline. A picture needs a connection." : failure.ownerMessage)
         } catch {
-            guard mine == validationGeneration else { return }
+            guard mine == selectionGeneration else { return }
             preview = .failed("The picture could not be asked for.")
         }
     }
@@ -336,19 +527,19 @@ public final class StudioModel {
     /// Looks once more for a preview that was still being rendered.
     public func checkPreview() async {
         guard preview == .queued, let hash = previewHash ?? composition?.manifestHash else { return }
-        _ = await readPreview(manifestHash: hash, generation: validationGeneration)
+        _ = await readPreview(manifestHash: hash, generation: selectionGeneration)
     }
 
     /// Reads the composition's preview state. Returns true when it is settled (rendered or failed).
     private func readPreview(manifestHash: String, generation: Int) async -> Bool {
-        guard let current = try? await environment.api.composition(manifestHash: manifestHash), generation == validationGeneration else { return false }
+        guard let current = try? await environment.api.composition(manifestHash: manifestHash), generation == selectionGeneration else { return false }
         composition = current
         switch current.preview.state {
         case .rendered:
             // A rendered preview is identified by its content hash, so cached bytes never go stale.
             let key = "preview:\(manifestHash):\(current.preview.sha256 ?? "")"
             if let cached = environment.media.data(for: key) { preview = .rendered(cached); return true }
-            guard let data = try? await environment.api.compositionPreview(manifestHash: manifestHash), generation == validationGeneration else { return false }
+            guard let data = try? await environment.api.compositionPreview(manifestHash: manifestHash), generation == selectionGeneration else { return false }
             environment.media.store(data, for: key)
             preview = .rendered(data)
             return true
@@ -375,9 +566,14 @@ public final class StudioModel {
     // MARK: The three distinct effects
 
     private func submit(_ draft: CommandDraft) async -> SubmissionOutcome {
+        // One change at a time: a second tap while one is being sent records nothing.
+        guard !isSubmitting else { return .notSaved("The previous change is still being sent, so this tap recorded nothing.") }
+        let mine = accountGeneration
         isSubmitting = true
-        defer { isSubmitting = false }
+        defer { if mine == accountGeneration { isSubmitting = false } }
         let outcome = await environment.center.submit(draft)
+        // The account ended while this was sent: nothing of it is shown or refreshed here.
+        guard mine == accountGeneration else { return outcome }
         lastOutcome = outcome
         if case .confirmed = outcome { await studio.refresh() }
         return outcome
@@ -427,11 +623,10 @@ public final class StudioModel {
     /// Loads a saved combination onto the canvas (unlocked roles only).
     public func show(_ combination: StudioCombination) {
         var next = selection.filter { locked.contains($0.key) }
-        for slot in combination.slots where !locked.contains(slot.role) {
-            if let item = items(for: slot.role).first(where: { slot.garmentId != nil && $0.garmentId == slot.garmentId }) { next[slot.role] = item }
-        }
+        let missing = place(combination.slots, into: &next)
         selection = next
         invalidateVerdict()
+        restoreNote = StudioModel.notPlacedLine(missing)
         persist()
     }
 
