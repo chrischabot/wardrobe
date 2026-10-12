@@ -46,9 +46,12 @@ restored by an operator, a deployment without the deletion journal) it edits D1 
 
 ## Defects these cases found
 
-Open ones are in `DEFECTS.md` (MEDIA-ABUSE-1: a direct garment-picture import crashes with a 500 instead of a
-typed refusal; MEDIA-ABUSE-2: a JPEG with headers and no picture data becomes an active image). These were
-fixed, each with the case as its regression test:
+Each was fixed, with the case as its regression test (`DEFECTS.md` lists them and any that are open):
+
+- A direct garment-picture import for a garment that already had image state crashed with a 500 instead
+  of a typed refusal (MEDIA-ABUSE-1; `packages/media/src/portability.ts`; `deleted-image-restore.test.ts`).
+- A JPEG with headers and no picture data became an active image (MEDIA-ABUSE-2;
+  `packages/media/src/image/jpeg.ts`, `packages/media/src/commands/uploads.ts`; `hostile-images.test.ts`).
 
 - A media job whose attempts all ended without reporting back (the isolate ran out of memory or time while it
   held the lease) was started again by every redelivery and sweep, without end. It is now recorded as failed

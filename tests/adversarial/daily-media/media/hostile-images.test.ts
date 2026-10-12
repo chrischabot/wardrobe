@@ -23,7 +23,6 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { unzipSync } from "fflate";
 import { APP_ORIGIN } from "@garderobe/worker/testing";
 import { decodeImage, probeImage } from "@garderobe/media/image";
-import { defect } from "../../harness/defect.ts";
 import {
   ascii, attemptUpload, cleanJpeg, cleanPng, concat, deflate, everyServedCopy, exifWithGps, jpegSegment, latin1, objectKeys, pngChunk, pngChunks, pngHeader, PNG_SIGNATURE, rows, settleJobs, syntheticOwner,
   type AbuseOwner, type UploadAttempt,
@@ -280,9 +279,9 @@ describe("malformed images", () => {
     for (const a of fromRejected) expect(derived.filter((k) => k.includes(a.asset_id)), a.asset_id).toEqual([]);
   });
 
-  // Open defect MEDIA-ABUSE-2 (DEFECTS.md): a JPEG whose headers are followed straight by its end marker
-  // (no scan data at all) is decoded into a blank picture and becomes an active asset.
-  defect("MEDIA-ABUSE-2", "a JPEG with headers and no picture data is never shown", async () => {
+  // Regression (was open defect MEDIA-ABUSE-2): a JPEG whose headers are followed straight by its end marker
+  // (no scan data at all) was decoded into a blank picture and became an active asset.
+  it("a JPEG with headers and no picture data is never shown", async () => {
     const sos = jpg.findIndex((b, i) => b === 0xff && jpg[i + 1] === 0xda);
     const attempt = await attemptUpload(owner, concat(jpg.subarray(0, sos), new Uint8Array([0xff, 0xd9])), { declareType: "image/jpeg", role: "socks" });
     expectNoServerFault(attempt, "JPEG headers and no picture data");

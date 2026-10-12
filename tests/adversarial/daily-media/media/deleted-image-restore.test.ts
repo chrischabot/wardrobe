@@ -20,7 +20,6 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { unzipSync } from "fflate";
 import { APP_ORIGIN, provisionOwner, testApp, type TestOwner } from "@garderobe/worker/testing";
 import { decodeImage } from "@garderobe/media/image";
-import { defect } from "../../harness/defect.ts";
 import { cleanJpeg, cleanPng, everyServedCopy, objectKeys, rows, settleJobs, sha256, syntheticOwner, uploadClean, type AbuseOwner } from "./support.ts";
 
 let source: AbuseOwner;
@@ -232,9 +231,9 @@ describe("a photograph deleted after a backup was taken", () => {
     await expectGoneFor(source, "after direct import commands");
   });
 
-  // Open defect MEDIA-ABUSE-1 (DEFECTS.md): the refusal holds (nothing is written), but it is a 500 from a
-  // UNIQUE constraint instead of a typed 4xx refusal.
-  defect("MEDIA-ABUSE-1", "a garment picture record naming the deleted photograph, imported directly, is refused with a typed 4xx and writes nothing", async () => {
+  // Regression (was open defect MEDIA-ABUSE-1): the refusal was a 500 from a UNIQUE constraint instead of a
+  // typed 4xx refusal.
+  it("a garment picture record naming the deleted photograph, imported directly, is refused with a typed 4xx and writes nothing", async () => {
     const u = source.owner.userId;
     const before = await rows("SELECT * FROM garment_media WHERE user_id = ? ORDER BY garment_id", u);
     const payload = { part: "garmentMedia", rows: { garmentMedia: [{ garment_id: source.garments.top.garmentId, image_state: "resolved", primary_asset_id: doomed.assetId, version: 99, updated_at: new Date().toISOString() }] } };
