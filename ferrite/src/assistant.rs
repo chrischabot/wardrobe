@@ -325,9 +325,10 @@ fn damaged() -> CmdError {
     CmdError::with("internal", "the stored run is unreadable; nothing was changed", json!({"retryable": false}))
 }
 
-/// The stored record must be this request's: its kind, connection and client ID, and its words.
+/// The stored record must be this request's: its run ID (the key it is stored under), kind,
+/// connection and client ID, and its words.
 fn check_owner(run: &Value, kind: &str, connection: &str, client: &str, hash: &str) -> Result<(), CmdError> {
-    if run["kind"] != kind || run["connection"] != connection || run["clientRequestId"] != client {
+    if run["runId"] != run_id_for(kind, connection, client).as_str() || run["kind"] != kind || run["connection"] != connection || run["clientRequestId"] != client {
         return Err(CmdError::with("internal", "the stored run is not this request's; nothing was read", json!({"retryable": false})));
     }
     if run["requestHash"] != hash {

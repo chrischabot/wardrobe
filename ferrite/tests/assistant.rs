@@ -503,6 +503,33 @@ async fn a_holder_that_stalled_past_its_lease_budget_never_calls_the_model() {
 }
 
 #[tokio::test]
+async fn a_stored_run_or_claim_naming_another_run_id_is_refused_on_replay() {
+    use wardrobe::assistant::CLAIM_MS;
+    let foreign = run_id_for("conversation_turn", CONN, "turn-9999");
+    // A completed answer under this request's key but naming another (valid) run.
+    let mut store = MemStore::default();
+    let mut inf = gateway(vec![message("An answer.")]);
+    assistant::ask(&mut store, &mut inf, CONN, T0, &ask_input("Hi", "turn-9001")).await.unwrap();
+    let key = runs::run_key(&run_id_for("conversation_turn", CONN, "turn-9001"));
+    for state in ["completed", "claim"] {
+        let mut run: Value = serde_json::from_slice(&store.data[&key]).unwrap();
+        if state == "claim" {
+            // An expired claim, which would otherwise be taken over.
+            run = json!({"v": 1, "runId": foreign, "kind": "conversation_turn", "state": "running", "createdAt": run["createdAt"], "claimedUntil": T0 + CLAIM_MS, "connection": CONN, "clientRequestId": "turn-9001", "requestHash": run["requestHash"]});
+        } else {
+            run["runId"] = json!(foreign);
+        }
+        store.data.insert(key.clone(), serde_json::to_vec(&run).unwrap());
+        let before = store.data.clone();
+        let mut g = gateway(vec![message("must not be used")]);
+        let e = assistant::ask(&mut store, &mut g, CONN, T0 + CLAIM_MS * 2, &ask_input("Hi", "turn-9001")).await.unwrap_err();
+        assert_eq!(e.code, "internal", "{state}");
+        assert!(sent(&g).is_empty(), "{state}");
+        assert_eq!(store.data, before, "{state}");
+    }
+}
+
+#[tokio::test]
 async fn a_stored_turn_or_research_run_that_is_not_exactly_what_was_written_is_refused() {
     let mut store = MemStore::default();
     let mut inf = gateway(vec![message("An answer."), message(r#"{"verdict": null, "summary": "s", "comparison": []}"#)]);

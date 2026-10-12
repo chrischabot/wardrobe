@@ -416,7 +416,15 @@ Bounds:
 What the assistant does here: it answers from the owner's garments, their
 balances and the profile rules the importer recorded; it changes nothing and
 proposes nothing (`receipts` and `proposals` are empty), so model output can
-never become a write; a change is a `garderobe_command`. No weather, Calendar,
+never become a write; a change is a `garderobe_command`. **Known limit, not
+yet ported:** the owner decision of 2026-10-05 says a change the owner asks
+for in conversation (including words an assistant relays) applies at once
+through the shared domain commands with a receipt and undo. This port's
+`garderobe_ask` does not do that yet. Interpreting conversation into typed
+commands, with the confirmation exceptions and the adversarial tests that
+must guard it, is a later milestone. Until then a connected assistant applies
+the owner's changes with `garderobe_command`, which already applies at once
+with a receipt and undo. No weather, Calendar,
 purchase records, transcript or profile document are connected, and the
 prompt says so. `pastedText` is quoted as third-party material and its
 closing tag cannot be forged from inside. Research has no web search or page
