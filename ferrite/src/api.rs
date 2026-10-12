@@ -261,6 +261,10 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
             }
         }
         ("GET", "/v1/meta") => crate::app_routes::meta(tokens.public_origin.as_deref().filter(|o| oauth::valid_origin(o)), now_ms),
+        ("GET", "/v1/me") => Ok(crate::app_routes::me(principal)),
+        ("GET", "/v1/service") => Ok(crate::app_routes::service()),
+        ("GET", "/v1/settings") => Ok(crate::app_routes::settings(now_ms)),
+        ("GET", "/v1/laundry") => crate::app_routes::laundry(store, now_ms).await,
         ("POST", "/v1/commands/batch") => crate::app_routes::batch(store, principal, now_ms, &req.body).await,
         ("POST", "/v1/recommendations") => crate::app_routes::recommendations(store, principal, now_ms, &req.body).await,
         ("POST", p) if crate::app_routes::swap_target(p).is_some() => {

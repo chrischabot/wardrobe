@@ -186,6 +186,64 @@ async fn a_preview_recommends_without_publishing_and_board_mode_publishes_once()
 }
 
 #[tokio::test]
+async fn the_launch_reads_say_what_this_server_holds() {
+    let mut store = MemStore::default();
+    let (status, me) = send(&mut store, OWNER, "GET", "/v1/me", Value::Null).await;
+    assert_eq!(status, 200);
+    assert_eq!((me["userId"].clone(), me["channel"].clone(), me["identities"].clone()), (json!("owner"), json!("ios"), json!([])));
+    assert_eq!(me["recoveryKit"], json!({"present": false, "issuedAt": null}));
+    let (_, as_assistant) = send(&mut store, ASSISTANT, "GET", "/v1/me", Value::Null).await;
+    assert_eq!(as_assistant["channel"], "mcp");
+
+    let (_, service) = send(&mut store, OWNER, "GET", "/v1/service", Value::Null).await;
+    assert_eq!(service, json!({"paused": false, "pause": null, "returnDeadlinesActive": true}));
+
+    let (status, settings) = send(&mut store, OWNER, "GET", "/v1/settings", Value::Null).await;
+    assert_eq!(status, 200, "{settings}");
+    assert_eq!((settings["version"].clone(), settings["profile"].clone(), settings["inference"].clone()), (json!(1), Value::Null, Value::Null));
+    assert_eq!(settings["service"], service);
+    assert_eq!(settings["settings"]["laundry"]["handwash"], json!({"mode": "owner_reported"}));
+    let count = settings["settings"]["delivery"]["defaultOptionCount"].as_u64().unwrap();
+    assert!((3..=5).contains(&count));
+    // The count shown is the count a recommendation without one composes.
+    let (_, rec) = send(&mut store, OWNER, "POST", "/v1/recommendations", json!({"clientRequestId": "recommend-0100", "date": DAY})).await;
+    assert_eq!(rec["options"].as_array().unwrap().len() as u64, count, "{rec}");
+}
+
+#[tokio::test]
+async fn laundry_shows_the_hamper_by_channel_and_the_bags_as_the_ledger_has_them() {
+    let mut store = MemStore::default();
+    let (_, empty) = send(&mut store, OWNER, "GET", "/v1/laundry", Value::Null).await;
+    assert_eq!((empty["awaitingService"].clone(), empty["awaitingHandwash"].clone(), empty["batches"].clone()), (json!([]), json!([]), json!([])));
+    assert_eq!((empty["exceptions"].clone(), empty["cycles"].clone(), empty["readAt"].clone()), (json!([]), json!([]), json!("2026-09-10T00:26:40Z")));
+
+    let (_, page) = send(&mut store, OWNER, "GET", "/v1/wardrobe", Value::Null).await;
+    let items = page["items"].as_array().unwrap();
+    let pick = |channel: &str| items.iter().find(|i| i["careChannel"] == channel && i["quantity"].as_u64().unwrap() >= 2).unwrap()["garmentId"].as_str().unwrap().to_string();
+    let (shirt, sock) = (pick("service"), pick("handwash"));
+    send(&mut store, OWNER, "POST", "/v1/commands", command("care.mark_dirty", json!({"items": [{"garmentId": shirt, "quantity": 2}, {"garmentId": sock}]}), "dirty-0001")).await;
+    let (_, l) = send(&mut store, OWNER, "GET", "/v1/laundry", Value::Null).await;
+    assert_eq!(l["awaitingService"].as_array().unwrap().iter().map(|x| (x["garmentId"].clone(), x["quantity"].clone())).collect::<Vec<_>>(), vec![(json!(shirt), json!(2))]);
+    assert_eq!(l["awaitingHandwash"][0]["garmentId"], sock);
+    assert!(l["awaitingService"][0]["name"].as_str().map_or(false, |n| !n.is_empty()));
+
+    // The laundry takes the bag: the hamper empties into it, and the bag is listed.
+    let (status, c) = send(&mut store, OWNER, "POST", "/v1/commands", command("laundry.collect", json!({}), "collect-0001")).await;
+    assert_eq!(status, 200, "{c}");
+    let (_, l) = send(&mut store, OWNER, "GET", "/v1/laundry", Value::Null).await;
+    assert_eq!(l["awaitingService"], json!([]));
+    let bag = l["batches"][0].clone();
+    assert_eq!((bag["status"].clone(), bag["returnedAt"].clone(), bag["returnBasis"].clone()), (json!("collected"), Value::Null, Value::Null));
+    assert_eq!((bag["items"][0]["garmentId"].clone(), bag["items"][0]["quantity"].clone(), bag["items"][0]["stillAway"].clone()), (json!(shirt), json!(2), json!(0)));
+
+    // An undone pickup is withdrawn and no longer listed, as in the TypeScript service.
+    send(&mut store, OWNER, "POST", "/v1/commands", command("command.undo", json!({"commandId": c["commandId"]}), "undo-collect-01")).await;
+    let (_, l) = send(&mut store, OWNER, "GET", "/v1/laundry", Value::Null).await;
+    assert_eq!(l["batches"], json!([]));
+    assert_eq!(l["awaitingService"][0]["quantity"], 2);
+}
+
+#[tokio::test]
 async fn a_swap_changes_one_slot_with_a_receipt_and_answers_the_board_as_it_now_stands() {
     let mut store = MemStore::default();
     let (_, made) = send(&mut store, OWNER, "POST", "/v1/recommendations", json!({"clientRequestId": "compose-00001", "date": DAY, "count": 3, "mode": "board"})).await;

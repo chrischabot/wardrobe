@@ -223,3 +223,92 @@ pub async fn swap<S: Store>(store: &mut S, principal: Principal, now_ms: u64, bo
     let board = api::board_view(store, board_id).await?;
     Ok(json!({"board": board, "receipt": receipt}))
 }
+
+// ─────────────────────────── launch and settings reads ───────────────────────────
+
+/// Pause and resume are not ported, so the service is never paused here (`ServiceState`).
+fn service_state() -> Value {
+    json!({"paused": false, "pause": null, "returnDeadlinesActive": true})
+}
+
+/// `GET /v1/service` (`ServiceState`).
+pub fn service() -> Value {
+    service_state()
+}
+
+/// `GET /v1/me` (`MeResponse`). This port serves one owner, signed in with the owner's token (the
+/// app) or the assistant token; there are no linked identities and no recovery kit yet, and it says so.
+pub fn me(principal: Principal) -> Value {
+    json!({
+        "userId": "owner",
+        "displayName": "Owner",
+        "scopes": ["read", "write"],
+        "channel": principal.channel,
+        "identities": [],
+        "recoveryKit": {"present": false, "issuedAt": null},
+        "issuedRecoveryKit": null,
+    })
+}
+
+/// `GET /v1/settings` (`SettingsResponse`): the specification's default settings
+/// (`DEFAULT_OWNER_SETTINGS`), version 1, because no settings command is ported to change them.
+/// The option count is the one the recommender uses (the owner's imported daily-entry rule, held to
+/// the settings' 3 to 5). No profile document or inference overview is served here (`null`).
+pub fn settings(now_ms: u64) -> Value {
+    let count = recommend::default_count(crate::seed::catalogue()).clamp(3, 5);
+    json!({
+        "settings": {
+            "timezone": "Europe/London",
+            "homeLocation": null,
+            "delivery": {"morningLocalTime": "07:00", "defaultOptionCount": count},
+            "laundry": {
+                "service": {"weeklyResetEnabled": true, "collectionWeekday": 5, "collectionLocalTime": "08:00", "returnWeekday": 6, "baselineWeekday": 7},
+                "handwash": {"mode": "owner_reported"},
+            },
+            "variety": {"repeatHorizonDays": 7, "patternHorizonDays": 14},
+            "estimator": {"pUseBoard": 0.85, "pFollowSelection": 0.9, "importCleanPrior": 0.8},
+            "extensions": {},
+        },
+        "version": 1,
+        "profile": null,
+        "inference": null,
+        "service": service_state(),
+        "apiVersion": "v1",
+        "contractVersion": CONTRACT_VERSION,
+        "readAt": instant(now_ms),
+    })
+}
+
+/// `GET /v1/laundry` (`LaundryStateResponse`, as `getLaundryState`): what is in the hamper by care
+/// channel, sorted by name, and the newest 12 laundry bags that were not withdrawn, newest first.
+/// Laundry exceptions and weekly cycles are not ported, so those lists are empty.
+pub async fn laundry<S: Store>(store: &mut S, now_ms: u64) -> Result<Value, CmdError> {
+    let (_, ledger) = api::read_ledger(store).await?;
+    let cat = crate::seed::catalogue();
+    let stock = crate::ledger::replay(cat, &ledger.events);
+    let name = |id: &str| cat.get(id).map(|g| g.name.clone()).unwrap_or_else(|| "Unknown garment".to_string());
+    let pool = |channel: &str| {
+        let mut lines: Vec<(String, String, u32)> = cat.garments.iter().filter(|g| g.care_channel == channel).map(|g| (g.name.clone(), g.id.clone(), stock.of(&g.id).dirty)).filter(|l| l.2 > 0).collect();
+        lines.sort();
+        lines.into_iter().map(|(n, id, q)| json!({"garmentId": id, "name": n, "quantity": q})).collect::<Vec<_>>()
+    };
+    let mut bags: Vec<&crate::ledger::Batch> = ledger.batches.iter().filter(|b| b.withdrawn_by.is_none()).collect();
+    bags.sort_by(|a, b| b.picked_up_at_ms.cmp(&a.picked_up_at_ms));
+    let batches: Vec<Value> = bags
+        .into_iter()
+        .take(12)
+        .map(|b| {
+            let mut items: Vec<&crate::ledger::BatchItem> = b.items.iter().collect();
+            items.sort_by_key(|i| (name(&i.garment_id), i.garment_id.clone()));
+            json!({
+                "batchId": b.batch_id,
+                "status": b.status,
+                "pickedUpAt": instant(b.picked_up_at_ms),
+                "returnedAt": b.returned_at_ms.map(instant),
+                "returnBasis": null,
+                "items": items.iter().map(|i| json!({"garmentId": i.garment_id, "name": name(&i.garment_id), "quantity": i.quantity, "returnedQuantity": i.returned, "stillAway": i.still_away})).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    Ok(json!({"awaitingService": pool("service"), "awaitingHandwash": pool("handwash"), "batches": batches, "exceptions": [], "cycles": [], "readAt": instant(now_ms)}))
+}
