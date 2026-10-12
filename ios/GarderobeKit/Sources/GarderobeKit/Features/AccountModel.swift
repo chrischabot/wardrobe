@@ -362,6 +362,8 @@ public final class RecoveryStatusModel {
 @Observable
 public final class ExportModel {
     public struct Download: Sendable, Equatable {
+        /// The export these bytes belong to. A download is only ever shown with its own job.
+        public var exportId: String
         public var fileName: String
         public var data: Data
         public var sha256: String
@@ -370,34 +372,133 @@ public final class ExportModel {
     }
 
     public let environment: AppEnvironment
-    public private(set) var job: ExportJob?
+    /// The job on screen. When it becomes another export, or this export can no longer be
+    /// downloaded (failed, expired), a download held for it is dropped.
+    public private(set) var job: ExportJob? {
+        didSet {
+            // The acknowledged job is remembered across launches, so a refresh after a relaunch
+            // reads it again; a start still waiting for its answer has no job and saves none. Any
+            // assignment of no job forgets the saved one, even when this model never held it.
+            if let id = job?.exportId {
+                if id != oldValue?.exportId { environment.restoration.save("export.job", id) }
+            } else {
+                environment.restoration.clear("export.job")
+            }
+            guard let held = download else { return }
+            if held.exportId != job?.exportId || !canDownload { download = nil }
+        }
+    }
     public private(set) var download: Download?
     public private(set) var message: String?
     public private(set) var isWorking = false
+    /// Counts resets (sign-out, deletion): an answer for the earlier account is dropped.
+    private var epoch = 0
+    /// Counts exports started here: a read of an earlier export that arrives after another was
+    /// started never replaces the newer job (or drops its package).
+    private var generation = 0
+    /// Starts still waiting for their answer: a refresh meanwhile would read the previous job and
+    /// could rotate the request ID the start is using.
+    private var startsInFlight = 0
 
     public init(environment: AppEnvironment) {
         self.environment = environment
         if let id: String = environment.restoration.load("export.request") { requestId = id }
     }
 
-    /// The stable request ID: starting again after a lost response resumes the same job.
+    /// Forgets the job, its download and its request key (the account ended).
+    public func reset() {
+        epoch += 1
+        generation += 1
+        job = nil; download = nil; message = nil; isWorking = false
+        // Starts of the ended account no longer hold back a refresh: their answers are dropped.
+        startsInFlight = 0
+        // The key is forgotten where it is kept too, so a model made after the account ended never resumes it.
+        rotateRequestId()
+    }
+
+    /// The stable request ID: starting again after a lost response resumes the same job. Once
+    /// that job has finished (completed, incomplete, failed or expired), starting again is a
+    /// fresh export under a new ID.
     private var requestId: String?
 
+    private static func isDead(_ job: ExportJob?) -> Bool { job?.state == .failed || job?.state == .expired }
+    private static func isTerminal(_ job: ExportJob?) -> Bool {
+        guard let state = job?.state else { return false }
+        return [.completed, .completedIncomplete, .failed, .expired].contains(state)
+    }
+
+    private func rotateRequestId() {
+        requestId = nil
+        environment.restoration.clear("export.request")
+    }
+
     public func start(passphrase: String?) async {
-        let id = requestId ?? environment.ids.next("export")
-        requestId = id
-        environment.restoration.save("export.request", id)
+        // The job on screen has finished: the owner is asking for a new export, not that one again.
+        // The finished job leaves the screen with its key, so a start whose answer is lost is
+        // retried under its own saved key (resuming that export) rather than rotating again.
+        if ExportModel.isTerminal(job) { rotateRequestId() }
+        // After a relaunch the kept key may belong to a job the backend already acknowledged (it is
+        // saved by ID): that key resumes that job, never a new export, so a new start uses a new key.
+        else if job == nil, (environment.restoration.load("export.job") as String?) != nil { rotateRequestId() }
+        // Whatever job was on screen leaves it: until this start is answered, the screen and the
+        // saved key belong to it, so a refresh never reads another job and rotates the key.
+        job = nil
         let pass = passphrase.flatMap { $0.isEmpty ? nil : $0 }
-        await run { self.job = try await self.environment.api.startExport(ExportRequest(clientRequestId: id, passphrase: pass)) }
+        generation += 1
+        let mine = epoch
+        startsInFlight += 1
+        defer { if mine == epoch { startsInFlight -= 1 } }
+        let gen = generation
+        // Starting an export offers no earlier package until this job's own package is downloaded.
+        download = nil
+        // A kept ID can name a job that has since failed or expired: then one fresh start.
+        for _ in 0..<2 {
+            let reused = requestId != nil
+            let id = requestId ?? environment.ids.next("export")
+            requestId = id
+            environment.restoration.save("export.request", id)
+            await run {
+                let started = try await self.environment.api.startExport(ExportRequest(clientRequestId: id, passphrase: pass))
+                if mine == self.epoch, gen == self.generation { self.job = started }
+            }
+            guard mine == epoch, gen == generation else { return }
+            guard reused, ExportModel.isDead(job) else { return }
+            // The dead job leaves the screen with its key: a lost answer to the fresh start is
+            // retried under the fresh key, never rotated again.
+            rotateRequestId()
+            job = nil
+        }
     }
 
     /// Reads the job's current state (the job runs on the backend and survives closing the app).
     public func refresh() async {
+        guard startsInFlight == 0 else { return }
+        let mine = epoch
+        let gen = generation
+        defer { if mine == epoch, gen == generation, ExportModel.isTerminal(job) { rotateRequestId() } }
         guard let id = job?.exportId else {
-            await run { self.job = try await self.environment.api.exports().exports.sorted { $0.requestedAt > $1.requestedAt }.first }
+            // After a relaunch: the job the backend acknowledged is read again by its ID.
+            if let acknowledged: String = environment.restoration.load("export.job") {
+                await run {
+                    let read = try await self.environment.api.export(id: acknowledged)
+                    if mine == self.epoch, gen == self.generation, self.job == nil { self.job = read }
+                }
+                return
+            }
+            // A start whose answer was lost owns the screen until it is retried: an older export
+            // from the list is not adopted, and its key is kept so the retry resumes it.
+            guard requestId == nil else { return }
+            await run {
+                let latest = try await self.environment.api.exports().exports.sorted { $0.requestedAt > $1.requestedAt }.first
+                if mine == self.epoch, gen == self.generation, self.job == nil { self.job = latest }
+            }
             return
         }
-        await run { self.job = try await self.environment.api.export(id: id) }
+        await run {
+            let read = try await self.environment.api.export(id: id)
+            // Only a read of the export still on screen replaces it.
+            if mine == self.epoch, gen == self.generation, self.job?.exportId == read.exportId { self.job = read }
+        }
     }
 
     public var isFinished: Bool {
@@ -435,43 +536,61 @@ public final class ExportModel {
         return "\(c.name): \(Phrases.count(c.records, "record")), \(state)" + (c.note.map { " (\($0))" } ?? "")
     }
 
-    /// Requests a short-lived ticket and downloads the package, verifying its checksum.
+    /// Requests a short-lived ticket and downloads the package, verifying its checksum. The bytes
+    /// are kept only if the same export is still the one on screen when they arrive.
     public func fetchPackage() async {
         guard let job, canDownload else { return }
+        let mine = epoch
+        let gen = generation
+        let exportId = job.exportId
         isWorking = true
-        defer { isWorking = false }
+        defer { if mine == epoch, gen == generation { isWorking = false } }
         do {
-            let ticket = try await environment.api.exportTicket(id: job.exportId)
+            let ticket = try await environment.api.exportTicket(id: exportId)
             let data = try await environment.api.download(ticket: ticket)
+            // Kept only for the same export, still downloadable, and verified against its current checksum.
+            guard mine == epoch, gen == generation, let current = self.job, current.exportId == exportId, canDownload else { return }
             let hash = SHA256.hex(data)
-            if let expected = job.sha256, expected != hash {
+            if let expected = current.sha256, expected != hash {
                 download = nil
                 message = "The downloaded package did not match its checksum and was discarded. Download it again."
                 return
             }
-            download = Download(fileName: ticket.fileName, data: data, sha256: hash, verified: job.sha256 != nil)
+            download = Download(exportId: exportId, fileName: ticket.fileName, data: data, sha256: hash, verified: current.sha256 != nil)
             environment.restoration.clear("export.request")
             requestId = nil
             message = nil
         } catch let failure as APIFailure {
+            // A failure for an export that is no longer the one on screen says nothing about it.
+            guard mine == epoch, gen == generation, self.job?.exportId == exportId else { return }
+            download = nil   // a failed download never leaves an earlier package on offer
             message = failure.ownerMessage
             environment.center.noteRead(failure: failure)
         } catch {
+            guard mine == epoch, gen == generation, self.job?.exportId == exportId else { return }
+            download = nil
             message = "The package could not be downloaded."
         }
     }
 
     private func run(_ work: @escaping () async throws -> Void) async {
+        // A request answered after the export was reset (the account ended) or after another
+        // export was started changes nothing here, and never clears the progress of a newer request.
+        let mine = epoch
+        let gen = generation
         isWorking = true
-        defer { isWorking = false }
+        defer { if mine == epoch, gen == generation { isWorking = false } }
         do {
             try await work()
+            guard mine == epoch, gen == generation else { return }
             message = nil
             environment.center.noteRead(failure: nil)
         } catch let failure as APIFailure {
+            guard mine == epoch, gen == generation else { return }
             message = failure.ownerMessage
             environment.center.noteRead(failure: failure)
         } catch {
+            guard mine == epoch, gen == generation else { return }
             message = "That could not be completed."
         }
     }
