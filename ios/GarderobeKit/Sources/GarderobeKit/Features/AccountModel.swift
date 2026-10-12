@@ -61,7 +61,7 @@ public final class AccountModel {
     /// cache rather than a sign-in wall.
     public func restore() async {
         if environment.isDemo {
-            state = .demo(try? await environment.api.me())
+            state = .demo((try? await environment.api.me()).map(AccountModel.withoutKit))
             return
         }
         guard let session, session.hasSession else { state = .signedOut; return }
@@ -71,12 +71,8 @@ public final class AccountModel {
     private func loadMe() async {
         do {
             let me = try await environment.api.me()
-            // The kit in a claim response is never cached; strip it before saving the account for offline use.
-            var cacheable = me
-            cacheable.issuedRecoveryKit = nil
-            environment.cache.put("me", cacheable, checkedAt: environment.time.now())
-            state = .signedIn(me)
-            environment.center.sessionRestored()
+            // The kit in a claim response is never cached or kept in the account state; strip it.
+            adopt(me)
             message = nil
         } catch let failure as APIFailure {
             switch failure {
@@ -178,8 +174,25 @@ public final class AccountModel {
         await run {
             let me = try await self.environment.api.claim(invitationCode: code)
             self.visibleKit = me.issuedRecoveryKit
-            self.state = .signedIn(me)
+            self.adopt(me)
         }
+    }
+
+    /// A verified account the backend just answered with (a read, a claim, a link): the kit is
+    /// stripped, the account is cached for an offline relaunch, and waiting work bound to it can go.
+    private func adopt(_ me: MeResponse) {
+        let cacheable = AccountModel.withoutKit(me)
+        environment.cache.put("me", cacheable, checkedAt: environment.time.now())
+        state = .signedIn(cacheable)
+        environment.center.sessionRestored()
+    }
+
+    /// The account without a just-issued recovery kit: the kit lives only in `visibleKit`,
+    /// shown once, and is never part of the account state that views and caches read.
+    static func withoutKit(_ me: MeResponse) -> MeResponse {
+        var stripped = me
+        stripped.issuedRecoveryKit = nil
+        return stripped
     }
 
     /// Issues (or rotates) the recovery kit. The previous kit stops working.
@@ -204,12 +217,12 @@ public final class AccountModel {
         let code = linkCode.trimmingCharacters(in: .whitespacesAndNewlines)
         await run {
             let me = try await self.environment.api.completeIdentityLink(linkCode: code)
-            self.state = .signedIn(me)
+            self.adopt(me)
         }
     }
 
     public func unlink(identityId: String) async {
-        await run { self.state = .signedIn(try await self.environment.api.unlinkIdentity(identityId: identityId)) }
+        await run { self.adopt(try await self.environment.api.unlinkIdentity(identityId: identityId)) }
     }
 
     // MARK: Recovery after losing the login identity
