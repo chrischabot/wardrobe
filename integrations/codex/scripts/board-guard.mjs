@@ -64,8 +64,11 @@ export const balancesState = (items) => JSON.stringify((items ?? []).map((i) => 
 
 /** Whether `after` is `before` with exactly one unit of `garmentId` moved from clean to dirty, nothing else changed. */
 export function movedToDirty(before, after, garmentId) {
-  const shifted = (before ?? []).map((i) => (i.garmentId === garmentId ? { ...i, balances: { clean: Number(i.balances?.clean) - 1, dirty: Number(i.balances?.dirty ?? 0) + 1 } } : i));
-  return (before ?? []).length > 0 && balancesState(shifted) === balancesState(after);
+  // Exactly one item must be that garment, with a clean unit to move; otherwise nothing proves a move.
+  const matching = (before ?? []).filter((i) => i.garmentId === garmentId);
+  if (matching.length !== 1 || !(Number(matching[0].balances?.clean) >= 1)) return false;
+  const shifted = before.map((i) => (i.garmentId === garmentId ? { ...i, balances: { clean: Number(i.balances?.clean) - 1, dirty: Number(i.balances?.dirty ?? 0) + 1 } } : i));
+  return balancesState(shifted) === balancesState(after);
 }
 
 /** A board revision usable as an expected version: a non-negative integer. */

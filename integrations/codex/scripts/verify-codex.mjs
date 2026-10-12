@@ -180,7 +180,14 @@ async function login() {
     let callback;
     if (ferrite) {
       // The Ferrite app's consent page: its form is fetched first and its issued/form_mac fields are posted back.
-      callback = await within(ferriteConsent(authUrl, { appOrigin: mcpUrl.origin, ownerToken, write: true }), 60_000, "Ferrite consent did not finish within 60 s", exited);
+      // Codex exiting (or the 60 s bound) aborts the consent requests, so no approval is posted after login failed.
+      const consentAbort = new AbortController();
+      exited.then(() => consentAbort.abort());
+      try {
+        callback = await within(ferriteConsent(authUrl, { appOrigin: mcpUrl.origin, ownerToken, write: true, signal: consentAbort.signal }), 60_000, "Ferrite consent did not finish within 60 s", exited);
+      } finally {
+        consentAbort.abort();
+      }
       check("the owner allowed the connection on the Ferrite consent page (form fetched, issued and form_mac posted back)", Boolean(callback), callback ? `redirect to ${callback.origin}${callback.pathname}` : "");
     } else if (loopback) {
       const { approveConsent } = await localHelpers();
@@ -323,6 +330,42 @@ function toolOutcome(result) {
   return { ok: true, data, error: null };
 }
 
+/**
+ * The Ferrite port has no recommender yet: the owner's app publishes the day's board (`board.publish`, owner_tap).
+ * A publication has no undo, so the verifier publishes only on an instance the operator declared disposable
+ * (--disposable-test-instance) at a loopback URL, and only when that day has no board yet. The two outfits are the
+ * owner's seed garments the port's own test publishes (ferrite/tests/mcp.rs, the Codex verifier board steps).
+ */
+const FERRITE_SEED_OUTFITS = [
+  ["gmt_3894b6a6295908d5e687af4f", "gmt_0bd82c642c7606199361d3d4", "gmt_9eb32f6a40ea3e5e4dee484b", "gmt_14bc4338d6760f6a13434b2f"],
+  ["gmt_41c2da80e7f41e5dc6a4340b", "gmt_b8744c2627cd88a3b937f851", "gmt_67d3228f744d17138e400729", "gmt_185ccf753d109848f21f7cec"],
+];
+async function ferriteBoardSetup(call, date) {
+  const existing = await call("garderobe_today", { date });
+  // Only an answer that explicitly shows no board establishes absence; a failed read proves nothing either way.
+  if (!existing.ok || existing.data === null || typeof existing.data !== "object" || !("board" in existing.data)) {
+    check("setup: whether tomorrow already has a board could be read", false, `not published: ${existing.ok ? "garderobe_today answered without a board field" : `${existing.error?.code}: ${existing.error?.message}`}`);
+    return;
+  }
+  if (existing.data.board !== null) return;
+  if (!loopback || !disposableInstance) {
+    console.log(`note: no board is published for ${date}; the verifier publishes one only on a disposable local instance (--disposable-test-instance), because a publication has no undo`);
+    return;
+  }
+  const options = FERRITE_SEED_OUTFITS.map(([top, bottom, socks, footwear]) => ({ slots: [{ role: "top", garmentId: top }, { role: "bottom", garmentId: bottom }, { role: "socks", garmentId: socks }, { role: "footwear", garmentId: footwear }], reason: "" }));
+  const body = { type: "board.publish", idempotencyKey: `codex-verify-publish-${date}`, authorization: "owner_tap", source: { channel: "ios" }, payload: { localDate: date, requestedCount: options.length, options } };
+  let status = "no answer";
+  let ok = false;
+  try {
+    const r = await fetch(new URL("/v1/commands", mcpUrl), { method: "POST", redirect: "manual", headers: { authorization: `Bearer ${ownerToken}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
+    const json = await r.json().catch(() => null);
+    ok = r.status === 200 && Boolean(json?.commandId ?? json?.receipt?.commandId);
+    status = `${r.status} ${json?.summary ?? json?.receipt?.summary ?? json?.error?.code ?? ""}`.trim();
+  } catch (error) {
+    status = error?.name === "TimeoutError" ? "timed out after 15 s" : "request failed";
+  }
+  check("setup (disposable local Ferrite app, as the owner in the app): tomorrow's board is published", ok, `${date}: ${status}`);
+}
 
 async function toolsThroughCodex() {
   const server = appServer();
@@ -361,7 +404,7 @@ async function toolsThroughCodex() {
       const sent = await call("garderobe_command", { type: "care.mark_dirty", payload: { items: [{ garmentId: garment }] }, idempotencyKey: `codex-verify-care-${Date.now()}` });
       const receipt = sent.data?.receipt;
       try {
-        check("routine write (local Ferrite app, test report undone below): care.mark_dirty applies at once with a receipt that offers undo", sent.ok && receipt?.commandId && receipt?.undo?.available !== false, sent.ok ? `${receipt?.commandId}: ${receipt?.summary}` : JSON.stringify(sent.error));
+        check("routine write (local Ferrite app, test report undone below): care.mark_dirty applies at once with a receipt that offers undo", sent.ok && receipt?.commandId && receipt?.undo?.available === true, sent.ok ? `${receipt?.commandId}: ${receipt?.summary}` : JSON.stringify(sent.error));
         const afterWrite = await call("garderobe_inventory", { view: "snapshot" });
         const nowItems = afterWrite.data?.data?.items ?? afterWrite.data?.items ?? null;
         check("exactly that garment moved from clean to dirty, nothing else changed", afterWrite.ok && movedToDirty(items, nowItems, garment), afterWrite.ok ? garment : JSON.stringify(afterWrite.error));
@@ -392,6 +435,8 @@ async function toolsThroughCodex() {
     if (local) {
       const published = await local.api("POST", "/v1/recommendations", { clientRequestId: `codex-verify-board-${Date.now()}`, date, mode: "board" });
       check("setup (local, as the owner in the app): tomorrow's board is published", published.ok, `${published.status} ${date}`);
+    } else if (ferrite) {
+      await ferriteBoardSetup(call, date);
     }
     const today = await call("garderobe_today", { date });
     const board = today.data?.board;
@@ -499,6 +544,29 @@ async function toolsThroughCodex() {
       const afterSwapUndo = await call("garderobe_today", { date });
       const restoredBoard = afterSwapUndo.ok ? afterSwapUndo.data?.board : null;
       check("after undoing the swap the board is exactly as before (board, choice, every option's pieces)", Boolean(restoredBoard?.boardId) && restoredBoard.boardId === boardNow.boardId && pieces(boardNow) !== "[]" && boardState(restoredBoard) === boardState(boardNow), afterSwapUndo.ok ? (restoredBoard?.boardId ? `before ${boardState(boardNow)}, after ${boardState(restoredBoard)}` : "garderobe_today returned no board") : JSON.stringify(afterSwapUndo.error));
+      // A swap sent with the board version read before the swap (now stale: the swap and its undo advanced it) must
+      // be refused as a version conflict and change nothing. This exercises unchangedAfterUnapplied on a server that
+      // applies swaps at once. A revision that did not move is a failure, not a reason to skip the check.
+      if (back?.ok && restoredBoard?.boardId) {
+        const sameBoardRestored = restoredBoard.boardId === boardNow.boardId && boardState(restoredBoard) === boardState(boardNow);
+        const advanced = Number.isSafeInteger(restoredBoard.revision) && Number.isSafeInteger(boardNow.revision) && restoredBoard.revision > boardNow.revision;
+        if (!sameBoardRestored) {
+          check("a swap sent with a stale board version is refused as a conflict", false, `not run: the board after the undo is not the swapped board restored (${restoredBoard.boardId}); the verifier does not write to it`);
+        } else if (!advanced) {
+          check("a swap sent with a stale board version is refused as a conflict", false, `not shown: the swap and its undo moved the board from revision ${boardNow.revision} to ${restoredBoard.revision}, not forward, so no earlier version is known to be stale`);
+        } else {
+          const stale = await call("garderobe_command", { type: "board.swap_slot", payload: { boardId: restoredBoard.boardId, optionId: option.optionId, role }, expectedVersions: versionsOf(boardNow), idempotencyKey: `codex-verify-stale-swap-${Date.now()}` });
+          const afterStale = await call("garderobe_today", { date });
+          const unchanged = unchangedAfterUnapplied(restoredBoard, afterStale.ok ? afterStale.data?.board : null);
+          check("a swap sent with a stale board version is refused as a conflict", !stale.ok && stale.error?.code === "conflict", stale.ok ? `applied: ${stale.data?.receipt?.summary ?? stale.data?.receipt?.commandId}` : `${stale.error?.code}: ${stale.error?.message}`);
+          check("the refused stale swap left the board unchanged (board, revision, choice, every option's pieces)", unchanged.ok, afterStale.ok ? unchanged.reason : JSON.stringify(afterStale.error));
+          // Should a server wrongly apply it, take it back so the run leaves nothing behind.
+          if (stale.ok && stale.data?.receipt?.commandId) {
+            const current = await read();
+            if (current) await call("garderobe_command", { type: "command.undo", payload: { commandId: stale.data.receipt.commandId }, expectedVersions: versionsOf(current), idempotencyKey: `codex-verify-undo-stale-${Date.now()}` });
+          }
+        }
+      }
     } else {
       // Waiting for the owner is the superseded policy for this change, so it fails the contract check.
       check(`contract 2026-10-05: a requested piece swap applies at once with a receipt (the ${role ?? "piece"} changed)`, false, swap.error?.code === "confirmation_required" ? `the server kept it for the owner's confirmation (confirmation_required: ${swap.error?.details?.summary ?? swap.error?.message}); the 2026-10-05 contract is not implemented on this server yet` : `${swap.error?.code}: ${swap.error?.message}`);

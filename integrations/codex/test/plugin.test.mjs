@@ -297,6 +297,24 @@ test("Ferrite consent fails without the server-issued fields, on a refused form 
   assert.deepEqual(hiddenFields('<input type="hidden" name="a" value="&lt;b&gt;&amp;&quot;&#39;">'), { a: `<b>&"'` });
 });
 
+test("Ferrite consent abandoned by the caller (Codex exited) posts no approval", async () => {
+  const before = fakeFerrite();
+  const gone = new AbortController();
+  gone.abort();
+  await assert.rejects(ferriteConsent(before.authUrl, { appOrigin: APP, ownerToken: "owner-secret", fetchImpl: before.fetchImpl, signal: gone.signal }), /abandoned before the page was fetched/);
+  assert.equal(before.requests.length, 0);
+  // Codex exits while the consent page is being fetched: the form is never posted.
+  const midway = fakeFerrite();
+  const exiting = new AbortController();
+  const fetchImpl = async (url, init = {}) => {
+    const r = await midway.fetchImpl(url, init);
+    if ((init.method ?? "GET") === "GET") exiting.abort();
+    return r;
+  };
+  await assert.rejects(ferriteConsent(midway.authUrl, { appOrigin: APP, ownerToken: "owner-secret", fetchImpl, signal: exiting.signal }), (e) => /abandoned before it was posted/.test(e.message) && !e.message.includes("owner-secret"));
+  assert.deepEqual(midway.requests.map((r) => r.method), ["GET"], "nothing is posted after the caller gave up");
+});
+
 test("care round trip helpers: pick a clean single laundered garment and require exactly one unit moved", () => {
   // Synthetic inventory items (labelled test data, not owner data).
   const items = [
@@ -313,6 +331,9 @@ test("care round trip helpers: pick a clean single laundered garment and require
   const extra = after.map((i) => (i.garmentId === "g_pair" ? { ...i, balances: { clean: 1, dirty: 1 } } : i));
   assert.equal(movedToDirty(items, extra, "g_shirt"), false);
   assert.equal(movedToDirty([], [], "g_shirt"), false);
+  // An absent garment, or one with no clean unit, proves nothing even when the inventory is unchanged.
+  assert.equal(movedToDirty(items, items, "g_missing"), false);
+  assert.equal(movedToDirty(items, items, "g_worn"), false);
   assert.equal(balancesState(items), balancesState([...items].reverse()));
   assert.notEqual(balancesState(items), balancesState(after));
 });

@@ -32,24 +32,28 @@ export function formAction(html, pageUrl) {
  * the authorization page is on that same origin. `fetchImpl` is injectable for tests; each request is bounded by
  * `timeoutMs`.
  */
-export async function ferriteConsent(authUrl, { appOrigin, ownerToken, write = true, fetchImpl = fetch, timeoutMs = 15_000 } = {}) {
+export async function ferriteConsent(authUrl, { appOrigin, ownerToken, write = true, fetchImpl = fetch, timeoutMs = 15_000, signal } = {}) {
+  // Each request ends at its own deadline or when the caller aborts (for example because Codex exited).
+  const bounded = () => (signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs));
   if (!ownerToken) throw new Error("no owner token: set WARDROBE_OWNER_TOKEN to the Ferrite app's owner token");
   if (!appOrigin) throw new Error("no app origin: the Ferrite app's origin is required before the owner token is sent anywhere");
   const expected = new URL(String(appOrigin)).origin;
   const authOrigin = new URL(String(authUrl)).origin;
   if (authOrigin !== expected) throw new Error(`the authorization page (${authOrigin}) is not on the Ferrite app's origin (${expected}); the owner token is not sent`);
-  const page = await fetchImpl(String(authUrl), { redirect: "manual", signal: AbortSignal.timeout(timeoutMs) });
+  if (signal?.aborted) throw new Error("the consent was abandoned before the page was fetched");
+  const page = await fetchImpl(String(authUrl), { redirect: "manual", signal: bounded() });
   const html = await page.text();
   if (page.status !== 200) throw new Error(`the consent page answered ${page.status}`);
   const fields = hiddenFields(html);
   if (!fields.issued || !fields.form_mac) throw new Error("the consent page carries no issued/form_mac fields (is this the Ferrite app, with an owner token configured?)");
+  if (signal?.aborted) throw new Error("the consent was abandoned before it was posted");
   const body = new URLSearchParams({ ...fields, owner_token: ownerToken, decision: "allow", ...(write ? { write: "on" } : {}) });
   const posted = await fetchImpl(String(formAction(html, new URL(String(authUrl)))), {
     method: "POST",
     redirect: "manual",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: body.toString(),
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: bounded(),
   });
   const location = posted.headers.get("location");
   if (posted.status !== 302 || !location) throw new Error(`the consent was not accepted: ${posted.status}${location ? "" : ", no redirect"}`);
