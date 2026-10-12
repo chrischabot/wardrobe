@@ -586,7 +586,8 @@ describe("Calendar description returned as HTML", () => {
 
   it("the owner's note is kept when Google hands the edited description back with <br> line breaks and entities", () => {
     const html = `${previous.replace("1. Pink oxford with grey chino", "1. MY OWN RENAMING").replace(/&/g, "&amp;").replace(/\n/g, "<br>")}<br><br>My own note: collect the dry cleaning &amp; post`;
-    expect(mergeDescription(html, previous, next)).toBe(`${next}\n\nMy own note: collect the dry cleaning & post`);
+    // The renamed heading could be the owner's own line, so it is kept after the managed text.
+    expect(mergeDescription(html, previous, next)).toBe(`${next}\n1. MY OWN RENAMING\n\nMy own note: collect the dry cleaning & post`);
     const before = `Remember the umbrella<br /><br />${previous.replace(/&/g, "&amp;").replace(/\n/g, "<BR>")}`;
     expect(mergeDescription(before, previous, next)).toBe(`Remember the umbrella\n\n${next}`);
     // Paragraphs, a link, a numeric entity, and a description that mixes real newlines with <br>.

@@ -10,6 +10,7 @@ import type { BoardDocument } from "@garderobe/contracts/ext/daily";
 import { all, effectsForCommand, first } from "@garderobe/domain";
 import type { TestOwner } from "@garderobe/domain/testing";
 import { CalendarApiError, getBoard, getToday, isValidGoogleEventId, projectCalendarEffects, recommend, renderBoardCalendarText } from "../src/index.ts";
+import { managedBlock } from "../src/calendar/projector.ts";
 import type { CalendarEventRaw } from "../src/ports.ts";
 import { compose, createDailyHarness, MILD_DAY, OUTFIT_CALENDAR, realOwner, SCHEDULED, type DailyHarness } from "./helpers.ts";
 
@@ -108,7 +109,7 @@ describe("the managed outfit event", () => {
     expect(e.attendees).toEqual([]);
     expect(e.reminderMinutesBefore).toBeNull(); // calendar reminders are separate from app notifications
     expect(e.summary).toBe("Outfits for Wednesday 16 September");
-    expect(e.description).toBe(renderBoardCalendarText(doc));
+    expect(e.description).toBe(managedBlock(renderBoardCalendarText(doc)));
     expect(e.privateProperties).toMatchObject({ garderobeBoard: doc.boardId, garderobeRevision: "1" });
     expect(h.calendar.log.every((l) => l.attendeesSent === 0)).toBe(true);
     // Only the dedicated outfit calendar is ever written, and only the managed event in it.
@@ -141,7 +142,7 @@ describe("the managed outfit event", () => {
     const events = h.calendar.allEvents(owner.userId, OUTFIT_CALENDAR);
     expect(events).toHaveLength(1);
     const now = (await getBoard(h.db, owner.principal(), { date: DAY }))!;
-    expect(events[0]!.description).toBe(renderBoardCalendarText(now));
+    expect(events[0]!.description).toBe(managedBlock(renderBoardCalendarText(now)));
     expect(events[0]!.description).not.toContain(oldShirt);
     expect(events[0]!.description!.match(/^1\. /gm)).toHaveLength(1);
     expect(writes(h).map((w) => w.op)).toEqual(["insertEvent", "patchEvent"]);
@@ -174,7 +175,7 @@ describe("the managed outfit event", () => {
     expect(now.revision).toBe(2);
     expect(live(h, owner)).toHaveLength(1);
     expect(live(h, owner)[0]!.privateProperties.garderobeRevision).toBe("2");
-    expect(live(h, owner)[0]!.description).toBe(renderBoardCalendarText(now));
+    expect(live(h, owner)[0]!.description).toBe(managedBlock(renderBoardCalendarText(now)));
     const row = await first<{ projected_revision: number }>(h.db, "SELECT projected_revision FROM calendar_projections WHERE user_id = ?", owner.userId);
     expect(row!.projected_revision).toBe(2);
   });
@@ -207,22 +208,24 @@ describe("the managed outfit event", () => {
     expect(h.calendar.log.filter((l) => l.op === "patchEvent").map((l) => l.reason)).toEqual(["precondition", null]);
     const e = live(h, owner)[0]!;
     const now = (await getBoard(h.db, owner.principal(), { date: DAY }))!;
-    expect(e.description).toBe(`${renderBoardCalendarText(now)}\n\nMy note: collect the dry cleaning`);
+    expect(e.description).toBe(`${managedBlock(renderBoardCalendarText(now))}\n\nMy note: collect the dry cleaning`);
     expect(e.unmanaged.colorId).toBe("7");
     expect(e.privateProperties.garderobeRevision).toBe("2");
   });
 
-  it("an edit to the managed outfit text itself is replaced by the next authoritative projection", async () => {
+  it("an edit to the managed outfit text itself is replaced by the next authoritative projection, and the owner's rewritten line is kept after it, outside the markers", async () => {
     const { h, owner } = await setup();
     const doc = (await compose(h, owner, DAY)).board!;
     await projectCalendarEffects(h.deps, { nowMs: h.clock.now() });
     h.calendar.externalEdit(owner.userId, OUTFIT_CALENDAR, live(h, owner)[0]!.eventId, (e) => {
-      e.description = "1. wear the suit";
+      e.description = e.description!.replace(/^1\. .*$/m, "1. wear the suit");
     });
+    expect(live(h, owner)[0]!.description).toContain("1. wear the suit");
     h.clock.advanceMinutes(2);
     await owner.exec("board.swap_slot", { boardId: doc.boardId, optionId: doc.options[0]!.optionId, role: "top" });
     await projectCalendarEffects(h.deps, { nowMs: h.clock.now() });
-    expect(live(h, owner)[0]!.description).toBe(renderBoardCalendarText((await getBoard(h.db, owner.principal(), { date: DAY }))!));
+    // The managed text is the board's again; his line is kept (it may be his note) after the managed region.
+    expect(live(h, owner)[0]!.description).toBe(`${managedBlock(renderBoardCalendarText((await getBoard(h.db, owner.principal(), { date: DAY }))!))}\n1. wear the suit`);
   });
 
   it("an event deleted in Google becomes a suppressed delivery for that day - not recreated by later revisions - until the owner restores it; the app board keeps working", async () => {

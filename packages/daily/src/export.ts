@@ -39,7 +39,7 @@ export async function exportDailyData(db: Db, principal: Principal): Promise<Dai
   for (const table of DAILY_TABLES) {
     const rows = await all<Record<string, unknown>>(db, `SELECT * FROM ${table} WHERE user_id = ? ORDER BY rowid`, principal.userId);
     // The owner's internal ID is not part of the portable form; import binds rows to the importing owner.
-    tables[table] = rows.map(({ user_id: _owner, lock_until: _lock, ...rest }) => rest);
+    tables[table] = rows.map(({ user_id: _owner, lock_until: _lock, lock_token: _token, ...rest }) => rest);
     counts[table] = rows.length;
   }
   return { version: DAILY_EXPORT_VERSION, component: "daily", tables, counts };
@@ -66,7 +66,7 @@ export async function importDailyData(db: Db, principal: Principal, data: DailyE
       // Calendar delivery is not replayed, and nothing is assumed about the importing owner's calendar: a
       // restored projection starts over as pending, so the next real publication creates or adopts the
       // event instead of mistaking its absence for a deletion by the owner.
-      const reset: Record<string, unknown> = table === "calendar_projections" ? { etag: null, state: row.state === "suppressed" && row.suppression_reason !== "deleted_externally" ? "suppressed" : "pending", suppression_reason: row.suppression_reason === "deleted_externally" ? null : row.suppression_reason, projected_revision: null, managed_text: null, last_verified_at: null, last_error: null, calendar_id: null } : {};
+      const reset: Record<string, unknown> = table === "calendar_projections" ? { etag: null, state: row.state === "suppressed" && row.suppression_reason !== "deleted_externally" ? "suppressed" : "pending", suppression_reason: row.suppression_reason === "deleted_externally" ? null : row.suppression_reason, projected_revision: null, managed_text: null, last_verified_at: null, last_error: null, calendar_id: null, removing_event_id: null, removing_token: null, uncertain_calendars: null, attempted_text: null } : {};
       const values = columns.map((c) => (c in reset ? reset[c] : row[c]));
       statements.push(prepare(db, stmt(`INSERT INTO ${table} (user_id, ${columns.join(", ")}) VALUES (?, ${columns.map(() => "?").join(", ")})`, principal.userId, ...values)));
     }

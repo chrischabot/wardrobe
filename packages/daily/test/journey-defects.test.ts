@@ -16,6 +16,7 @@ import { all, define } from "@garderobe/domain";
 import type { TestOwner } from "@garderobe/domain/testing";
 import { assembleContext, fetchWeatherSnapshot, getBoard, mergeDescription, prepareTripDayBoard, projectCalendarEffects, proposePacking, recommend, repairOptions, validateOutfit } from "../src/index.ts";
 import { loadBoard, loadOptions, loadRevision } from "../src/document.ts";
+import { managedBlock } from "../src/calendar/projector.ts";
 import { colourFamily } from "../src/model.ts";
 import { compose, createDailyHarness, garmentsByName, MILD_DAY, OUTFIT_CALENDAR, realOwner, syntheticOwner, type DailyHarness } from "./helpers.ts";
 
@@ -26,18 +27,29 @@ describe("D05-3: the owner's own words in the Calendar event survive a new proje
   const next = previous.replace("grey chino", "walnut chino");
 
   it.each([
-    ["a note after the outfits, with an outfit heading renamed", `${previous.replace("1. Pink oxford with grey chino", "1. MY OWN RENAMING")}\n\nMy own note: collect the dry cleaning`, `${next}\n\nMy own note: collect the dry cleaning`],
-    ["a note before the outfits, with the day line rewritten", `Remember the umbrella\n\n${previous.replace("Tuesday: 12 °C at 08:00, 19 °C peak.", "Tuesday, mild")}`, `Remember the umbrella\n\n${next}`],
-    ["notes on both sides, with the last managed line rewritten", `Before\n${previous.replace(/Shirt: Gold oxford$/, "Shirt: the gold one")}\nAfter`, `Before\n${next}\nAfter`],
+    ["a note after the outfits, with an outfit heading renamed (the renamed line could be his, so it stays)", `${previous.replace("1. Pink oxford with grey chino", "1. MY OWN RENAMING")}\n\nMy own note: collect the dry cleaning`, `${next}\n1. MY OWN RENAMING\n\nMy own note: collect the dry cleaning`],
+    ["a note before the outfits, with the day line rewritten", `Remember the umbrella\n\n${previous.replace("Tuesday: 12 °C at 08:00, 19 °C peak.", "Tuesday, mild")}`, `Remember the umbrella\n\nTuesday, mild\n\n${next}`],
+    ["notes on both sides, with the last managed line rewritten", `Before\n${previous.replace(/Shirt: Gold oxford$/, "Shirt: the gold one")}\nAfter`, `Before\n${next}\nShirt: the gold one\nAfter`],
     ["a managed line deleted and a note added", `${previous.replace("\nWarm against cool.", "")}\n\nNote to self`, `${next}\n\nNote to self`],
-    ["Windows line endings from the remote editor", `${previous.replace("1. Pink oxford with grey chino", "1. MY OWN RENAMING").replace(/\n/g, "\r\n")}\r\n\r\nMy own note`, `${next}\n\nMy own note`],
+    ["Windows line endings from the remote editor", `${previous.replace("1. Pink oxford with grey chino", "1. MY OWN RENAMING").replace(/\n/g, "\r\n")}\r\n\r\nMy own note`, `${next}\n1. MY OWN RENAMING\n\nMy own note`],
+    ["an owner's note between two unchanged managed lines, with no more lines than the managed line it replaced", previous.replace("Warm against cool.", "Owner note"), `${next}\nOwner note`],
   ])("%s", (_name, remote, expected) => {
     expect(mergeDescription(remote, previous, next)).toBe(expected);
   });
 
-  it("replaces the description when nothing of the last projection is left, and leaves an untouched projection's surroundings alone", () => {
-    expect(mergeDescription("Something else entirely", previous, next)).toBe(next);
+  it("keeps the owner's text when nothing of the last projection is left, and leaves an untouched projection's surroundings alone", () => {
+    expect(mergeDescription("Something else entirely", previous, next)).toBe(`${next}\n\nSomething else entirely`);
     expect(mergeDescription(`Top\n${previous}\nBottom`, previous, next)).toBe(`Top\n${next}\nBottom`);
+  });
+
+  it("keeps an owner's note written between managed lines inside the marked region, directly after the new managed text", () => {
+    const remote = `Top\n${managedBlock(previous.replace("Warm against cool.", "Warm against cool.\nOwner note inside"))}\nBottom`;
+    expect(mergeDescription(remote, previous, managedBlock(next))).toBe(`Top\n${managedBlock(next)}\nOwner note inside\nBottom`);
+    // An unchanged region carries no note: it is replaced exactly.
+    expect(mergeDescription(`Top\n${managedBlock(previous)}\nBottom`, previous, managedBlock(next))).toBe(`Top\n${managedBlock(next)}\nBottom`);
+    // With no recorded last projection (a write that landed but was never verified), the new text is the basis.
+    const unverified = `${managedBlock(next.replace("Warm against cool.", "Warm against cool.\nOwner note inside"))}`;
+    expect(mergeDescription(unverified, null, managedBlock(next))).toBe(`${managedBlock(next)}\nOwner note inside`);
   });
 });
 
