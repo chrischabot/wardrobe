@@ -14,7 +14,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { checkMcpUrl, retarget } from "../scripts/retarget.mjs";
-import { adoptAfterWrite, authorizationUrlFrom, balancesState, boardAbsence, boardState, cleanLaundered, movedToDirty, ownerDay, publishCommand, publishLostRace, realBoardRun, sameWear, setupDecision, swapDecision, unchangedAfterUnapplied, versionsOf, within, writeDecision } from "../scripts/board-guard.mjs";
+import { adoptAfterWrite, assistantRefusal, authorizationUrlFrom, balancesState, boardAbsence, boardState, cleanLaundered, movedToDirty, ownerDay, publishCommand, publishLostRace, realBoardRun, sameWear, setupDecision, swapDecision, unchangedAfterUnapplied, versionsOf, within, writeDecision } from "../scripts/board-guard.mjs";
 import { ferriteConsent, formAction, hiddenFields } from "../scripts/ferrite-consent.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -167,6 +167,15 @@ test("a piece swap on the owner's real board needs --allow-real-swap; the local 
   }
   assert.equal(swapDecision({ realBoard: realBoardRun(runs.localWorker) }).ok, true);
   assert.equal(swapDecision({ realBoard: realBoardRun(runs.disposableFerrite) }).ok, true);
+});
+
+test("ask and research without an inference gateway must refuse with module_unavailable naming WARDROBE_AI_GATEWAY", () => {
+  assert.equal(assistantRefusal({ ok: false, error: { code: "module_unavailable", message: "set the secret WARDROBE_AI_GATEWAY" } }), true);
+  assert.equal(assistantRefusal({ ok: false, error: { code: "module_unavailable", message: "no gateway", details: { secret: "WARDROBE_AI_GATEWAY" } } }), true);
+  assert.equal(assistantRefusal({ ok: false, error: { code: "module_unavailable", message: "no gateway" } }), false);
+  assert.equal(assistantRefusal({ ok: false, error: { code: "internal", message: "WARDROBE_AI_GATEWAY" } }), false);
+  assert.equal(assistantRefusal({ ok: true, data: { answer: "WARDROBE_AI_GATEWAY" } }), false);
+  assert.equal(assistantRefusal(null), false);
 });
 
 // Synthetic boards (labelled test data, not owner data) for the verifier's write guard.

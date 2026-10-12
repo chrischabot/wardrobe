@@ -2,7 +2,11 @@
 /**
  * End-to-end check of the Wardrobe Codex plugin with the real Codex CLI.
  *
- *   node integrations/codex/scripts/verify-codex.mjs [--marketplace <dir>] [--report <file.json>] [--registration dcr|cimd|auto] [--timezone <IANA zone>] [--app worker|ferrite] [--disposable-test-instance] [--allow-real-swap]
+ *   node integrations/codex/scripts/verify-codex.mjs [--marketplace <dir>] [--report <file.json>] [--registration dcr|cimd|auto] [--timezone <IANA zone>] [--app worker|ferrite] [--disposable-test-instance] [--allow-real-swap] [--ai-gateway-unset]
+ *
+ * --ai-gateway-unset (Ferrite only) states that the app has no WARDROBE_AI_GATEWAY; only then are garderobe_ask and
+ * garderobe_research called, and they must refuse by that secret's name and write nothing (otherwise they would run
+ * a model, which this verifier never does).
  *
  * --allow-real-swap acknowledges that the piece swap may be sent to the owner's real board (any run other than the
  * local Worker or a declared disposable Ferrite instance at a loopback URL); without it the swap is reported as
@@ -42,7 +46,7 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import { adoptAfterWrite, authorizationUrlFrom, balancesState, boardState, choiceOf, cleanLaundered, movedToDirty, ownerDay, publishCommand, publishLostRace, realBoardRun, sameWear, setupDecision, swapDecision, unchangedAfterUnapplied, versionsOf, within, writeDecision } from "./board-guard.mjs";
+import { adoptAfterWrite, assistantRefusal, authorizationUrlFrom, balancesState, boardState, choiceOf, cleanLaundered, movedToDirty, ownerDay, publishCommand, publishLostRace, realBoardRun, sameWear, setupDecision, swapDecision, unchangedAfterUnapplied, versionsOf, within, writeDecision } from "./board-guard.mjs";
 import { ferriteConsent } from "./ferrite-consent.mjs";
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -83,6 +87,14 @@ if (disposableInstance && !ferrite) {
 }
 // A piece swap on the owner's real board needs the operator's explicit acknowledgement (see swapDecision).
 const allowRealSwap = args.includes("--allow-real-swap");
+// garderobe_ask and garderobe_research call a model when the app has an inference gateway. This verifier runs no
+// model, so it calls them only when the operator states that the app has no gateway credential (--ai-gateway-unset,
+// for the Ferrite app: WARDROBE_AI_GATEWAY not set); they must then refuse by that secret's name and write nothing.
+const aiGatewayUnset = args.includes("--ai-gateway-unset");
+if (aiGatewayUnset && app !== "ferrite") {
+  console.error("--ai-gateway-unset applies only to --app ferrite");
+  process.exit(2);
+}
 const ownerToken = process.env.WARDROBE_OWNER_TOKEN ?? "";
 if (ferrite && !ownerToken) {
   console.error("--app ferrite needs WARDROBE_OWNER_TOKEN, the Ferrite app's owner token (locally: [secrets] in ferrite/ferrite.local.toml), to give the owner's consent.");
@@ -378,6 +390,64 @@ async function ferriteBoardSetup(call, date) {
   check("setup (disposable local Ferrite app, as the owner in the app): tomorrow's board is published", ok, `${date}: ${status}`);
 }
 
+/** A GET on the Ferrite app as the owner (owner token, sent only to the MCP URL's own origin). The JSON body, or null. */
+async function ferriteOwnerGet(pathname) {
+  try {
+    const r = await fetch(new URL(pathname, mcpUrl), { redirect: "manual", headers: { authorization: `Bearer ${ownerToken}` }, signal: AbortSignal.timeout(15_000) });
+    return r.ok ? await r.json() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The Ferrite app's other tools through Codex: garderobe_recommend (a validated recommendation, nothing published),
+ * garderobe_run (the recommendation's run, read back by the runId a repeated request returns), and, only with
+ * --ai-gateway-unset, garderobe_ask and garderobe_research, which must refuse by the secret's name and write nothing.
+ */
+async function ferriteReadTools(call, tools) {
+  const date = ownerDay(new Date(), timeZoneArg, 1);
+  if (tools.includes("garderobe_recommend")) {
+    const request = { date, count: 2, clientRequestId: `codex-verify-recommend-${Date.now()}` };
+    const first = await call("garderobe_recommend", request);
+    const options = first.data?.options;
+    check("read: garderobe_recommend returns validated outfit options through Codex (nothing published)", first.ok && Array.isArray(options) && first.data?.board == null, first.ok ? `${options?.length ?? 0} options for ${first.data?.localDate ?? date}${first.data?.insufficient ? `, insufficient: ${JSON.stringify(first.data.insufficient)}` : ""}` : JSON.stringify(first.error));
+    const again = await call("garderobe_recommend", request);
+    const third = await call("garderobe_recommend", request);
+    // A repeat must be answered from one stored run: the repeats both name the same runId (the first reply may name
+    // none, as the run is stored after it; if it names one, it must be that one), with the same options throughout.
+    const runId = again.data?.runId;
+    const sameRun = typeof runId === "string" && runId.length > 0 && third.data?.runId === runId && (first.data?.runId == null || first.data.runId === runId);
+    check("the same request returns the same recommendation, from one stored run", again.ok && third.ok && sameRun && JSON.stringify(again.data?.options) === JSON.stringify(options) && JSON.stringify(third.data?.options) === JSON.stringify(options), again.ok && third.ok ? `runs: first ${first.data?.runId ?? "none"}, repeat ${again.data?.runId}, third ${third.data?.runId}` : JSON.stringify(again.error ?? third.error));
+    if (tools.includes("garderobe_run")) {
+      const status = sameRun ? await call("garderobe_run", { runId, action: "status" }) : { ok: false, error: { code: "no_run", message: "the two replies did not name one run to read" } };
+      // The run itself: McpRunOutput is { run, stopped } (apps/worker/src/mcp/server.ts, ferrite/src/runs.rs).
+      const run = status.data?.run;
+      check("read: garderobe_run reads the recommendation's run back through Codex", status.ok && run?.runId === runId && run?.state === "completed", status.ok ? `${run?.kind} ${run?.state}` : JSON.stringify(status.error));
+    }
+  }
+  const assistantTools = ["garderobe_ask", "garderobe_research"].filter((t) => tools.includes(t));
+  if (!assistantTools.length) return;
+  if (!aiGatewayUnset) {
+    console.log(`note: ${assistantTools.join(" and ")} not called: with an inference gateway they would run a model, which this verifier never does; pass --ai-gateway-unset for an app without WARDROBE_AI_GATEWAY`);
+    return;
+  }
+  // The newest receipt only (not the read envelope, whose read time changes on every read), or null when unreadable.
+  const newestReceipt = async () => {
+    const r = await call("garderobe_inventory", { view: "receipts", limit: 1 });
+    const receipts = r.data?.data?.receipts ?? r.data?.receipts;
+    return r.ok && Array.isArray(receipts) ? JSON.stringify(receipts[0]?.commandId ?? null) : null;
+  };
+  for (const tool of assistantTools) {
+    const before = await newestReceipt();
+    const stamp = `codex-verify-${tool.slice(10)}-${Date.now()}`;
+    const sent = tool === "garderobe_ask" ? await call(tool, { message: "Which of my coats is warmest?", clientTurnId: stamp }) : await call(tool, { topic: "How often did I wear my navy coat this year?", kind: "history", clientRequestId: stamp });
+    const after = await newestReceipt();
+    check(`${tool} without an inference gateway refuses by the secret's name (module_unavailable, WARDROBE_AI_GATEWAY)`, assistantRefusal(sent), sent.ok ? `answered: ${JSON.stringify(sent.data).slice(0, 200)}` : `${sent.error?.code}: ${sent.error?.message}`);
+    check(`the refused ${tool} wrote nothing (newest receipt unchanged)`, before !== null && before === after, before === null ? "the receipts could not be read" : before === after ? "unchanged" : "a new receipt appeared");
+  }
+}
+
 async function toolsThroughCodex() {
   const server = appServer();
   try {
@@ -398,6 +468,8 @@ async function toolsThroughCodex() {
     // Checked before the board steps, which may stop early (an owner's choice on a hosted board), so it always runs.
     const lift = await call("garderobe_command", { type: "restriction.resolve", payload: { restrictionId: "rst_codex_verify_not_a_restriction", evidence: { kind: "owner_statement" } }, idempotencyKey: `codex-verify-lift-${Date.now()}` });
     check("a restriction lift from Codex is refused", !lift.ok && lift.error?.code === "forbidden", lift.ok ? "applied" : `${lift.error?.code}: ${lift.error?.message}`);
+
+    if (ferrite) await ferriteReadTools(call, tools);
 
     // The Ferrite port publishes the board tools only once they are ported. Until then the board steps are not run,
     // and the routine write with receipt and undo is shown with the one write the port offers, a care report undone
@@ -489,8 +561,10 @@ async function toolsThroughCodex() {
     const other = board.options.find((o) => o.optionId !== initialSelection);
     const option = other ?? board.options[0];
     const beforeSelect = other ? await guard("routine write: board.select", board) : null;
-    // Choosing is not wearing: the day's wear (local Worker, read as the owner) must be the same after the choice.
-    const wearBefore = local && beforeSelect ? (await local.api("GET", `/v1/days/${date}`)).json : null;
+    // Choosing is not wearing: the day's wear (read as the owner: the local Worker's owner API, or the Ferrite app's
+    // GET /v1/days/<date> with the owner token) must be the same after the choice.
+    const readDay = local ? async () => (await local.api("GET", `/v1/days/${date}`)).json : ferrite ? () => ferriteOwnerGet(`/v1/days/${date}`) : null;
+    const wearBefore = readDay && beforeSelect ? await readDay() : null;
     const selected = beforeSelect ? await call("garderobe_command", { type: "board.select", payload: { boardId: beforeSelect.boardId, optionId: option.optionId }, expectedVersions: versionsOf(beforeSelect), idempotencyKey: `codex-verify-select-${Date.now()}` }) : { ok: false, data: null, error: other ? { code: "refused_before_writing", message: "the board changed before the choice could be made" } : { code: "no_other_option", message: "the board has no option other than the owner's current choice, so no choice transition can be shown" } };
     const receipt = selected.data?.receipt;
     check("routine write: board.select runs directly with a receipt naming the connected assistant", selected.ok && receipt?.commandId && receipt.channel === "mcp" && receipt.actor === "assistant", selected.ok ? `${receipt?.commandId}: ${receipt?.summary}` : JSON.stringify(selected.error));
@@ -502,8 +576,8 @@ async function toolsThroughCodex() {
       const afterSelect = await read();
       if (receipt?.commandId) lastSeen = adopt(beforeSelect, afterSelect, receipt, (b) => b.selection?.optionId === option.optionId);
       check("the choice is on the board the app shows", afterSelect?.selection?.optionId === option.optionId, `selection ${afterSelect?.selection?.optionId}`);
-      if (local) {
-        const wear = sameWear(wearBefore, (await local.api("GET", `/v1/days/${date}`)).json);
+      if (readDay) {
+        const wear = sameWear(wearBefore, await readDay());
         check("choosing is not wearing: the day's recorded wear is unchanged", wear.ok, wear.reason);
       } else {
         console.log("note: choosing is not wearing was not verified on this run (the verifier has no owner read of the day's wear for this app)");

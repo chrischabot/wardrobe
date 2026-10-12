@@ -41,6 +41,13 @@ export function swapDecision({ realBoard, allowRealSwap = false }) {
   return { ok: false, reason: "this run works on the owner's real board, where a swap may not be undoable; pass --allow-real-swap to send it, or run against a test account or a disposable instance" };
 }
 
+/** Whether an assistant tool (ask, research) refused for want of an inference gateway, naming the secret: code
+ * module_unavailable, and WARDROBE_AI_GATEWAY in the message or the details. */
+export function assistantRefusal(outcome) {
+  if (!outcome || outcome.ok || outcome.error?.code !== "module_unavailable") return false;
+  return JSON.stringify({ m: outcome.error.message ?? "", d: outcome.error.details ?? null }).includes("WARDROBE_AI_GATEWAY");
+}
+
 /** The owner's choice on a board (option and footwear), or null. */
 export const choiceOf = (board) =>
   JSON.stringify(board?.selection ? { optionId: board.selection.optionId ?? null, footwearGarmentId: board.selection.footwearGarmentId ?? null } : null);
