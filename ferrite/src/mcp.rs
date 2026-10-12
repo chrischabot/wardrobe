@@ -10,6 +10,10 @@
 //!                         and validated by the same code as a board, never
 //!                         published (a durable run per client request ID);
 //!   `garderobe_inventory` views `items`, `snapshot` and `receipts`;
+//!   `garderobe_run`       a saved run by its ID (status; cancel answers the
+//!                         finished run unchanged; resume and respond are refused,
+//!                         as nothing here runs in the background or waits for the
+//!                         owner);
 //!   `garderobe_command`   the ported commands, offered only to a grant with
 //!                         `wardrobe.write` and refused to any other with the
 //!                         OAuth `insufficient_scope` step-up.
@@ -34,6 +38,7 @@ const GUIDE: &str = "Garderobe: the connected owner's private wardrobe. The owne
 garderobe_today reads the day's outfit board for a named date (YYYY-MM-DD): its options, their pieces and the owner's choice. \
 garderobe_recommend returns validated outfit options for a named date and count; never invent garments: only the options returned there exist, and nothing is published. \
 garderobe_inventory reads the wardrobe (views items, snapshot, receipts); check `complete` and `nextCursor` before saying how many things exist. \
+garderobe_run reads a saved run by its runId, or cancels what remains of it. \
 garderobe_command makes one typed change the owner reported or asked for (needs the write permission) and returns its verified receipt; \
 send a stable idempotencyKey per intended change, send the board's revision as expectedVersions ({\"board:<boardId>\": revision}) for a board change, and take a change back with command.undo and the receipt's commandId. \
 Choosing an outfit is an intention, not a recorded wear. A laundry pickup or return is what the owner says happened: name pieces still away only when he says so. \
@@ -120,6 +125,7 @@ pub async fn handle<S: Store>(store: &mut S, origin: &str, now_ms: u64, req: &In
                 "garderobe_today" => rpc_result(id, today(store, now_ms, &args).await),
                 "garderobe_recommend" => rpc_result(id, recommend(store, &caller, now_ms, &args).await),
                 "garderobe_inventory" => rpc_result(id, inventory(store, now_ms, &args).await),
+                "garderobe_run" => rpc_result(id, run(store, &args).await),
                 "garderobe_command" if !caller.can_write() => oauth::insufficient_scope(origin),
                 "garderobe_command" => rpc_result(id, command(store, now_ms, &args).await),
                 _ => rpc_error(200, id, -32602, &format!("unknown tool '{name}'")),
@@ -180,6 +186,24 @@ pub fn tools(caller: &Caller) -> Vec<Value> {
             }
         },
         "annotations": {"title": "Read the wardrobe", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+        }),
+        json!({
+            "name": "garderobe_run",
+            "title": "Follow a long operation",
+            "description": "Read the durable state of a run by its runId (status), answer the question it is waiting on (respond, with inputId and choiceId or text), or cancel what remains (cancel). Committed changes stay committed after a cancel. Nothing on this server runs in the background, so resume is refused: start the request again.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["runId"],
+                "properties": {
+                    "runId": {"type": "string"},
+                    "action": {"type": "string", "enum": ["status", "respond", "cancel", "resume"], "default": "status"},
+                    "inputId": {"type": "string"},
+                    "choiceId": {"type": "string"},
+                    "text": {"type": "string", "maxLength": 4000}
+                }
+            },
+            "annotations": {"title": "Follow a long operation", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
         }),
     ];
     if caller.can_write() {
@@ -383,6 +407,20 @@ async fn inventory_inner<S: Store>(store: &mut S, now_ms: u64, args: &Map<String
             let next_out = next.clone();
             Ok(tool_ok(envelope(page, complete, Some(total), next_out, &revision), summary))
         }
+    }
+}
+
+async fn run<S: Store>(store: &mut S, args: &Map<String, Value>) -> Value {
+    let input = match crate::runs::parse_input(args) {
+        Ok(i) => i,
+        Err(e) => return tool_error(e),
+    };
+    match crate::runs::act(store, &input).await {
+        Ok(out) => {
+            let line = crate::runs::summary(&input, &out);
+            tool_ok(out, line)
+        }
+        Err(e) => tool_error(e),
     }
 }
 

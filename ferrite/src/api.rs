@@ -235,6 +235,11 @@ pub async fn handle<S: Store>(store: &mut S, tokens: &Tokens, now_ms: u64, req: 
                 read_day(store, &p["/v1/days/".len()..]).await
             }
         }
+        ("GET", p) if p.starts_with("/v1/runs/") => crate::runs::get(store, &p["/v1/runs/".len()..]).await,
+        ("POST", p) if p.strip_prefix("/v1/runs/").and_then(|r| r.strip_suffix("/cancel")).is_some() => {
+            let id = p.strip_prefix("/v1/runs/").and_then(|r| r.strip_suffix("/cancel")).unwrap_or_default();
+            crate::runs::cancel(store, id).await
+        }
         ("GET", "/v1/commands") => {
             let limit = query.iter().find(|(k, _)| k == "limit").and_then(|(_, v)| v.parse::<usize>().ok()).unwrap_or(50).clamp(1, 200);
             list_receipts(store, limit).await

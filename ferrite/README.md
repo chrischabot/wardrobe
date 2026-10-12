@@ -355,14 +355,44 @@ Tools, with the TypeScript server's names, arguments and results:
 - `garderobe_recommend`: validated outfit options for `{date, count?,
   brief?, clientRequestId}` (see "Recommendations"). It is a read, so a
   read-only grant is offered it.
+- `garderobe_run`: a saved run by `{runId, action?}` (see "Runs"). Offered
+  to a read-only grant too, as in the TypeScript server.
 - `garderobe_command`: the ported commands as the connected assistant
   (`assistant`, channel `mcp`, authorization `owner_statement`), returning
   `{receipt}`. Only a grant with `wardrobe.write` is offered it. A read-only
   grant that calls it gets HTTP 403 with the OAuth `insufficient_scope`
   challenge.
 
-`garderobe_ask`, `garderobe_research` and `garderobe_run` are not offered
-yet: they come with milestone 1f.
+`garderobe_ask` and `garderobe_research` are not offered yet: they come with
+the inference adapter (milestone 1f, second part).
+
+### Runs
+
+A run is the durable record of a long operation, kept at `u/<runId>`
+(`runs.ts`, the `api` provider). The only runs written are recommendation
+runs, and they finish inside their request, so every run is a completed
+recommendation. A stored record is returned only when it is exactly the
+record `recommend` writes (the same fields, none missing and none extra, each
+of its type, the answer checked as the composer writes it); anything else is
+refused (`internal`), never returned as a run. A run of another kind gets its
+own exact check when the code that writes it is ported. Run IDs are `run_`
+and 24 lowercase hex digits; anything else is `not_found` without a store
+read. Every run is the one owner's, so any of the owner's connections may
+read it (the TypeScript build scopes runs to the user, not to a connection).
+
+- `GET /v1/runs/{id}` and `garderobe_run` action `status`: the run as the
+  contract's `Run`. The connection, request ID and request hash are never
+  returned.
+- `POST /v1/runs/{id}/cancel` and action `cancel`: the finished run is
+  answered unchanged with nothing stopped, and nothing is written. No run
+  here is ever unfinished, so there is nothing to stop; stopping comes with
+  the first run that can be unfinished.
+- Action `resume` is refused with `precondition_failed` ("this run cannot be
+  resumed; start it again"): nothing on Ferrite runs in the background, so an
+  interrupted request is sent again. Action `respond` needs `inputId` and is
+  refused while no run waits for the owner, which none does yet. The event
+  stream (`GET /v1/runs/{id}/events`) is not ported: an SSE reply would get
+  no headers on Ferrite.
 
 The authorization server follows the TypeScript Worker's Workers OAuth
 provider and consent page:
@@ -504,10 +534,12 @@ small change of its own, and passes `ferrite check`, `ferrite test` and
    records no wear. (e) Done:
    `garderobe_recommend`: the deterministic composer of `packages/daily`
    over the owner's real stock, in preview mode, as a durable run per request
-   ID, with recorded wear held to the seven-day repeat horizon. (f)
-   `garderobe_run` (run status) and then `garderobe_ask` and
-   `garderobe_research`, which wait on model and outside calls and so come
-   with the queued runs of milestones 3 and 4. Then the Codex plugin
+   ID, with recorded wear held to the seven-day repeat horizon. (f) Done:
+   `garderobe_run` (status of saved runs; cancel, resume and respond answer
+   as the TypeScript server does for a finished run) and `GET
+   /v1/days/{date}`; next `garderobe_ask` and `garderobe_research` behind an
+   isolated AI Gateway adapter, which answer only when its secret is set.
+   Then the Codex plugin
    (`integrations/codex`) is pointed at this app.
 2. **Ledger.** The rest of the command service in `packages/domain`, one
    command at a time: garments (create, correct, aliases, merge, move,

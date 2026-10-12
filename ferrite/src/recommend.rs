@@ -510,7 +510,7 @@ fn default_count(cat: &Catalogue) -> u64 {
 /// Whether a saved run's `result` is a whole recommendation answer: every field present (a missing
 /// field is not read as null) and of its type, the date and read time parseable, and every option
 /// shaped as `preview_options` writes it, naming garments of the catalogue.
-fn stored_answer_ok(r: &Value) -> bool {
+pub(crate) fn stored_answer_ok(r: &Value) -> bool {
     let Some(m) = r.as_object() else { return false };
     let has = |k: &str| m.contains_key(k);
     const RESULT_FIELDS: [&str; 7] = ["localDate", "options", "board", "insufficient", "note", "wardrobeRevision", "readAt"];
@@ -599,7 +599,7 @@ pub async fn recommend<S: Store>(store: &mut S, connection: &str, now_ms: u64, i
     });
     let run = json!({
         "v": 1, "runId": run_id, "kind": "recommendation", "state": "completed", "createdAt": at, "updatedAt": at,
-        "activity": null, "lastEventId": 2, "connection": connection, "clientRequestId": input.client_request_id,
+        "activity": null, "lastEventId": 2, "pendingInput": null, "receipts": [], "proposals": [], "connection": connection, "clientRequestId": input.client_request_id,
         "requestHash": hash, "result": result, "error": null,
     });
     let bytes = ferrite_app::serde_json::to_vec(&run).map_err(|_| CmdError::with("internal", "the recommendation could not be recorded", json!({"retryable": true})))?;
