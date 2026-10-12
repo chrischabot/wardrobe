@@ -1,0 +1,1384 @@
+{
+  "formatVersion": 1,
+  "seed": "4",
+  "completed": false,
+  "truncated": null,
+  "fatal": "TypeError: fetch failed\n    at node:internal/deps/undici/undici:15141:13\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async Target.door (file:///home/user/wardrobe/tests/simulation/lib/target.mjs:233:22)\n    at async Target.setClock (file:///home/user/wardrobe/tests/simulation/lib/target.mjs:256:5)\n    at async runSimulation (file:///home/user/wardrobe/tests/simulation/lib/runner.mjs:119:7)\n    at async runSeed (file:///home/user/wardrobe/tests/simulation/bin/local.mjs:46:12)\n    at async file:///home/user/wardrobe/tests/simulation/bin/local.mjs:60:26\n    at async Promise.all (index 1)\n    at async file:///home/user/wardrobe/tests/simulation/bin/local.mjs:54:1",
+  "cleanupErrors": [],
+  "target": {
+    "label": "local simulation Worker",
+    "kind": "local-simulation-worker",
+    "doors": {
+      "clock": true,
+      "weather": true,
+      "calendar": true,
+      "scheduled": true
+    }
+  },
+  "timeline": {
+    "planDigest": "3580fda298760236",
+    "startDate": "2027-09-06",
+    "endDate": "2027-10-03",
+    "weeks": 4,
+    "days": 28,
+    "season": "autumn",
+    "trip": "Paris (SIMULATED forecast), days 11 to 13",
+    "illness": "days 17 to 18",
+    "pause": "days 22 to 23",
+    "purchase": "exchange",
+    "laundryWeeks": [
+      "normal",
+      "still_away",
+      "lost_in_service",
+      "no_reports"
+    ]
+  },
+  "steps": {
+    "planned": 350,
+    "run": 348,
+    "byKind": {
+      "sweep": 146,
+      "plan_tomorrow": 29,
+      "morning": 28,
+      "calendar_change": 17,
+      "evening_report": 28,
+      "night": 28,
+      "purchase_order": 1,
+      "becomes_unavailable": 8,
+      "ask": 2,
+      "lift_attempt": 2,
+      "undo_a_report": 2,
+      "socks_washed": 4,
+      "purchase_arrival": 1,
+      "amend_a_report": 2,
+      "day_brief": 3,
+      "swap_and_undo": 4,
+      "laundry_collect": 2,
+      "return_open": 1,
+      "weather_outage": 4,
+      "weather_change": 8,
+      "return_label": 1,
+      "laundry_return": 2,
+      "comes_back": 6,
+      "return_post": 1,
+      "trip_create": 1,
+      "owner_observation": 6,
+      "after_baseline": 3,
+      "research": 2,
+      "trip_proposal": 1,
+      "trip_pack": 1,
+      "trip_unpack": 1,
+      "return_settle": 1,
+      "pause": 1,
+      "late_wear_report": 2,
+      "laundry_late_return": 1
+    },
+    "errors": []
+  },
+  "invariantChecks": {
+    "passed": 12809,
+    "failed": 2,
+    "notApplicable": 3,
+    "byCheck": {
+      "amend.replaces_only_what_it_corrects": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "ask.returns_a_durable_run": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "ask.same_turn_id_is_the_same_turn": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "availability.hard_exclusion_states_a_hard_reason": {
+        "passed": 348,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "availability.parameters_are_stated_as_hypotheses": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "availability.probabilities_in_range": {
+        "passed": 348,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "availability.uncertainty_alone_never_excludes": {
+        "passed": 348,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "availability.what_came_back_is_available_again": {
+        "passed": 6,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "availability.what_the_owner_made_unavailable_is_excluded_at_once": {
+        "passed": 8,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "availability.what_the_owner_made_unavailable_stays_unavailable": {
+        "passed": 348,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "board.limited_when_the_forecast_is_not_fresh": {
+        "passed": 23,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "board.offers_at_least_one_option_or_says_why": {
+        "passed": 23,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "board.options_are_distinct": {
+        "passed": 407,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "board.prepared_for_the_morning": {
+        "passed": 23,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "board.prepared_the_evening_before": {
+        "passed": 23,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "board.revision_never_goes_back": {
+        "passed": 527,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "board.selection_is_one_of_its_options": {
+        "passed": 407,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "calendar.a_healthy_calendar_projection_does_not_fail": {
+        "passed": 407,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "calendar.event_identity_is_stable": {
+        "passed": 298,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "calendar.event_revision_not_ahead_of_board": {
+        "passed": 298,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "calendar.no_outfit_entry_for_a_paused_day": {
+        "passed": 28,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "calendar.no_outfit_entry_projected_for_a_paused_day": {
+        "passed": 28,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "calendar.one_managed_event_per_day": {
+        "passed": 348,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "calendar.projected_revision_is_the_event_s": {
+        "passed": 265,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "calendar.replacement_names_the_version_it_replaces": {
+        "passed": 348,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "calendar.revision_never_goes_back": {
+        "passed": 348,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "choice.accepted_on_the_published_board": {
+        "passed": 31,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "choice.is_an_intention_not_a_wear": {
+        "passed": 19,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "choice.is_shown_on_the_board": {
+        "passed": 31,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "choice.runs_without_a_tap": {
+        "passed": 31,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "circumstance.day_brief_recorded": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "command.accepted": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "contract.a_change_the_owner_asks_for_applies_at_once": {
+        "passed": 121,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "contract.a_connected_assistant_cannot_lift_a_restriction": {
+        "passed": 4,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "contract.a_wear_report_on_a_restricted_piece_is_on_the_record": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "contract.a_wear_report_on_a_restricted_piece_is_recorded_at_once": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "contract.receipt_states_whether_undo_is_available": {
+        "passed": 121,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "contract.undo_takes_the_report_back": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "feedback.optional_note_recorded": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "import.every_garment_present": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "import.no_invented_wear_history": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "invariants.state_could_be_read_after_the_step": {
+        "passed": 347,
+        "failed": 1,
+        "notApplicable": 0
+      },
+      "inventory.availability_view_matches_the_snapshot": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "inventory.command_types_mark_only_section_3_as_waiting": {
+        "passed": 6,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "inventory.day_record_is_what_was_reported": {
+        "passed": 4,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "inventory.item_matches_the_snapshot": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "inventory.pages_reach_everything_exactly_once": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "inventory.resolve_finds_a_garment_by_its_own_name": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "inventory.selection_counts_what_it_lists": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "inventory.snapshot_is_complete": {
+        "passed": 349,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "inventory.style_is_the_owner_s_profile": {
+        "passed": 4,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "inventory.trips_show_the_simulated_trip": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "inventory.view_describes_itself": {
+        "passed": 41,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "isolation.first_owner_does_not_see_the_second_s": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "isolation.second_owner_cannot_read_a_garment_of_the_first": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "isolation.second_owner_cannot_read_a_run_of_the_first": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "isolation.second_owner_cannot_report_on_a_garment_of_the_first": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "isolation.second_owner_does_not_get_the_first_owner_s_board": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "isolation.second_owner_sees_no_receipt_of_the_first": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "isolation.second_owner_sees_only_its_own_garments": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "isolation.two_distinct_owners": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "laundry.a_piece_still_away_is_not_offered": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "laundry.a_return_with_a_missing_piece_applies_at_once": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "laundry.exception_recorded": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "laundry.hand_wash_brings_back_exactly_the_washed_units": {
+        "passed": 4,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "laundry.hand_wash_returns_only_when_the_owner_says_washed": {
+        "passed": 4,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "laundry.pickup_moves_exactly_the_waiting_units": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "laundry.pickup_runs_without_a_tap": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "laundry.pickup_takes_what_was_waiting": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "laundry.return_brings_back_the_bag_and_only_the_bag": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "laundry.return_moves_exactly_the_returned_units": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "laundry.return_runs_without_a_tap": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "laundry.what_is_at_the_service_is_not_offered": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "mcp.read_only_connection_cannot_write": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "mcp.read_only_connection_is_not_offered_the_write_tool": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "mcp.read_only_write_is_denied_for_scope": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "mcp.resource_readable": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "mcp.resources_listed": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "mcp.write_connection_offers_all_seven_tools": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "observation.a_wash_report_runs_without_a_tap": {
+        "passed": 4,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "observation.the_owner_s_count_is_what_the_ledger_then_says": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "observation.what_the_owner_says_is_dirty_is_dirty": {
+        "passed": 4,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "owner_text.no_internal_codes": {
+        "passed": 462,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "pause.nothing_published_for_a_paused_day": {
+        "passed": 40,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "pause.recorded": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "pause.today_says_paused": {
+        "passed": 23,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "purchase.an_order_is_not_an_arrival": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "purchase.arrival_is_the_owner_s_observation": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "receipt.an_accepted_command_returns_one": {
+        "passed": 121,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "receipt.idempotent_repeat": {
+        "passed": 117,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "receipt.key_reuse_refused": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "receipt.key_reuse_runs_nothing": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "receipt.names_who_acted": {
+        "passed": 117,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "receipt.reads_back_as_returned": {
+        "passed": 117,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "receipt.repeat_writes_nothing": {
+        "passed": 117,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "receipt.revision_not_ahead_of_ledger": {
+        "passed": 117,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "receipt.well_formed": {
+        "passed": 117,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "recommend.answers": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "recommend.no_more_than_asked": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "recommend.publishes_nothing": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "recommend.same_request_same_answer": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "recommend.says_so_when_it_has_too_few": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "recommended.complete_outfit": {
+        "passed": 345,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "recommended.garments_exist_under_their_names": {
+        "passed": 345,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "recommended.not_hard_excluded": {
+        "passed": 345,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "recommended.not_made_unavailable_by_owner": {
+        "passed": 345,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "recommended.not_restricted": {
+        "passed": 345,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "recommended.offered_role_is_the_garment_s_own": {
+        "passed": 345,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "recommended.owned": {
+        "passed": 345,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "recommended.profile_hard_constraints": {
+        "passed": 345,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "recommended.trip_day_uses_packed_pieces_only": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "repair.changes_only_what_it_must": {
+        "passed": 4,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "repair.keeps_the_chosen_outfit": {
+        "passed": 4,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "repair.makes_a_new_board_revision": {
+        "passed": 4,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "repair.planned_piece_made_unavailable_is_replaced": {
+        "passed": 4,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "repair.replacement_is_wearable_in_the_removed_role": {
+        "passed": 4,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "research.returns_a_durable_run": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "restriction.connected_assistant_cannot_lift": {
+        "passed": 4,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "restriction.from_the_profile_is_never_lifted": {
+        "passed": 348,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "restriction.profile_restriction_in_force_at_start": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "restriction.still_in_force_after_a_report_naming_the_piece": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "return.an_exchange_never_duplicates_ownership": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "return.bookkeeping_moves_no_stock": {
+        "passed": 6,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "return.deadline_comes_from_sourced_terms_and_the_real_delivery": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "return.departure_changes_only_the_departed_piece": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "return.departure_is_shown_on_the_case": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "return.opening_a_return_removes_no_stock": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "return.step_recorded": {
+        "passed": 4,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "return.stock_leaves_only_on_physical_departure": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "run.a_failed_run_changes_nothing": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "run.a_failure_is_reported_as_a_failure": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "run.answer_to_a_question_nobody_asked_is_refused": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "run.cancel_answers_with_the_run": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "run.nothing_changes_without_a_receipt": {
+        "passed": 4,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "run.readable_by_its_id": {
+        "passed": 4,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "run.resume_answers_with_the_run_or_a_typed_refusal": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "run.settles_within_the_polling_budget": {
+        "passed": 4,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "run.state_is_a_known_state": {
+        "passed": 4,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "run.unknown_run_is_not_found": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "step.ran_to_its_end": {
+        "passed": 348,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "swap.accepted": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "swap.changes_the_slot": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "swap.keeps_the_choice": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "swap.makes_a_new_board_revision": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "swap.receipt_names_the_new_revision": {
+        "passed": 2,
+        "failed": 1,
+        "notApplicable": 0
+      },
+      "swap.receipt_offers_an_undo": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "swap.replacement_is_a_garment_of_that_role": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "swap.runs_without_a_tap": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "swap.undo_keeps_the_choice": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "swap.undo_makes_the_next_revision": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "swap.undo_receipt_names_the_board": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "swap.undo_restores_the_board": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 1
+      },
+      "swap.undo_runs_without_a_tap": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "trip.a_trip_day_is_answered_from_the_suitcase": {
+        "passed": 3,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "trip.packed_is_what_the_suitcase_holds": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "trip.packing_runs_without_a_tap": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "trip.planned_trip_is_listed": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "trip.proposal_covers_every_day_of_the_trip": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "trip.proposal_fits_the_luggage": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "trip.proposal_offers_only_wearable_pieces": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "trip.proposed_is_not_packed": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "trip.unpacked_garments_are_still_in_the_wardrobe": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "trip.unpacked_is_not_clean": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "trip.unpacked_units_come_home_to_the_expected_bucket": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "trip.unpacking_conserves_owned_units": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "trip.unpacking_empties_the_suitcase": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "trip.unpacking_moves_only_the_suitcase": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "trip.what_is_in_the_suitcase_is_not_offered_at_home": {
+        "passed": 1,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "undo.an_undone_report_is_no_longer_counted": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "undo.cannot_be_done_twice": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "undo.keeps_what_another_report_still_supports": {
+        "passed": 0,
+        "failed": 0,
+        "notApplicable": 2
+      },
+      "undo.of_a_report_runs_without_a_tap": {
+        "passed": 2,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "wear.count_per_garment_matches_reported_days": {
+        "passed": 348,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "wear.duplicate_report_is_not_a_new_wear": {
+        "passed": 5,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "wear.every_report_is_counted": {
+        "passed": 348,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "wear.nothing_invented": {
+        "passed": 348,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "wear.one_counted_wear_per_garment_and_day": {
+        "passed": 348,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "wear.report_accepted": {
+        "passed": 20,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "wear.report_runs_without_a_tap": {
+        "passed": 20,
+        "failed": 0,
+        "notApplicable": 0
+      }
+    }
+  },
+  "failures": [
+    {
+      "check": "swap.receipt_names_the_new_revision",
+      "seed": "4",
+      "step": 233,
+      "stepKind": "swap_and_undo",
+      "day": 17,
+      "date": "2027-09-23",
+      "at": "2027-09-23T20:25:00Z",
+      "message": "the swap's receipt names [{\"kind\":\"board\",\"id\":\"brd_f7d3826273414866b966eb90722bed41\",\"version\":2}]; the board is at revision 3",
+      "evidence": {
+        "date": "2027-09-24",
+        "boardId": "brd_f7d3826273414866b966eb90722bed41",
+        "optionId": "opt_1779f5b201d345c9bb17dad77a0f440c",
+        "role": "top",
+        "previous": "California plaid",
+        "revisionBefore": 1,
+        "commandId": "cmd_2025d30b6e8a4f8a9e1ab857f40b8355",
+        "revisionSwapped": 3,
+        "now": "Pima oxford — white"
+      }
+    },
+    {
+      "check": "invariants.state_could_be_read_after_the_step",
+      "seed": "4",
+      "step": 348,
+      "stepKind": "plan_tomorrow",
+      "day": 27,
+      "date": "2027-10-03",
+      "at": "2027-10-03T20:20:30Z",
+      "message": "fetch failed",
+      "evidence": null
+    }
+  ],
+  "notApplicable": [
+    {
+      "check": "undo.keeps_what_another_report_still_supports",
+      "step": 24,
+      "why": "no garment of the undone report of 2027-09-07 has another report behind it"
+    },
+    {
+      "check": "undo.keeps_what_another_report_still_supports",
+      "step": 98,
+      "why": "no garment of the undone report of 2027-09-12 has another report behind it"
+    },
+    {
+      "check": "swap.undo_restores_the_board",
+      "step": 154,
+      "why": "no home board for 2027-09-17 (trip)"
+    }
+  ],
+  "toolCoverage": {
+    "byTool": {
+      "garderobe_inventory": {
+        "calls": 1910,
+        "answered": 1908,
+        "refused": 2,
+        "refusalCodes": {
+          "not_found": 2
+        }
+      },
+      "garderobe_command": {
+        "calls": 248,
+        "answered": 238,
+        "refused": 10,
+        "refusalCodes": {
+          "not_found": 2,
+          "forbidden": 4,
+          "not_undoable": 2,
+          "idempotency_key_reuse": 2
+        }
+      },
+      "garderobe_today": {
+        "calls": 822,
+        "answered": 822,
+        "refused": 0,
+        "refusalCodes": {}
+      },
+      "garderobe_ask": {
+        "calls": 4,
+        "answered": 4,
+        "refused": 0,
+        "refusalCodes": {}
+      },
+      "garderobe_run": {
+        "calls": 14,
+        "answered": 8,
+        "refused": 6,
+        "refusalCodes": {
+          "not_found": 4,
+          "precondition_failed": 2
+        }
+      },
+      "garderobe_research": {
+        "calls": 2,
+        "answered": 2,
+        "refused": 0,
+        "refusalCodes": {}
+      },
+      "garderobe_recommend": {
+        "calls": 6,
+        "answered": 6,
+        "refused": 0,
+        "refusalCodes": {}
+      }
+    },
+    "inventoryViews": {
+      "snapshot": 976,
+      "receipts": 505,
+      "items": 12,
+      "item": 3,
+      "availability": 3,
+      "history": 362,
+      "laundry": 18,
+      "style": 4,
+      "resolve": 3,
+      "selection": 3,
+      "command_types": 6,
+      "trips": 6,
+      "returns": 4,
+      "orders": 5
+    },
+    "runActions": {
+      "status": 9,
+      "cancel": 1,
+      "resume": 2,
+      "respond": 2
+    },
+    "commandTypes": {
+      "settings.update": {
+        "direct": 1
+      },
+      "garment.create": {
+        "direct": 2
+      },
+      "board.select": {
+        "direct": 31
+      },
+      "wear.record": {
+        "direct": 28,
+        "owner_app": 2
+      },
+      "purchase.import_order": {
+        "direct": 2
+      },
+      "restriction.add": {
+        "direct": 2
+      },
+      "restriction.resolve": {
+        "refused": 4,
+        "owner_app": 2
+      },
+      "command.undo": {
+        "direct": 6
+      },
+      "care.washed": {
+        "direct": 4
+      },
+      "feedback.record": {
+        "direct": 1
+      },
+      "garment.retire": {
+        "direct": 4
+      },
+      "garment.receive": {
+        "direct": 1
+      },
+      "purchase.mark_delivered": {
+        "direct": 1
+      },
+      "garment.set_planning_policy": {
+        "direct": 4
+      },
+      "wear.amend": {
+        "direct": 2
+      },
+      "style.set_brief": {
+        "direct": 3
+      },
+      "board.swap_slot": {
+        "direct": 3
+      },
+      "laundry.collect": {
+        "direct": 2
+      },
+      "return.open_case": {
+        "direct": 1
+      },
+      "garment.move": {
+        "direct": 5
+      },
+      "return.update_case": {
+        "direct": 3
+      },
+      "laundry.return": {
+        "direct": 2
+      },
+      "return.link_exchange": {
+        "direct": 1
+      },
+      "trip.create": {
+        "direct": 1
+      },
+      "care.mark_dirty": {
+        "direct": 5
+      },
+      "stock.pack": {
+        "direct": 1
+      },
+      "stock.unpack": {
+        "direct": 1
+      },
+      "stock.reconcile": {
+        "direct": 2
+      },
+      "service.pause": {
+        "direct": 1
+      },
+      "laundry.report_exception": {
+        "direct": 1
+      }
+    },
+    "resourcesRead": {
+      "garderobe://commands": 1,
+      "garderobe://guide": 1,
+      "garderobe://style/profile": 1
+    },
+    "oauth": {
+      "connections": 3,
+      "authorizations": 3,
+      "tokenRefreshes": 354
+    },
+    "ownerRequestsInTheApp": 16,
+    "testDoorRequests": 874
+  },
+  "conditions": {
+    "planned": {
+      "weather": {
+        "scripted_days": 28,
+        "rainy_days": 2,
+        "seasonal_drift_c": -9,
+        "sudden_rain": 4,
+        "heat_days": 2,
+        "cold_snap_days": 2,
+        "forecast_outages": 2
+      },
+      "calendar": {
+        "entries_appearing": 12,
+        "formal": 3,
+        "workouts": 4,
+        "travel": 2,
+        "moved": 3,
+        "cancelled": 2
+      },
+      "availability": {
+        "lost": 2,
+        "at_the_cleaner": 2,
+        "lent": 2,
+        "damaged": 2,
+        "owner_observations_contradicting_estimates": 6,
+        "laundry_weeks": 4,
+        "laundry_exception_weeks": 3,
+        "repair_probes": 4
+      },
+      "circumstance": {
+        "trip_days": 3,
+        "ill_days": 2,
+        "work_from_home_days": 3,
+        "paused_days": 2,
+        "return_or_exchange": "exchange",
+        "days_without_a_wear_report": 5
+      }
+    },
+    "observed": {
+      "arrivals reported": 1,
+      "attempts by the connected assistant to lift the profile's restriction (all must be refused)": 2,
+      "calendar entries: entry cancelled (SIMULATED calendar)": 2,
+      "calendar entries: entry moves to another day (SIMULATED calendar)": 3,
+      "calendar entries: formal entry appears (SIMULATED calendar)": 3,
+      "calendar entries: ordinary entry appears (SIMULATED calendar)": 3,
+      "calendar entries: travel entry appears (SIMULATED calendar)": 2,
+      "calendar entries: workout entry appears (SIMULATED calendar)": 4,
+      "comfort notes: too_cold": 1,
+      "day briefs set (working from home)": 3,
+      "days with a scripted forecast (SIMULATED weather)": 28,
+      "days with no wear report": 5,
+      "exchanges opened (SYNTHETIC order)": 1,
+      "exchanges settled": 1,
+      "forecast changes: cold snap (SIMULATED weather)": 2,
+      "forecast changes: heat (SIMULATED weather)": 2,
+      "forecast changes: sudden rain (SIMULATED weather)": 4,
+      "forecast outages: daytime (SIMULATED weather)": 1,
+      "forecast outages: overnight (SIMULATED weather)": 1,
+      "garderobe_ask (start): cancelled": 1,
+      "garderobe_ask (wait): failed (no_selectable_profile)": 1,
+      "garderobe_research (history): failed (no_selectable_profile)": 1,
+      "garderobe_research (product): failed (no_selectable_profile)": 1,
+      "garments made unavailable: at the cleaner (SIMULATED event)": 2,
+      "garments made unavailable: damaged (SIMULATED event)": 2,
+      "garments made unavailable: lent (SIMULATED event)": 2,
+      "garments made unavailable: lost (SIMULATED event)": 2,
+      "garments restricted by the profile at the start": 4,
+      "garments that came back: from the cleaner (SIMULATED event)": 2,
+      "garments that came back: from the friend (SIMULATED event)": 2,
+      "garments that came back: repaired (SIMULATED event)": 2,
+      "hand-wash reports (socks washed)": 4,
+      "isolation checks against the SYNTHETIC second owner": 2,
+      "laundry exceptions: a piece lost by the service": 1,
+      "laundry exceptions: one piece did not come back with the bag": 1,
+      "laundry pickups": 2,
+      "laundry returns": 2,
+      "managed Calendar event writes (insert, replace, remove)": 35,
+      "managed Calendar events replaced in place under a newer revision": 26,
+      "morning boards with options marked as suiting a calendar entry": 4,
+      "morning boards, calendar ok": 23,
+      "morning boards, forecast fresh": 22,
+      "morning boards, forecast unavailable": 1,
+      "morning boards: current": 22,
+      "morning boards: limited": 1,
+      "morning decision: choose": 13,
+      "morning decision: choose_then_change": 6,
+      "morning decision: no_choice": 4,
+      "mornings away on the trip": 3,
+      "mornings while the service was paused": 2,
+      "most garments at once whose availability was an estimate": 79,
+      "offers checked without a thermal check (forecast unavailable, stale or just changed)": 67,
+      "orders logged (SYNTHETIC order)": 1,
+      "outfits chosen the evening before": 6,
+      "owner observations contradicting the ledger: a spill (was available)": 1,
+      "owner observations contradicting the ledger: a spill (was estimated)": 1,
+      "owner observations contradicting the ledger: all of it in the hamper (was estimated)": 2,
+      "owner observations contradicting the ledger: counted clean (was estimated)": 2,
+      "packing proposals (from the destination's SIMULATED forecast)": 1,
+      "parcels posted back (physical departure recorded separately)": 1,
+      "pauses (with a resume date) (SIMULATED circumstance)": 1,
+      "repair probes: lost": 1,
+      "repair probes: marked dirty": 1,
+      "repair probes: sent to cleaner": 1,
+      "repair probes: worn today late report": 1,
+      "route.direct": 121,
+      "route.refused": 4,
+      "scheduled sweeps run (the product's own scheduled handler)": 145,
+      "suitcases packed": 1,
+      "suitcases unpacked": 1,
+      "swaps on tomorrow's board": 3,
+      "swaps undone": 3,
+      "trips planned (SIMULATED circumstance)": 1,
+      "wear reports corrected (route: direct)": 2,
+      "wear reports from the suitcase": 3,
+      "wear reports made the next morning": 1,
+      "wear reports made the same evening": 19,
+      "wear reports repeated as a new report": 3,
+      "wear reports repeated from the owner's app": 2,
+      "wear reports undone": 2,
+      "wear reports with a second pair of socks used": 1,
+      "weekly laundry baselines the ledger has applied": 4,
+      "worn: as chosen": 14,
+      "worn: one piece differs": 2,
+      "worn: something else": 4
+    }
+  },
+  "commands": {
+    "total": 129,
+    "refused": [
+      {
+        "step": 22,
+        "type": "restriction.resolve",
+        "label": "the assistant tries to lift the profile's restriction",
+        "code": "forbidden",
+        "reason": "restriction_lift_not_relayed",
+        "message": "a connected assistant cannot lift a restriction or undo the command that recorded one; nothing was changed. The owner lifts it in the Garderobe app by saying its condition has ended."
+      },
+      {
+        "step": 3,
+        "type": "restriction.resolve",
+        "label": "the assistant tries to lift a restriction",
+        "code": "forbidden",
+        "reason": "restriction_lift_not_relayed",
+        "message": "a connected assistant cannot lift a restriction or undo the command that recorded one; nothing was changed. The owner lifts it in the Garderobe app by saying its condition has ended."
+      },
+      {
+        "step": 6,
+        "type": "restriction.resolve",
+        "label": "the assistant tries to lift a restriction",
+        "code": "forbidden",
+        "reason": "restriction_lift_not_relayed",
+        "message": "a connected assistant cannot lift a restriction or undo the command that recorded one; nothing was changed. The owner lifts it in the Garderobe app by saying its condition has ended."
+      },
+      {
+        "step": 256,
+        "type": "restriction.resolve",
+        "label": "the assistant tries to lift the profile's restriction",
+        "code": "forbidden",
+        "reason": "restriction_lift_not_relayed",
+        "message": "a connected assistant cannot lift a restriction or undo the command that recorded one; nothing was changed. The owner lifts it in the Garderobe app by saying its condition has ended."
+      }
+    ]
+  },
+  "outcomeDigest": "84ddc9eeb4b151b8",
+  "simulated": {
+    "from": "2027-09-05T18:30:00Z",
+    "to": "2027-10-03T20:20:30Z"
+  },
+  "realSeconds": 213
+}

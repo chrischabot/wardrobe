@@ -105,7 +105,9 @@ another request is refused; a change the owner asks for applies at once and says
 undone, and only a section 3 change waits for the owner (the 2026-10-05 contract); a wear report naming
 the restricted piece is recorded and taken back with undo, and the restriction stays in force; a planned
 piece that becomes unavailable is replaced on tomorrow's board by a wearable piece in the same role,
-automatically, in a new revision, with the choice kept; an owner's count or "dirty" is what the ledger then
+automatically, in a new revision, with the choice kept; a swap on tomorrow's board applies at once with a
+receipt that offers an undo, and its undo brings back every outfit exactly, at the next board revision, with
+a receipt naming that revision and the choice untouched; an owner's count or "dirty" is what the ledger then
 says; the weekly baseline keeps laundry exceptions and does not call inferred cleanliness observed; a
 proposal is not a packed suitcase, a trip day is answered from the suitcase, unpacking makes nothing
 clean; stock leaves only on physical departure and an exchange never duplicates ownership; a

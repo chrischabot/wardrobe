@@ -18,6 +18,7 @@
  *   21:05              the scheduled sweep (tomorrow's board is composed)
  *   21:20              tomorrow's board: read, sometimes chosen already, sometimes a planned piece then
  *                      becomes unavailable (the repair probe)
+ *   21:25 every 7th day  one piece of an option on tomorrow's board swapped, then the swap undone
  *   22:30              one inventory view in depth; the isolation check on three days
  */
 const ORDER = ["weather_outage", "weather_change", "pause", "resume", "sweep", "late_wear_report", "after_baseline", "morning"];
@@ -45,6 +46,7 @@ export function buildSteps(plan) {
     add(d, "19:30", "evening_report");
     add(d, "21:05", "sweep");
     add(d, "21:20", "plan_tomorrow", { probe: plan.repairProbes.find((p) => p.eveningOfDay === d) ?? null });
+    if (d % 7 === 3) add(d, "21:25", "swap_and_undo");
     add(d, "22:30", "night", { isolation: plan.toolExercise.isolationDays.includes(d) });
     if (day.weekday === 7) add(d, "23:10", "sweep", { why: "the weekly baseline day ends" });
     if (plan.workFromHomeDays.includes(d + 1)) add(d, "20:40", "day_brief", { forDay: d + 1 });

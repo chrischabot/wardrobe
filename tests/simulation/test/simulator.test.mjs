@@ -90,7 +90,7 @@ test("the steps are in time order, every step has a handler, and every day has i
       for (const kind of ["sweep", "morning", "evening_report", "plan_tomorrow", "night"]) assert.ok(kinds.includes(kind), `day ${d} has no ${kind}`);
     }
     const kinds = new Set(steps.map((s) => s.kind));
-    for (const kind of ["weather_change", "weather_outage", "calendar_change", "becomes_unavailable", "comes_back", "owner_observation", "socks_washed", "trip_create", "trip_proposal", "trip_pack", "trip_unpack", "pause", "purchase_order", "return_open", "return_post", "ask", "research", "lift_attempt", "undo_a_report", "amend_a_report"]) assert.ok(kinds.has(kind), `seed ${seed} has no ${kind} step`);
+    for (const kind of ["weather_change", "weather_outage", "calendar_change", "becomes_unavailable", "comes_back", "owner_observation", "socks_washed", "trip_create", "trip_proposal", "trip_pack", "trip_unpack", "pause", "purchase_order", "return_open", "return_post", "ask", "research", "lift_attempt", "undo_a_report", "amend_a_report", "swap_and_undo"]) assert.ok(kinds.has(kind), `seed ${seed} has no ${kind} step`);
     assert.ok(steps.length > 300, `only ${steps.length} steps`);
   }
 });

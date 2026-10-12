@@ -7,6 +7,7 @@ import * as circumstances from "./handlers-circumstances.mjs";
 import * as conditions from "./handlers-conditions.mjs";
 import * as daily from "./handlers-daily.mjs";
 import { standingChecks } from "./invariants.mjs";
+import * as swap from "./handlers-swap.mjs";
 import { buildSteps, stepCounts } from "./schedule.mjs";
 import { Sim } from "./sim.mjs";
 import { Target } from "./target.mjs";
@@ -19,6 +20,7 @@ export const HANDLERS = {
   late_wear_report: daily.lateWearReport,
   plan_tomorrow: daily.planTomorrow,
   night: daily.night,
+  swap_and_undo: swap.swapAndUndo,
   day_brief: daily.dayBrief,
   weather_change: conditions.weatherChange,
   weather_outage: conditions.weatherOutage,
@@ -138,6 +140,8 @@ export async function runSimulation({ targetDescription, seed, weeks = 4, startD
     // The healthy scripted-calendar path must actually project: a run in which the outfit calendar was
     // connected but no board's revision ever reached it as its one managed event fails.
     if (untilDay === null && sim.calendar.outfitCalendarId && target.doors.calendar) sim.check("calendar.outfits_reach_the_calendar", (sim.calendarProjectedDays?.size ?? 0) > 0, "the outfit calendar was connected, yet no board was ever seen projected as the one managed event of its day", { projectedDays: [...(sim.calendarProjectedDays ?? [])] });
+    // Every complete run must cover the swap-undo path at least once.
+    if (untilDay === null) sim.check("swap.a_swap_and_its_undo_ran_this_run", (sim.swapsUndone ?? 0) > 0, "no swap on tomorrow's board was accepted and undone in this run: every scheduled swap was refused or not applicable");
   } catch (error) {
     fatal = String(error?.stack ?? error).slice(0, 2000);
     log(`seed ${plan.seed}: the run stopped: ${String(error?.message ?? error)}`);
