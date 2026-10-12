@@ -1,0 +1,12 @@
+{
+  "name": "garderobe-evals",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Runs the bundled 64-case evaluation corpus against the real Garderobe Worker, with candidate/judge isolation and the development/holdout split enforced in code. Not an npm workspace: it needs a model route and is never part of `npm test`.",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "eval": "node run.mjs",
+    "selftest": "node run.mjs selftest"
+  }
+}
