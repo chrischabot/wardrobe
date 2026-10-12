@@ -503,7 +503,7 @@ fn request_hash(input: &RecommendInput) -> String {
 }
 
 /// The default number of options (`board.daily_entry_format` defaultOptionCount, else 5).
-fn default_count(cat: &Catalogue) -> u64 {
+pub(crate) fn default_count(cat: &Catalogue) -> u64 {
     cat.active_rule("board.daily_entry_format").and_then(|r| r.params["defaultOptionCount"].as_u64()).filter(|n| (1..=8).contains(n)).unwrap_or(5)
 }
 

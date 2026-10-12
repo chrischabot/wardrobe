@@ -4,6 +4,7 @@
 //! app. See README.md for what is ported, the platform limits and the plan.
 
 pub mod api;
+pub mod app_routes;
 pub mod assistant;
 pub mod board;
 pub mod inference;

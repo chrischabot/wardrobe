@@ -75,6 +75,10 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `GET /v1/commands[?limit=]`, `GET /v1/commands/{id}` | receipts, newest first; an undo already used is no longer offered |
 | `GET /v1/connections`, `POST /v1/connections/{grantId}/disconnect` (owner only) | Settings › Connected assistants: the OAuth grants, and disconnecting one, effective on its next request |
 | `POST /mcp` (OAuth) | the MCP server of `apps/worker/src/mcp`, see below |
+| `GET /v1/meta` | `MetaResponse`: API and contract versions, mounted modules (media is reported as not mounted), server time, the MCP endpoint and its protocol versions. Without a valid `WARDROBE_PUBLIC_ORIGIN` it is refused by that secret's name |
+| `POST /v1/commands/batch` | the phone's offline replay (`CommandBatchResponse`): 1 to 50 envelopes in order, each run as `POST /v1/commands` runs it, independent of the others, with `retryable` from the error code as `isRetryable` decides it |
+| `POST /v1/recommendations` | `RecommendResponse`. `preview` (default): the recommender's validated options, nothing published. `board`: those options published as the day's home board through `board.publish` under the key `board-compose:{clientRequestId}`, answered with the board. A retransmission answers from the saved run and the publication's receipt. `date` is required (no owner timezone); `lockedGarmentIds` and `occasionOnly: true` are refused as not ported |
+| `POST /v1/boards/{id}/swap` | `SwapSlotResponse`: `board.swap_slot` under the key `board-swap:{clientRequestId}`, `expectedRevision` sent as the board's expected version, answered with the receipt and the board as it now stands. No fresher forecast is fetched first (weather is not ported) |
 | `/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` | the MCP authorization server, see below |
 
 Commands: `care.mark_dirty`, `care.washed`, `board.publish`, `board.select`,

@@ -260,6 +260,13 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
                 Err(e) => Err(e),
             }
         }
+        ("GET", "/v1/meta") => crate::app_routes::meta(tokens.public_origin.as_deref().filter(|o| oauth::valid_origin(o)), now_ms),
+        ("POST", "/v1/commands/batch") => crate::app_routes::batch(store, principal, now_ms, &req.body).await,
+        ("POST", "/v1/recommendations") => crate::app_routes::recommendations(store, principal, now_ms, &req.body).await,
+        ("POST", p) if crate::app_routes::swap_target(p).is_some() => {
+            let id = crate::app_routes::swap_target(p).unwrap_or_default();
+            crate::app_routes::swap(store, principal, now_ms, id, &req.body).await
+        }
         ("POST", "/v1/commands") => match serde_json::from_slice::<Value>(&req.body) {
             Ok(envelope) => execute(store, principal, now_ms, &envelope).await,
             Err(_) => Err(CmdError::new("invalid_command", "the request body is not valid JSON")),
@@ -749,6 +756,23 @@ pub async fn read_today<S: Store>(store: &mut S, now_ms: u64, date: Option<&str>
         let cat = catalogue();
         let day = board::Day::of(cat, &l, date);
         return Ok(board::today(&day, date, board.as_ref(), wear::day_record(cat, &l, date), l.revision, now_ms));
+    }
+    Err(CmdError::with("conflict", "the wardrobe kept changing while the board was read; try again", json!({"retryable": true})))
+}
+
+/// The board document of `board_id`, checked against the stock read in the same commit as the board.
+pub(crate) async fn board_view<S: Store>(store: &mut S, board_id: &str) -> Result<Value, CmdError> {
+    for _ in 0..3 {
+        let (before, l) = read_ledger(store).await?;
+        let Some(board) = load_board(store, board_id).await? else {
+            return Err(CmdError::new("not_found", "that board was not found"));
+        };
+        let (after, _) = read_ledger(store).await?;
+        if before != after {
+            continue;
+        }
+        let day = board::Day::of(catalogue(), &l, &board.local_date);
+        return Ok(board::document(&day, &board, l.revision));
     }
     Err(CmdError::with("conflict", "the wardrobe kept changing while the board was read; try again", json!({"retryable": true})))
 }
