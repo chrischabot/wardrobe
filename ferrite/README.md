@@ -18,7 +18,10 @@ the app's own OAuth. The day's outfit board is ported (`board.publish`,
 `board.select`, `board.swap_slot` with their undo, and `garderobe_today`),
 and so are service laundry (`laundry.collect` and `laundry.return`, with
 their undo) and wear records (`wear.record`, with its undo, and the day's
-record). The daily recommender and the conversation tools are next.
+record). The daily recommender (`garderobe_recommend`), saved runs
+(`garderobe_run`) and the assistant's tools (`garderobe_ask`,
+`garderobe_research`, behind the AI Gateway adapter, refusing by name until
+its secret is set) are ported; see "The assistant".
 Nothing has been deployed: see "Deploying".
 
 ## Running it
@@ -363,19 +366,113 @@ Tools, with the TypeScript server's names, arguments and results:
   grant that calls it gets HTTP 403 with the OAuth `insufficient_scope`
   challenge.
 
-`garderobe_ask` and `garderobe_research` are not offered yet: they come with
-the inference adapter (milestone 1f, second part).
+`garderobe_ask` and `garderobe_research` are offered to every grant (scope
+`wardrobe.read`, open world, as the contract's tool table says); see "The
+assistant".
+
+### The assistant
+
+`garderobe_ask` and `garderobe_research` make one model call each through
+`src/inference.rs`, the only place a model is reached, over the app's
+declared egress handle `inference` (destination prefix
+`https://gateway.ai.cloudflare.com/v1/`). The route is Cloudflare AI
+Gateway's Anthropic endpoint, as Cloudflare documents it (Anthropic provider
+and Unified Billing pages, July 2026):
+`POST https://gateway.ai.cloudflare.com/v1/{account_id}/{gateway_id}/anthropic/v1/messages`
+with `cf-aig-authorization: Bearer <gateway token>` and
+`anthropic-version: 2023-06-01`, an Anthropic Messages body, and no provider
+key (Unified Billing).
+
+Configuration is one deploy secret, `WARDROBE_AI_GATEWAY`, a JSON object:
+`{"accountId": "<32 hex>", "gatewayId": "garderobe-dev", "token": "<gateway token>", "model": "claude-opus-5-5"}`.
+`gatewayId` must be `garderobe-dev` or `garderobe-prod` (`default` is never
+used, as in `gateway.ts`); `model` is optional and may be `claude-opus-5-5`
+(the default) or `claude-odango-eap` (the API model ID
+`packages/assistant/src/inference/registry.ts` names). Without the secret,
+with a value that does not parse, or without the egress handle, both tools
+answer `module_unavailable` (HTTP 501 in the error table) naming what is
+missing, before anything is read, sent or saved. There is no fallback
+answer, and no development value exists yet.
+
+Bounds:
+- Deadline: the whole egress exchange is wrapped in
+  `ferrite_app::rt::time::timeout` at 6 s (`MODEL_DEADLINE_MS`). Upstream
+  Ferrite's SDK has no per-call egress budget (`ferrite check --target
+  upstream` refuses `EgressDeadline`), and its egress gateway allows 10 s,
+  more than the 8 s ingress deadline; the remaining 2 s cover the store reads
+  and the one write. A call cut off may still have reached the model; nothing
+  is saved, and the same client ID can be sent again.
+- Concurrency: one instance runs four request loops (`REQUEST_LOOPS`), each
+  polling the request queue with its own store and egress clients, so a
+  request waiting on the model holds up only its own loop; health, OAuth,
+  reads and commands keep being answered by the others. Every write is a
+  guarded commit, so concurrent loops are as safe as concurrent instances.
+  Five model calls at once would still queue the fifth request behind them.
+- Reply size: the egress gateway refuses a body over 1 MiB, and the adapter
+  refuses a delivered body over 1 MiB again before parsing. `max_tokens` (400
+  for ask, 500 for research) keeps the answer to a few kilobytes, far under
+  the ingress reply cap and the 64 KiB record size.
+
+What the assistant does here: it answers from the owner's garments, their
+balances and the profile rules the importer recorded; it changes nothing and
+proposes nothing (`receipts` and `proposals` are empty), so model output can
+never become a write; a change is a `garderobe_command`. No weather, Calendar,
+purchase records, transcript or profile document are connected, and the
+prompt says so. `pastedText` is quoted as third-party material and its
+closing tag cannot be forged from inside. Research has no web search or page
+reading: `url` is refused (`module_unavailable`), the model is told it has no
+live prices, stock or reviews, a `history` or `purchases` answer cites the
+wardrobe records it read, and a `product` or `general` answer cites nothing.
+Research answers must be the agreed JSON (`verdict`, `summary`,
+`comparison`); anything else, or an answer cut short, is refused and not
+kept. An ask answer cut short is kept with a note saying so.
+
+Each request is a durable run (`conversation_turn` or `research`) keyed by
+the connection and the client's ID. Before the model is called, the run is
+claimed with a guarded write: a `running` record with a 10 s lease
+(`CLAIM_MS`, longer than the 6 s call and the store work around it). A
+concurrent or repeated request with the same ID therefore never calls the
+model a second time: while the lease holds it is answered `state: "running"`
+(`answer` or `result` null; follow it with `garderobe_run`), and once the
+answer is saved it is answered from the run. The same ID for different words
+is `idempotency_key_reuse`, even while running. A call that definitely ended
+without an answer (an egress refusal, an error status, an unusable reply)
+releases the claim and saves no answer (`garderobe_run` shows the run
+`failed`, error `interrupted`), so the same ID can be sent again at once.
+When the outcome is uncertain (cut off at the 6 s deadline, a lost
+connection, or an answer that could not be saved) the request may still be
+running at the gateway, because dropping the local future does not stop it.
+The claim is then kept until its 10 s lease ends: until then the same ID is
+answered `running`, and only afterwards may it claim the run and call the
+model again. So a second model call for a run never starts inside the first
+call's lease. This is structural; the server does not try to detect when
+the remote call stops, and a remote call that outlives the lease is not
+prevented from overlapping a retry. A holder that died mid-call is treated
+the same way. The lease is stamped from the app's own clock (`ctx.now_ms`)
+when the claim is written, and the model call starts only if its 6 s local
+deadline plus a 1 s margin ends before both the lease and the request's
+reply deadline (`call_fits_lease`); otherwise the claim is released without
+calling the model. That check bounds only how long this server waits. (Across
+several instances this assumes their clocks agree to well under a second.)
+`mode: "start"` is answered like `wait`. Research comparison rows must be
+flat (string, number, boolean or null values), and an ask answer longer than
+8000 characters is kept cut short with the same note as one the model cut
+short.
+
+`tests/assistant.rs` checks all of this with a labelled test double standing
+in for the egress handle and the gateway; the live gateway has not been
+called.
 
 ### Runs
 
 A run is the durable record of a long operation, kept at `u/<runId>`
-(`runs.ts`, the `api` provider). The only runs written are recommendation
-runs, and they finish inside their request, so every run is a completed
-recommendation. A stored record is returned only when it is exactly the
-record `recommend` writes (the same fields, none missing and none extra, each
-of its type, the answer checked as the composer writes it); anything else is
-refused (`internal`), never returned as a run. A run of another kind gets its
-own exact check when the code that writes it is ported. Run IDs are `run_`
+(`runs.ts`, the `api` provider). The runs written are recommendation runs,
+conversation turns and research runs, and they finish inside their request,
+so every run is completed. A stored record is returned only when it is
+exactly the record its writer writes (the same fields, none missing and none
+extra, each of its type, its two times and the result's read time one
+instant, the result checked as its writer writes it); anything else is
+refused (`internal`), never returned as a run. Run IDs are `run_`
 and 24 lowercase hex digits; anything else is `not_found` without a store
 read. Every run is the one owner's, so any of the owner's connections may
 read it (the TypeScript build scopes runs to the user, not to a connection).
@@ -537,9 +634,9 @@ small change of its own, and passes `ferrite check`, `ferrite test` and
    ID, with recorded wear held to the seven-day repeat horizon. (f) Done:
    `garderobe_run` (status of saved runs; cancel, resume and respond answer
    as the TypeScript server does for a finished run) and `GET
-   /v1/days/{date}`; next `garderobe_ask` and `garderobe_research` behind an
+   /v1/days/{date}`, then `garderobe_ask` and `garderobe_research` behind an
    isolated AI Gateway adapter, which answer only when its secret is set.
-   Then the Codex plugin
+   Next the Codex plugin
    (`integrations/codex`) is pointed at this app.
 2. **Ledger.** The rest of the command service in `packages/domain`, one
    command at a time: garments (create, correct, aliases, merge, move,
@@ -569,8 +666,10 @@ Not done. `ferrite deploy` needs a Ferrite account: a credential document
 `ferrite login --credentials-file`, which only the owner can supply. Before the
 first deploy, set the secrets with `ferrite secrets set <name>` (values on
 stdin, never in source): `WARDROBE_OWNER_TOKEN`, `WARDROBE_ASSISTANT_TOKEN`
-(the deploy tooling generates both) and `WARDROBE_PUBLIC_ORIGIN` (the hosted
-origin, known after the first deploy; deploy again once it is set).
+(the deploy tooling generates both), `WARDROBE_PUBLIC_ORIGIN` (the hosted
+origin, known after the first deploy; deploy again once it is set) and, for
+the assistant's tools, `WARDROBE_AI_GATEWAY` (see "The assistant"; without
+it those two tools refuse by name and everything else works).
 
 `AGENTS.md` is the Ferrite CLI's brief for coding agents; `vendor/` is the
 CLI's local SDK twin, which a deploy never submits (the platform compiles

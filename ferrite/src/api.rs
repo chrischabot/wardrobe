@@ -121,6 +121,7 @@ fn error_status(code: &str) -> u16 {
         "forbidden" => 403,
         "not_found" => 404,
         "conflict" | "idempotency_key_reuse" | "precondition_failed" | "not_undoable" | "ambiguous_target" => 409,
+        "module_unavailable" => 501,
         _ => 500,
     }
 }
@@ -186,9 +187,16 @@ fn split_path(path: &str) -> (&str, Vec<(String, String)>) {
     (p, query)
 }
 
-/// Answer one request. The caller publishes the reply.
+/// Answer one request. The caller publishes the reply. No model is reachable through this entry
+/// point: the assistant's tools refuse by the name of the missing secret.
 pub async fn handle<S: Store>(store: &mut S, tokens: &Tokens, now_ms: u64, req: &IngressRequest) -> Reply {
+    handle_with(store, tokens, &mut crate::inference::Inference::unavailable(), now_ms, req).await
+}
+
+/// [`handle`] with the inference adapter the app was started with.
+pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S, tokens: &Tokens, inference: &mut crate::inference::Inference<T>, now_ms: u64, req: &IngressRequest) -> Reply {
     let (path, query) = split_path(&req.path);
+    inference.set_reply_deadline((req.deadline_ms > 0).then_some(req.deadline_ms));
     if path == "/health" {
         return ok(json!({"status": "ok", "service": "wardrobe", "host": "ferrite", "contractVersion": CONTRACT_VERSION}));
     }
@@ -211,7 +219,7 @@ pub async fn handle<S: Store>(store: &mut S, tokens: &Tokens, now_ms: u64, req: 
             ("POST", "/oauth/authorize") => oauth::authorize_decision(store, origin, tokens.owner.as_deref(), &oauth::Mint::new(tokens.owner.as_deref(), &req.correlation_id), now_ms, &req.body).await,
             ("POST", "/oauth/token") => oauth::token_endpoint(store, origin, &oauth::Mint::new(tokens.owner.as_deref(), &req.correlation_id), now_ms, &req.body).await,
             ("POST", "/oauth/revoke") => oauth::revoke(store, now_ms, &req.body).await,
-            (_, "/mcp") => mcp::handle(store, origin, now_ms, req).await,
+            (_, "/mcp") => mcp::handle(store, origin, inference, now_ms, req).await,
             _ => error_reply(CmdError::new("not_found", "no such route")),
         };
     }
@@ -235,10 +243,10 @@ pub async fn handle<S: Store>(store: &mut S, tokens: &Tokens, now_ms: u64, req: 
                 read_day(store, &p["/v1/days/".len()..]).await
             }
         }
-        ("GET", p) if p.starts_with("/v1/runs/") => crate::runs::get(store, &p["/v1/runs/".len()..]).await,
+        ("GET", p) if p.starts_with("/v1/runs/") => crate::runs::get(store, &p["/v1/runs/".len()..], now_ms).await,
         ("POST", p) if p.strip_prefix("/v1/runs/").and_then(|r| r.strip_suffix("/cancel")).is_some() => {
             let id = p.strip_prefix("/v1/runs/").and_then(|r| r.strip_suffix("/cancel")).unwrap_or_default();
-            crate::runs::cancel(store, id).await
+            crate::runs::cancel(store, id, now_ms).await
         }
         ("GET", "/v1/commands") => {
             let limit = query.iter().find(|(k, _)| k == "limit").and_then(|(_, v)| v.parse::<usize>().ok()).unwrap_or(50).clamp(1, 200);

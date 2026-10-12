@@ -20,6 +20,9 @@
       { "prefix": "/oauth/", "binding": "requests", "kind": "api", "public": true },
       { "prefix": "/mcp", "binding": "requests", "kind": "api", "public": true, "forward_headers": ["authorization", "mcp-protocol-version", "origin"] }
     ],
+    "egress": [
+      { "handle": "inference", "destinations": ["https://gateway.ai.cloudflare.com/v1/"] }
+    ],
     "compute": { "memory_mb": 256, "cpu_percent": 50 }
   }]
 }

@@ -42,6 +42,15 @@ fn action(run_id: &str, action: &str) -> RunInput {
     RunInput { run_id: run_id.into(), action: action.into(), input_id: None, choice_id: None, text: None }
 }
 
+/// The run actions at a fixed time (a recommendation run does not depend on it).
+async fn run_act(store: &mut MemStore, input: &RunInput) -> Result<Value, wardrobe::ledger::CmdError> {
+    runs::act(store, input, T0).await
+}
+
+async fn get(store: &mut MemStore, run_id: &str) -> Result<Value, wardrobe::ledger::CmdError> {
+    runs::get(store, run_id, T0).await
+}
+
 async fn recommendation(store: &mut MemStore) -> (String, Value) {
     let input = RecommendInput { client_request_id: "rec-00000001".into(), date: DAY.into(), brief: None, count: Some(2) };
     let first = recommend::recommend(store, "mcp:grant_a", T0, &input).await.unwrap();
@@ -52,7 +61,7 @@ async fn recommendation(store: &mut MemStore) -> (String, Value) {
 async fn a_recommendation_run_reads_back_as_the_contract_run() {
     let mut store = MemStore::default();
     let (run_id, first) = recommendation(&mut store).await;
-    let out = runs::act(&mut store, &action(&run_id, "status")).await.unwrap();
+    let out = run_act(&mut store, &action(&run_id, "status")).await.unwrap();
     assert_eq!(out, json!({"run": {
         "runId": run_id, "kind": "recommendation", "state": "completed", "createdAt": "2026-09-10T00:26:40Z", "updatedAt": "2026-09-10T00:26:40Z",
         "activity": null, "lastEventId": 2, "pendingInput": null, "receipts": [], "proposals": [],
@@ -61,19 +70,19 @@ async fn a_recommendation_run_reads_back_as_the_contract_run() {
     }, "stopped": []}));
     assert_eq!(runs::summary(&action(&run_id, "status"), &out), format!("Run {run_id} is completed"));
     // The REST read is the same run.
-    assert_eq!(runs::get(&mut store, &run_id).await.unwrap(), out["run"]);
+    assert_eq!(get(&mut store, &run_id).await.unwrap(), out["run"]);
 
     // The finished run is answered unchanged by cancel, and nothing is written.
     let before = store.data.clone();
-    let cancelled = runs::act(&mut store, &action(&run_id, "cancel")).await.unwrap();
+    let cancelled = run_act(&mut store, &action(&run_id, "cancel")).await.unwrap();
     assert_eq!(cancelled, out);
     assert_eq!(runs::summary(&action(&run_id, "cancel"), &cancelled), format!("Run {run_id} is completed."));
     // Nothing runs in the background: resume is refused, and no run waits for an answer.
-    assert_eq!(runs::act(&mut store, &action(&run_id, "resume")).await.unwrap_err().code, "precondition_failed");
-    assert_eq!(runs::act(&mut store, &action(&run_id, "respond")).await.unwrap_err().code, "invalid_command");
+    assert_eq!(run_act(&mut store, &action(&run_id, "resume")).await.unwrap_err().code, "precondition_failed");
+    assert_eq!(run_act(&mut store, &action(&run_id, "respond")).await.unwrap_err().code, "invalid_command");
     let mut respond = action(&run_id, "respond");
     respond.input_id = Some("input_1".into());
-    assert_eq!(runs::act(&mut store, &respond).await.unwrap_err().message, "this run is not waiting for input");
+    assert_eq!(run_act(&mut store, &respond).await.unwrap_err().message, "this run is not waiting for input");
     assert_eq!(store.data, before);
 }
 
@@ -81,13 +90,13 @@ async fn a_recommendation_run_reads_back_as_the_contract_run() {
 async fn unknown_malformed_and_damaged_runs_are_refused() {
     let mut store = MemStore::default();
     for act in ["status", "cancel", "resume"] {
-        assert_eq!(runs::act(&mut store, &action("run_000000000000000000000000", act)).await.unwrap_err().code, "not_found", "{act}");
+        assert_eq!(run_act(&mut store, &action("run_000000000000000000000000", act)).await.unwrap_err().code, "not_found", "{act}");
     }
     // An ID this server never issues is not looked up at all: no key outside `u/run_…` is read.
     store.reads.clear();
     for bad in ["../ledger", "ledger", "run_", "run_0123456789ABCDEF01234567", "run_0123456789abcdef0123456", "run_0123456789abcdef01234567/x"] {
-        assert_eq!(runs::act(&mut store, &action(bad, "status")).await.unwrap_err().code, "not_found", "{bad}");
-        assert_eq!(runs::act(&mut store, &action(bad, "cancel")).await.unwrap_err().code, "not_found", "{bad}");
+        assert_eq!(run_act(&mut store, &action(bad, "status")).await.unwrap_err().code, "not_found", "{bad}");
+        assert_eq!(run_act(&mut store, &action(bad, "cancel")).await.unwrap_err().code, "not_found", "{bad}");
     }
     assert!(store.reads.is_empty(), "{:?}", store.reads);
 
@@ -139,13 +148,13 @@ async fn unknown_malformed_and_damaged_runs_are_refused() {
         store.data.insert(key.clone(), serde_json::to_vec(&run).unwrap());
         let before = store.data.clone();
         for act in ["status", "cancel"] {
-            assert_eq!(runs::act(&mut store, &action(&run_id, act)).await.unwrap_err().code, "internal", "{what} ({act})");
+            assert_eq!(run_act(&mut store, &action(&run_id, act)).await.unwrap_err().code, "internal", "{what} ({act})");
         }
         assert_eq!(store.data, before, "{what}: nothing written");
     }
     // The undamaged record still reads.
     store.data.insert(key.clone(), serde_json::to_vec(&good).unwrap());
-    assert!(runs::get(&mut store, &run_id).await.is_ok());
+    assert!(get(&mut store, &run_id).await.is_ok());
 }
 
 #[test]

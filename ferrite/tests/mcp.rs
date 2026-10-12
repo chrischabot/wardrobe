@@ -294,7 +294,7 @@ async fn the_codex_flow_reads_writes_with_a_receipt_and_undoes() {
     assert_eq!(note.status, 202);
     let list = rpc(&mut store, T0, &access, 2, "tools/list", json!({})).await;
     let names: Vec<&str> = list.json["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, vec!["garderobe_today", "garderobe_recommend", "garderobe_inventory", "garderobe_run", "garderobe_command"]);
+    assert_eq!(names, vec!["garderobe_today", "garderobe_recommend", "garderobe_inventory", "garderobe_run", "garderobe_ask", "garderobe_research", "garderobe_command"]);
 
     // Reads: the complete inventory, and a page that says it is not the whole.
     let snapshot = call(&mut store, &access, "garderobe_inventory", json!({"view": "snapshot"})).await;
@@ -359,7 +359,7 @@ async fn the_codex_flow_reads_writes_with_a_receipt_and_undoes() {
     assert_eq!((read_only.status, read_only.json["scope"].clone()), (200, json!("wardrobe.read")));
     let ro = read_only.json["access_token"].as_str().unwrap().to_string();
     let ro_list = rpc(&mut store, T0 + 7_000, &ro, 8, "tools/list", json!({})).await;
-    assert_eq!(ro_list.json["result"]["tools"].as_array().unwrap().len(), 4, "the read tools, not the write tool");
+    assert_eq!(ro_list.json["result"]["tools"].as_array().unwrap().len(), 6, "the read tools, not the write tool");
     // Narrowing is permanent: a later refresh cannot win write back, asked or not.
     let rn = read_only.json["refresh_token"].as_str().unwrap().to_string();
     let back = send(&mut store, T0 + 7_000, "POST", "/oauth/token", None, form(&[("grant_type", "refresh_token"), ("refresh_token", &rn), ("client_id", &client), ("scope", "wardrobe.read wardrobe.write")])).await;
@@ -369,7 +369,7 @@ async fn the_codex_flow_reads_writes_with_a_receipt_and_undoes() {
     // The write-scoped access token issued before narrowing is held to read too.
     let early_write = t3.json["access_token"].as_str().unwrap();
     let r = rpc(&mut store, T0 + 7_000, early_write, 8, "tools/list", json!({})).await;
-    assert_eq!(r.json["result"]["tools"].as_array().unwrap().len(), 4);
+    assert_eq!(r.json["result"]["tools"].as_array().unwrap().len(), 6);
 
     // An access token expires after 15 minutes.
     assert_eq!(rpc(&mut store, T0 + 7_000, &access, 9, "ping", json!({})).await.status, 200, "the first access token is still kept");
@@ -466,7 +466,15 @@ async fn a_read_only_connection_is_not_offered_the_write_tool_and_is_stepped_up(
     let access = tokens["access_token"].as_str().unwrap();
     let list = rpc(&mut store, T0, access, 1, "tools/list", json!({})).await;
     let names: Vec<&str> = list.json["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, vec!["garderobe_today", "garderobe_recommend", "garderobe_inventory", "garderobe_run"]);
+    assert_eq!(names, vec!["garderobe_today", "garderobe_recommend", "garderobe_inventory", "garderobe_run", "garderobe_ask", "garderobe_research"]);
+    // With no gateway secret, the assistant's tools refuse by the secret's name and save nothing.
+    let runs_before = store.data.keys().filter(|k| k.starts_with(b"u/")).count();
+    for (tool, a) in [("garderobe_ask", json!({"message": "What should I wear?", "clientTurnId": "codex-ask-0001"})), ("garderobe_research", json!({"topic": "Loafers", "clientRequestId": "codex-res-0001"}))] {
+        let refused = call(&mut store, access, tool, a).await;
+        assert_eq!(error_of(&refused)["code"], "module_unavailable", "{tool}");
+        assert!(error_of(&refused)["message"].as_str().unwrap().contains("WARDROBE_AI_GATEWAY"), "{tool}");
+    }
+    assert_eq!(store.data.keys().filter(|k| k.starts_with(b"u/")).count(), runs_before);
     // Recommending is a read: a read-only connection gets validated options, and nothing is published.
     let rec = call(&mut store, access, "garderobe_recommend", json!({"date": "2026-09-11", "count": 2, "clientRequestId": "codex-rec-0001"})).await;
     assert_eq!(rec["structuredContent"]["options"].as_array().unwrap().len(), 2, "{rec}");
