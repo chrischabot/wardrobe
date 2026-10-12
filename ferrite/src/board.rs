@@ -857,10 +857,17 @@ pub struct PublishInput {
     expected_board_revision: Option<u64>,
 }
 
+/// The payload fields `board.publish`, `board.select` and `board.swap_slot` accept, published by
+/// `GET /v1/command-types`. (`requestFingerprint` is not accepted: the port has no composition runs
+/// to fingerprint.)
+pub const PUBLISH_FIELDS: &[&str] = &["localDate", "scope", "reason", "options", "reserves", "brief", "requestedCount", "weatherSnapshotId", "calendarSnapshotId", "notice", "composedAgainst", "expectedBoardRevision"];
+pub const SELECT_FIELDS: &[&str] = &["boardId", "optionId", "footwearGarmentId"];
+pub const SWAP_FIELDS: &[&str] = &["boardId", "optionId", "role", "garmentId", "weatherSnapshotId"];
+
 /// Parse a `board.publish` payload (`BoardPublish`), with this port's limits stated.
 pub fn publish_input(p: &Value) -> Result<PublishInput, CmdError> {
     const T: &str = "board.publish";
-    only_keys(p, T, &["localDate", "scope", "reason", "options", "reserves", "brief", "requestedCount", "weatherSnapshotId", "calendarSnapshotId", "notice", "composedAgainst", "expectedBoardRevision"])?;
+    only_keys(p, T, PUBLISH_FIELDS)?;
     let local_date = match p.get("localDate").and_then(Value::as_str) {
         Some(d) if parse_local_date(d).is_some() => d.to_string(),
         _ => return Err(invalid(T, "localDate: expected a date (YYYY-MM-DD)")),
@@ -1148,7 +1155,7 @@ fn offered_of(board: &Board) -> Vec<Opt> {
 /// `board.select`: choose an option (an intention, never a wear) or clear the choice.
 pub fn select(ctx: &Ctx<'_>, day: &Day<'_>, board: Option<&Board>, p: &Value) -> Result<Outcome, CmdError> {
     const T: &str = "board.select";
-    only_keys(p, T, &["boardId", "optionId", "footwearGarmentId"])?;
+    only_keys(p, T, SELECT_FIELDS)?;
     let board_id = named_board(T, p)?;
     let option_id = match p.get("optionId") {
         Some(Value::Null) => None,
@@ -1304,7 +1311,7 @@ fn weather_basis(role: &str) -> &'static str {
 /// `board.swap_slot`: replace one piece of one option (the owner's pick, validated, or a replacement).
 pub fn swap(ctx: &Ctx<'_>, day: &Day<'_>, board: Option<&Board>, p: &Value) -> Result<Outcome, CmdError> {
     const T: &str = "board.swap_slot";
-    only_keys(p, T, &["boardId", "optionId", "role", "garmentId", "weatherSnapshotId"])?;
+    only_keys(p, T, SWAP_FIELDS)?;
     let board_id = named_board(T, p)?;
     let option_id = id_field(p.get("optionId"), T, "optionId")?;
     let role = role_field(p.get("role"), T, "role")?;

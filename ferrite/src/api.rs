@@ -261,6 +261,7 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
             }
         }
         ("GET", "/v1/meta") => crate::app_routes::meta(tokens.public_origin.as_deref().filter(|o| oauth::valid_origin(o)), now_ms),
+        ("GET", "/v1/command-types") => crate::command_types::list(),
         ("GET", "/v1/me") => Ok(crate::app_routes::me(principal)),
         ("GET", "/v1/service") => Ok(crate::app_routes::service()),
         ("GET", "/v1/settings") => Ok(crate::app_routes::settings(now_ms)),
@@ -903,12 +904,16 @@ fn parse_envelope(v: &Value) -> Result<Envelope, CmdError> {
     Ok(Envelope { kind, payload, idempotency_key, expected_versions, occurred_at, authorization, request_hash })
 }
 
+/// The authorizations this port accepts for any command (`checkAuthorization` in service.ts, less the
+/// schedule and policy bases: the port has no schedules yet).
+pub const ACCEPTED_AUTHORIZATIONS: &[&str] = &["owner_tap", "owner_statement"];
+
 /// `checkAuthorization` in service.ts. Every command of this port is one an
 /// owner tap or an owner statement authorizes (a publication also by a
 /// schedule, which this port does not have yet); only the owner can tap, and
 /// an assistant can only relay the owner's words.
 fn check_authorization(principal: Principal, env: &Envelope, source_channel: &str) -> Result<(), CmdError> {
-    let allowed = ["owner_tap", "owner_statement"];
+    let allowed = ACCEPTED_AUTHORIZATIONS;
     if !allowed.contains(&env.authorization.as_str()) {
         return Err(CmdError::with("forbidden", format!("'{}' cannot be authorized by '{}'", env.kind, env.authorization), json!({"allowed": allowed})));
     }

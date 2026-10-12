@@ -737,10 +737,16 @@ pub(crate) fn journal(ctx: &Ctx<'_>, ledger: &mut Ledger, garment_id: &str, kind
     id
 }
 
+/// The payload fields each command of this module accepts (what `only_keys` allows), published by
+/// `GET /v1/command-types`.
+pub const MARK_DIRTY_FIELDS: &[&str] = &["items"];
+pub const WASHED_FIELDS: &[&str] = &["items", "allOfChannel"];
+pub const UNDO_FIELDS: &[&str] = &["commandId", "reason"];
+
 /// `care.mark_dirty`: "it is in the wash" (an owner observation).
 pub fn mark_dirty(ctx: &Ctx<'_>, ledger: &mut Ledger, payload: &Value) -> Result<Plan, CmdError> {
     const T: &str = "care.mark_dirty";
-    only_keys(payload, T, &["items"])?;
+    only_keys(payload, T, MARK_DIRTY_FIELDS)?;
     let asked = items(payload, T)?;
     let garments = load(ctx.cat, &asked.iter().map(|a| a.0.clone()).collect::<Vec<_>>())?;
     if let Some(g) = garments.iter().find(|g| g.care_channel == "none") {
@@ -782,7 +788,7 @@ const CARE_CHANNELS: [&str; 3] = ["service", "handwash", "none"];
 /// Not ported: units reported lost and laundry exceptions (milestone 2), so nothing is left as lost.
 pub fn washed(ctx: &Ctx<'_>, ledger: &mut Ledger, payload: &Value) -> Result<Plan, CmdError> {
     const T: &str = "care.washed";
-    only_keys(payload, T, &["items", "allOfChannel"])?;
+    only_keys(payload, T, WASHED_FIELDS)?;
     // An optional field is absent or set; an explicit null is not "absent" (an uncounted wash
     // speaks for every unit), so it is refused rather than read as an omission.
     let channel = match payload.get("allOfChannel") {
@@ -1053,7 +1059,7 @@ pub(crate) fn others_changed(ctx: &Ctx<'_>, ledger: &Ledger, data: &Value, voide
 /// Parse a `command.undo` payload into the target command ID.
 pub fn undo_target(payload: &Value) -> Result<String, CmdError> {
     const T: &str = "command.undo";
-    only_keys(payload, T, &["commandId", "reason"])?;
+    only_keys(payload, T, UNDO_FIELDS)?;
     match payload.get("reason") {
         None | Some(Value::Null) | Some(Value::String(_)) => {}
         _ => return Err(invalid(T, "reason: expected a string or null")),

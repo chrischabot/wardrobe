@@ -44,6 +44,8 @@ ferrite dev                      # http://127.0.0.1:8787
 
 # from the repository root: the embedded inventory still matches the importer
 node --experimental-strip-types ferrite/scripts/build-seed.mjs --check
+# and the embedded command descriptions still match the Worker's command registry (Node 22.7+)
+node --experimental-transform-types ferrite/scripts/build-command-types.mjs --check
 ```
 
 `ferrite dev` reads its secrets from `[secrets]` in `ferrite.local.toml`
@@ -76,6 +78,7 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `GET /v1/connections`, `POST /v1/connections/{grantId}/disconnect` (owner only) | Settings › Connected assistants: the OAuth grants, and disconnecting one, effective on its next request |
 | `POST /mcp` (OAuth) | the MCP server of `apps/worker/src/mcp`, see below |
 | `GET /v1/meta` | `MetaResponse`: API and contract versions, mounted modules (media is reported as not mounted), server time, the MCP endpoint and its protocol versions. Without a valid `WARDROBE_PUBLIC_ORIGIN` it is refused by that secret's name |
+| `GET /v1/command-types` | `CommandTypeList`, as `describeCommandTypes`: the nine command types this port executes, each with the class, required scope and payload JSON Schema the TypeScript registry gives it (`src/seed/command-types.json`, written by `scripts/build-command-types.mjs`), narrowed to this port: only the payload fields its handler accepts, with `additionalProperties: false` (so `board.publish` has no `requestFingerprint`), only the `owner_tap` and `owner_statement` authorizations (a publication by schedule is not ported), and `consequential` from the port's own connected-assistant rule, under which none of the nine waits for the owner. Values the port refuses inside an accepted field (a non-default `brief`, a `tripId`, a weather or Calendar snapshot ID) are not expressed in the schema; the command names them when it refuses |
 | `POST /v1/commands/batch` | the phone's offline replay (`CommandBatchResponse`): 1 to 50 envelopes in order, each run as `POST /v1/commands` runs it, independent of the others, with `retryable` from the error code as `isRetryable` decides it |
 | `POST /v1/recommendations` | `RecommendResponse`. `preview` (default): the recommender's validated options, nothing published. `board`: those options published as the day's home board through `board.publish` under the key `board-compose:{clientRequestId}`, answered with the board. A retransmission answers from the saved run and the publication's receipt. `date` is required (no owner timezone); `lockedGarmentIds` and `occasionOnly: true` are refused as not ported |
 | `POST /v1/boards/{id}/swap` | `SwapSlotResponse`: `board.swap_slot` under the key `board-swap:{clientRequestId}`, `expectedRevision` sent as the board's expected version, answered with the receipt and the board as it now stands. No fresher forecast is fetched first (weather is not ported) |
@@ -623,6 +626,9 @@ The inventory is `src/seed/owner-inventory.json`, written by
 `scripts/build-seed.mjs`, which runs the TypeScript importer itself on
 `requirements/wardrobe_inventory_clean.csv` (127 garments, 144 units, CSV
 SHA-256 `ca9a5e06…`). Nothing about the import is re-implemented here.
+Likewise the command descriptions of `GET /v1/command-types` are
+`src/seed/command-types.json`, written by `scripts/build-command-types.mjs`
+from the Worker's own command registry.
 
 Authentication on `/v1/` is two bearer tokens held as deploy secrets,
 `WARDROBE_OWNER_TOKEN` (the owner) and `WARDROBE_ASSISTANT_TOKEN` (a

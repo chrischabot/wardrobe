@@ -172,10 +172,14 @@ fn relied_on(names: &[String], batch_id: Option<&str>) -> CmdError {
 // another bag's record is refused (see `ledger::other_bags_changed`).
 use crate::ledger::other_bags_changed;
 
+/// The payload fields `laundry.collect` and `laundry.return` accept, published by `GET /v1/command-types`.
+pub const COLLECT_FIELDS: &[&str] = &["batchId", "exclude", "include"];
+pub const RETURN_FIELDS: &[&str] = &["batchId", "stillAway"];
+
 /// `laundry.collect`: the service picked up the laundry.
 pub fn collect(ctx: &Ctx<'_>, ledger: &mut Ledger, p: &Value) -> Result<Plan, CmdError> {
     const T: &str = "laundry.collect";
-    only_keys(p, T, &["batchId", "exclude", "include"])?;
+    only_keys(p, T, COLLECT_FIELDS)?;
     let asked_batch = batch_id_field(p, T)?;
     if asked_batch.as_deref().map_or(false, |id| id.starts_with("lb_")) {
         return Err(invalid(T, "batchId: IDs starting with 'lb_' are made by the app; choose another"));
@@ -297,7 +301,7 @@ pub fn undo_collect(ctx: &Ctx<'_>, ledger: &mut Ledger, original: &StoredCommand
 /// stands and what was awaiting the service is clean.
 pub fn return_batch(ctx: &Ctx<'_>, ledger: &mut Ledger, p: &Value) -> Result<Plan, CmdError> {
     const T: &str = "laundry.return";
-    only_keys(p, T, &["batchId", "stillAway"])?;
+    only_keys(p, T, RETURN_FIELDS)?;
     let asked_batch = batch_id_field(p, T)?;
     let still_away = quantities(p, T, "stillAway", Some(1))?;
     load(ctx.cat, &still_away.iter().map(|(g, _)| g.clone()).collect::<Vec<_>>())?;

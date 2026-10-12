@@ -58,8 +58,11 @@ fn garment_id(v: &Value) -> Option<String> {
     v.as_str().filter(|s| !s.is_empty() && s.len() <= 64).map(str::to_string)
 }
 
+/// The payload fields `wear.record` accepts, published by `GET /v1/command-types`.
+pub const RECORD_FIELDS: &[&str] = &["wearingDate", "garmentIds", "timezone", "segment", "additionalUnits", "tripId", "note"];
+
 pub fn parse(payload: &Value) -> Result<WearInput, CmdError> {
-    only_keys(payload, T, &["wearingDate", "garmentIds", "timezone", "segment", "additionalUnits", "tripId", "note"])?;
+    only_keys(payload, T, RECORD_FIELDS)?;
     let wearing_date = payload.get("wearingDate").and_then(Value::as_str).unwrap_or_default().to_string();
     let Some(days) = parse_local_date(&wearing_date) else { return Err(invalid(T, "wearingDate: expected a date, YYYY-MM-DD")) };
     let ids = match payload.get("garmentIds") {

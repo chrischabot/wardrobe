@@ -10,6 +10,7 @@ pub mod board;
 pub mod inference;
 pub mod laundry;
 pub mod canonical;
+pub mod command_types;
 pub mod ledger;
 pub mod mcp;
 pub mod oauth;
