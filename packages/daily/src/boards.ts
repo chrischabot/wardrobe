@@ -14,7 +14,7 @@ import {
 } from "@garderobe/domain";
 import type { EntityVersion } from "@garderobe/contracts";
 import { assembleContext, calendarSnapshotById, dailySettings, latestWeatherSnapshot, weatherSnapshotById } from "./context.ts";
-import { factualReason, findReplacement, withPairedFootwear } from "./compose.ts";
+import { factualReason, findReplacement, suitsEventIdsFor, withPairedFootwear } from "./compose.ts";
 import { dayLineFor, loadBoard, loadOptions, loadRevision, pauseCovering, type BoardRow, type RevisionRow, type StoredOption } from "./document.ts";
 import { parseScope, type RecommendationContext } from "./model.ts";
 import { repairOptions } from "./repair.ts";
@@ -160,6 +160,15 @@ export function boardNotice(rc: RecommendationContext, shortage: string | null, 
 }
 
 const slotOf = (o: { slots: OutfitSlot[] }, role: Role) => o.slots.find((s) => s.role === role)?.garmentId ?? null;
+
+/** The line saying which offered outfits suit the day's calendar event, from the context the options were validated in. */
+export function suitabilityLineFor(rc: RecommendationContext, offered: { suitsEventIds: string[] }[]): string | null {
+  const suitable = offered.filter((o) => o.suitsEventIds.length > 0).length;
+  const event = rc.calendar?.events.find((e) => offered.some((o) => o.suitsEventIds.includes(e.eventId)));
+  const numberWords = ["No", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight"];
+  const title = event ? event.title.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 48) : null;
+  return event && suitable > 0 ? `${suitable === offered.length && suitable > 1 ? "All" : numberWords[suitable]} ${suitable === 1 ? "option works" : "options work"} for “${title}”.` : null;
+}
 
 /** Changed-item receipt lines between two offered sets, in ledger names. */
 export function describeChanges(rc: RecommendationContext, before: StoredOption[], after: DraftOption[], why: Map<string, string> = new Map()): string[] {
@@ -421,11 +430,7 @@ export const boardPublish = define({
 
     const shortage = offered.length === 0 ? (p.notice ?? "No complete outfit is available for this day at the moment.") : offered.length < p.requestedCount ? (p.notice ?? `${offered.length} valid ${offered.length === 1 ? "outfit" : "outfits"} instead of ${p.requestedCount}.`) : null;
     const changes = withdrawal ?? (existing ? (p.reason === "compose" || p.reason === "rebuild" || p.reason === "resume" ? ["The board was recomposed."] : describeChanges(rc, previousOffered, offered)) : []);
-    const suitable = offered.filter((o) => o.suitsEventIds.length > 0).length;
-    const event = rc.calendar?.events.find((e) => offered.some((o) => o.suitsEventIds.includes(e.eventId)));
-    const numberWords = ["No", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight"];
-    const title = event ? event.title.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 48) : null;
-    const suitabilityLine = event && suitable > 0 ? `${suitable === offered.length && suitable > 1 ? "All" : numberWords[suitable]} ${suitable === 1 ? "option works" : "options work"} for “${title}”.` : null;
+    const suitabilityLine = suitabilityLineFor(rc, offered);
 
     const dayScope = !scope.evening;
     const write = await planRevisionWrite(ctx, {
@@ -699,7 +704,83 @@ export const boardSwapSlot = define({
       outbox: write.outbox,
       result: { boardId: board.board_id, revision: write.revision, optionId: option.optionId, role: p.role, garmentId: newId, replacedGarmentId: previousId, weatherBasis: basis.kind, weatherAgeMinutes: basis.ageMinutes },
       bumpWardrobe: write.exposureId !== null || !!board.exposure_id,
-      undo: { unavailableReason: "swap the piece back instead; the earlier revision stays in history" },
+      undo: { data: { boardId: board.board_id, revisionBefore: board.current_revision, revisionAfter: write.revision, optionId: option.optionId, role: p.role } },
+    };
+  },
+  /**
+   * Undoing a swap publishes the board as it was before the swap as a NEW revision (history keeps both).
+   * Only while the swap's revision is still the board's current one - a later swap, repair or rebuild is
+   * undone first - and only when every earlier outfit, reserves included, is still valid now. The earlier
+   * outfits are judged as the forward swap is: a forecast recorded since the swap governs and is carried
+   * into the new revision, a stale one is stated and rechecked. The board's lines (which outfits suit the
+   * day's event, the notice) are recomputed from that current context, never copied from the old revision.
+   */
+  async planUndo(ctx, _original, data): Promise<CommandPlan> {
+    const board = await requireBoard(ctx, data.boardId as string);
+    if (board.status !== "active") throw new CommandError("precondition_failed", board.status === "worn" ? "the day's outfit is already recorded; the swap is history" : "this day's board was removed; restore it first");
+    if (board.current_revision !== data.revisionAfter) throw new CommandError("conflict", "the board changed after this swap; undo the newer change first, or swap the piece back", { revision: board.current_revision, swapRevision: data.revisionAfter });
+    const beforeOptions = await loadOptions(ctx.db, ctx.userId, board.board_id, data.revisionBefore as number);
+    const before = beforeOptions.find((o) => o.optionId === data.optionId);
+    if (!before) throw new CommandError("precondition_failed", "the option as it was before the swap is not recorded");
+    const revisionBefore = await loadRevision(ctx.db, ctx.userId, board.board_id, data.revisionBefore as number);
+    if (!revisionBefore) throw new CommandError("precondition_failed", "the board revision before the swap is not recorded");
+    const base = await contextForBoard(ctx, board);
+    const revisionNow = (await loadRevision(ctx.db, ctx.userId, board.board_id, board.current_revision))!;
+    const role = data.role as Role;
+    const basis = await swapWeatherBasis(ctx, board, revisionNow, role, null);
+    const rc = basis.snapshot
+      ? await assembleContext(ctx.db, ctx.principal, { localDate: board.local_date, nowMs: ctx.nowMs, scope: board.scope, brief: revisionNow.brief, weather: basis.snapshot, calendar: base.rc.calendar, withoutProfileText: true, repeatExceptions: honoursRepeatExceptions(revisionNow) })
+      : base.rc;
+    for (const o of beforeOptions.filter((x) => x.state === "offered" || x.state === "reserve")) {
+      const v = validateCandidate(rc, { slots: o.slots, footwearAlternatives: o.footwearAlternatives }, { requirePairedFootwear: true, explicitGarmentIds: o.evidence.explicitGarmentIds ?? [], ignoreBriefInclusions: true });
+      if (!v.valid) {
+        const blockers = v.violations.filter((x) => x.severity === "blocking");
+        throw new CommandError("precondition_failed", `the board as it was before the swap is no longer valid${o.state === "reserve" ? " (one of its reserve outfits)" : ""}: ${blockers.map((x) => x.message).join("; ")}; nothing was changed`, { violations: blockers, optionId: o.optionId });
+      }
+    }
+    const requestedCount = revisionNow.requested_count;
+    const offered = base.options.filter((o) => o.state === "offered");
+    // The outfits come back as they were; which of them suit the day's event is judged again in the
+    // current context, never carried from the earlier revision.
+    const nextOffered = beforeOptions.filter((o) => o.state === "offered").map((o) => ({ ...storedToDraft(o, o.optionId === before.optionId), suitsEventIds: suitsEventIdsFor(rc, o) }));
+    const nextReserves = beforeOptions.filter((o) => o.state === "reserve").map((o) => ({ ...storedToDraft(o), suitsEventIds: [] }));
+    const shortage = nextOffered.length < requestedCount ? `${nextOffered.length} valid ${nextOffered.length === 1 ? "outfit" : "outfits"} instead of ${requestedCount}.` : null;
+    const staleNote = basis.kind === "stale" ? `The forecast behind this board is ${formatAge(basis.ageMinutes ?? 0)} old. The undo was checked against it and is rechecked when a fresh forecast is read.` : null;
+    const notice = [boardNotice(rc, shortage, nextOffered), staleNote].filter(Boolean).join(" ") || null;
+    const write = await planRevisionWrite(ctx, {
+      existing: board,
+      scope: board.scope,
+      localDate: board.local_date,
+      timezone: board.timezone,
+      reason: "swap",
+      requestedCount,
+      brief: revisionNow.brief,
+      conditions: basis.snapshot ? rc.conditions : revisionNow.conditions,
+      context: revisionContext(rc, { undoOfSwap: { revision: data.revisionAfter, restoredRevision: data.revisionBefore }, swapWeatherBasis: { kind: basis.kind, ageMinutes: basis.ageMinutes, snapshotId: basis.snapshot?.snapshotId ?? revisionNow.weather_snapshot_id } }),
+      weatherLine: basis.snapshot ? basis.snapshot.line : revisionNow.weather_line,
+      suitabilityLine: suitabilityLineFor(rc, nextOffered),
+      notice,
+      changes: describeChanges(rc, offered, nextOffered),
+      weatherSnapshotId: basis.snapshot ? basis.snapshot.snapshotId : revisionNow.weather_snapshot_id,
+      // The calendar basis is the one the outfits were just validated against: the current revision's.
+      calendarSnapshotId: revisionNow.calendar_snapshot_id,
+      offered: nextOffered,
+      reserves: nextReserves,
+      projectToCalendar: !parseScope(board.scope).evening && !(await pauseCovering(ctx.db, ctx.userId, board.local_date)),
+      writeExposure: !parseScope(board.scope).evening && !(await wearRecordedOn(ctx, board.local_date)),
+      needsReplenishment: board.needs_replenishment === 1 || basis.kind === "stale" || basis.kind === "unavailable" || nextOffered.length < requestedCount,
+    });
+    const back = slotOf(before, role);
+    return {
+      summary: `Option ${nextOffered.findIndex((o) => o.optionId === before.optionId) + 1} for ${board.local_date}: swap undone; the outfits of revision ${data.revisionBefore} are back${back ? ` (${rc.garments.get(back)?.name ?? "the earlier piece"} is back)` : ""}`,
+      statements: write.statements,
+      preconditions: write.preconditions,
+      affected: write.affected,
+      effects: write.effects,
+      outbox: write.outbox,
+      result: { boardId: board.board_id, revision: write.revision, optionId: before.optionId, role, garmentId: back ?? null, weatherBasis: basis.kind },
+      bumpWardrobe: write.exposureId !== null || !!board.exposure_id,
+      undo: { unavailableReason: "this is already an undo; swap the piece again instead" },
     };
   },
 });

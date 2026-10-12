@@ -435,6 +435,18 @@ export function relevantCalendarEvents(ctx: RecommendationContext): CalendarEven
   return ctx.calendar.events.filter((e) => e.weight !== "none" && e.inferredOccasion !== "none" && !e.cancelled);
 }
 
+/**
+ * The day's events an outfit suits in this context, by the composer's own rule: the primary relevant
+ * event, when the outfit's top and bottom suit its inferred occasion. Used to judge stored outfits again
+ * (an undo restoring earlier outfits) rather than carrying their historical claims.
+ */
+export function suitsEventIdsFor(ctx: RecommendationContext, o: { slots: OutfitSlot[] }): string[] {
+  const events = relevantCalendarEvents(ctx);
+  const primaryEvent = events.find((e) => e.weight === "full") ?? events[0];
+  if (!primaryEvent) return [];
+  return suits(primaryEvent.inferredOccasion, ctx.garments.get(slotOf(o, "top") ?? ""), ctx.garments.get(slotOf(o, "bottom") ?? "")) ? [primaryEvent.eventId] : [];
+}
+
 export async function composeBoard(ctx: RecommendationContext, opts: ComposeOptions = {}): Promise<ComposeResult> {
   const validateOpts: ValidateOptions = { requirePairedFootwear: true, ...(opts.validate ?? {}) };
   const requestedCount = ctx.brief.requestedCount ?? opts.count ?? ctx.settings.delivery.defaultOptionCount;
