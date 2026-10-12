@@ -116,7 +116,7 @@ OAuth client and holds no client secret.
 | Setting | Meaning |
 | --- | --- |
 | `GARDEROBE_API_BASE_URL` | The deployed Worker, for example the development deployment's origin. Also sent as the OAuth `resource`. |
-| `GARDEROBE_OAUTH_CLIENT_ID` | The public client registered with Cloudflare Access Managed OAuth. |
+| `GARDEROBE_OAUTH_CLIENT_ID` | The public client registered with the authorization server the app discovers at `<api base>/.well-known/oauth-authorization-server` (PKCE S256 with the resource indicator). In the backend as designed this is Cloudflare Access Managed OAuth on the app origin (`apps/worker/README.md`); the Worker's own OAuth server serves MCP clients only. |
 | `GARDEROBE_OAUTH_REDIRECT_URL` | The HTTPS universal-link callback registered for that client. |
 | `GARDEROBE_ASSOCIATED_DOMAIN` | The domain serving `apple-app-site-association` for the callback and board links. |
 | `DEVELOPMENT_TEAM` | The owner's Apple team, for signing. The app's entitlements ask for push notifications (`aps-environment`), so the team's App ID needs the Push Notifications capability. |
@@ -173,7 +173,9 @@ zero-second failed run for it on every push. No job started in those runs.
 
 - No device run: no VoiceOver session, no real Dynamic Type, dark mode, Reduce Motion, Increase Contrast or
   Reduce Transparency pass by a person; no gesture, performance or memory measurement.
-- No sign-in against Cloudflare Access, no Keychain, no universal link, no background behaviour.
+- No sign-in against a deployed backend (authorization code with PKCE through `ASWebAuthenticationSession`,
+  Cloudflare Access Managed OAuth in the backend as designed), no Keychain, no universal link, no background
+  behaviour.
 - No notification was ever requested from, or delivered by, Apple: registration needs a signed build on a
   device with the Push Notifications capability. The registration model is tested against a recording of
   the real Worker with a fixture token.
@@ -186,10 +188,12 @@ zero-second failed run for it on every push. No job started in those runs.
 
 ## Remaining checks on a Mac and a device
 
-Needed from the owner or the deployment first: `GARDEROBE_API_BASE_URL`, `GARDEROBE_OAUTH_CLIENT_ID`,
-`GARDEROBE_OAUTH_REDIRECT_URL`, `GARDEROBE_ASSOCIATED_DOMAIN` (with `apple-app-site-association` served
-there), the Apple team (`DEVELOPMENT_TEAM`) with the app group, the Keychain group and the Push
-Notifications capability registered, a push (APNs) key configured on the backend, and an app icon for
+Needed from the development deployment, once it exists: `GARDEROBE_API_BASE_URL`,
+`GARDEROBE_OAUTH_CLIENT_ID`, `GARDEROBE_OAUTH_REDIRECT_URL` and `GARDEROBE_ASSOCIATED_DOMAIN` (with
+`apple-app-site-association` served there). Where it is hosted is not settled and nothing is deployed yet,
+so none of these four values exists. Needed from the owner in any case: the Apple team (`DEVELOPMENT_TEAM`)
+with the app group, the Keychain group and the Push Notifications capability registered, a push (APNs) key
+configured on the backend, and an app icon for
 `Assets.xcassets/AppIcon.appiconset` (none is supplied).
 
 1. Look at Today, Wardrobe and Studio in Xcode's Accessibility Inspector and settle the audit's open
