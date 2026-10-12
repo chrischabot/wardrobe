@@ -177,10 +177,15 @@ provider and consent page:
   refresh token sat idle for 90 days, is shown as expired and no longer
   counts. At most 100 grants that can still produce tokens are kept.
 - **Bounded storage.** Registrations (at most 200; the oldest over an hour
-  old make room, a faster flood is refused with 429) and grants live in a
-  fixed set of record slots named by the first four hex digits of their IDs.
-  A new record takes over a slot its index no longer names, because the APE
-  binding has no delete; an ID whose slot was reused is not found.
+  old make room, a faster flood is refused with 429) live in a fixed set of
+  record slots named by the first four hex digits of their IDs, and a new
+  registration takes over a slot its index no longer names, because the APE
+  binding has no delete. Grants have no index: the 100 slot records are the
+  grant store. A new grant takes the first slot that is empty or holds a
+  grant that can no longer produce tokens, by compare-and-swap on that slot
+  record's exact bytes, so an exchange, refresh or disconnect that commits
+  in between makes the overwrite fail and the next attempt re-reads the
+  slots. An ID whose slot was reused is not found.
 
 The app needs its public origin (`WARDROBE_PUBLIC_ORIGIN`) for the metadata
 and challenges, because the gateway forwards no `Host` header. Without it,

@@ -46,7 +46,6 @@ const CLIENT_PRUNE_AGE_MS: u64 = 60 * 60_000;
 const MAX_ACCESS_PER_GRANT: usize = 4;
 const ATTEMPTS: u32 = 6;
 const CLIENTS_KEY: &[u8] = b"o/clients";
-const GRANTS_KEY: &[u8] = b"o/grants";
 
 // ───────────────────────────── configuration ─────────────────────────────
 
@@ -815,42 +814,31 @@ enum GrantRefusal {
     Fault(Fault),
 }
 
+/// Every grant slot: its number, the record's exact bytes, and the grant.
+/// The slot records are the whole grant store; there is no separate index
+/// whose updates could race the records.
+async fn read_grant_slots<S: Store>(store: &mut S) -> Result<Vec<(usize, Option<Vec<u8>>, Option<Grant>)>, Fault> {
+    let mut out = Vec::with_capacity(MAX_GRANTS);
+    for slot in 0..MAX_GRANTS {
+        let key = format!("o/grant/{slot}").into_bytes();
+        let bytes = store.get(&key).await.map_err(|_| Fault::Unavailable)?;
+        let grant = match &bytes {
+            None => None,
+            Some(b) => Some(serde_json::from_slice::<Value>(b).ok().and_then(|v| Grant::from_json(&v)).filter(|g| slot_of(&g.id) == Some(slot)).ok_or(Fault::Corrupt)?),
+        };
+        out.push((slot, bytes, grant));
+    }
+    Ok(out)
+}
+
 async fn create_grant<S: Store>(store: &mut S, now: u64, r: &AuthRequest, scopes: Vec<String>) -> Result<String, GrantRefusal> {
     for _ in 0..ATTEMPTS {
-        let current = store.get(GRANTS_KEY).await.map_err(|_| GrantRefusal::Fault(Fault::Unavailable))?;
-        let mut index = parse_index(current.as_deref()).map_err(GrantRefusal::Fault)?;
-        if index.len() >= MAX_GRANTS {
-            // Only grants that can still produce tokens hold a place; revoked
-            // and expired ones leave the index, and their slots are reused.
-            // An expired grant is first revoked by a write guarded on its own
-            // record, so an exchange or refresh that commits meanwhile (and
-            // makes it live) is never overwritten: the guard fails and the
-            // pruning is planned again. A revoked grant never becomes live.
-            let mut keep = Vec::new();
-            let mut raced = false;
-            for (id, at) in index {
-                match load_grant(store, &id).await.map_err(GrantRefusal::Fault)? {
-                    Some((_, g)) if g.live(now) => keep.push((id, at)),
-                    Some((old, mut g)) if g.active => {
-                        g.revoke(now, "expired");
-                        g.version += 1;
-                        if !save_grant(store, &old, &g).await.map_err(GrantRefusal::Fault)? {
-                            raced = true;
-                            keep.push((id, at));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            if raced {
-                continue;
-            }
-            index = keep;
-            if index.len() >= MAX_GRANTS {
-                return Err(GrantRefusal::Full);
-            }
-        }
-        let Some(slot) = free_slot(&index, MAX_GRANTS) else { return Err(GrantRefusal::Full) };
+        // A slot is free when it is empty or its grant can no longer produce
+        // tokens (revoked, code expired unused, refresh idle too long).
+        let slots = read_grant_slots(store).await.map_err(GrantRefusal::Fault)?;
+        let Some((slot, expected)) = slots.into_iter().find(|(_, _, g)| g.as_ref().map_or(true, |g| !g.live(now))).map(|(s, b, _)| (s, b)) else {
+            return Err(GrantRefusal::Full);
+        };
         let id = format!("grt_{slot:04x}{}", token(14));
         let code = format!("wac.{id}.{}", token(32));
         let grant = Grant {
@@ -868,11 +856,13 @@ async fn create_grant<S: Store>(store: &mut S, now: u64, r: &AuthRequest, scopes
             access: Vec::new(),
             version: 1,
         };
-        index.push((id.clone(), now));
         let Some(gkey) = grant_key(&id) else { return Err(GrantRefusal::Fault(Fault::Corrupt)) };
         let gval = grant.to_json().to_string().into_bytes();
-        let ival = index_json(&index);
-        match store.commit_n_if(GRANTS_KEY, current.as_deref(), &[(GRANTS_KEY, &ival), (&gkey, &gval)]).await {
+        // Compare-and-swap on the slot record itself: written only if the slot
+        // still holds exactly the bytes judged free above. An exchange,
+        // refresh or disconnect that committed since changed those bytes, so
+        // this write is refused and the attempt starts over from fresh slots.
+        match store.commit_n_if(&gkey, expected.as_deref(), &[(&gkey, &gval)]).await {
             Ok(Ok(())) => return Ok(code),
             Ok(Err(_)) => continue,
             // A lost answer leaves at most an unused grant, which the owner sees and can disconnect.
@@ -1178,15 +1168,11 @@ pub fn insufficient_scope(origin: &str) -> Reply {
 
 // ───────────────────────────── owner settings ─────────────────────────────
 
-/// Settings › Connected assistants: every grant in the index.
+/// Settings › Connected assistants: every grant still in a slot, newest first.
 pub async fn list_grants<S: Store>(store: &mut S, now: u64) -> Result<Value, Fault> {
-    let index = store.get(GRANTS_KEY).await.map_err(|_| Fault::Unavailable)?;
-    let mut out = Vec::new();
-    for (id, _) in parse_index(index.as_deref())?.iter().rev() {
-        let (_, g) = load_grant(store, id).await?.ok_or(Fault::Corrupt)?;
-        out.push(g.summary(now));
-    }
-    Ok(json!({"connections": out}))
+    let mut grants: Vec<Grant> = read_grant_slots(store).await?.into_iter().filter_map(|(_, _, g)| g).collect();
+    grants.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| b.id.cmp(&a.id)));
+    Ok(json!({"connections": grants.iter().map(|g| g.summary(now)).collect::<Vec<_>>()}))
 }
 
 /// Settings › Connected assistants › Disconnect: effective on the next request.

@@ -24,7 +24,7 @@ const REDIRECT: &str = "http://127.0.0.1:43123/callback";
 const VERIFIER: &str = "verifier-verifier-verifier-verifier-verifier-0001";
 const T0: u64 = 1_789_000_000_000;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct MemStore {
     data: BTreeMap<Vec<u8>, Vec<u8>>,
     /// Applied just before the first commit guarded on this key, as if
@@ -429,33 +429,46 @@ async fn registrations_are_bounded_and_pruned_slots_are_reused() {
 }
 
 #[tokio::test]
-async fn pruning_never_overwrites_a_grant_that_became_live_meanwhile() {
+async fn pruning_and_refresh_at_the_idle_boundary_never_lose_the_refreshed_grant() {
     let mut store = MemStore::default();
     let owner = format!("Bearer {OWNER}");
-    let client = register(&mut store).await;
-    for _ in 0..MAX_GRANTS {
+    // Slot 0: a real connection. Slots 1..: consents never exchanged.
+    let (client, tokens) = connect(&mut store, false).await;
+    for _ in 1..MAX_GRANTS {
         consent(&mut store, &client, "wardrobe.read", false).await;
     }
-    let later = T0 + CODE_TTL_MS + 1;
-    // Slot 0's grant is exchanged by a request that read it before the code
-    // expired and commits while the pruning is under way.
-    let mut live: Value = serde_json::from_slice(&store.data[b"o/grant/0".as_slice()]).unwrap();
-    live["code"]["used"] = json!(true);
-    live["refresh"] = json!({"current": ["h"], "previous": null, "retired": [], "lastUsedAt": later});
-    live["version"] = json!(2);
-    store.interleave = Some((b"o/grant/0".to_vec(), live.to_string().into_bytes()));
+    let r0 = tokens["refresh_token"].as_str().unwrap().to_string();
+    let refresh = |rt: &str| form(&[("grant_type", "refresh_token"), ("refresh_token", rt), ("client_id", &client)]);
 
+    // At the last instant its refresh token is accepted, the client refreshes.
+    // Run that real refresh on a copy to get the exact record it commits.
+    let at_refresh = T0 + REFRESH_IDLE_MS;
+    let mut other = store.clone();
+    let refreshed = send(&mut other, at_refresh, "POST", "/oauth/token", None, refresh(&r0)).await;
+    assert_eq!(refreshed.status, 200, "{}", refreshed.text);
+    let committed = other.data[b"o/grant/0".as_slice()].clone();
+
+    // One millisecond later a consent prunes: by its clock slot 0 is idle
+    // too long, so it reads slot 0 as free. The refresh commits between that
+    // read and the compare-and-swap.
+    store.interleave = Some((b"o/grant/0".to_vec(), committed.clone()));
+    let at_prune = at_refresh + 1;
     let ch = challenge();
     let mut params = authorize_params(&client, &ch, "wardrobe.read");
     params.extend([("owner_token", OWNER), ("decision", "allow")]);
-    let fits = send(&mut store, later, "POST", "/oauth/authorize", None, form(&params)).await;
+    let fits = send(&mut store, at_prune, "POST", "/oauth/authorize", None, form(&params)).await;
     assert_eq!(fits.status, 302, "{}", fits.text);
-    assert!(store.interleave.is_none(), "the competing write happened");
-    let kept: Value = serde_json::from_slice(&store.data[b"o/grant/0".as_slice()]).unwrap();
-    assert_eq!((kept["status"].clone(), kept["refresh"]["current"].clone()), (json!("active"), json!(["h"])), "{kept}");
-    let list = send(&mut store, later, "GET", "/v1/connections", Some(&owner), vec![]).await;
-    let statuses: Vec<&str> = list.json["connections"].as_array().unwrap().iter().map(|c| c["status"].as_str().unwrap()).collect();
-    assert_eq!(statuses, vec!["active", "active"], "the live grant and the new one");
+    assert!(store.interleave.is_none(), "the refresh committed mid-prune");
+
+    // The overwrite of slot 0 was refused; the new grant took slot 1.
+    assert_eq!(store.data[b"o/grant/0".as_slice()], committed, "the refreshed grant is intact");
+    assert!(fits.header("location").unwrap().contains("code=wac.grt_0001"), "{:?}", fits.header("location"));
+    // And the client's new refresh token keeps working.
+    let r1 = refreshed.json["refresh_token"].as_str().unwrap();
+    assert_eq!(send(&mut store, at_prune + 1, "POST", "/oauth/token", None, refresh(r1)).await.status, 200);
+    let list = send(&mut store, at_prune + 1, "GET", "/v1/connections", Some(&owner), vec![]).await;
+    let active = list.json["connections"].as_array().unwrap().iter().filter(|c| c["status"] == "active").count();
+    assert_eq!(active, 2, "the refreshed grant and the new one");
 }
 
 #[tokio::test]
@@ -485,8 +498,9 @@ async fn expired_authorizations_hold_no_place_and_are_shown_as_expired() {
     let fits = send(&mut store, later, "POST", "/oauth/authorize", None, form(&params)).await;
     assert_eq!(fits.status, 302, "{}", fits.text);
     let list = send(&mut store, later, "GET", "/v1/connections", Some(&owner), vec![]).await;
-    assert_eq!(list.json["connections"].as_array().unwrap().len(), 2, "expired grants leave the index");
-    assert_eq!(store.count(b"o/grant/"), MAX_GRANTS, "the new grant reused a freed slot");
+    let statuses: Vec<&str> = list.json["connections"].as_array().unwrap().iter().map(|c| c["status"].as_str().unwrap()).collect();
+    assert_eq!((statuses.len(), statuses.iter().filter(|s| **s == "active").count()), (MAX_GRANTS, 2), "the new grant took an expired grant's slot");
+    assert_eq!(store.count(b"o/grant/"), MAX_GRANTS, "storage stays at the slots");
 
     // A refresh token idle for 90 days: the connection is shown as expired.
     let idle = T0 + REFRESH_IDLE_MS + 1;
