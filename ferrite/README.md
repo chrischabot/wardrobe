@@ -21,7 +21,9 @@ their undo) and wear records (`wear.record`, with its undo, and the day's
 record). The daily recommender (`garderobe_recommend`), saved runs
 (`garderobe_run`) and the assistant's tools (`garderobe_ask`,
 `garderobe_research`, behind the AI Gateway adapter, refusing by name until
-its secret is set) are ported; see "The assistant".
+its secret is set) are ported; see "The assistant". The app's Today reads, its
+sign-in (see "Signing in the owner's app") and Studio's reads (see "Studio")
+are ported too.
 Nothing has been deployed: see "Deploying".
 
 ## Running it
@@ -87,6 +89,10 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `POST /v1/recommendations` | `RecommendResponse`. `preview` (default): the recommender's validated options, nothing published. `board`: those options published as the day's home board through `board.publish` under the key `board-compose:{clientRequestId}`, answered with the board. A retransmission answers from the saved run and the publication's receipt. `date` is required (no owner timezone); `lockedGarmentIds` and `occasionOnly: true` are refused as not ported |
 | `POST /v1/boards/{id}/swap` | `SwapSlotResponse`: `board.swap_slot` under the key `board-swap:{clientRequestId}`, `expectedRevision` sent as the board's expected version, answered with the receipt and the board as it now stands. No fresher forecast is fetched first (weather is not ported) |
 | `GET /v1/laundry` | `LaundryStateResponse` as `getLaundryState`: the hamper by care channel (service, hand wash), sorted by name, and the newest 12 laundry bags not withdrawn, newest first. `returnBasis` is null; `exceptions` and `cycles` are empty (laundry exceptions and weekly cycles are not ported) |
+| `GET /v1/studio[?mode=for_today\|explore][&date=]` | `StudioResponse`: Studio's selectors and opening outfit for the day (the owner's day now when none is named), see "Studio". `combinations` and `dayPlans` are always empty (the Studio commands are not ported) |
+| `POST /v1/studio/validate` | `StudioValidation` for a `StudioOutfitRequest`: the daily validator's verdict on the outfit for the day, with Studio's shopping-candidate rule, see "Studio" |
+| `POST /v1/studio/compose` | `Composition`: the deterministic layout of the outfit's garments (`buildManifest`) and its hash, with every garment a labelled text tile (no media) and the preview `none` |
+| `GET /v1/studio/compositions/{hash}[/preview]` | 404 `not_found`: a composition is kept only when a preview is requested, which this server does not do |
 | `GET /v1/service` | `ServiceState`: never paused (pause and resume are not ported) |
 | `GET /v1/me` | `MeResponse` for the one owner this port serves (`userId: "owner"`), with the caller's channel (`ios` for the owner token and the app's sign-in) and scopes (`read`, `write`, `admin` for the owner; `read`, `write` for the assistant token); no linked identities and no recovery kit (identity, linking and recovery are not ported) |
 | `POST /v1/sessions/revoke` (owner only) | `SignOutEverywhereResponse`: sign out everywhere. Every sign-in of the owner's app ends now (its access and refresh tokens stop working); connected assistants and the owner token are untouched. `sessionsRevokedBefore` is the moment of the request |
@@ -226,6 +232,48 @@ What differs from the TypeScript build, and why:
 - the seeded tie-break names this app's single owner (`owner`) where
   TypeScript uses the user ID, so the same day ranks differently there
   (`seeded_unit` itself is the TypeScript hash, pinned by a test).
+
+## Studio
+
+As `packages/media/src/studio/reads.ts` does it, without media. Studio never
+decides eligibility or rules itself: validation is the daily validator (the
+board's `validateCandidate`).
+
+- **Selectors** (`GET /v1/studio`). Ten roles, top, bottom, footwear and
+  outer first and always shown. For today a selector holds only owned
+  garments that are `available` or `estimated` and not excluded; Explore also
+  holds the others, marked `seasonal_or_stored` (or `incoming`) with the
+  reasons they cannot be worn. Availability follows the estimator's reasons on
+  this port's stock: `restricted` (the sneakers-only restriction),
+  `planning_excluded`, `no_units_at_home` with `observed_dirty`,
+  `in_service_batch` or `laundry_exception`; `conditional` for occasional and
+  indoor-only pieces; and `estimated` with `import_cleanliness_unverified` for
+  a laundered garment no wash or return has been reported for since the
+  import, as the estimator's import prior makes it. Garments are listed by
+  category, name and ID, as `listInventory` lists them; `image` is null.
+- **Opening outfit.** The recommender's first option for the day, kept to
+  its top, bottom, footwear and socks as Studio's suggestion keeps it, and
+  offered only when it validates for today; otherwise none.
+- **Validation** (`POST /v1/studio/validate`). Every slot holds exactly one
+  garment or one shopping candidate; a garment that is not the owner's is
+  `not_found`, naming each one. The garments are checked by the daily
+  validator for the day (repeat horizon included); in Explore its "not
+  wearable today" findings (`EXPLORE_ADVISORY`: unavailable, restricted,
+  repeat, temperature and the like) are advisories, while "not an outfit"
+  findings such as missing socks stay blocking. Studio adds its own rule: a
+  shopping candidate is not owned, so it blocks for today and is advisory in
+  Explore; an outfit with no owned garment is `incomplete_outfit` for today.
+  `validator` is `daily-service`, `wearableOn` the day for today and null in
+  Explore. Without a forecast, temperature rules are reported as not checked.
+- **Composition** (`POST /v1/studio/compose`). The deterministic manifest of
+  `compose/manifest.ts` (template, frames, category scale, layering order,
+  caption) and its hash, the SHA-256 of the canonical manifest JSON. The
+  `ferrite dev` probe compared the manifest and hash with the TypeScript
+  `buildManifest` and `manifestHash` on four outfits and found them
+  identical. There is no media, so every garment is a `missing` layer ("no
+  photo yet") and a shopping candidate is a `shopping_candidate` layer.
+
+Nothing here writes: the reads leave the store as it was (`tests/studio.rs`).
 
 ## Service laundry
 
@@ -789,6 +837,32 @@ milestone, and outside the lines of the milestone in hand:
   - The iOS build's local-development custom-scheme callback is refused as a
     redirect URI; the app is configured with its HTTPS universal-link
     callback, as a release build is.
+- **Studio.**
+  - Availability uses this port's binary stock and the import prior only: no
+    unreported wear is inferred from board exposure sets (never
+    `estimated_possibly_worn`), and there are no storage, tailor or trip
+    buckets.
+  - There is no media: every garment is a text tile, previews
+    (`POST /v1/studio/previews`) are not ported and no composition is kept,
+    so a composition read by its hash is always `not_found`.
+  - Suggestions around locked pieces (`POST /v1/studio/suggest`) and the
+    Studio commands (saving a combination, planning a day) are not ported, so
+    the saved combinations and day plans are always empty.
+  - The opening outfit comes from this port's recommender, not the
+    TypeScript composer.
+  - Two slots in the same role are ordered as TypeScript's `localeCompare`
+    orders them for IDs of printable ASCII (the root collation's primary
+    order, then lower case before upper; it agreed with ICU 78.2 on 200,000
+    random pairs, and the `ferrite dev` probe compared manifests with mixed-case
+    and punctuated candidate IDs against the TypeScript composer). Ferrite apps
+    have no collation tables, so in a shopping-candidate ID any other character
+    sorts by code point after every printable-ASCII character (`localeCompare`
+    would place, say, `é` beside `e`). The order is still total, so a request's
+    slot order never changes the result, but such an ID can be laid out and
+    hashed differently from the TypeScript composer.
+  - A request carries at most 24 slots (the contract sets no maximum): the
+    validator compares slots pairwise, and the bound keeps one request's work
+    small. Ten roles with one garment each fit well inside it.
 - **Recommender.**
   - Availability is binary (clean at home).
   - No weather, Calendar or brief is read.

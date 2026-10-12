@@ -322,6 +322,13 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
         ("POST", "/v1/sessions/revoke") => sign_out_everywhere(store, principal, now_ms).await,
         ("POST", "/v1/identities/link" | "/v1/identities/unlink" | "/v1/recovery-kit" | "/v1/account/delete") => Err(identity_unavailable()),
         ("GET", "/v1/laundry") => crate::app_routes::laundry(store, now_ms).await,
+        ("GET", "/v1/studio") => {
+            let q = |name: &str| query.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
+            crate::studio::read(store, now_ms, q("mode"), q("date")).await
+        }
+        ("POST", "/v1/studio/validate") => crate::studio::validate(store, now_ms, &req.body).await,
+        ("POST", "/v1/studio/compose") => crate::studio::compose(&req.body),
+        ("GET", p) if p.strip_prefix("/v1/studio/compositions/").is_some_and(|rest| !rest.is_empty()) => Err(crate::studio::stored_composition(p)),
         ("POST", "/v1/commands/batch") => crate::app_routes::batch(store, principal, now_ms, &req.body).await,
         ("POST", "/v1/recommendations") => crate::app_routes::recommendations(store, principal, now_ms, &req.body).await,
         ("POST", p) if crate::app_routes::swap_target(p).is_some() => {

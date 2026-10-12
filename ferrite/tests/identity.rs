@@ -13,7 +13,7 @@ use std::io;
 use ferrite_app::serde_json::{self, json, Value};
 use ferrite_app::IngressRequest;
 use wardrobe::api::{self, Store, Tokens};
-use wardrobe::oauth::{b64url, consent_form_mac, pct_encode, ACCESS_TTL_MS, MAX_APP_SESSIONS};
+use wardrobe::oauth::{b64url, consent_form_mac, pct_encode, AppClient, ACCESS_TTL_MS, MAX_APP_SESSIONS};
 use wardrobe::sha256::digest;
 
 const ORIGIN: &str = "http://127.0.0.1:8787";
@@ -291,9 +291,13 @@ async fn without_or_after_changing_the_app_configuration_its_sign_ins_do_not_wor
     let ch = challenge();
     let page = send_with(&mut store, &tokens(None), T0, "GET", &format!("/oauth/authorize?{}", query(&borrowed(&app_params(&ch)))), None, vec![]).await;
     assert!(page.status == 400 && page.text.contains("not registered"), "{}", page.text);
-    // A registered-client ID cannot be configured as the app.
-    let page = send_with(&mut store, &tokens(Some("cli_0000aaaaaaaaaaaaaaaaaaaaaaaaaaaa")), T0, "GET", "/oauth/authorize?client_id=cli_0000aaaaaaaaaaaaaaaaaaaaaaaaaaaa", None, vec![]).await;
-    assert_eq!(page.status, 400);
+    // A registered-client ID cannot be configured as the app, even with a valid redirect; a well-formed ID can.
+    assert_eq!(AppClient::from_config(Some("cli_0000aaaaaaaaaaaaaaaaaaaaaaaaaaaa"), Some(APP_REDIRECT)), None);
+    assert!(AppClient::from_config(Some(APP_ID), Some(APP_REDIRECT)).is_some());
+    let ch_cli = challenge();
+    let cli_params = [("response_type", "code"), ("client_id", "cli_0000aaaaaaaaaaaaaaaaaaaaaaaaaaaa"), ("redirect_uri", APP_REDIRECT), ("code_challenge", ch_cli.as_str()), ("code_challenge_method", "S256"), ("resource", ORIGIN)];
+    let page = send_with(&mut store, &tokens(Some("cli_0000aaaaaaaaaaaaaaaaaaaaaaaaaaaa")), T0, "GET", &format!("/oauth/authorize?{}", query(&cli_params)), None, vec![]).await;
+    assert!(page.status == 400 && page.text.contains("not registered"), "{}", page.text);
     // Signed in, then the configured client ID changes: the sign-in no longer works on /v1 or at the token endpoint.
     let (access, refresh) = sign_in(&mut store, T0).await;
     let changed = tokens(Some("garderobe-ios-2"));

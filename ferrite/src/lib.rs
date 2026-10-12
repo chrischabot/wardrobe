@@ -19,6 +19,7 @@ pub mod recommend;
 pub mod runs;
 pub mod seed;
 pub mod sha256;
+pub mod studio;
 pub mod time;
 pub mod weather;
 pub mod wear;
