@@ -222,6 +222,49 @@ describe("replayed and duplicated deliveries", () => {
     const recorded = (await rows<{ object_key: string }>("SELECT object_key FROM media_renditions WHERE user_id = ? AND asset_id = ? AND status != 'deleted'", u, assetId)).map((r) => r.object_key).sort();
     expect((await objectKeys(u)).filter((k) => k.includes(assetId))).toEqual(recorded);
   });
+
+  // The case above can find the job already finished. This one holds it unfinished on purpose: while another
+  // run holds its lease every copy must be turned away, and once that lease has run out exactly one of many
+  // simultaneous copies may take the job over.
+  it("copies delivered while another run holds the job are turned away, and only one takes over once its lease runs out", async () => {
+    const o = await syntheticOwner("QE");
+    const u = o.owner.userId;
+    const photo = await uploadClean(o, await freshPng(168), { role: "top" });
+    const job = (await jobsOf(u)).find((j) => j.subject_id === photo.assetId && j.kind === "normalize")!;
+    expect(job.state).toBe("succeeded");
+    const results = async () => (await rows<{ n: number }>("SELECT COUNT(*) AS n FROM commands WHERE user_id = ? AND type = 'media.record_normalization'", u))[0]!.n;
+    const app = await testApp();
+    // TEST SETUP: the job is unfinished and held by another run whose lease is still current.
+    await app.db.prepare("UPDATE media_jobs SET state = 'running', attempts = 1, lease_until = '2999-01-01T00:00:00.000Z', last_error = NULL, result_json = NULL WHERE user_id = ? AND job_id = ?").bind(u, job.job_id).run();
+    const resultsBefore = await results();
+    const keysBefore = await objectKeys(u);
+    const copies = () => Array.from({ length: 8 }, () => ({ kind: "media.job", userId: u, jobId: job.job_id }));
+
+    expect(await deliver(copies())).toBe(8);
+    await consumerCaughtUp("after copies of a held job");
+    expect(await jobOf(u, job.job_id), "no copy claimed a job another run holds").toMatchObject({ state: "running", attempts: 1 });
+    expect(await results()).toBe(resultsBefore);
+    expect(await objectKeys(u)).toEqual(keysBefore);
+
+    // TEST SETUP: the other run's lease runs out (it died), with attempts left; then many copies arrive at once.
+    await app.db.prepare("UPDATE media_jobs SET lease_until = '2000-01-01T00:00:00.000Z' WHERE user_id = ? AND job_id = ?").bind(u, job.job_id).run();
+    const queue = app.env.MEDIA_QUEUE!;
+    await Promise.all(copies().map((body) => queue.send(body as never)));
+    await waitForJob(u, job.job_id, (j) => j.state !== "running", "after the lease ran out");
+    // Every copy has been consumed (the consumer has caught up past them) and nothing is left to run;
+    // only then is the final state read, so a later copy that took the job again would be counted.
+    await consumerCaughtUp("after the copies sent once the lease ran out");
+    await settleJobs(u);
+    const after = await jobOf(u, job.job_id);
+    expect(after.state).toBe("succeeded");
+    expect(after.attempts, "exactly one of the copies claimed the job").toBe(2);
+    expect(await results()).toBeLessThanOrEqual(resultsBefore + 1);
+    const perKind = await rows<{ kind: string; n: number }>("SELECT kind, COUNT(*) AS n FROM media_renditions WHERE user_id = ? AND asset_id = ? AND status = 'active' GROUP BY kind", u, photo.assetId);
+    expect(perKind.length).toBeGreaterThan(1);
+    for (const row of perKind) expect(row.n, row.kind).toBe(1);
+    const recorded = (await rows<{ object_key: string }>("SELECT object_key FROM media_renditions WHERE user_id = ? AND asset_id = ? AND status != 'deleted'", u, photo.assetId)).map((r) => r.object_key).sort();
+    expect((await objectKeys(u)).filter((k) => k.includes(photo.assetId))).toEqual(recorded);
+  });
 });
 
 describe("jobs that were interrupted", () => {

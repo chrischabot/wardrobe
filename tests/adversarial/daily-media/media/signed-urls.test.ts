@@ -14,7 +14,7 @@
 import { SELF } from "cloudflare:test";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { APP_ORIGIN, testApp } from "@garderobe/worker/testing";
-import { cleanJpeg, cleanPng, objectKeys, rows, settleJobs, sha256, syntheticOwner, uploadClean, type AbuseOwner } from "./support.ts";
+import { attemptUpload, cleanJpeg, cleanPng, objectKeys, rows, settleJobs, sha256, syntheticOwner, uploadClean, type AbuseOwner } from "./support.ts";
 
 let owner: AbuseOwner;
 let other: AbuseOwner;
@@ -81,10 +81,21 @@ describe("signed image URLs: tampering", () => {
     expect(served.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
     expect(served.headers.get("access-control-allow-origin")).toBeNull();
     await served.arrayBuffer();
-    expect(signed.url).not.toMatch(/u\/|assets\/|r2|bucket|https?:/i);
+    // The URL is the app's own relative route followed by one opaque token (packages/media/src/delivery.ts builds
+    // `/v1/media/signed/<payload>.<mac>`). The token is base64url text, in which letters such as "r2" occur by chance, so the
+    // storage words are looked for in the route, and the token is judged by what it carries: the exact claims below.
+    expect(signed.url).toMatch(/^\/v1\/media\/signed\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    const route = signed.url.slice(0, signed.url.length - signed.token.length);
+    expect(route).toBe("/v1/media/signed/");
+    expect(route).not.toMatch(/u\/|assets\/|r2|bucket|https?:/i);
+    expect(signed.url).not.toContain(owner.owner.userId);
+    const keys = await objectKeys(owner.owner.userId);
+    expect(keys.length, "the owner's image files are stored").toBeGreaterThan(0);
+    for (const key of keys) expect(signed.url).not.toContain(key);
     const claims = claimsOf(signed.token);
     expect(Object.keys(claims).sort()).toEqual(["exp", "p", "r", "u", "w"]);
     expect(claims).toMatchObject({ p: "rendition", r: derived, u: owner.owner.userId });
+    for (const key of keys) expect(JSON.stringify(claims)).not.toContain(key);
   });
 
   it("changing any claim, the signature, or the key invalidates the URL", async () => {
@@ -223,9 +234,22 @@ describe("signed image URLs and upload authorizations: replay", () => {
     expect(stored[0]!.sha256).toBe(await sha256(first));
     const keysBefore = await objectKeys(owner.owner.userId);
 
-    // The same authorization again, still inside its lifetime, with different bytes of the same size class.
-    const swapped = (await cleanPng(128, [160, 20, 20])).slice();
-    const replay = await put(swapped.length <= first.length ? swapped : first.map((b, i) => (i > 100 && i < 110 ? b ^ 1 : b)));
+    // The same authorization again, still inside its lifetime, with a different valid picture of exactly
+    // the authorized length, so only the replay itself can be the reason for a refusal.
+    let swapped: Uint8Array | null = null;
+    for (let red = 160; red < 256 && !swapped; red++) {
+      const candidate = await cleanPng(128, [red, 20, 20]);
+      if (candidate.length === first.length) swapped = candidate;
+    }
+    for (let size = 120; size < 137 && !swapped; size++) {
+      for (let red = 120; red < 256 && !swapped; red += 5) {
+        const candidate = await cleanPng(size, [red, 30, 30]);
+        if (candidate.length === first.length) swapped = candidate;
+      }
+    }
+    expect(swapped, `no different synthetic PNG of exactly ${first.length} bytes could be built`).not.toBeNull();
+    expect(await sha256(swapped!)).not.toBe(await sha256(first));
+    const replay = await put(swapped!);
     expect(replay.status).toBeGreaterThanOrEqual(400);
     expect(replay.status).toBeLessThan(500);
     // Completing again changes nothing and creates no second asset.
@@ -237,6 +261,13 @@ describe("signed image URLs and upload authorizations: replay", () => {
     const object = await app.env.MEDIA_BUCKET!.get(stored[0]!.object_key);
     expect(await sha256(new Uint8Array(await object!.arrayBuffer()))).toBe(await sha256(first));
     expect(await rows("SELECT 1 FROM media_assets WHERE user_id = ? AND upload_id = ?", owner.owner.userId, upload.uploadId)).toHaveLength(1);
+
+    // Control: the same replacement bytes are accepted under a fresh authorization, so the refusal above
+    // was the replay, not the picture.
+    const control = await attemptUpload(owner, swapped!, { role: "bottom" });
+    expect(control.put?.status, JSON.stringify(control.put)).toBe(200);
+    expect(control.complete?.body.state, JSON.stringify(control.complete)).toBe("finalized");
+    await settleJobs(owner.owner.userId);
   });
 
   it("every outstanding URL of an account dies with the account's access", async () => {

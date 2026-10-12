@@ -78,10 +78,23 @@ export async function objectKeys(userId: string): Promise<string[]> {
   return keys.sort();
 }
 
+/** Every object the owner has in the private media bucket with its content tag and size, so an overwrite under the same name shows. */
+export async function objectVersions(userId: string): Promise<string[]> {
+  const app = await testApp();
+  const out: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await app.env.MEDIA_BUCKET!.list({ prefix: `u/${userId}/`, ...(cursor ? { cursor } : {}) });
+    out.push(...page.objects.map((o) => `${o.key} ${o.etag} ${o.size}`));
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  return out.sort();
+}
+
 /** A fingerprint of everything an owner has in the visual wardrobe: used to prove an attack changed nothing. */
 export async function mediaFingerprint(userId: string): Promise<string> {
   const tables = ["media_uploads", "media_assets", "media_renditions", "garment_media", "outfit_composites", "studio_combinations", "studio_day_plans"];
-  const out: Record<string, unknown> = { objects: await objectKeys(userId) };
+  const out: Record<string, unknown> = { objects: await objectKeys(userId), objectVersions: await objectVersions(userId) };
   for (const table of tables) out[table] = await rows(`SELECT * FROM ${table} WHERE user_id = ? ORDER BY 1, 2, 3`, userId);
   out.jobs = await rows("SELECT job_id, kind, state, attempts FROM media_jobs WHERE user_id = ? ORDER BY job_id", userId);
   out.commands = (await rows<{ n: number }>("SELECT COUNT(*) AS n FROM commands WHERE user_id = ?", userId))[0]!.n;
@@ -95,6 +108,8 @@ export interface UploadAttempt {
   put: { status: number; body: any } | null;
   complete: { status: number; body: any } | null;
   uploadId: string | null;
+  /** The owner's object keys just before the upload was authorized. */
+  objectsBefore: string[];
 }
 
 async function parsed(response: Response): Promise<{ status: number; body: any }> {
@@ -118,6 +133,7 @@ export async function attemptUpload(
   opts: { intent?: "garment_photo" | "selfie" | "attachment"; role?: FixtureRole; declareType?: string; declareBytes?: number; sendType?: string; wearingDate?: string } = {},
 ): Promise<UploadAttempt> {
   const intent = opts.intent ?? "garment_photo";
+  const objectsBefore = await objectKeys(o.owner.userId);
   const authorize = await parsed(
     await o.owner.api.post("/v1/uploads", {
       clientUploadId: `abuse-${crypto.randomUUID()}`,
@@ -128,11 +144,11 @@ export async function attemptUpload(
       ...(opts.wearingDate ? { wearingDate: opts.wearingDate } : {}),
     }),
   );
-  if (authorize.status !== 200) return { authorize, put: null, complete: null, uploadId: null };
+  if (authorize.status !== 200) return { authorize, put: null, complete: null, uploadId: null, objectsBefore };
   const uploadId = authorize.body.uploadId as string;
   const put = await parsed(await SELF.fetch(`${APP_ORIGIN}${authorize.body.url}`, { method: "PUT", headers: { "Content-Type": opts.sendType ?? authorize.body.requiredHeaders["content-type"], "Content-Length": String(bytes.length) }, body: bytes }));
   const complete = await parsed(await o.owner.api.post(`/v1/uploads/${uploadId}/complete`, {}));
-  return { authorize, put, complete, uploadId };
+  return { authorize, put, complete, uploadId, objectsBefore };
 }
 
 /** Upload that must succeed (a clean synthetic picture), settled: returns the asset and its renditions. */

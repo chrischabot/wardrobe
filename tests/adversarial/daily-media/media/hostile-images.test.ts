@@ -65,6 +65,11 @@ async function expectNothingStored(attempt: UploadAttempt, what: string): Promis
   }
   const keys = await objectKeys(owner.owner.userId);
   expect(keys.filter((k) => k.endsWith(`/staging/${attempt.uploadId}`)), `${what}: staging`).toEqual([]);
+  // No new object anywhere in the owner's bucket, except derived files of another upload's accepted
+  // picture whose background work was still finishing when this attempt began.
+  const others = (await rows<{ asset_id: string }>("SELECT asset_id FROM media_assets WHERE user_id = ? AND (upload_id IS NULL OR upload_id != ?) AND status NOT IN ('rejected', 'deleted')", owner.owner.userId, attempt.uploadId)).map((a) => a.asset_id);
+  const before = new Set(attempt.objectsBefore);
+  expect(keys.filter((k) => !before.has(k) && !others.some((id) => k.includes(id))), `${what}: new objects`).toEqual([]);
   const status = await owner.owner.api.json("GET", `/v1/uploads/${attempt.uploadId}`);
   expect(status.state === "finalized" && assets.every((a) => a.status !== "rejected"), `${what}: upload reported as a usable image (${JSON.stringify(status)})`).toBe(false);
 }
@@ -280,16 +285,25 @@ describe("malformed images", () => {
   });
 
   // Regression (was open defect MEDIA-ABUSE-2): a JPEG whose headers are followed straight by its end marker
-  // (no scan data at all) was decoded into a blank picture and became an active asset.
+  // (no scan data at all) was decoded into a blank picture and became an active asset. Both shapes are tried:
+  // the complete start-of-scan header followed at once by FFD9 (the reported defect), and no scan header at all.
   it("a JPEG with headers and no picture data is never shown", async () => {
     const sos = jpg.findIndex((b, i) => b === 0xff && jpg[i + 1] === 0xda);
-    const attempt = await attemptUpload(owner, concat(jpg.subarray(0, sos), new Uint8Array([0xff, 0xd9])), { declareType: "image/jpeg", role: "socks" });
-    expectNoServerFault(attempt, "JPEG headers and no picture data");
-    await settleJobs(owner.owner.userId);
-    const assets = await rows<{ asset_id: string; status: string }>("SELECT asset_id, status FROM media_assets WHERE user_id = ? AND upload_id = ?", owner.owner.userId, attempt.uploadId);
-    for (const asset of assets) {
-      expect(asset.status).toBe("rejected");
-      for (const copy of await everyServedCopy(owner, asset.asset_id)) expect(copy.status, copy.via).toBe(404);
+    expect(sos, "the clean JPEG has a start-of-scan marker").toBeGreaterThan(0);
+    const sosHeaderEnd = sos + 2 + ((jpg[sos + 2]! << 8) | jpg[sos + 3]!);
+    const variants: [string, Uint8Array][] = [
+      ["complete scan header, then FFD9 with no entropy-coded data", concat(jpg.subarray(0, sosHeaderEnd), new Uint8Array([0xff, 0xd9]))],
+      ["no scan header, then FFD9", concat(jpg.subarray(0, sos), new Uint8Array([0xff, 0xd9]))],
+    ];
+    for (const [what, bytes] of variants) {
+      const attempt = await attemptUpload(owner, bytes, { declareType: "image/jpeg", role: "socks" });
+      expectNoServerFault(attempt, what);
+      await settleJobs(owner.owner.userId);
+      const assets = await rows<{ asset_id: string; status: string }>("SELECT asset_id, status FROM media_assets WHERE user_id = ? AND upload_id = ?", owner.owner.userId, attempt.uploadId);
+      for (const asset of assets) {
+        expect(asset.status, what).toBe("rejected");
+        for (const copy of await everyServedCopy(owner, asset.asset_id)) expect(copy.status, `${what}: ${copy.via}`).toBe(404);
+      }
     }
   });
 
