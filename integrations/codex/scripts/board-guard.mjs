@@ -56,6 +56,18 @@ export function within(promise, ms, message, stop) {
   return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
 }
 
+/** The first garment in an inventory snapshot that is laundered by service, held once and clean now, or null. */
+export const cleanLaundered = (items) => (items ?? []).find((i) => i?.careChannel === "service" && Number(i.quantity) === 1 && Number(i.balances?.clean) >= 1)?.garmentId ?? null;
+
+/** Every garment's balances in an inventory snapshot, as a comparable string (order-independent). */
+export const balancesState = (items) => JSON.stringify((items ?? []).map((i) => `${i.garmentId}:${Number(i.balances?.clean ?? 0)}/${Number(i.balances?.dirty ?? 0)}`).sort());
+
+/** Whether `after` is `before` with exactly one unit of `garmentId` moved from clean to dirty, nothing else changed. */
+export function movedToDirty(before, after, garmentId) {
+  const shifted = (before ?? []).map((i) => (i.garmentId === garmentId ? { ...i, balances: { clean: Number(i.balances?.clean) - 1, dirty: Number(i.balances?.dirty ?? 0) + 1 } } : i));
+  return (before ?? []).length > 0 && balancesState(shifted) === balancesState(after);
+}
+
 /** A board revision usable as an expected version: a non-negative integer. */
 export const validRevision = (revision) => Number.isInteger(revision) && revision >= 0;
 

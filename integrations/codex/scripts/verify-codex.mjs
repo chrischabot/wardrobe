@@ -38,7 +38,8 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import { adoptAfterWrite, authorizationUrlFrom, boardState, choiceOf, ownerDay, sameWear, unchangedAfterUnapplied, versionsOf, within, writeDecision } from "./board-guard.mjs";
+import { adoptAfterWrite, authorizationUrlFrom, balancesState, boardState, choiceOf, cleanLaundered, movedToDirty, ownerDay, sameWear, unchangedAfterUnapplied, versionsOf, within, writeDecision } from "./board-guard.mjs";
+import { ferriteConsent } from "./ferrite-consent.mjs";
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const REPO_ROOT = path.resolve(PACKAGE_ROOT, "../..");
@@ -50,7 +51,7 @@ const opt = (name) => {
 const marketplaceRoot = path.resolve(opt("--marketplace") ?? PACKAGE_ROOT);
 const reportPath = opt("--report");
 // No model-driven step: Codex runs only OpenAI models, which the project does not authorize for inference.
-if (args.includes("--codex-model") || process.env.CODEX_MODEL) {
+if (args.some((a) => a === "--codex-model" || a.startsWith("--codex-model=")) || process.env.CODEX_MODEL) {
   console.error("This verifier runs no model: Codex can run only OpenAI models, and the project authorizes only claude-opus-5-5 for inference. Remove --codex-model / CODEX_MODEL.");
   process.exit(2);
 }
@@ -59,6 +60,21 @@ if (!["auto", "cimd", "dcr"].includes(registration)) throw new Error("--registra
 const CODEX = process.env.CODEX_BIN ?? "codex";
 const mcpUrl = new URL(JSON.parse(readFileSync(path.join(marketplaceRoot, "plugin", "mcp.json"), "utf8")).mcpServers.wardrobe.url);
 const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(mcpUrl.hostname);
+// Which Wardrobe app serves the MCP URL: the Cloudflare Worker (default) or the Ferrite port (`--app ferrite`, local
+// `ferrite dev` or a Ferrite deployment). The Ferrite consent page needs the app's owner token, from the environment.
+const app = opt("--app") ?? "worker";
+if (!["worker", "ferrite"].includes(app)) {
+  console.error("--app must be worker or ferrite");
+  process.exit(2);
+}
+const ferrite = app === "ferrite";
+const ownerToken = process.env.WARDROBE_OWNER_TOKEN ?? "";
+if (ferrite && !ownerToken) {
+  console.error("--app ferrite needs WARDROBE_OWNER_TOKEN, the Ferrite app's owner token (locally: [secrets] in ferrite/ferrite.local.toml), to give the owner's consent.");
+  process.exit(2);
+}
+// The local Worker's run-mode helpers (owner sign-in stand-in, owner API) exist only for a loopback Worker.
+const workerLocal = loopback && !ferrite;
 // The owner's day decides which board is read. Locally it comes from the owner's settings (an authenticated read);
 // a hosted run has no such read here, so it must be told the owner's timezone: no silent default.
 const timeZoneArg = opt("--timezone");
@@ -70,8 +86,8 @@ if (timeZoneArg !== undefined) {
     process.exit(2);
   }
 }
-if (!loopback && !timeZoneArg) {
-  console.error(`A hosted run (${mcpUrl}) needs --timezone <IANA zone>, the owner's timezone from Garderobe settings, to pick the owner's day.`);
+if (!workerLocal && !timeZoneArg) {
+  console.error(`This run (${mcpUrl}${ferrite ? ", Ferrite app" : ""}) needs --timezone <IANA zone>, the owner's timezone from Garderobe settings, to pick the owner's day.`);
   process.exit(2);
 }
 
@@ -82,12 +98,22 @@ function check(name, pass, detail = "") {
   return Boolean(pass);
 }
 
-const codexHome = mkdtempSync(path.join(os.tmpdir(), "wardrobe-codex-home-"));
 // Nothing from the user's own Codex home is copied: no model runs, so no Codex sign-in is needed.
 // Keep the Garderobe OAuth grant in this throw-away home: by default Codex may store MCP credentials in the OS
-// keyring, which deleting the directory would not remove. Written before any other command adds to the config.
-writeFileSync(path.join(codexHome, "config.toml"), 'mcp_oauth_credentials_store = "file"\n');
-const env = { ...process.env, CODEX_HOME: codexHome };
+// keyring, which deleting the directory would not remove. Written before any other command adds to the config;
+// if that fails, the directory is removed before the run stops.
+let codexHome = null;
+try {
+  codexHome = mkdtempSync(path.join(os.tmpdir(), "wardrobe-codex-home-"));
+  writeFileSync(path.join(codexHome, "config.toml"), 'mcp_oauth_credentials_store = "file"\n');
+} catch (error) {
+  if (codexHome) rmSync(codexHome, { recursive: true, force: true });
+  console.error(`could not prepare the temporary CODEX_HOME: ${error?.message ?? error}`);
+  process.exit(1);
+}
+// Codex gets no copy of the owner token.
+const { WARDROBE_OWNER_TOKEN: _ownerToken, ...inherited } = process.env;
+const env = { ...inherited, CODEX_HOME: codexHome };
 const codex = (...a) => spawnSync(CODEX, a, { env, encoding: "utf8", input: "", timeout: 60_000, killSignal: "SIGKILL" });
 // A setup command that hit its 60 s limit (killed) is reported as such.
 const timedOut = (r) => r.error?.code === "ETIMEDOUT" || r.signal === "SIGKILL";
@@ -143,7 +169,11 @@ async function login() {
     });
     check("Codex discovered the Garderobe authorization server and asked for both scopes", authUrl.searchParams.get("scope") === "wardrobe.read wardrobe.write" && authUrl.searchParams.get("resource") === mcpUrl.toString(), `client_id ${authUrl.searchParams.get("client_id")}`);
     let callback;
-    if (loopback) {
+    if (ferrite) {
+      // The Ferrite app's consent page: its form is fetched first and its issued/form_mac fields are posted back.
+      callback = await within(ferriteConsent(authUrl, { appOrigin: mcpUrl.origin, ownerToken, write: true }), 60_000, "Ferrite consent did not finish within 60 s", exited);
+      check("the owner allowed the connection on the Ferrite consent page (form fetched, issued and form_mac posted back)", Boolean(callback), callback ? `redirect to ${callback.origin}${callback.pathname}` : "");
+    } else if (loopback) {
       const { approveConsent } = await localHelpers();
       // Bounded: fails after 60 s or when Codex exits, so a stalled consent page still reaches the cleanup below.
       callback = await within(approveConsent(authUrl, { allow: true, write: true }), 60_000, "local consent approval did not finish within 60 s", exited);
@@ -306,9 +336,41 @@ async function toolsThroughCodex() {
     const lift = await call("garderobe_command", { type: "restriction.resolve", payload: { restrictionId: "rst_codex_verify_not_a_restriction", evidence: { kind: "owner_statement" } }, idempotencyKey: `codex-verify-lift-${Date.now()}` });
     check("a restriction lift from Codex is refused", !lift.ok && lift.error?.code === "forbidden", lift.ok ? "applied" : `${lift.error?.code}: ${lift.error?.message}`);
 
+    // The Ferrite port publishes the board tools only once they are ported. Until then the board steps are not run,
+    // and on a LOCAL ferrite dev (fresh state, nobody's real record) the routine write with receipt and undo is shown
+    // with the one write the port offers: a care report, undone at once. It is never sent to a Ferrite deployment,
+    // where it would record a wash the owner did not report.
+    if (ferrite && !tools.includes("garderobe_today")) {
+      check("board steps (choice, swap and their undos) on the Ferrite app", false, `not run: this Ferrite app publishes ${tools.join(", ")}; garderobe_today is not ported yet`);
+      if (!loopback) {
+        check("routine write with receipt and undo on the Ferrite deployment", false, "not run: the only write this Ferrite app offers is a care report (care.mark_dirty), which on the owner's real record would invent a wash event");
+        return null;
+      }
+      const items = snapshot.data?.data?.items ?? snapshot.data?.items ?? null;
+      const garment = cleanLaundered(items);
+      if (!check("local Ferrite app: a clean, single, laundered garment is available for the routine write", Boolean(garment), garment ?? "none in the inventory snapshot")) return null;
+      const sent = await call("garderobe_command", { type: "care.mark_dirty", payload: { items: [{ garmentId: garment }] }, idempotencyKey: `codex-verify-care-${Date.now()}` });
+      const receipt = sent.data?.receipt;
+      try {
+        check("routine write (local Ferrite app, test report undone below): care.mark_dirty applies at once with a receipt that offers undo", sent.ok && receipt?.commandId && receipt?.undo?.available !== false, sent.ok ? `${receipt?.commandId}: ${receipt?.summary}` : JSON.stringify(sent.error));
+        const afterWrite = await call("garderobe_inventory", { view: "snapshot" });
+        const nowItems = afterWrite.data?.data?.items ?? afterWrite.data?.items ?? null;
+        check("exactly that garment moved from clean to dirty, nothing else changed", afterWrite.ok && movedToDirty(items, nowItems, garment), afterWrite.ok ? garment : JSON.stringify(afterWrite.error));
+      } finally {
+        if (receipt?.commandId) {
+          const back = await call("garderobe_command", { type: "command.undo", payload: { commandId: receipt.commandId }, idempotencyKey: `codex-verify-undo-care-${Date.now()}` });
+          check("undo: command.undo takes the care report back with its own receipt", back.ok && back.data?.receipt?.commandId, back.ok ? back.data?.receipt?.summary ?? back.data?.receipt?.commandId : JSON.stringify(back.error));
+          const restored = await call("garderobe_inventory", { view: "snapshot" });
+          const restoredItems = restored.data?.data?.items ?? restored.data?.items ?? null;
+          check("after the undo every garment's balances are exactly as before", restored.ok && Array.isArray(restoredItems) && balancesState(restoredItems) === balancesState(items), restored.ok ? `${restoredItems?.length ?? 0} garments compared` : JSON.stringify(restored.error));
+        }
+      }
+      return null;
+    }
+
     // The board for tomorrow in the owner's own day. Locally the owner's app publishes it (the daily service's
     // own route, as the owner); on a deployment the daily service will have published it already.
-    const local = loopback ? await localHelpers() : null;
+    const local = workerLocal ? await localHelpers() : null;
     let timeZone = timeZoneArg ?? null;
     if (local) {
       await local.ensureClaimed();
@@ -379,7 +441,7 @@ async function toolsThroughCodex() {
         const wear = sameWear(wearBefore, (await local.api("GET", `/v1/days/${date}`)).json);
         check("choosing is not wearing: the day's recorded wear is unchanged", wear.ok, wear.reason);
       } else {
-        console.log("note: choosing is not wearing was not verified on this hosted run (no owner read of the day's wear is available to the verifier)");
+        console.log("note: choosing is not wearing was not verified on this run (the verifier has no owner read of the day's wear for this app)");
       }
     } finally {
       if (receipt?.commandId) {
@@ -460,7 +522,7 @@ try {
   const ran = codex("--version");
   const version = (ran.stdout ?? "").trim();
   require(check("Codex CLI available", !ran.error && ran.status === 0 && version.startsWith("codex"), timedOut(ran) ? outcome(ran) : ran.error ? `${CODEX}: ${ran.error.message}` : version || `exit ${ran.status}`), "the Codex CLI check");
-  console.log(`MCP server: ${mcpUrl} (${loopback ? "LOCAL Worker, not a hosted deployment" : "hosted"})`);
+  console.log(`MCP server: ${mcpUrl} (${ferrite ? (loopback ? "LOCAL Ferrite app (ferrite dev), not a hosted deployment" : "Ferrite deployment") : loopback ? "LOCAL Worker, not a hosted deployment" : "hosted"})`);
   const added = codex("plugin", "marketplace", "add", marketplaceRoot);
   require(check("codex plugin marketplace add", added.status === 0, outcome(added)), "codex plugin marketplace add");
   const installed = codex("plugin", "add", "wardrobe@wardrobe-codex");
@@ -486,7 +548,7 @@ try {
 }
 
 const failed = results.filter((r) => !r.pass);
-const summary = { mcpUrl: mcpUrl.toString(), target: loopback ? "local Worker (not hosted)" : "hosted", registration, model: "none (Codex runs only OpenAI models, which the project does not authorize)", at: new Date().toISOString(), passed: results.length - failed.length, failed: failed.length, results };
+const summary = { mcpUrl: mcpUrl.toString(), target: ferrite ? (loopback ? "local Ferrite app (not hosted)" : "Ferrite deployment") : loopback ? "local Worker (not hosted)" : "hosted", registration, model: "none (Codex runs only OpenAI models, which the project does not authorize)", at: new Date().toISOString(), passed: results.length - failed.length, failed: failed.length, results };
 if (reportPath) writeFileSync(reportPath, JSON.stringify(summary, null, 2) + "\n");
 console.log(`\n${summary.passed} passed, ${summary.failed} failed`);
 process.exit(failed.length === 0 ? 0 : 1);

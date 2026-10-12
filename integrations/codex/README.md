@@ -12,12 +12,13 @@ integrations/codex/
 ├── scripts/retarget.mjs               copy the package with another MCP URL (a hosted deployment)
 ├── scripts/verify-codex.mjs           end-to-end check with the real Codex CLI
 ├── scripts/board-guard.mjs            the verifier's write guard: fresh read, same revision, no owner's choice on a hosted board
+├── scripts/ferrite-consent.mjs        the owner's consent on the Ferrite app's page (form fetched, issued/form_mac posted back)
 └── test/plugin.test.mjs               static checks (node --test)
 ```
 
 ## Which Garderobe it connects to
 
-The committed `plugin/mcp.json` points at the local Worker, `http://127.0.0.1:8787/mcp` (`npm run dev` in `apps/worker`). No hosted Garderobe MCP endpoint exists yet, on Ferrite or anywhere else. To use a hosted deployment, write a copy whose URL is that deployment's MCP resource (`MCP_ORIGIN` + `/mcp`):
+The committed `plugin/mcp.json` points at `http://127.0.0.1:8787/mcp`, which is where both the local Worker (`npm run dev` in `apps/worker`) and the local Ferrite app (`ferrite dev` in `ferrite/`) serve by default. No hosted Garderobe MCP endpoint exists yet, on Ferrite or anywhere else. To use a hosted deployment, write a copy whose URL is that deployment's MCP resource (`MCP_ORIGIN` + `/mcp`):
 
 ```
 node integrations/codex/scripts/retarget.mjs --mcp-url https://<mcp-host>/mcp --out ~/wardrobe-codex
@@ -76,16 +77,25 @@ CODEX_BIN=$(command -v codex) node integrations/codex/scripts/verify-codex.mjs -
 
 Against a hosted deployment (a retargeted copy), also pass the owner's timezone from Garderobe settings, which picks the owner's day: `--marketplace ~/wardrobe-codex --timezone Europe/London`. The script refuses a hosted run without it. Against the local Worker it reads the timezone from the owner's settings.
 
+Against the Ferrite port of the app (`ferrite/`), pass `--app ferrite` and `--timezone`, with the app's owner token in `WARDROBE_OWNER_TOKEN` (never on the command line, never written out; Codex's own process does not receive it). Locally, start `ferrite dev --fresh` in `ferrite/` on the origin the app announces (http://127.0.0.1:8787 by default, which the committed `mcp.json` names), take the token from `[secrets]` in `ferrite/ferrite.local.toml`, and run:
+
+```
+WARDROBE_OWNER_TOKEN=… CODEX_BIN=$(command -v codex) node integrations/codex/scripts/verify-codex.mjs --app ferrite --timezone Europe/London
+```
+
+For a Ferrite deployment, run the same against a retargeted copy (`--marketplace`). The Ferrite consent page needs its own form: the script GETs the consent page first, copies its hidden fields (among them the server-issued `issued` and `form_mac`; a form is valid for 10 minutes) and posts them back at once with the owner token and the decision (`scripts/ferrite-consent.mjs`). The owner token is sent only when the discovered authorization page is on the origin of the plugin's MCP URL; an authorization server anywhere else is refused before any request.
+
 The script works in a throw-away `CODEX_HOME` and runs these steps:
 
 1. Installs the plugin from the marketplace.
-2. Runs `codex mcp login`. Against a loopback Worker it gives the owner's consent with the local run mode's sign-in, which stands in for Cloudflare Access. Against any other host it prints the URL for the owner to approve in a browser.
+2. Runs `codex mcp login`. Against a loopback Worker it gives the owner's consent with the local run mode's sign-in, which stands in for Cloudflare Access. With `--app ferrite` it gives it on the Ferrite app's consent page with the owner token. Against any other host it prints the URL for the owner to approve in a browser.
 3. Starts `codex app-server`, the protocol the Codex IDE extension and the desktop app use, and through Codex:
    - lists the tools;
    - reads the inventory and the board;
    - chooses a board option other than the owner's current choice, checks the receipt and (against the local Worker) that the day's recorded wear is unchanged, then undoes the choice and checks that the board shows exactly the owner's prior choice (or none, if there was none). A hosted run prints a note that the wear check was not verified;
    - asks for a piece swap on the board. Under the owner's 2026-10-05 contract it must apply at once with a receipt; the script reads the board to check that the piece in that role really changed, then always undoes the swap and checks that the option has its original pieces again. A `confirmation_required` answer fails this check, because it is the superseded behaviour;
-   - checks that a restriction lift is refused (the request names no real restriction, and nothing is written).
+   - checks that a restriction lift is refused (the request names no real restriction, and nothing is written);
+   - with `--app ferrite`, while the port does not yet publish `garderobe_today`: reports the board steps as not run. Against a local `ferrite dev` only, it shows the routine write with its receipt and undo with the one write the port offers, a care report (`care.mark_dirty` on one clean, single, laundered garment): it checks that exactly that garment moved from clean to dirty, undoes it at once and checks that every garment's balances are as before. It never sends that write to a Ferrite deployment, where it would record a wash the owner did not report.
 No model runs in this script. Codex can run only OpenAI models, and the project authorizes only claude-opus-5-5 for inference, so there is no model-driven `codex exec` step: every check above goes through `codex app-server`, which calls the tools without a model, and no Codex sign-in is needed. The script refuses `--codex-model` and `CODEX_MODEL`. A model-driven session would need an explicit owner exception to that rule.
 
 Against a local Worker, setup (publishing tomorrow's board) and cleanup (rejecting a waiting proposal) are done as the owner through the app API. Against a deployment the daily service publishes the board, and the script does not write on a board where the owner has already made a choice: it reports the board writes as not run. Before every write (choice, swap and both undos) it reads the board again and sends the revision it observed as `expectedVersions`; if the board changed between steps, it stops instead of writing. A writing run against real data leaves undone changes in the history, and possibly one pending proposal, which the owner rejects in the app.
@@ -94,31 +104,20 @@ Against a local Worker, setup (publishing tomorrow's board) and cleanup (rejecti
 
 All results below are local, not a hosted check.
 
-**Current version, 2026-10-12, local Worker** (Miniflare via `npm run dev` in `apps/worker`, with the real owner profile and the 127-garment inventory), Codex CLI 0.162.1, `--registration dcr`, no model: **19 of 21 checks passed, 2 failed** (`node integrations/codex/scripts/verify-codex.mjs`, exit 1). Passed:
+**Current version, 2026-10-12, local Worker** (Miniflare via `npm run dev` in `apps/worker`, with the real owner profile and the 127-garment inventory), Codex CLI 0.162.1, `--registration dcr`, no model, after the daily service gave `board.swap_slot` an undo (commit fdb48436): **21 of 21 checks passed** (exit 0). Install and login, all seven tools, the inventory and board reads, the refused restriction lift, `board.select` with a receipt and the day's wear unchanged, its undo with the whole board exactly as before, and the piece swap applied at once with a receipt, then taken back by `command.undo` with its own receipt and the whole board exactly as before.
 
-- plugin install and login: Codex available, marketplace add, plugin add, server configured, Garderobe's authorization server discovered with both scopes, login with the owner's consent;
-- tools: server connected over OAuth, all seven tools listed;
-- reads: the complete inventory (127 garments) and tomorrow's published board (5 options);
-- a restriction lift from Codex is refused (`forbidden`);
-- routine write: `board.select` applied directly with a receipt, shown on the app's board, the day's recorded wear unchanged;
-- undo: `command.undo` took the choice back with its own receipt, and the whole board (board, choice, every option's pieces) was exactly as before;
-- contract 2026-10-05: the requested piece swap (`board.swap_slot`, the top) applied at once with a receipt, and the board showed the new top.
+**Current version, 2026-10-12, local Ferrite app** (`ferrite dev --fresh` in `ferrite/`, ferrite 0.1.20, at http://127.0.0.1:8787; the port's milestone 1a, seeded with the owner's 127-garment inventory), Codex CLI 0.162.1, `--app ferrite --timezone Europe/London`, no model: **15 of 17 checks passed, 2 failed** (exit 1). Passed: install, Garderobe's authorization server discovered with both scopes, the owner's consent on the Ferrite consent page (form fetched, `issued` and `form_mac` posted back), `codex mcp login` completed, the server connected over OAuth, the complete inventory (127 garments) read, a restriction lift refused (`forbidden`), and the routine write: `care.mark_dirty` applied at once with a receipt offering undo, exactly that garment moved from clean to dirty, `command.undo` took it back with its own receipt, and every garment's balances were as before. Failed: the port lists two tools (`garderobe_command`, `garderobe_inventory`), not seven, so the board steps (choice, swap and their undos) were not run. The owner token did not appear in the output.
 
-Failed:
+The same day, the refusals were checked: a missing `CODEX_BIN` fails the "Codex CLI available" check with exit 1; `--app ferrite` without `WARDROBE_OWNER_TOKEN` or without `--timezone`, an unknown `--app`, `--codex-model`, `--codex-model=…` and `CODEX_MODEL` each exit 2; no temporary Codex home was left. `node --test integrations/codex/test/plugin.test.mjs`: 21 of 21 tests passed.
 
-- `command.undo` of the swap was refused: `not_undoable`, "swap the piece back instead; the earlier revision stays in history";
-- so the board was not restored after the swap (the local board keeps the swapped top).
-
-The 2026-10-05 contract says a change the owner asks for applies at once with a receipt and is taken back with undo, so the swap's refused undo is a server finding: `board.swap_slot` declares no undo plan in the daily service (`packages/daily/src/boards.ts`), so the shared command service answers `not_undoable` on every surface (the plugin does not change server behaviour). Until the daily service gives the swap an undo plan, this check fails.
-
-The same day, the refusals were also checked: a missing or non-executable `CODEX_BIN` fails the "Codex CLI available" check and stops with exit 1 (no unhandled spawn error, no temporary home left); a hosted run without `--timezone`, an invalid `--timezone`, `--codex-model` and `CODEX_MODEL` each exit 2. `node --test integrations/codex/test/plugin.test.mjs`: 18 of 18 tests passed.
+**Earlier on 2026-10-12, local Worker:** 19 of 21, when `command.undo` of a swap was still refused (`not_undoable`, "swap the piece back instead") because `board.swap_slot` declared no undo plan in `packages/daily/src/boards.ts`; the daily service has since added it.
 
 **Earlier versions, 2026-10-12:** 22 of 22 checks passed, and 21 of 21 before the restriction-lift check was added. Those versions accepted a `confirmation_required` answer to the piece swap (the server then still kept swaps for the owner), and they included a model-driven `codex exec` step that ran Codex 0.162.1's default OpenAI model (its name was not recorded); that step has since been removed because the project authorizes only claude-opus-5-5 for inference.
 
 What these results do not cover:
 
-- No hosted deployment was tested, so no hosted run has happened.
-- Real Cloudflare Access was not used: consent was given with the local sign-in stand-in.
+- No hosted deployment was tested, so no hosted run has happened: neither a Cloudflare deployment nor a Ferrite deployment (the Ferrite deploy waits on the owner's Ferrite account credential).
+- Real Cloudflare Access was not used: consent on the Worker was given with the local sign-in stand-in.
 - The ChatGPT desktop app's plugin installer and its sign-in on install were not exercised; only the CLI was.
 
 ## Codex format

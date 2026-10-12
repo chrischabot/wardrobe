@@ -13,7 +13,8 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { checkMcpUrl, retarget } from "../scripts/retarget.mjs";
-import { adoptAfterWrite, authorizationUrlFrom, boardState, ownerDay, sameWear, unchangedAfterUnapplied, versionsOf, within, writeDecision } from "../scripts/board-guard.mjs";
+import { adoptAfterWrite, authorizationUrlFrom, balancesState, boardState, cleanLaundered, movedToDirty, ownerDay, sameWear, unchangedAfterUnapplied, versionsOf, within, writeDecision } from "../scripts/board-guard.mjs";
+import { ferriteConsent, formAction, hiddenFields } from "../scripts/ferrite-consent.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const REPO = path.resolve(ROOT, "../..");
@@ -230,6 +231,90 @@ test("a wait that never settles is bounded by its deadline or by the process end
   await assert.rejects(within(never, 10_000, "consent did not finish", Promise.reject(new Error("spawn failed"))), /the process ended first/);
   assert.equal(await within(Promise.resolve("ok"), 10_000, "unused"), "ok");
   await assert.rejects(within(Promise.reject(new Error("denied")), 10_000, "unused"), /denied/);
+});
+
+// A stand-in for the Ferrite app's consent endpoints (test double, not the app): GET answers a consent page in the
+// markup ferrite/src/oauth.rs writes; POST accepts only a form carrying the issued/form_mac it handed out.
+function fakeFerrite({ getStatus = 200, withMac = true, postStatus = 302 } = {}) {
+  const requests = [];
+  const origin = "http://127.0.0.1:8790";
+  const hidden = (n, v) => `<input type="hidden" name="${n}" value="${v}">`;
+  const html = `<form method="post" action="${origin}/oauth/authorize">${withMac ? hidden("issued", "1791800000000") + hidden("form_mac", "ab12") : ""}${hidden("response_type", "code")}${hidden("client_id", "cl_1")}${hidden("redirect_uri", "http://127.0.0.1:1455/callback")}${hidden("state", "s&amp;1")}<input type="password" name="owner_token"></form>`;
+  const fetchImpl = async (url, init = {}) => {
+    requests.push({ url, method: init.method ?? "GET", body: init.body ? Object.fromEntries(new URLSearchParams(init.body)) : null });
+    if ((init.method ?? "GET") === "GET") return { status: getStatus, text: async () => html, headers: new Headers() };
+    const b = Object.fromEntries(new URLSearchParams(init.body));
+    const ok = postStatus === 302 && b.issued === "1791800000000" && b.form_mac === "ab12";
+    return { status: ok ? 302 : 400, text: async () => "", headers: new Headers(ok ? { location: "http://127.0.0.1:1455/callback?code=wac.grt_1.x&state=s%261" } : {}) };
+  };
+  return { fetchImpl, requests, authUrl: `${origin}/oauth/authorize?response_type=code&client_id=cl_1` };
+}
+
+const APP = "http://127.0.0.1:8790";
+
+test("Ferrite consent: the form is fetched first and its issued/form_mac fields are posted back with the owner's decision", async () => {
+  const f = fakeFerrite();
+  const callback = await ferriteConsent(f.authUrl, { appOrigin: APP, ownerToken: "owner-secret", fetchImpl: f.fetchImpl });
+  assert.equal(callback.toString(), "http://127.0.0.1:1455/callback?code=wac.grt_1.x&state=s%261");
+  assert.deepEqual(f.requests.map((r) => r.method), ["GET", "POST"]);
+  assert.equal(f.requests[0].url, f.authUrl);
+  assert.equal(f.requests[1].url, "http://127.0.0.1:8790/oauth/authorize");
+  const posted = f.requests[1].body;
+  assert.equal(posted.issued, "1791800000000");
+  assert.equal(posted.form_mac, "ab12");
+  assert.equal(posted.client_id, "cl_1");
+  assert.equal(posted.state, "s&1");
+  assert.equal(posted.owner_token, "owner-secret");
+  assert.equal(posted.decision, "allow");
+  assert.equal(posted.write, "on");
+  // Read-only consent leaves "Make changes" off.
+  const ro = fakeFerrite();
+  await ferriteConsent(ro.authUrl, { appOrigin: APP, ownerToken: "owner-secret", write: false, fetchImpl: ro.fetchImpl });
+  assert.equal(ro.requests[1].body.write, undefined);
+});
+
+test("Ferrite consent fails without the server-issued fields, on a refused form or without an owner token, never echoing the token", async () => {
+  const noMac = fakeFerrite({ withMac: false });
+  await assert.rejects(ferriteConsent(noMac.authUrl, { appOrigin: APP, ownerToken: "owner-secret", fetchImpl: noMac.fetchImpl }), /issued\/form_mac/);
+  assert.equal(noMac.requests.length, 1, "nothing is posted without the issued form");
+  const page404 = fakeFerrite({ getStatus: 404 });
+  await assert.rejects(ferriteConsent(page404.authUrl, { appOrigin: APP, ownerToken: "owner-secret", fetchImpl: page404.fetchImpl }), /answered 404/);
+  const refused = fakeFerrite({ postStatus: 400 });
+  await assert.rejects(ferriteConsent(refused.authUrl, { appOrigin: APP, ownerToken: "owner-secret", fetchImpl: refused.fetchImpl }), (e) => /not accepted: 400/.test(e.message) && !e.message.includes("owner-secret"));
+  await assert.rejects(ferriteConsent(refused.authUrl, { appOrigin: APP, ownerToken: "", fetchImpl: refused.fetchImpl }), /WARDROBE_OWNER_TOKEN/);
+  // A discovered authorization URL on any other origin never receives a request, let alone the owner token.
+  const elsewhere = fakeFerrite();
+  await assert.rejects(
+    ferriteConsent(elsewhere.authUrl, { appOrigin: "https://wardrobe.example", ownerToken: "owner-secret", fetchImpl: elsewhere.fetchImpl }),
+    (e) => /not on the Ferrite app's origin/.test(e.message) && !e.message.includes("owner-secret"),
+  );
+  assert.equal(elsewhere.requests.length, 0, "nothing is fetched from an authorization server on another origin");
+  const noOrigin = fakeFerrite();
+  await assert.rejects(ferriteConsent(noOrigin.authUrl, { ownerToken: "owner-secret", fetchImpl: noOrigin.fetchImpl }), /no app origin/);
+  assert.equal(noOrigin.requests.length, 0);
+  // The form must post to the page's own origin.
+  assert.throws(() => formAction('<form method="post" action="https://evil.example/oauth/authorize">', new URL("http://127.0.0.1:8790/oauth/authorize?x=1")), /another origin/);
+  assert.deepEqual(hiddenFields('<input type="hidden" name="a" value="&lt;b&gt;&amp;&quot;&#39;">'), { a: `<b>&"'` });
+});
+
+test("care round trip helpers: pick a clean single laundered garment and require exactly one unit moved", () => {
+  // Synthetic inventory items (labelled test data, not owner data).
+  const items = [
+    { garmentId: "g_shoe", careChannel: "none", quantity: 1, balances: { clean: 1, dirty: 0 } },
+    { garmentId: "g_pair", careChannel: "service", quantity: 2, balances: { clean: 2, dirty: 0 } },
+    { garmentId: "g_worn", careChannel: "service", quantity: 1, balances: { clean: 0, dirty: 1 } },
+    { garmentId: "g_shirt", careChannel: "service", quantity: 1, balances: { clean: 1, dirty: 0 } },
+  ];
+  assert.equal(cleanLaundered(items), "g_shirt");
+  assert.equal(cleanLaundered(items.slice(0, 3)), null);
+  const after = items.map((i) => (i.garmentId === "g_shirt" ? { ...i, balances: { clean: 0, dirty: 1 } } : i));
+  assert.equal(movedToDirty(items, after, "g_shirt"), true);
+  assert.equal(movedToDirty(items, items, "g_shirt"), false);
+  const extra = after.map((i) => (i.garmentId === "g_pair" ? { ...i, balances: { clean: 1, dirty: 1 } } : i));
+  assert.equal(movedToDirty(items, extra, "g_shirt"), false);
+  assert.equal(movedToDirty([], [], "g_shirt"), false);
+  assert.equal(balancesState(items), balancesState([...items].reverse()));
+  assert.notEqual(balancesState(items), balancesState(after));
 });
 
 test("choosing is not wearing: the day's wear must be unchanged, not merely empty", () => {
