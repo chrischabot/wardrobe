@@ -41,7 +41,7 @@
  *
  * Runs in the Cloudflare Workers runtime: only the injected `fetch`; no Node APIs.
  */
-import { CalendarApiError, CalendarNotConnectedError, withRequestTimeout } from "../ports.ts";
+import { CalendarApiError, CalendarNotConnectedError, DeadlineError, withDeadline, withRequestTimeout } from "../ports.ts";
 import type { CalendarEventRaw, CalendarReader, CalendarWriter, FetchLike, ManagedEvent, ManagedEventWrite } from "../ports.ts";
 
 const DEFAULT_BASE_URL = "https://www.googleapis.com/calendar/v3";
@@ -225,7 +225,16 @@ export function createGoogleCalendar(opts: {
    * short machine reason: never from the token, the URL, a response message or event text.
    */
   async function call(userId: string, spec: CallSpec): Promise<CallResult> {
-    const token = await opts.getAccessToken(userId);
+    // The access-token lookup (a refresh against Google's token endpoint) has a deadline of the same
+    // length as the request that follows it: a silent token service must not hold a phase either. A
+    // lookup that fails for any other reason keeps its own error.
+    let token: string | null;
+    try {
+      token = await withDeadline(opts.getAccessToken(userId), opts.timeoutMs);
+    } catch (e) {
+      if (e instanceof DeadlineError) throw new CalendarApiError(`Google Calendar ${spec.op} failed: network error`, { status: null, retryable: true, reason: "network" });
+      throw e;
+    }
     if (token === null || token === "") throw new CalendarNotConnectedError();
 
     const query = new URLSearchParams(spec.query ?? {}).toString();

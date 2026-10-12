@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import type { BoardDocument } from "@garderobe/contracts/ext/daily";
 import { all, first } from "@garderobe/domain";
 import type { TestOwner } from "@garderobe/domain/testing";
-import { getBoard, getToday, projectCalendarEffects, replenishBoards, runOwnerPhase, validateOutfit } from "../src/index.ts";
+import { fetchWeatherSnapshot, getBoard, getToday, projectCalendarEffects, replenishBoards, runOwnerPhase, validateOutfit } from "../src/index.ts";
 import { compose, createDailyHarness, garmentsByName, MILD_DAY, OUTFIT_CALENDAR, realOwner, syntheticOwner, system, WARM_DAY, type DailyHarness } from "./helpers.ts";
 
 const piece = (o: BoardDocument["options"][number], role: string) => o.garments.find((g) => g.role === role);
@@ -267,12 +267,22 @@ describe("forecast and calendar changes are repaired by the next phase", () => {
     h.clock.set("2026-09-15T20:05:00Z");
     await runOwnerPhase(h.deps, { userId: owner.userId, localDate: "2026-09-16", phase: "evening_compose", nowMs: h.clock.now() });
     const before = (await getBoard(h.db, owner.principal(), { date: "2026-09-16" }))!;
-    const chosen = before.options.find((o) => piece(o, "outer") && /^Lightweight oxford/.test(piece(o, "top")!.name)) ?? before.options.find((o) => piece(o, "outer"))!;
+    h.clock.set("2026-09-16T05:41:00Z");
+    // A much warmer day (21 C from the start instead of 12 C): beyond most jackets' stated range, while
+    // most shirts are still right. The outfit chosen is one whose shirt, trousers, socks and shoes are
+    // still right under that forecast (which shirts a seeded board carries varies; one kept to 20 C is
+    // rightly replaced, and then its option is not the one this test is about).
+    h.weather.setForecast("2026-09-16", { temperatureByHour: { 0: 19, 8: 21, 14: 21, 23: 19 } });
+    const warmer = await fetchWeatherSnapshot(h.deps, owner.principal(), { localDate: "2026-09-16", purpose: "adhoc", nowMs: h.clock.now(), record: false });
+    expect(warmer.conditions).toMatchObject({ departureC: 21, peakC: 21 });
+    let chosen: BoardDocument["options"][number] | undefined;
+    for (const o of before.options.filter((x) => piece(x, "outer"))) {
+      const v = await validateOutfit(h.db, owner.principal(), { forDate: "2026-09-16", nowMs: h.clock.now(), weather: warmer, slots: o.garments.filter((g) => g.role !== "outer").map((g) => ({ role: g.role, garmentId: g.garmentId })) as never });
+      if (v.valid) { chosen = o; break; }
+    }
+    if (!chosen) throw new Error("no jacketed option whose base outfit suits the warmer forecast");
     await owner.exec("board.select", { boardId: before.boardId, optionId: chosen.optionId });
 
-    h.clock.set("2026-09-16T05:41:00Z");
-    // Warmer start (23 C): above every jacket's stated range, while the 21 C peak leaves the shirts alone.
-    h.weather.setForecast("2026-09-16", { temperatureByHour: { 0: 22, 8: 23, 14: 21, 23: 19 } });
     const refresh = await runOwnerPhase(h.deps, { userId: owner.userId, localDate: "2026-09-16", phase: "morning_refresh", nowMs: h.clock.now() });
     expect(refresh.status).toBe("succeeded");
     expect((refresh.detail as any).action).not.toBe("recomposed");

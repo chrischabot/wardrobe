@@ -9,36 +9,67 @@ export type FetchLike = (input: string, init?: { method?: string; headers?: Reco
 /** Deadline for one request to an external service, body included. A phase must never wait on a silent provider. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 
+/** Longest delay a timer honours; a longer one would fire at once. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/** Thrown by `withDeadline` when the time ran out; adapters report it as a retryable network failure. */
+export class DeadlineError extends Error {
+  constructor(ms: number) {
+    super(`no complete response within ${ms} ms`);
+    this.name = "DeadlineError";
+  }
+}
+
+/** Settle with `work`, or reject after `timeoutMs` (`<= 0`, NaN or infinite: no deadline). `onTimeout` runs first. */
+export async function withDeadline<T>(work: Promise<T>, timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS, onTimeout?: () => void): Promise<T> {
+  if (!(timeoutMs > 0) || !Number.isFinite(timeoutMs)) return work;
+  const ms = Math.min(timeoutMs, MAX_TIMER_MS);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      onTimeout?.();
+      reject(new DeadlineError(ms));
+    }, ms);
+  });
+  // The losing promise of the race must not surface as an unhandled rejection.
+  deadline.catch(() => undefined);
+  work.catch(() => undefined);
+  try {
+    return await Promise.race([work, deadline]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 /**
  * Wrap a fetch so one exchange (headers AND body) is abandoned after `timeoutMs`: the request is aborted
  * and the call rejects, which every adapter already reports as a retryable network failure. The body is
  * read inside the deadline and handed on as a buffered response, so a provider that sends headers and
- * then stalls cannot hold a scheduled phase either. `timeoutMs <= 0` disables the deadline.
+ * then stalls cannot hold a scheduled phase either. A caller's own abort signal still aborts the request.
+ * `timeoutMs <= 0` (or an infinite one) disables the deadline; a deadline longer than a timer can hold
+ * is the longest a timer can hold.
  */
 export function withRequestTimeout(fetchFn: FetchLike, timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS): FetchLike {
-  if (!(timeoutMs > 0)) return fetchFn;
+  if (!(timeoutMs > 0) || !Number.isFinite(timeoutMs)) return fetchFn;
   return async (input, init) => {
     const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const deadline = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => {
-        controller.abort();
-        reject(new Error(`no complete response within ${timeoutMs} ms`));
-      }, timeoutMs);
-    });
-    // The losing promise of the race must not surface as an unhandled rejection.
-    deadline.catch(() => undefined);
+    const callers = init?.signal;
+    const forward = () => controller.abort();
+    if (callers?.aborted) controller.abort();
+    else callers?.addEventListener("abort", forward, { once: true });
     try {
-      const exchange = (async () => {
-        const response = await fetchFn(input, { ...(init ?? {}), signal: controller.signal });
-        const text = await response.text();
-        const bodiless = response.status === 204 || response.status === 205 || response.status === 304;
-        return new Response(bodiless ? null : text, { status: response.status, statusText: response.statusText, headers: response.headers });
-      })();
-      exchange.catch(() => undefined);
-      return await Promise.race([exchange, deadline]);
+      return await withDeadline(
+        (async () => {
+          const response = await fetchFn(input, { ...(init ?? {}), signal: controller.signal });
+          const text = await response.text();
+          const bodiless = response.status === 204 || response.status === 205 || response.status === 304;
+          return new Response(bodiless ? null : text, { status: response.status, statusText: response.statusText, headers: response.headers });
+        })(),
+        timeoutMs,
+        () => controller.abort(),
+      );
     } finally {
-      if (timer !== undefined) clearTimeout(timer);
+      callers?.removeEventListener("abort", forward);
     }
   };
 }
@@ -191,6 +222,25 @@ export interface CompositionRequest {
   rejections: { candidate: OutfitCandidate; violations: string[] }[];
   deadlineAtMs: number;
 }
+
+/**
+ * The clock and timer behind the inference budget. In production it is the real wall clock (a hung
+ * model has to be abandoned in real time); a test supplies its own so the budget running out is an
+ * event the test causes, not something that depends on how busy the machine is.
+ */
+export interface BudgetClock {
+  now(): number;
+  /** Call `fire` once after `ms`; the returned function cancels it. */
+  after(ms: number, fire: () => void): () => void;
+}
+
+export const SYSTEM_BUDGET_CLOCK: BudgetClock = {
+  now: () => Date.now(),
+  after: (ms, fire) => {
+    const timer = setTimeout(fire, ms);
+    return () => clearTimeout(timer);
+  },
+};
 
 /**
  * The composition model behind the AI Gateway (implemented by the assistant workstream). It only ever

@@ -12,7 +12,7 @@ import { DAILY_COMMANDS, DayBrief } from "@garderobe/contracts/ext/daily";
 import type { OutfitSlot, PackingProposal, Trip, TripDestination } from "@garderobe/contracts/ext/daily";
 import { addDays, all, assertPrincipal, CommandError, define, first, json, requireScope, stmt, type CommandPlan, type CommandRegistry, type Db, type Principal } from "@garderobe/domain";
 import { assembleContext } from "./context.ts";
-import { composeBoard } from "./compose.ts";
+import { composeBoard, eligibleFor } from "./compose.ts";
 import { execAs, nowOf, type DailyDeps } from "./deps.ts";
 import { fetchWeatherSnapshot } from "./snapshots.ts";
 import { prepareBoard, type PrepareBoardResult } from "./service.ts";
@@ -148,6 +148,14 @@ export function registerTripCommands(registry: CommandRegistry): void {
   registry.registerVersionResolver("trip", (userId, id) => ({ sql: "SELECT version FROM trips WHERE user_id = ? AND trip_id = ?", params: [userId, id] }));
   // Receipts of other workstreams' commands (packing, unpacking) name a trip in the owner's words.
   registry.registerEntityNamer("trip", async (db, userId, id) => (await first<{ name: string }>(db, "SELECT name FROM trips WHERE user_id = ? AND trip_id = ?", userId, id))?.name ?? null);
+  // Packing (a foundation command) is accepted only for this owner's own trip that is still planned:
+  // an unknown trip, another owner's trip and a cancelled trip are refused in the owner's words.
+  registry.registerEntityCheck("trip", async (db, userId, id) => {
+    const trip = await first<{ name: string; status: string }>(db, "SELECT name, status FROM trips WHERE user_id = ? AND trip_id = ?", userId, id);
+    if (!trip) return { ok: false, reason: "there is no such trip", notFound: true };
+    if (trip.status !== "planned") return { ok: false, reason: `${trip.name} is ${trip.status === "cancelled" ? "cancelled" : "no longer a planned trip"}` };
+    return { ok: true };
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -240,14 +248,15 @@ export async function proposePacking(deps: DailyDeps, principal: Principal, inpu
       // days (the same day's dinner still reuses the pair worn that day).
       const wornToday = days.find((d) => d.localDate === date)?.slots.find((s) => s.role === "socks")?.garmentId ?? null;
       const allocatedSocks = [...items.values()].filter((i) => i.role === "socks" && i.garmentId !== wornToday && i.quantity >= (sockUnits.get(i.garmentId) ?? 1)).map((i) => i.garmentId);
-      const rc = await assembleContext(deps.db, principal, {
+      const contextFor = (exclude: string[]) => assembleContext(deps.db, principal, {
         localDate: date,
         nowMs,
         scope: segment === "evening" ? "home:evening" : "home",
-        brief: DayBrief.parse({ allowRepeat: true, requestedCount: 1, segment, exclude: allocatedSocks }),
+        brief: DayBrief.parse({ allowRepeat: true, requestedCount: 1, segment, exclude }),
         weather: eveningSnapshot,
         calendar: occasionSnapshot(trip, date, segment, nowMs),
       });
+      let rc = await contextFor(allocatedSocks);
       // Deliberate reuse: lock pieces already in the bag while they still validate for this day.
       const attempt = async (lockedRoles: Role[]) => {
         const locked: OutfitSlot[] = lockedRoles.flatMap((role) => {
@@ -262,10 +271,37 @@ export async function proposePacking(deps: DailyDeps, principal: Principal, inpu
         const composed = await composeBoard(rc, { count: 1, reserveCount: 0, locked, avoidTops: usedTops, everydayFlourish: false, validate: { allowRepeat: true, ignoreBriefInclusions: true } });
         return composed.options[0] ?? null;
       };
-      const option = (await attempt(["bottom", "outer", "footwear", "belt"])) ?? (await attempt(["outer", "footwear", "belt"])) ?? (await attempt(["footwear"])) ?? (await attempt([]));
+      const cascade = async () => (await attempt(["bottom", "outer", "footwear", "belt"])) ?? (await attempt(["outer", "footwear", "belt"])) ?? (await attempt(["footwear"])) ?? (await attempt([]));
+      let option = await cascade();
+      let socksRanOut = false;
+      // Clean pairs at home that are not yet planned for an earlier day (they may still not suit this day).
+      const unplannedCleanSocks = [...rc.garments.values()].some((g) => g.roles.includes("socks") && g.availability.cleanObserved > 0 && !allocatedSocks.includes(g.garmentId));
+      if (!option && allocatedSocks.length > 0) {
+        // Every clean pair of socks at home is already planned for an earlier day. That is said in so
+        // many words, and the rest of the day is still planned (and packed): the day is composed as if
+        // one more pair were clean, then listed without socks. No pair is planned twice.
+        rc = await contextFor([]);
+        option = await cascade();
+        socksRanOut = option !== null;
+      }
       if (!option) {
-        notes.push(`No complete valid outfit could be proposed for ${date}${segment === "evening" ? " (evening)" : ""} from what is available at home.`);
+        // With no eligible pair of socks at all the day cannot be composed; the note still names socks, and
+        // says whether no pair is clean at home or clean pairs exist that do not suit the day.
+        const noEligibleSocks = eligibleFor(rc, "socks", { allowRepeat: true }).length === 0;
+        const cleanSocksAtHome = [...rc.garments.values()].some((g) => g.roles.includes("socks") && g.availability.cleanObserved > 0);
+        const where = `${date}${segment === "evening" ? " (evening)" : ""}`;
+        notes.push(!noEligibleSocks
+          ? `No complete valid outfit could be proposed for ${where} from what is available at home.`
+          : cleanSocksAtHome
+            ? `No outfit could be proposed for ${where}: the clean socks at home do not suit that day (its temperature, a restriction or another rule).`
+            : `No outfit could be proposed for ${where}: no clean pair of socks is available at home.`);
         continue;
+      }
+      if (socksRanOut) {
+        option = { ...option, slots: option.slots.filter((s) => s.role !== "socks") };
+        notes.push(unplannedCleanSocks
+          ? `No clean pair of socks that suits ${date}${segment === "evening" ? " (evening)" : ""} is left: the pairs that suit it are already planned for earlier days of the trip, and the other clean pairs at home do not suit that day (its temperature, a restriction or another rule). The rest of that day is planned without socks; one more suitable pair is needed before then.`
+          : `No clean pair of socks is left for ${date}${segment === "evening" ? " (evening)" : ""}: every clean pair at home is already planned for an earlier day of the trip. The rest of that day is planned without socks; one more clean pair is needed before then.`);
       }
       days.push({ localDate: date, segment, occasion: occasion?.label ?? null, slots: option.slots, reason: option.reason });
       for (const s of option.slots) {
@@ -274,6 +310,9 @@ export async function proposePacking(deps: DailyDeps, principal: Principal, inpu
         // Interchangeable units (socks) are counted per wearing day; other pieces are packed once.
         const sameDayReuse = days.some((d) => d !== days[days.length - 1] && d.localDate === date && d.slots.some((x) => x.garmentId === s.garmentId));
         if (s.role === "socks") {
+          // Only a sock with a clean pair on the ledger can be chosen at all (a garment with no clean
+          // unit at home is hard-excluded by the availability estimator), so the pairs that can be
+          // packed are exactly the clean pairs counted there.
           const units = Math.max(1, g.availability.cleanObserved);
           sockUnits.set(s.garmentId, units);
           entry.quantity = sameDayReuse ? entry.quantity : Math.min(entry.quantity + 1, units);

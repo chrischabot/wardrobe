@@ -103,12 +103,14 @@ describe("packing proposal", () => {
     await owner.exec("trip.create", { tripId: "synthetic-three-days", name: "Synthetic three days", departsOn: "2026-09-24", returnsOn: "2026-09-26", destinations: [PARIS], source: { kind: "owner_statement", note: "synthetic trip for a boundary test" } });
     const proposal = await proposePacking(h.deps, owner.principal(), { tripId: "synthetic-three-days", clientRequestId: "pp-synthetic", nowMs: h.clock.now() });
 
-    // Two single pairs cover two days. The third day is not dressed in a pair already planned.
-    expect(proposal.days.map((d) => d.localDate)).toEqual(["2026-09-24", "2026-09-25"]);
-    const socks = proposal.days.map((d) => d.slots.find((s) => s.role === "socks")!.garmentId);
+    // Two single pairs cover two days. The third day is not dressed in a pair already planned: it is
+    // planned without socks, and the proposal names socks as what is missing.
+    expect(proposal.days.map((d) => d.localDate)).toEqual(["2026-09-24", "2026-09-25", "2026-09-26"]);
+    const socks = proposal.days.slice(0, 2).map((d) => d.slots.find((s) => s.role === "socks")!.garmentId);
     expect([...socks].sort()).toEqual(["sock-a", "sock-b"]);
+    expect(proposal.days[2]!.slots.some((s) => s.role === "socks")).toBe(false);
     expect(proposal.items.filter((i) => i.role === "socks").map((i) => [i.garmentId, i.quantity]).sort()).toEqual([["sock-a", 1], ["sock-b", 1]]);
-    expect(proposal.notes.join(" ")).toMatch(/No complete valid outfit could be proposed for 2026-09-26/);
+    expect(proposal.notes.join(" ")).toMatch(/No clean pair of socks is left for 2026-09-26: every clean pair at home is already planned for an earlier day/);
   });
 });
 

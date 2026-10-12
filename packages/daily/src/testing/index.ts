@@ -14,6 +14,18 @@ import type { CompositionModel } from "../ports.ts";
 import { FakeGoogleCalendar } from "./fake-calendar.ts";
 import { FakeGeocoder, FakeWeatherProvider } from "./fake-weather.ts";
 import { REVISION_PROPERTY } from "../calendar/projector.ts";
+import type { ProviderForecast } from "../ports.ts";
+import { weatherCacheKey, writeCache } from "../snapshots.ts";
+import type { Db } from "@garderobe/domain";
+
+/**
+ * TEST DATA only: put a provider forecast into the shared forecast cache exactly as a real fetch would
+ * have (same key, same row), so another workstream's test can start from a cached forecast without
+ * writing the table by hand.
+ */
+export async function seedForecastCache(db: Db, input: { provider?: string; location: { latitude: number; longitude: number }; localDate: string; forecast: ProviderForecast }): Promise<void> {
+  await writeCache(db, weatherCacheKey(input.provider ?? input.forecast.provider, input.location, input.localDate), input.localDate, input.forecast);
+}
 
 export * from "./fake-calendar.ts";
 export * from "./fake-weather.ts";

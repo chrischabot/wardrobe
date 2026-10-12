@@ -776,6 +776,8 @@ export const stockPack = define({
     // The trip belongs to another workstream: when it has registered a check, only a trip it vouches for
     // (this owner's, still planned) is packed for (adversarial defect L13-1).
     const tripCheck = await ctx.checkEntity("trip", p.tripId);
+    // A trip that is not this owner's is not found, before any other refusal: another owner's trip is never confirmed to exist.
+    if (!tripCheck.ok && tripCheck.notFound) throw new CommandError("not_found", "nothing was packed: there is no such trip", { tripId: p.tripId });
     if (!tripCheck.ok) throw new CommandError("precondition_failed", `nothing was packed: ${tripCheck.reason}`, { reason: "trip_not_packable", tripId: p.tripId });
     const planner = ctx.stock();
     const eventIds: string[] = [];

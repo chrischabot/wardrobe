@@ -8,13 +8,14 @@ import { DayBrief, SuggestOutfitsInput, ValidateOutfitInput } from "@garderobe/c
 import type { BoardDocument, BoardGarmentLine, BoardOption, CalendarSnapshot, OutfitSlot, OutfitValidation, SuggestedOutfit, TemperaturePreview, WeatherSnapshot } from "@garderobe/contracts/ext/daily";
 import { all, assertPrincipal, CommandError, first, isCommandError, json, localDateOf, newId, prepare, requireScope, stmt, type Db, type Principal } from "@garderobe/domain";
 import { assembleContext, calendarSnapshotById, dailySettings, loadOwner, weatherSnapshotById } from "./context.ts";
-import { WEATHER_ROLES } from "./boards.ts";
+import { honoursRepeatExceptions, repeatExceptionsFor, repeatStatements, WEATHER_ROLES } from "./boards.ts";
 import { eligibleFor, factualReason } from "./compose.ts";
 import { composeBoard, type ComposedOption, type ComposeDiagnostics } from "./compose.ts";
 import { execAs, loadComfort, modelOf, nowOf, type DailyDeps } from "./deps.ts";
 import { buildBoardDocument, getBoard, loadBoard, loadOptions, loadRevision, type BoardRow, type StoredOption } from "./document.ts";
 import { parseScope, type RecommendationContext } from "./model.ts";
 import { repairOptions } from "./repair.ts";
+import { SYSTEM_BUDGET_CLOCK } from "./ports.ts";
 import { fetchWeatherSnapshot, readCalendarSnapshot } from "./snapshots.ts";
 import { destinationFor, occasionSnapshot, packedTripOn } from "./trip-day.ts";
 import { garmentViolations, validateCandidate } from "./validate.ts";
@@ -171,9 +172,11 @@ export async function prepareBoard(deps: DailyDeps, principal: Principal, opts: 
   const calendar = opts.calendar !== undefined ? opts.calendar : await readCalendarSnapshot(deps, principal, { localDate: opts.localDate, scope, nowMs, ...(opts.purpose === "adhoc" ? { maxAgeMinutes: dailySettings((await loadOwner(deps.db, principal.userId)).settings).calendarMaxAgeMinutes } : {}) });
   const approved = await approvedCombinations(deps.db, principal.userId, opts.localDate);
   const comfort = await loadComfort(deps, principal);
+  const repeatExceptions = await repeatExceptionsFor(deps.db, principal, await loadBoard(deps.db, principal.userId, { date: opts.localDate, scope }), brief);
   // One wall-clock model budget for the whole request, shared by its attempts, so a scheduled phase
   // stays inside its lease however many times the wardrobe changes underneath it.
-  const startedAt = Date.now();
+  const budgetClock = deps.budgetClock ?? SYSTEM_BUDGET_CLOCK;
+  const startedAt = budgetClock.now();
   const modelBudgetMs = Math.max(0, deps.modelBudgetMs ?? 120_000);
 
   const keepOwnersBoard = async (result: PrepareBoardResult, why: string): Promise<PrepareBoardResult> => {
@@ -192,9 +195,9 @@ export async function prepareBoard(deps: DailyDeps, principal: Principal, opts: 
 
   let last: PrepareBoardResult = { board: null, receipt: null, note: null, requestedCount: 0, diagnostics: null };
   for (let attempt = 1; attempt <= 3; attempt++) {
-    const rc = await assembleContext(deps.db, principal, { localDate: opts.localDate, nowMs, scope, brief, weather, calendar, comfort });
+    const rc = await assembleContext(deps.db, principal, { localDate: opts.localDate, nowMs, scope, brief, weather, calendar, comfort, repeatExceptions });
     const keep = (opts.keep ?? []).map((o) => storedToComposed(rc, o)).filter((o) => o.validation.valid);
-    const composed = await composeBoard(rc, { count: opts.count, model: modelOf(deps, principal), modelBudgetMs: Math.max(0, modelBudgetMs - (Date.now() - startedAt)), maxModelAttempts: deps.maxModelAttempts ?? 2, deadlineAtMs: nowMs + 120_000, approved, keep, avoidTops: opts.avoidTops });
+    const composed = await composeBoard(rc, { count: opts.count, model: modelOf(deps, principal), modelBudgetMs: Math.max(0, modelBudgetMs - (budgetClock.now() - startedAt)), budgetClock, maxModelAttempts: deps.maxModelAttempts ?? 2, deadlineAtMs: nowMs + 120_000, approved, keep, avoidTops: opts.avoidTops });
     last = { board: null, receipt: null, note: composed.notice, requestedCount: composed.requestedCount, diagnostics: composed.diagnostics };
     if (composed.options.length === 0) return last;
     try {
@@ -274,7 +277,7 @@ function previewOptions(rc: RecommendationContext, options: ComposedOption[]): B
       footwearAlternatives: o.footwearAlternatives.map((id) => line(id, "footwear")),
       flourish: flourish ? line(flourish.garmentId, "neckwear") : null,
       suitsEventIds: o.suitsEventIds,
-      qualification: null,
+      qualification: repeatStatements([{ evidence: { validation: o.validation } }]).join(" ") || null,
       changedInRevision: false,
     };
   });
@@ -290,7 +293,9 @@ function previewOptions(rc: RecommendationContext, options: ComposedOption[]): B
  * board. Clothes left at home cannot appear, and home stock is not made present by asking.
  *
  * A piece named in `lockedGarmentIds` stays on every outfit returned, and naming it is the owner's
- * explicit override of the repeat preference for that piece in this request only.
+ * explicit override of the repeat preference for that piece in this request only. The repeat is stated
+ * in the note, on the option and in the published board's notice. The override is the owner's: for an
+ * assistant principal neither a named piece nor `brief.allowRepeat` relaxes the repeat rule.
  */
 export async function recommend(deps: DailyDeps, principal: Principal, input: RecommendInput): Promise<RecommendResult> {
   assertPrincipal(principal);
@@ -298,7 +303,10 @@ export async function recommend(deps: DailyDeps, principal: Principal, input: Re
   const nowMs = nowOf(deps, input.nowMs);
   const owner = await loadOwner(deps.db, principal.userId);
   const localDate = input.date ?? localDateOf(nowMs, owner.settings.timezone);
-  const brief = DayBrief.parse({ ...(input.brief ?? {}), requestedCount: input.count ?? input.brief?.requestedCount ?? null, include: [...new Set([...(input.brief?.include ?? []), ...(input.lockedGarmentIds ?? [])])], occasionOnly: input.occasionOnly ?? input.brief?.occasionOnly ?? false });
+  // A malformed brief or garment identifier is the caller's mistake, said as such (never an internal error).
+  const parsedBrief = DayBrief.safeParse({ ...(input.brief ?? {}), requestedCount: input.count ?? input.brief?.requestedCount ?? null, include: [...new Set([...(input.brief?.include ?? []), ...(input.lockedGarmentIds ?? [])])], occasionOnly: input.occasionOnly ?? input.brief?.occasionOnly ?? false });
+  if (!parsedBrief.success) throw new CommandError("invalid_command", `the request is not valid: ${parsedBrief.error.issues.map((i) => `${i.path.join(".") || "brief"}: ${i.message}`).join("; ")}`);
+  const brief = parsedBrief.data;
   const evening = brief.segment === "evening";
   const trip = await packedTripOn(deps.db, principal.userId, localDate);
   const scope = trip ? `trip:${trip.tripId}${evening ? ":evening" : ""}` : evening ? "home:evening" : "home";
@@ -307,9 +315,11 @@ export async function recommend(deps: DailyDeps, principal: Principal, input: Re
   if (input.mode === "preview") {
     const weather = await fetchWeatherSnapshot(deps, principal, { localDate, purpose: trip ? "trip" : "adhoc", segment: brief.segment, nowMs, record: false, ...(location ? { location } : {}) });
     const calendar = trip ? occasionSnapshot(trip, localDate, brief.segment, nowMs) : await readCalendarSnapshot(deps, principal, { localDate, scope, nowMs, record: false });
-    const rc = await assembleContext(deps.db, principal, { localDate, nowMs, scope, brief, weather, calendar, comfort: await loadComfort(deps, principal) });
-    const composed = await composeBoard(rc, { model: modelOf(deps, principal), modelBudgetMs: deps.modelBudgetMs, maxModelAttempts: deps.maxModelAttempts ?? 2, reserveCount: 0, deadlineAtMs: nowMs + 120_000 });
-    return { state: "completed", options: previewOptions(rc, composed.options), board: null, insufficient: composed.options.length < composed.requestedCount, note: composed.notice };
+    const rc = await assembleContext(deps.db, principal, { localDate, nowMs, scope, brief, weather, calendar, comfort: await loadComfort(deps, principal), repeatExceptions: principal.actor !== "assistant" });
+    const composed = await composeBoard(rc, { model: modelOf(deps, principal), modelBudgetMs: deps.modelBudgetMs, budgetClock: deps.budgetClock, maxModelAttempts: deps.maxModelAttempts ?? 2, reserveCount: 0, deadlineAtMs: nowMs + 120_000 });
+    // A piece repeated inside the repeat horizon because the owner named it is said so, never silently.
+    const repeated = repeatStatements(composed.options.map((o) => ({ evidence: { validation: o.validation } })));
+    return { state: "completed", options: previewOptions(rc, composed.options), board: null, insufficient: composed.options.length < composed.requestedCount, note: [composed.notice, ...repeated].filter(Boolean).join(" ") || null };
   }
 
   requireScope(principal, "write");
@@ -352,7 +362,7 @@ async function boardContext(deps: DailyDeps, principal: Principal, board: BoardR
   const revision = (await loadRevision(deps.db, principal.userId, board.board_id, board.current_revision))!;
   const weather = overrides.weather ?? (revision.weather_snapshot_id ? await weatherSnapshotById(deps.db, principal.userId, revision.weather_snapshot_id) : null);
   const calendar = overrides.calendar !== undefined ? overrides.calendar : revision.calendar_snapshot_id ? await calendarSnapshotById(deps.db, principal.userId, revision.calendar_snapshot_id) : null;
-  const rc = await assembleContext(deps.db, principal, { localDate: board.local_date, nowMs, scope: board.scope, brief: revision.brief, ...(overrides.weather ? {} : { conditions: revision.conditions }), weather, calendar, comfort: await loadComfort(deps, principal) });
+  const rc = await assembleContext(deps.db, principal, { localDate: board.local_date, nowMs, scope: board.scope, brief: revision.brief, ...(overrides.weather ? {} : { conditions: revision.conditions }), weather, calendar, comfort: await loadComfort(deps, principal), repeatExceptions: honoursRepeatExceptions(revision) });
   const stored = await loadOptions(deps.db, principal.userId, board.board_id, board.current_revision);
   return { revision, weather, calendar, rc, stored };
 }
@@ -371,7 +381,7 @@ export async function rebuildOption(deps: DailyDeps, principal: Principal, input
   if (!target) return { board: await doc(), receipt: null, note: "That option is not on the current board revision." };
   const keep = offered.filter((o) => o.optionId !== target.optionId).map((o) => storedToComposed(rc, o));
   const oldTop = target.slots.find((s) => s.role === "top")?.garmentId;
-  const composed = await composeBoard(rc, { count: offered.length, reserveCount: 0, model: modelOf(deps, principal), modelBudgetMs: deps.modelBudgetMs, maxModelAttempts: deps.maxModelAttempts ?? 1, keep, avoidTops: oldTop && !revision.brief.include.includes(oldTop) ? [oldTop] : [] });
+  const composed = await composeBoard(rc, { count: offered.length, reserveCount: 0, model: modelOf(deps, principal), modelBudgetMs: deps.modelBudgetMs, budgetClock: deps.budgetClock, maxModelAttempts: deps.maxModelAttempts ?? 1, keep, avoidTops: oldTop && !revision.brief.include.includes(oldTop) ? [oldTop] : [] });
   const fresh = composed.options.find((o) => !o.optionId);
   if (!fresh) return { board: await doc(), receipt: null, note: "Nothing else eligible makes a different valid outfit today; the option is unchanged." };
   const options = offered.map((o) => (o.optionId === target.optionId ? toPublishOption(fresh) : storedToPublish(o)));
@@ -514,7 +524,7 @@ export async function reviseBoard(deps: DailyDeps, principal: Principal, board: 
   let added = 0;
   let notice: string | null = outcome.shortage;
   if (short) {
-    const composed = await composeBoard(rc, { count: revision.requested_count, model: modelOf(deps, principal), modelBudgetMs: deps.modelBudgetMs, maxModelAttempts: deps.maxModelAttempts ?? 1, keep, deadlineAtMs: opts.nowMs + 60_000 });
+    const composed = await composeBoard(rc, { count: revision.requested_count, model: modelOf(deps, principal), modelBudgetMs: deps.modelBudgetMs, budgetClock: deps.budgetClock, maxModelAttempts: deps.maxModelAttempts ?? 1, keep, deadlineAtMs: opts.nowMs + 60_000 });
     added = composed.options.length - keep.length;
     options = composed.options;
     if (composed.reserves.length >= reserves.length) reserves = composed.reserves;

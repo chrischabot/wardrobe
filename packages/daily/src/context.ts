@@ -29,6 +29,8 @@ export interface Overlay {
   unavailable?: Set<string>;
   addWears?: { garmentId: string; wearingDate: string }[];
   removeWears?: { garmentId: string; wearingDate: string }[];
+  /** Garments the committing command reports dirty: on a trip they are not re-worn from the suitcase. */
+  markedDirty?: Set<string>;
 }
 
 export interface AssembleOptions {
@@ -44,6 +46,12 @@ export interface AssembleOptions {
   overlay?: Overlay;
   /** Dated comfort observations to carry into ranking and the model context. */
   comfort?: ComfortObservation[];
+  /**
+   * Honour the brief's exceptions to the repeat rule (default true: a stored board is revalidated under
+   * the brief it was published with). Wherever a NEW brief enters - an ad hoc request, a publication -
+   * the caller passes false for an assistant principal: the exceptions are the owner's override.
+   */
+  repeatExceptions?: boolean;
   /** Skip the full profile text (validation and repair need rules, not prose). */
   withoutProfileText?: boolean;
 }
@@ -161,19 +169,34 @@ export async function assembleContext(db: Db, principal: Principal, opts: Assemb
   }
   if (parsedScope.tripId) {
     const tripId = parsedScope.tripId;
-    // Deliberate reuse the packing proposal planned: a unit of such a piece that was WORN on this trip
-    // is still in the suitcase and still wearable on a day the proposal plans it. Everything else worn
-    // on the trip, and anything packed already awaiting care, stays out.
-    const reuse = await plannedReuse(db, userId, tripId);
+    // Deliberate reuse the packing proposal planned: a unit of such a piece that was WORN ON THIS TRIP
+    // is still in the suitcase and still wearable on a day the proposal plans it, up to the number of
+    // units the proposal packs. Everything else worn on the trip, anything packed already awaiting
+    // care, and a piece the owner reported dirty after packing for the trip, stays out.
+    const { pieces: reuse, packedSeq } = await plannedReuse(db, userId, tripId);
     const wornOnTrip = new Set<string>();
+    const reportedDirty = new Set<string>();
     if (reuse.size > 0 && tripDepartsOn) {
-      const rows = await all<{ garment_id: string; wearing_date: string }>(db, "SELECT garment_id, wearing_date FROM daily_wears WHERE user_id = ? AND status = 'active' AND wearing_date >= ? AND wearing_date <= ?", userId, tripDepartsOn, localDate);
+      // A wear counts when its stock event names this trip (a wear whose event is not linked is taken by its date).
+      const rows = await all<{ garment_id: string; wearing_date: string }>(
+        db,
+        `SELECT w.garment_id, w.wearing_date FROM daily_wears w
+           LEFT JOIN stock_events e ON e.user_id = w.user_id AND e.event_id = w.stock_event_id
+          WHERE w.user_id = ? AND w.status = 'active' AND w.wearing_date >= ? AND w.wearing_date <= ?
+            AND (e.event_id IS NULL OR json_extract(e.payload_json, '$.tripId') = ?)`,
+        userId, tripDepartsOn, localDate, tripId,
+      );
       for (const r of rows) if (!overlay.removeWears?.some((w) => w.garmentId === r.garment_id && w.wearingDate === r.wearing_date)) wornOnTrip.add(r.garment_id);
       for (const w of overlay.addWears ?? []) if (w.wearingDate >= tripDepartsOn && w.wearingDate <= localDate) wornOnTrip.add(w.garmentId);
+      const dirty = await all<{ garment_id: string }>(db, "SELECT DISTINCT garment_id FROM stock_events WHERE user_id = ? AND kind = 'mark_dirty' AND voided_by_command_id IS NULL AND garment_id IS NOT NULL AND seq > ?", userId, packedSeq ?? 0);
+      for (const r of dirty) reportedDirty.add(r.garment_id);
     }
+    // The dirty report being committed counts as well, so the in-commit repair never re-wears it.
+    for (const id of overlay.markedDirty ?? []) reportedDirty.add(id);
     for (const g of input.garments) {
       const worn = g.balances.filter((b) => b.bucket === "trip" && b.ref === `${tripId}#dirty`).reduce((n, b) => n + b.quantity, 0);
-      const rewearable = reuse.get(g.garmentId)?.has(localDate) && wornOnTrip.has(g.garmentId) ? worn : 0;
+      const planned = reuse.get(g.garmentId);
+      const rewearable = planned?.dates.has(localDate) && wornOnTrip.has(g.garmentId) && !reportedDirty.has(g.garmentId) ? Math.min(worn, planned.units) : 0;
       const clean = (packedClean.get(g.garmentId) ?? 0) + rewearable;
       packedClean.set(g.garmentId, clean);
       g.balances = [
@@ -221,7 +244,7 @@ export async function assembleContext(db: Db, principal: Principal, opts: Assemb
       seasonNote: r.season_note,
       availability: avail,
       wornDates: wornByGarment.get(r.garment_id) ?? [],
-      colourFamily: colourFamily(r.colour ?? r.name),
+      colourFamily: colourFamily(r.colour || r.name),
       packedClean: packedClean.get(r.garment_id) ?? 0,
       inStorage: storage.get(r.garment_id) ?? 0,
     });
@@ -307,6 +330,7 @@ export async function assembleContext(db: Db, principal: Principal, opts: Assemb
     settings,
     daily,
     brief,
+    repeatExceptions: opts.repeatExceptions ?? true,
     wears,
     futureSelections: [...futureSelections.values()],
     recentlyShown: [...shown.values()],

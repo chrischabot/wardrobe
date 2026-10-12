@@ -4,10 +4,10 @@
  *
  *  - Google Calendar v3: every operation the adapter performs (events.list, get, insert, patch, delete) is
  *    sent to the real service with a token that is not a token. Google must answer HTTP 401 on each exact
- *    URL and verb, and the adapter must report "not connected". A wrong path or verb would answer 404 or
- *    405 instead, so this proves the endpoints, verbs and query parameters are accepted as far as
- *    authentication, and that Google's real error body is parsed. Nothing can be written: the calls are
- *    refused before they act.
+ *    URL and verb, and the adapter must report "not connected". This shows that each request reaches the
+ *    Calendar API and is refused for its token, and that Google's real error body is parsed. It does NOT
+ *    show that the path, verb or query parameters are right: Google may refuse the token before it looks
+ *    at them. Nothing can be written: the calls are refused before they act.
  *  - Apple WeatherKit: one forecast request signed with a throwaway P-256 key generated in this process.
  *    Apple must answer HTTP 401 and the adapter must raise a non-retryable provider error.
  *
@@ -78,7 +78,7 @@ for (const [name, verb, run] of operations) {
   const error = (exchange.body as { error?: { code?: unknown; status?: unknown; errors?: { reason?: unknown }[] } } | null)?.error;
   console.log(`  ${exchange.method} ${exchange.url.replace(/\?.*$/, "")} -> HTTP ${exchange.status} status=${String(error?.status)} reason=${String(error?.errors?.[0]?.reason)}`);
   check(exchange.method === verb, `${name}: sent as ${verb}`);
-  check(exchange.status === 401, `${name}: the real endpoint answers HTTP 401 to an invalid token (a wrong path or verb would answer 404 or 405)`);
+  check(exchange.status === 401, `${name}: the real endpoint answers HTTP 401 to an invalid token`);
   check(thrown instanceof CalendarNotConnectedError, `${name}: the adapter reports "not connected" (${thrown instanceof Error ? thrown.name : "no error"})`);
   check(thrown instanceof Error && !thrown.message.includes("not-a-token"), `${name}: the error message does not contain the token`);
   check(error?.code === 401 && typeof error?.status === "string", `${name}: error body has the documented shape { error: { code, status, errors[] } }`);
@@ -113,4 +113,4 @@ if (problems.length > 0) {
   console.log(`\nRESULT: FAILED, ${problems.length} problem(s).`);
   process.exit(1);
 }
-console.log("\nRESULT: OK. Endpoints, verbs and the unauthenticated error contracts match the adapters. Behaviour behind authentication is NOT covered.");
+console.log("\nRESULT: OK. Every request reached the real service and was refused for its token, and the unauthenticated error contracts match the adapters. Paths, parameters and behaviour behind authentication are NOT covered.");

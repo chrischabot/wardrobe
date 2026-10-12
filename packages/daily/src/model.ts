@@ -114,6 +114,12 @@ export interface RecommendationContext {
   settings: OwnerSettings;
   daily: DailySettings;
   brief: DayBrief;
+  /**
+   * Whether the brief's exceptions to the repeat rule (its `allowRepeat`, and a piece named in `include`
+   * that was worn inside the horizon) are honoured. They are the OWNER's override: a request made by an
+   * assistant principal never carries them, so it cannot repeat a piece the owner did not ask to repeat.
+   */
+  repeatExceptions: boolean;
   /** Counted wears in the pattern horizon. */
   wears: { garmentId: string; wearingDate: string }[];
   /** Selected options of other open boards in the coming week. */

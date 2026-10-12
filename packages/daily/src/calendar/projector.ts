@@ -8,6 +8,7 @@
  * is reported `projected` only after a read-back verified that revision.
  */
 import type { BoardDocument } from "@garderobe/contracts/ext/daily";
+import { decodeHTML } from "entities";
 import { claimDueEffects, first, latestDesiredRevision, prepare, settleEffect, stmt, toInstant, zonedToUtcMs, type Db, type EffectRecord } from "@garderobe/domain";
 import { CALENDAR_EFFECT_KIND } from "../boards.ts";
 import { dailySettings, loadOwner } from "../context.ts";
@@ -44,8 +45,17 @@ async function setProjection(db: Db, userId: string, targetKey: string, nowMs: n
  * around it (specification section 9). When the owner edited the managed outfit text itself, the
  * authoritative projection replaces his edit, but what he wrote before or after it is still his: the
  * managed region is located by the lines of the last projection that are still there.
+ *
+ * Google can hand a description back as HTML once it was edited in its web editor (line breaks as
+ * `<br>` or closed paragraphs, links as anchors, `&amp;` for `&`). Such a description is read as its
+ * plain text before the managed region is looked for, so the owner's note is found there too; the
+ * merged description is written as plain text.
+ *
+ * Known limit: a line directly above the surviving managed lines cannot be told apart from the first
+ * managed line rewritten in place when exactly that line is missing, and is then taken as the latter.
  */
-export function mergeDescription(remote: string | null, previousManaged: string | null, next: string): string {
+export function mergeDescription(remoteRaw: string | null, previousManaged: string | null, next: string): string {
+  const remote = remoteRaw && /<\/?(br|p|div|a|span|b|i|u|ul|ol|li)\b[^>]*>/i.test(remoteRaw) ? htmlToText(remoteRaw) : remoteRaw;
   if (!remote || remote.trim() === "") return next;
   if (previousManaged && remote.includes(previousManaged)) return remote.replace(previousManaged, next);
   if (remote.includes(next)) return remote;
@@ -71,6 +81,82 @@ export function mergeDescription(remote: string | null, previousManaged: string 
   const start = Math.max(0, firstRemote - firstManaged);
   const end = Math.min(lines.length, lastRemote + 1 + (managed.length - 1 - lastManaged));
   return [...lines.slice(0, start), next, ...lines.slice(end)].join("\n");
+}
+
+/**
+ * The plain text of a description Google returned as HTML: line breaks and block boundaries become lines,
+ * a link keeps its address as "text (address)", other tags go, and entities are decoded in one pass (so
+ * "&#38;amp;" is the text "&amp;", never "&").
+ */
+export function htmlToText(html: string): string {
+  let out = "";
+  let swallowNewline = false;
+  let anchor: { href: string; start: number } | null = null;
+  const lineStart = () => {
+    if (out !== "" && !out.endsWith("\n")) out += "\n";
+  };
+  const token = /<(\/?)([a-z][a-z0-9]*)\b([^>]*)>|[^<]+|</gi;
+  for (const m of html.replace(/\r\n/g, "\n").matchAll(token)) {
+    const [whole, closing, rawName, attributes] = m;
+    if (rawName === undefined) {
+      let text = decodeEntities(whole);
+      if (swallowNewline && text.startsWith("\n")) text = text.slice(1);
+      swallowNewline = false;
+      out += text;
+      continue;
+    }
+    swallowNewline = false;
+    const name = rawName.toLowerCase();
+    if (name === "br") {
+      out += "\n";
+      swallowNewline = true;
+    } else if (name === "p" || name === "div" || name === "li") {
+      if (closing) {
+        out += "\n";
+        swallowNewline = true;
+      } else lineStart();
+    } else if (name === "a" && !closing) {
+      const href = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(attributes ?? "");
+      const value = href ? decodeEntities(href[1] ?? href[2] ?? href[3] ?? "").trim() : "";
+      anchor = value ? { href: value, start: out.length } : null;
+    } else if (name === "a" && closing && anchor) {
+      const label = out.slice(anchor.start).trim();
+      if (label !== anchor.href) out += ` (${anchor.href})`;
+      anchor = null;
+    }
+  }
+  return out.replace(/\n+$/, "");
+}
+
+/**
+ * Decode HTML character references in one pass, as a browser shows the text, using the `entities`
+ * package's full HTML named-reference table; a numeric reference naming no valid code point (beyond
+ * U+10FFFF, a surrogate, zero) becomes U+FFFD instead of throwing.
+ */
+function decodeEntities(text: string): string {
+  return decodeHTML(text);
+}
+
+/**
+ * The base address to write into a Calendar event, rebuilt from the parsed URL (origin and path, no
+ * trailing slash): an absolute http(s) address with no credentials, query, fragment, whitespace or
+ * control characters. Anything else is null and is never written as a link.
+ */
+export function webAddressBase(value: string | null | undefined): string | null {
+  if (!value || /[\s\u0000-\u001f\u007f]/.test(value)) return null;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    if (url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "" || value.includes("?") || value.includes("#")) return null;
+    return `${url.origin}${url.pathname}`.replace(/\/+$/, "");
+  } catch {
+    return null;
+  }
+}
+
+/** A base address fit to be written into a Calendar event (see `webAddressBase`). */
+export function isWebAddress(value: string | null | undefined): value is string {
+  return webAddressBase(value) !== null;
 }
 
 function isNotConnected(e: unknown): boolean {
@@ -157,9 +243,10 @@ async function projectOne(deps: DailyDeps, effect: EffectRecord, nowMs: number):
       }
 
       const doc = await buildBoardDocument(db, userId, board);
-      // The owner's own base address when he set one; otherwise this deployment's origin.
-      const base = settings.calendar.boardBaseUrl || deps.boardBaseUrl || null;
-      const url = base ? `${base.replace(/\/+$/, "")}/board/${doc.localDate}` : null;
+      // The owner's own base address when he set one; otherwise this deployment's origin. Only a plain
+      // https (or http) address is ever written into the Calendar event; anything else is not a link.
+      const base = [settings.calendar.boardBaseUrl, deps.boardBaseUrl].map((b) => webAddressBase(b)).find((b) => b !== null) ?? null;
+      const url = base ? `${base}/board/${doc.localDate}` : null;
       const text = renderBoardCalendarText(doc, { boardUrl: url });
       const write = eventWrite(doc, text, owner.settings.delivery.morningLocalTime, settings.calendar.presentation, settings.calendar.reminderMinutesBefore);
 

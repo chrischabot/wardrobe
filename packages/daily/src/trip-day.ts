@@ -45,17 +45,35 @@ export async function packedTripOn(db: Db, userId: string, localDate: string): P
   return { tripId: row.trip_id, destinations, occasions: json(row.occasions_json, []) };
 }
 
+/** Roles the packing proposal reuses deliberately across days (see `proposePacking`). Socks and shirts are worn once. */
+export const PLANNED_REUSE_ROLES: ReadonlySet<string> = new Set(["bottom", "outer", "footwear", "belt"]);
+
 /**
- * Pieces the trip's latest packing proposal plans on more than one day, with the days it plans them.
- * Packing to that proposal is the owner's explicit request for the reuse, so a planned-again piece
- * worn earlier on the trip is still wearable from the suitcase on a day the proposal plans it; the
- * exception is the trip's alone. (The latest proposal is read: a proposal made after packing changes
- * which pieces count.)
+ * Pieces the packing proposal THE OWNER PACKED TO plans on more days than it packs units of, with the
+ * days it plans them and that unit count. Packing to that proposal is the owner's explicit request for
+ * the reuse, so a planned-again piece worn earlier on the trip is still wearable from the suitcase on a
+ * day the proposal plans it; the exception is the trip's alone.
+ *
+ * Only trousers, the jacket, the shoes and the belt are reused this way. A pair of socks or a shirt is
+ * worn for one day: a sock garment planned on three days is three pairs, and a pair that was worn is
+ * never offered again however few were packed. The proposal read is the newest one recorded no later
+ * than the owner's last packing report, compared as instants (julianday), never as text: the command
+ * service writes "...:00Z" for a whole second and "...:00.500Z" otherwise, and as text the second sorts
+ * before the first. A proposal regenerated after packing, however soon, changes nothing. The last
+ * packing report is one row, the newest in the journal, and both its instant and its journal position
+ * come from it; after that position a dirty report counts against re-wearing a piece.
  */
-export async function plannedReuse(db: Db, userId: string, tripId: string): Promise<Map<string, Set<string>>> {
-  const row = await first<{ proposal_json: string }>(db, "SELECT proposal_json FROM trip_packing_proposals WHERE user_id = ? AND trip_id = ? ORDER BY revision DESC LIMIT 1", userId, tripId);
+export async function plannedReuse(db: Db, userId: string, tripId: string): Promise<{ pieces: Map<string, { dates: Set<string>; units: number }>; packedSeq: number | null }> {
+  const packed = await first<{ at: string; seq: number }>(db, "SELECT recorded_at AS at, seq FROM stock_events WHERE user_id = ? AND kind = 'pack' AND voided_by_command_id IS NULL AND json_extract(payload_json, '$.tripId') = ? ORDER BY seq DESC LIMIT 1", userId, tripId);
+  if (!packed?.at) return { pieces: new Map(), packedSeq: null };
+  const row = await first<{ proposal_json: string }>(db, "SELECT proposal_json FROM trip_packing_proposals WHERE user_id = ? AND trip_id = ? AND julianday(created_at) <= julianday(?) ORDER BY revision DESC LIMIT 1", userId, tripId, packed.at);
   const proposal = row ? json<PackingProposal | null>(row.proposal_json, null) : null;
   const dates = new Map<string, Set<string>>();
-  for (const day of proposal?.days ?? []) for (const s of day.slots) dates.set(s.garmentId, (dates.get(s.garmentId) ?? new Set()).add(day.localDate));
-  return new Map([...dates].filter(([, d]) => d.size > 1));
+  for (const day of proposal?.days ?? []) for (const s of day.slots) if (PLANNED_REUSE_ROLES.has(s.role)) dates.set(s.garmentId, (dates.get(s.garmentId) ?? new Set()).add(day.localDate));
+  const out = new Map<string, { dates: Set<string>; units: number }>();
+  for (const [garmentId, d] of dates) {
+    const units = Math.max(1, proposal?.items.find((i) => i.garmentId === garmentId)?.quantity ?? 1);
+    if (d.size > units) out.set(garmentId, { dates: d, units });
+  }
+  return { pieces: out, packedSeq: packed.seq };
 }

@@ -112,7 +112,8 @@ async function readCache(db: Db, key: string): Promise<ProviderForecast | null> 
   return row ? (JSON.parse(row.payload_json) as ProviderForecast) : null;
 }
 
-async function writeCache(db: Db, key: string, localDate: string, f: ProviderForecast): Promise<void> {
+/** Write one forecast into the shared cache (the fetch path's own write; also used to seed TEST DATA). */
+export async function writeCache(db: Db, key: string, localDate: string, f: ProviderForecast): Promise<void> {
   await prepare(
     db,
     stmt(

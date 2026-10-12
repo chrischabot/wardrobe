@@ -137,8 +137,12 @@ export interface CommandContext {
 /** Looks up the owner's name for a record (registered per kind by the workstream that owns the records). */
 export type EntityNamer = (db: Db, userId: string, id: string) => Promise<string | null>;
 
-/** Whether a record of another workstream may be the target of a command; `reason` is in the owner's words. */
-export type EntityCheckResult = { ok: true } | { ok: false; reason: string };
+/**
+ * Whether a record of another workstream may be the target of a command; `reason` is in the owner's words.
+ * `notFound` says the record is not this owner's at all (unknown, or another owner's): the command then
+ * answers not_found, so it never confirms that another owner's record exists.
+ */
+export type EntityCheckResult = { ok: true } | { ok: false; reason: string; notFound?: boolean };
 /** Answers for one owner's record (registered per kind by the workstream that owns the records). */
 export type EntityCheck = (db: Db, userId: string, id: string) => Promise<EntityCheckResult>;
 

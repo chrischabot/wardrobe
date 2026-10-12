@@ -17,7 +17,7 @@ import { OutfitCandidate } from "@garderobe/contracts/ext/daily";
 import type { CalendarEventContext, OutfitSlot, OutfitValidation } from "@garderobe/contracts/ext/daily";
 import { jointAvailability } from "@garderobe/domain";
 import { COOL_FAMILIES, NEUTRAL_FAMILIES, WARM_FAMILIES, neutralFamiliesOf, seededUnit, type PoolGarment, type RecommendationContext } from "./model.ts";
-import type { CompositionModel } from "./ports.ts";
+import { SYSTEM_BUDGET_CLOCK, type BudgetClock, type CompositionModel } from "./ports.ts";
 import { EXPLORE_ADVISORY, garmentViolations, roleAccepts, validateCandidate, type ValidateOptions } from "./validate.ts";
 import { renderContextData, renderContextText } from "./context-text.ts";
 
@@ -65,6 +65,8 @@ export interface ComposeOptions {
   maxModelAttempts?: number;
   /** Wall-clock budget (ms) for the model part of this composition; it bounds every attempt together. */
   modelBudgetMs?: number;
+  /** The clock and timer the budget is measured with (default: the real wall clock). */
+  budgetClock?: BudgetClock;
   deadlineAtMs?: number;
   /** Existing options kept exactly as they are (replenishment keeps valid options usable). */
   keep?: ComposedOption[];
@@ -141,7 +143,7 @@ function pairScore(ctx: RecommendationContext, top: PoolGarment, bottom: PoolGar
   return score;
 }
 
-const neutralsOf = (g: PoolGarment) => neutralFamiliesOf(g.colour ?? g.name);
+const neutralsOf = (g: PoolGarment) => neutralFamiliesOf(g.colour || g.name);
 
 /**
  * The owner's limit on one neutral in an outfit (profile section 5) counts every piece worn in it:
@@ -245,16 +247,20 @@ function jacketWanted(ctx: RecommendationContext, index: number, smart: boolean)
   return false;
 }
 
-function chooseOuter(ctx: RecommendationContext, pools: Pools, top: PoolGarment, bottom: PoolGarment, usage: BoardUsage, seed: string, lockedOthers: (PoolGarment | undefined)[]): PoolGarment | undefined {
+function chooseOuter(ctx: RecommendationContext, pools: Pools, top: PoolGarment, bottom: PoolGarment, usage: BoardUsage, seed: string, lockedOthers: (PoolGarment | undefined)[], shoes: PoolGarment[]): PoolGarment | undefined {
   const band = ctx.rules.jacketBand;
   const t = ctx.conditions.departureC;
   // Inside the 14-16 C band - or when the outdoor temperature is unknown and the band cannot be ruled
   // out - a jacket only goes over the required shirt; any other shirt simply goes without a jacket.
   if (band && top.attributes.fabricClass !== band.requiredShirtFabricClass && (t === null || (t >= band.minC && t <= band.maxC))) return undefined;
   // A jacket that would be the third piece in one neutral is passed over while another jacket is eligible.
-  return pick(withinNeutralLimit(ctx, pools.outers, [top, bottom, ...lockedOthers]), (g) => {
+  const within = withinNeutralLimit(ctx, pools.outers, [top, bottom, ...lockedOthers]);
+  // The shoe is chosen after the jacket, so a jacket is also passed over when every shoe still to choose
+  // from would then be the third piece in one neutral (a navy jacket over navy trousers with only navy
+  // shoes eligible), while another jacket leaves a shoe within the limit.
+  const leavesShoe = shoes.length === 0 ? within : within.filter((g) => shoes.some((f) => !exceedsNeutralLimit(ctx, f, [g, top, bottom, ...lockedOthers])));
+  return pick(leavesShoe.length > 0 ? leavesShoe : within, (g) => {
     let s = seasonFit(g, t) * 1.5 + rotation(ctx, g) - (usage.outers.get(g.garmentId) ?? 0) * 2.5 + seededUnit(seed, g.garmentId) * 0.6;
-    if (NEUTRAL_FAMILIES.has(g.colourFamily) && g.colourFamily === top.colourFamily && g.colourFamily === bottom.colourFamily) s -= 3; // same neutral three times
     if (g.colourFamily === bottom.colourFamily) s -= 0.6;
     if (g.attributes.fitNote) s -= 0.5;
     return s;
@@ -266,26 +272,33 @@ function buildOutfit(ctx: RecommendationContext, pools: Pools, top: PoolGarment,
   const slots: OutfitSlot[] = [];
   // Pieces the owner fixed count towards the neutral limit before anything is chosen around them.
   const fixed = [locked.get("footwear"), locked.get("belt"), locked.get("socks"), locked.get("mid_layer")];
-  const outer = locked.get("outer") ?? (jacketWanted(ctx, usage.index, smart) ? chooseOuter(ctx, pools, top, bottom, usage, seed, fixed) : undefined);
+  const paired = ctx.rules.pairedFootwear?.inForce === true;
+  const sneakers = pools.footwear.filter((g) => g.attributes.footwearKind === "sneaker");
+  const shoePool = paired && sneakers.length > 0 ? sneakers : pools.footwear;
+  const outer = locked.get("outer") ?? (jacketWanted(ctx, usage.index, smart) ? chooseOuter(ctx, pools, top, bottom, usage, seed, fixed, locked.has("footwear") ? [] : shoePool) : undefined);
   if (outer) slots.push({ role: "outer", garmentId: outer.garmentId });
   slots.push({ role: "top", garmentId: top.garmentId }, { role: "bottom", garmentId: bottom.garmentId });
 
   const upper = new Set([top.colourFamily, outer?.colourFamily].filter(Boolean));
 
   // The belt line's optional flourish, appropriate to the day (profile section 9): a scarf for a cold
-  // start; otherwise a tie whenever the top is a collared shirt and the sheet's season words for the
-  // tie fit the day's peak. It is a suggestion carried on every plan, never a required piece.
+  // start; otherwise, whenever the top is a shirt, a TIE whose season words in the sheet fit the day's
+  // peak (the everyday suggestion is never a bandana or other neckwear; a smart occasion keeps any
+  // neckwear that is not a scarf). It is a suggestion carried on every plan,
+  // never a required piece. (No collar attribute is recorded on garments; the shirt category stands for it.)
   const departure = ctx.conditions.departureC;
   const scarfDay = departure !== null && departure <= 10;
   const flourish = locked.get("neckwear") ?? pick(
-    pools.neckwear.filter((g) => (g.category === "scarf" ? scarfDay : top.category === "shirt" && (smart || (everydayFlourish && seasonFit(g, ctx.conditions.peakC) >= 0)))),
+    pools.neckwear.filter((g) => (g.category === "scarf" ? scarfDay : top.category === "shirt" && (smart || (g.category === "tie" && everydayFlourish && seasonFit(g, ctx.conditions.peakC) >= 0)))),
     (g) => (g.category === "scarf" ? 2 + seasonFit(g, departure) : seasonFit(g, ctx.conditions.peakC)) + (g.colourFamily !== top.colourFamily ? 0.5 : 0) + (outer && g.colourFamily === outer.colourFamily ? -0.3 : 0) + seededUnit(seed, g.garmentId) * 0.5,
   );
 
+  // The colour echo from higher up belongs to the sock first (profile section 4). A shoe in a neutral
+  // already worn higher up would be that neutral's second piece and leave no room for the sock to echo
+  // it, so such a shoe is ranked down rather than up; a shoe may still echo a colour that is not a neutral.
+  const takesSockEcho = (g: PoolGarment) => NEUTRAL_FAMILIES.has(g.colourFamily) && upper.has(g.colourFamily);
   const footwearScore = (g: PoolGarment) =>
-    rotation(ctx, g) - (usage.footwear.get(g.garmentId) ?? 0) * 1.5 + (upper.has(g.colourFamily) ? 0.8 : 0) - (g.colourFamily === bottom.colourFamily ? 0.3 : 0) + (g.attributes.breakingIn ? -0.5 : 0) + seededUnit(seed, g.garmentId) * 0.6;
-  const paired = ctx.rules.pairedFootwear?.inForce === true;
-  const sneakers = pools.footwear.filter((g) => g.attributes.footwearKind === "sneaker");
+    rotation(ctx, g) - (usage.footwear.get(g.garmentId) ?? 0) * 1.5 + (takesSockEcho(g) ? -0.6 : upper.has(g.colourFamily) ? 0.8 : 0) - (g.colourFamily === bottom.colourFamily ? 0.3 : 0) + (g.attributes.breakingIn ? -0.5 : 0) + seededUnit(seed, g.garmentId) * 0.6;
   // The shoe echoes a colour from higher up, but never as the third piece in one neutral while another
   // eligible shoe exists (a navy jacket over a navy shirt does not take the navy sneaker as well).
   const worn = [outer, top, bottom, ...fixed];
@@ -301,7 +314,7 @@ function buildOutfit(ctx: RecommendationContext, pools: Pools, top: PoolGarment,
     const kept = shoes.filter(leavesSockEcho);
     return kept.length > 0 ? kept : shoes;
   };
-  const footwear = locked.get("footwear") ?? pick(keepingSockEcho(withinNeutralLimit(ctx, paired && sneakers.length > 0 ? sneakers : pools.footwear, worn)), footwearScore);
+  const footwear = locked.get("footwear") ?? pick(keepingSockEcho(withinNeutralLimit(ctx, shoePool, worn)), footwearScore);
   if (!footwear) return null;
   const footwearAlternatives: string[] = [];
   if (paired) {
@@ -490,27 +503,28 @@ export async function composeBoard(ctx: RecommendationContext, opts: ComposeOpti
     // The inference budget is wall-clock: a slow or hung model cannot hold the morning board. When it
     // runs out the attempt is abandoned and the deterministic composer fills the board.
     const budgetMs = Math.max(0, opts.modelBudgetMs ?? 120_000);
-    const startedAt = Date.now();
+    const budgetClock = opts.budgetClock ?? SYSTEM_BUDGET_CLOCK;
+    const startedAt = budgetClock.now();
     for (let attempt = 1; attempt <= maxAttempts && accepted < want; attempt++) {
-      const remaining = budgetMs - (Date.now() - startedAt);
+      const remaining = budgetMs - (budgetClock.now() - startedAt);
       if (remaining <= 0) {
         diagnostics.modelError = diagnostics.modelError ?? "the inference budget for this board was used up";
         break;
       }
       diagnostics.modelAttempts = attempt;
       let proposals: unknown[];
-      let timer: ReturnType<typeof setTimeout> | undefined;
+      let cancelTimer: (() => void) | undefined;
       try {
         const call = opts.model.propose({ localDate: ctx.localDate, count: want, contextText, contextData, rejections: [...rejections], deadlineAtMs: (opts.deadlineAtMs ?? ctx.nowMs + budgetMs) });
         const timeout = new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error("the model did not answer within the inference budget for this board")), remaining);
+          cancelTimer = budgetClock.after(remaining, () => reject(new Error("the model did not answer within the inference budget for this board")));
         });
         proposals = await Promise.race([call, timeout]);
       } catch (e) {
         diagnostics.modelError = String((e as Error)?.message ?? e).slice(0, 200);
         break;
       } finally {
-        if (timer !== undefined) clearTimeout(timer);
+        cancelTimer?.();
       }
       if (!Array.isArray(proposals)) {
         diagnostics.modelError = "the model did not return a list of candidates";
@@ -688,7 +702,7 @@ export async function composeBoard(ctx: RecommendationContext, opts: ComposeOpti
 export function withPairedFootwear(
   ctx: RecommendationContext,
   candidate: { slots: OutfitSlot[]; footwearAlternatives: string[] },
-  opts: { validate?: ValidateOptions; usage?: Map<string, number> } = {},
+  opts: { validate?: ValidateOptions; usage?: Map<string, number>; avoidGarmentIds?: Set<string> } = {},
 ): { slots: OutfitSlot[]; footwearAlternatives: string[]; added: string[] } {
   const unchanged = { slots: candidate.slots, footwearAlternatives: candidate.footwearAlternatives, added: [] as string[] };
   if (ctx.rules.pairedFootwear?.inForce !== true) return unchanged;
@@ -699,7 +713,7 @@ export function withPairedFootwear(
   const missing = ["sneaker", "welted"].filter((k) => !kinds.has(k));
   if (missing.length === 0) return unchanged;
   const inOutfit = new Set([...candidate.slots.map((s) => s.garmentId), ...candidate.footwearAlternatives]);
-  const eligible = eligibleFor(ctx, "footwear", opts.validate ?? {}).filter((g) => !inOutfit.has(g.garmentId));
+  const eligible = eligibleFor(ctx, "footwear", opts.validate ?? {}).filter((g) => !inOutfit.has(g.garmentId) && !opts.avoidGarmentIds?.has(g.garmentId));
   const added: string[] = [];
   for (const kind of missing) {
     const best = eligible
@@ -748,8 +762,11 @@ export function findReplacement(
     .sort((a, b) => b.score - a.score || a.g.garmentId.localeCompare(b.g.garmentId));
   for (const { g } of ranked) {
     const swapped = option.slots.some((s) => s.role === role) ? option.slots.map((s) => (s.role === role ? { role, garmentId: g.garmentId } : s)) : [...option.slots, { role, garmentId: g.garmentId }];
-    // An option published before the paired-shoe format came into force gains its alternative here.
-    const { slots, footwearAlternatives } = withPairedFootwear(ctx, { slots: swapped, footwearAlternatives: option.footwearAlternatives }, { validate: validateOpts });
+    // An option published before the paired-shoe format came into force gains its alternative here: a
+    // pair other than the avoided ones when one is eligible, otherwise whatever completes the format.
+    const base = { slots: swapped, footwearAlternatives: option.footwearAlternatives };
+    const avoiding = avoid.size > 0 ? withPairedFootwear(ctx, base, { validate: validateOpts, avoidGarmentIds: avoid }) : null;
+    const { slots, footwearAlternatives } = avoiding && avoiding.added.length > 0 ? avoiding : withPairedFootwear(ctx, base, { validate: validateOpts });
     const validation = validateCandidate(ctx, { slots, footwearAlternatives }, validateOpts);
     if (validation.valid) return { slots, footwearAlternatives, validation, replacement: g };
   }

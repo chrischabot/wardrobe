@@ -312,7 +312,7 @@ export class CommandService {
         // Unlike a name, this decides whether the command may write: a check that cannot answer refuses.
         try {
           const answer = await check(db, userId, id);
-          return answer.ok === true ? { ok: true as const } : { ok: false as const, reason: typeof answer.reason === "string" && answer.reason.trim() !== "" ? answer.reason : "it could not be confirmed" };
+          return answer.ok === true ? { ok: true as const } : { ok: false as const, reason: typeof answer.reason === "string" && answer.reason.trim() !== "" ? answer.reason : "it could not be confirmed", ...(answer.notFound === true ? { notFound: true } : {}) };
         } catch (error) {
           console.warn(`entity check for '${kind}' failed for ${id} in command ${commandId}; the command is refused: ${error instanceof Error ? error.message : "unknown error"}`);
           return { ok: false as const, reason: "it could not be checked just now" };

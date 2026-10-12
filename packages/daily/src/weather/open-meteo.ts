@@ -224,14 +224,17 @@ export function normalizeOpenMeteoForecast(body: Record<string, unknown>, reques
   };
 }
 
-/** The exact forecast URL the adapter calls for a request (one extra day each side; see the header comment). */
-export function openMeteoForecastUrl(request: ForecastRequest, baseUrl: string = OPEN_METEO_FORECAST_BASE_URL): string {
+/**
+ * The exact forecast URL the adapter calls for a request: one extra day each side (see the header
+ * comment). `padEnd: false` leaves the end unpadded, for the last day the provider can forecast.
+ */
+export function openMeteoForecastUrl(request: ForecastRequest, baseUrl: string = OPEN_METEO_FORECAST_BASE_URL, opts: { padEnd?: boolean } = {}): string {
   const params = new URLSearchParams({
     latitude: String(request.latitude),
     longitude: String(request.longitude),
     timezone: request.timezone,
     start_date: addDays(request.startDate, -1),
-    end_date: addDays(request.endDate, 1),
+    end_date: opts.padEnd === false ? request.endDate : addDays(request.endDate, 1),
     hourly: OPEN_METEO_HOURLY_VARIABLES.join(","),
     temperature_unit: "celsius",
     wind_speed_unit: "kmh",
@@ -246,7 +249,19 @@ export function createOpenMeteoProvider(opts: { fetch: FetchLike; baseUrl?: stri
   return {
     name: PROVIDER,
     async forecast(request: ForecastRequest): Promise<ProviderForecast> {
-      const body = await getJson(fetchFn, openMeteoForecastUrl(request, opts.baseUrl), "Open-Meteo forecast");
+      let body: Record<string, unknown>;
+      try {
+        body = await getJson(fetchFn, openMeteoForecastUrl(request, opts.baseUrl), "Open-Meteo forecast");
+      } catch (error) {
+        // The extra day after the requested range can fall outside what the provider forecasts (observed
+        // live on 2026-10-03: HTTP 400 "Parameter 'end_date' is out of allowed range from ... to ..."
+        // for the last forecastable day, which answers 200 on its own). The request is then repeated
+        // without that extra day; hours the unpadded answer does not cover are simply absent, and the
+        // preceding-hour values of its last label are null. A range that is itself out of range fails again.
+        const outOfRange = error instanceof WeatherProviderError && error.detail.status === 400 && /end_date/.test(error.message) && /out of allowed range/i.test(error.message);
+        if (!outOfRange) throw error;
+        body = await getJson(fetchFn, openMeteoForecastUrl(request, opts.baseUrl, { padEnd: false }), "Open-Meteo forecast");
+      }
       return normalizeOpenMeteoForecast(body, request, now());
     },
   };

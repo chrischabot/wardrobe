@@ -1,7 +1,7 @@
 import type { CommandReceipt } from "@garderobe/contracts";
 import type { CommandService, Db, Principal } from "@garderobe/domain";
 import type { ComfortObservation } from "./model.ts";
-import type { CalendarReader, CalendarWriter, CompositionModel, Geocoder, WeatherProvider } from "./ports.ts";
+import type { BudgetClock, CalendarReader, CalendarWriter, CompositionModel, Geocoder, WeatherProvider } from "./ports.ts";
 
 /**
  * Everything the daily service needs from its host (the Worker). External services appear only as
@@ -23,6 +23,8 @@ export interface DailyDeps {
   modelFor?: ((principal: Principal) => CompositionModel | null) | null;
   /** Wall-clock budget for the model part of one composition (default two minutes); the fallback composer then takes over. */
   modelBudgetMs?: number;
+  /** The clock and timer that budget is measured with (default: the real wall clock). Tests supply their own. */
+  budgetClock?: BudgetClock;
   /** Reader for the owner's dated comfort observations (the assistant workstream's store). */
   comfort?: ((principal: Principal) => Promise<ComfortObservation[]>) | null;
   /** Upper bound on model calls per composition (the morning budget). */

@@ -14,7 +14,7 @@ import type { Role } from "@garderobe/contracts";
 import type { OutfitSlot } from "@garderobe/contracts/ext/daily";
 import { addDays, all, allIn, localDateOf, stmt, type BalanceRow, type CommandContext, type CommandPlan, type CommitHook, type DomainChanges, type PlanFragment, type Stmt } from "@garderobe/domain";
 import { assembleContext, calendarSnapshotById, weatherSnapshotById, type Overlay } from "./context.ts";
-import { boardNotice, describeChanges, optionEvidence, planRevisionWrite, revisionContext, storedToDraft, type DraftOption } from "./boards.ts";
+import { boardNotice, describeChanges, honoursRepeatExceptions, optionEvidence, planRevisionWrite, revisionContext, storedToDraft, type DraftOption } from "./boards.ts";
 import { factualReason, findReplacement, withPairedFootwear } from "./compose.ts";
 import { loadOptions, loadRevision, pauseCovering, type BoardRow, type StoredOption } from "./document.ts";
 import { parseScope, type RecommendationContext } from "./model.ts";
@@ -64,7 +64,7 @@ export function repairOptions(rc: RecommendationContext, published: StoredOption
     let current = { slots: o.slots, footwearAlternatives: o.footwearAlternatives.filter((id) => !hurts(id)) };
     let changed = current.footwearAlternatives.length !== o.footwearAlternatives.length;
     for (const s of o.slots.filter((x) => hurts(x.garmentId))) {
-      const found = findReplacement(rc, current, s.role, { avoidGarmentIds: pain, validate: { explicitGarmentIds: [...explicit] } });
+      const found = findReplacement(rc, current, s.role, { avoidGarmentIds: pain, validate: optsFor(o) });
       if (!found) continue;
       current = { slots: found.slots, footwearAlternatives: found.footwearAlternatives };
       changed = true;
@@ -79,12 +79,19 @@ export function repairOptions(rc: RecommendationContext, published: StoredOption
   const pairUsage = new Map<string, number>();
   const paired = new Set<string>();
   const sameShoes = (a: StoredOption, b: { slots: OutfitSlot[]; footwearAlternatives: string[] }) => JSON.stringify([a.slots, [...a.footwearAlternatives].sort()]) === JSON.stringify([b.slots, [...b.footwearAlternatives].sort()]);
+  // The paired-shoe format is completed with a pair that was not reported painful whenever one is
+  // eligible; only when nothing else can complete it does a painful pair stand.
+  const complete = (o: StoredOption) => {
+    const avoiding = pain.size > 0 ? withPairedFootwear(rc, o, { validate: optsFor(o), usage: pairUsage, avoidGarmentIds: pain }) : null;
+    return avoiding && avoiding.added.length > 0 ? avoiding : withPairedFootwear(rc, o, { validate: optsFor(o), usage: pairUsage });
+  };
   const prepared = stored.map((o, index) => {
-    const completed = withPairedFootwear(rc, o, { validate: optsFor(o), usage: pairUsage });
+    const completed = complete(o);
     if (eased.has(o.optionId)) {
-      // The only eligible second shoe may be the painful pair again: then nothing changed for this option.
+      // Pain makes no option invalid. When the only eligible second shoe is the painful pair again, or
+      // the eased outfit does not pass the board's own checks, the option stays exactly as it was.
       const original = published[index]!;
-      if (sameShoes(original, completed)) {
+      if (sameShoes(original, completed) || !validateCandidate(rc, completed, optsFor(o)).valid) {
         eased.delete(o.optionId);
         return original;
       }
@@ -123,10 +130,23 @@ export function repairOptions(rc: RecommendationContext, published: StoredOption
   const spareReserves = reserveChecks.filter((c) => c.validation.valid).map((c) => ({ o: c.o, validation: c.validation }));
   let changed = reserveChecks.some((c) => !c.validation.valid) || paired.size > 0;
   let withdrawn = 0;
+  // A named piece that has come inside the repeat horizon since the board was published (the owner
+  // wore it in between) stays, as he asked, and the board now says so: its option is refreshed. The same
+  // holds the other way: when the wear behind a stored repeat statement is undone or its date corrected,
+  // the statement no longer matches what he reports, so the option, its notice and the revision follow.
+  const repeatsOf = (violations: { code: string; garmentIds: string[] }[]) => violations.filter((x) => x.code === "repeat_at_owner_request").map((x) => x.garmentIds[0]);
+  const repeatKey = (violations: { code: string; message: string; garmentIds: string[] }[]) =>
+    JSON.stringify(violations.filter((x) => x.code === "repeat_at_owner_request").map((x) => `${x.garmentIds[0] ?? ""}|${x.message}`).sort());
+  const stated: string[] = [];
 
   for (const { o, validation } of checks) {
     if (validation.valid) {
-      next.push(paired.has(o.optionId) ? refreshed(o, validation) : storedToDraft(o));
+      const before = new Set(repeatsOf(o.evidence.validation.violations));
+      const newlyRepeated = validation.violations.filter((x) => x.code === "repeat_at_owner_request" && !before.has(x.garmentIds[0]));
+      const repeatsChanged = repeatKey(o.evidence.validation.violations) !== repeatKey(validation.violations);
+      if (repeatsChanged) changed = true;
+      for (const x of newlyRepeated) if (!stated.includes(x.message)) stated.push(x.message);
+      next.push(paired.has(o.optionId) || repeatsChanged ? refreshed(o, validation) : storedToDraft(o));
       continue;
     }
     changed = true;
@@ -146,7 +166,7 @@ export function repairOptions(rc: RecommendationContext, published: StoredOption
     const roles = o.slots.filter((s) => implicated.has(s.garmentId)).map((s) => s.role);
     for (const role of roles) {
       const avoid = new Set<string>([...implicated, ...(role === "top" ? usedTops : role === "bottom" ? usedBottoms : [])]);
-      if (role === "outer" || role === "neckwear" || role === "belt" || role === "mid_layer") {
+      if (role === "outer" || role === "neckwear" || role === "belt" || role === "mid_layer" || role === "accessory") {
         // An optional layer: replace it when something eligible fits, otherwise the outfit goes without it.
         const found = findReplacement(rc, current, role, { avoidGarmentIds: avoid, validate: { explicitGarmentIds: opts.explicitGarmentIds } });
         current = found ? { slots: found.slots, footwearAlternatives: found.footwearAlternatives } : { slots: current.slots.filter((s) => s.role !== role), footwearAlternatives: current.footwearAlternatives };
@@ -201,7 +221,7 @@ export function repairOptions(rc: RecommendationContext, published: StoredOption
       ? "No complete outfit is available for this day at the moment."
       : `${next.length} valid ${next.length === 1 ? "outfit" : "outfits"} instead of ${requestedCount}: the others could not be replaced from eligible stock.`
     : null;
-  return { changed, offered: next, reserves: keptReserves, changes: changed ? describeChanges(rc, originalOffered, next, why) : [], shortage, withdrawn };
+  return { changed, offered: next, reserves: keptReserves, changes: changed ? [...describeChanges(rc, originalOffered, next, why), ...stated] : [], shortage, withdrawn };
 }
 
 /* ------------------------------------------------------------------ */
@@ -265,6 +285,9 @@ export function overlayFromPlan(ctx: CommandContext, plan: CommandPlan, changes:
       break;
     case "garment.remove_fabricated":
       overlay.unavailable = new Set([String(payload.garmentId)]);
+      break;
+    case "care.mark_dirty":
+      overlay.markedDirty = new Set(((payload.items ?? []) as { garmentId?: unknown }[]).map((i) => String(i.garmentId)));
       break;
   }
   overlay.addWears = changes.wears.filter((w) => w.change !== "retracted").map((w) => ({ garmentId: w.garmentId, wearingDate: w.wearingDate }));
@@ -347,7 +370,7 @@ export const boardRepairHook: CommitHook = async (ctx, plan, changes): Promise<P
       const weather = revision.weather_snapshot_id ? await weatherSnapshotById(ctx.db, ctx.userId, revision.weather_snapshot_id) : null;
       const calendar = revision.calendar_snapshot_id ? await calendarSnapshotById(ctx.db, ctx.userId, revision.calendar_snapshot_id) : null;
       const comfort = pain.length > 0 ? [{ feedbackId: "committing", text: "", kind: "pain", pain: true, garmentIds: pain, wearingDate: null, scope: null, createdAt: ctx.now }] : [];
-      const rc = await assembleContext(ctx.db, ctx.principal, { localDate: board.local_date, nowMs: ctx.nowMs, scope: board.scope, brief: revision.brief, conditions: revision.conditions, weather, calendar, overlay, comfort, withoutProfileText: true });
+      const rc = await assembleContext(ctx.db, ctx.principal, { localDate: board.local_date, nowMs: ctx.nowMs, scope: board.scope, brief: revision.brief, conditions: revision.conditions, weather, calendar, overlay, comfort, withoutProfileText: true, repeatExceptions: honoursRepeatExceptions(revision) });
       const stored = await loadOptions(ctx.db, ctx.userId, board.board_id, board.current_revision);
       const outcome = repairOptions(rc, stored, revision.requested_count, { painGarmentIds: pain });
       if (!outcome.changed) continue;
@@ -364,7 +387,7 @@ export const boardRepairHook: CommitHook = async (ctx, plan, changes): Promise<P
         context: revisionContext(rc, { repairedBy: { commandId: ctx.commandId, type } }),
         weatherLine: revision.weather_line,
         suitabilityLine: revision.suitability_line,
-        notice: boardNotice(rc, outcome.shortage),
+        notice: boardNotice(rc, outcome.shortage, outcome.offered),
         changes: outcome.changes,
         weatherSnapshotId: revision.weather_snapshot_id,
         calendarSnapshotId: revision.calendar_snapshot_id,

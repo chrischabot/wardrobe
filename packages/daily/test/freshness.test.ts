@@ -2,7 +2,8 @@
  * Source freshness and weather-aware edits: the final pre-morning check honours the weather and
  * calendar freshness thresholds, an ad hoc request reuses a calendar read inside its threshold, a
  * weather-affected swap is validated against a current forecast (or says how old its basis is), ad
- * hoc outfit questions get decision-scoped context, and inference is bounded by a wall-clock budget.
+ * hoc outfit questions get decision-scoped context, and inference is bounded by a budget (measured on
+ * a clock the tests control).
  * Real command service, real local D1, real owner data; labelled fakes behind the weather, Calendar
  * and model ports only.
  */
@@ -219,20 +220,79 @@ describe("the inference budget of a board", () => {
     },
   });
 
+  /** TEST FAKE: the clock and timer of the inference budget. Time passes only when the test says so. */
+  const manualBudgetClock = () => {
+    let t = 0;
+    const timers: { at: number; fire: () => void; cancelled: boolean }[] = [];
+    return {
+      clock: {
+        now: () => t,
+        after: (ms: number, fire: () => void) => {
+          const timer = { at: t + ms, fire, cancelled: false };
+          timers.push(timer);
+          return () => { timer.cancelled = true; };
+        },
+      },
+      advance(ms: number) {
+        t += ms;
+        for (const timer of timers.splice(0)) {
+          if (timer.cancelled) continue;
+          if (timer.at <= t) timer.fire();
+          else timers.push(timer);
+        }
+      },
+    };
+  };
+
   it("a model that does not answer inside the budget is abandoned and the board is still complete", async () => {
     const { h, owner } = await setup();
     const calls: { userId: string | null }[] = [];
-    // The budget is wall-clock for the whole request and starts before the context is assembled, so it has
-    // to outlast that assembly for the model to be asked at all: 60 ms did not on a loaded machine (the
-    // model was then never called and this test failed on `calls`). The model answers long after the budget.
-    h.deps.model = slowModel(20_000, calls);
-    h.deps.modelBudgetMs = 1_500;
-    const started = Date.now();
+    const budget = manualBudgetClock();
+    // TEST FAKE model: once asked, five seconds of budget time pass and it never answers at all.
+    h.deps.model = {
+      profile: "TEST-FAKE-hung-model",
+      async propose(): Promise<OutfitCandidate[]> {
+        calls.push({ userId: null });
+        await Promise.resolve(); // the caller arms its budget timer before the time passes
+        budget.advance(5_000);
+        return new Promise<OutfitCandidate[]>(() => undefined);
+      },
+    };
+    h.deps.budgetClock = budget.clock;
+    h.deps.modelBudgetMs = 600;
     const result = await compose(h, owner, DAY);
-    expect(Date.now() - started).toBeLessThan(10_000); // abandoned at the budget, not awaited for its 20 s
     expect(calls).toHaveLength(1); // no second attempt once the budget is spent
     expect(result.diagnostics!.modelError).toMatch(/inference budget/);
     expect(result.board!.options).toHaveLength(5);
+  });
+
+  it("a model that answers inside the budget is not cut off, and a budget already spent means the model is not asked", async () => {
+    const { h, owner } = await setup();
+    const calls: { userId: string | null }[] = [];
+    const budget = manualBudgetClock();
+    h.deps.budgetClock = budget.clock;
+    h.deps.modelBudgetMs = 600;
+    h.deps.maxModelAttempts = 1;
+    h.deps.model = {
+      profile: "TEST-FAKE-prompt-model",
+      async propose(): Promise<OutfitCandidate[]> {
+        calls.push({ userId: null });
+        await Promise.resolve();
+        budget.advance(599);
+        return [];
+      },
+    };
+    const inTime = await compose(h, owner, DAY);
+    expect(calls).toHaveLength(1);
+    expect(inTime.diagnostics!.modelError).toBeNull();
+    expect(inTime.board!.options).toHaveLength(5);
+
+    h.deps.modelBudgetMs = 0;
+    h.weather.setForecast("2026-09-17", MILD_DAY);
+    const spent = await compose(h, owner, "2026-09-17");
+    expect(calls).toHaveLength(1);
+    expect(spent.diagnostics!.modelError).toMatch(/inference budget/);
+    expect(spent.board!.options).toHaveLength(5);
   });
 
   it("the scheduled sweep asks for each owner's own model, so inference is attributed to the owner whose board it is", async () => {

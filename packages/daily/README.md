@@ -51,6 +51,7 @@ const deps: DailyDeps = {
   model: null,                    // a CompositionModel behind the AI Gateway; optional
   modelFor: (principal) => model, // preferred: a model budgeted to that owner (also used by the scheduled sweep)
   modelBudgetMs: 120_000,         // wall-clock budget for the model part of one board
+  // budgetClock: { now, after }, // optional: the clock and timer that budget runs on (tests supply their own)
   comfort: null,                  // reader for dated comfort observations; optional
   boardBaseUrl: env.APP_ORIGIN,   // the deployment's origin: the Calendar event links to <origin>/board/<date>
 };
@@ -71,34 +72,70 @@ phase times, wearing intervals, freshness thresholds, the outfit calendar and it
 - The one-neutral limit (profile section 5) counts every piece worn in the outfit: jacket, layers,
   shirt, trousers, belt, socks and shoes. The composer settles the shoe, then the sock, then the belt,
   each from pieces that keep the outfit within the limit; when every eligible piece would break it the
-  outfit is still offered and the validator reports the advisory, because the verdict is soft.
+  outfit is still offered and the validator reports the advisory, because the verdict is soft. The
+  jacket is chosen with the shoe in mind: a jacket that would leave only shoes that are a third piece
+  in one neutral is passed over while another jacket leaves a shoe within the limit.
 - The belt line carries an optional flourish on every plan (profile section 9): a scarf for a start
-  at 10 C or colder, otherwise a tie whenever the top is a collared shirt and the tie's season words
-  in the sheet fit the day's peak. A packing proposal does not propose the everyday tie (only a scarf
-  for a cold start or a tie for a smart occasion), so the suggestion does not take a place in a bag.
+  at 10 C or colder, otherwise, whenever the top is a shirt, a tie whose season words in the sheet
+  fit the day's peak (the everyday suggestion is category `tie` only, never a bandana or other
+  neckwear; a smart occasion keeps any neckwear that is not a scarf). No collar attribute is
+  recorded on garments, so the shirt category stands for a collared shirt. A packing proposal does not
+  propose the everyday tie (only a scarf for a cold start or a tie for a smart occasion), so the
+  suggestion does not take a place in a bag.
 - A piece named in a request (`lockedGarmentIds`, the brief's `include`) stays on every outfit
   returned, so a board around one named shirt repeats that shirt. Naming it is also the owner's
   explicit override of the repeat horizon for that piece in that request only: it is reported as
-  `repeat_at_owner_request` (advisory) instead of refused. Every other piece still obeys the horizon,
-  and a named piece that is unavailable, restricted or wrong for the forecast is still refused.
+  `repeat_at_owner_request` (advisory) instead of refused, and the repeat is stated in the preview's
+  note, as the option's qualification and in the published board's notice. Every other piece still
+  obeys the horizon, and a named piece that is unavailable, restricted or wrong for the forecast is
+  still refused.
+- The repeat exceptions a brief can carry (a named piece, `allowRepeat`) are the owner's override.
+  For an assistant principal `recommend` and `board.publish` honour neither, and a board an assistant
+  publishes stores `allowRepeat: false`. Each revision records whose brief it carries
+  (`context.repeatExceptions`), every later revalidation of that board (repair, swap, sweep) reads it,
+  and a scheduled run inherits it: a piece only an assistant named is given up, not repeated, if the
+  owner wears it before the day. On the owner's own board such a piece stays, and the repair that
+  notices it states the repeat on the board and in the receipt.
 - A swap never falls back to navy (profile section 8 rule 6), whatever the colour of the piece being
   swapped out: a navy replacement is taken only when nothing else validates.
 - A day inside a trip for which something is packed is answered from the trip by `recommend`:
   destination forecast, the trip's occasions and only the packed subset, published in `board` mode as
   that day's trip board. A trip with nothing packed is only a plan and the day is answered from home.
-- A piece the latest packing proposal plans on more than one day stays wearable from the suitcase
-  after it was worn on the trip (the trip's own repeat exception). Anything else worn on the trip
-  awaits care, and unpacking still declares nothing clean.
+- Trousers, a jacket, shoes or a belt that the packing proposal plans on more days than it packs
+  units of stay wearable from the suitcase after they were worn on the trip, on the days the proposal
+  plans them and up to the units it packs (the trip's own repeat exception). The proposal read is the
+  newest one recorded no later than the owner's last packing report. Socks and shirts are worn once:
+  a worn pair or shirt is never offered again, however few were packed. A piece he reports dirty
+  after his last packing report is not re-worn either. Anything else worn on the trip awaits care, and unpacking
+  still declares nothing clean.
+- When every clean pair of socks at home is already planned, the packing proposal says so in a note
+  that names socks, and still plans (and packs) the rest of that day without socks; with no clean
+  pair at home at all the day is not planned and the note says socks are the reason. A sock with no
+  clean pair on the ledger is never proposed: the availability estimate does not stand in for a pair.
 - A comfort note that reports pain (`feedback.record` with `result.pain` and `result.garmentIds`) is
   applied to open boards in the note's own commit: wherever another eligible piece can take the
-  painful one's place it does, the option keeps its ID, and the receipt names the change. With
-  nothing else eligible the option stays, and a piece the owner put on an option himself stays.
+  painful one's place it does (as the main piece or as the second shoe), the option keeps its ID, and
+  the receipt names the change. With nothing else eligible, or when the eased outfit would not pass
+  the board's own checks, the option stays as it was, and a piece the owner put on an option himself
+  stays. The note's stated scope is deliberately not used: pain is never outweighed by styling
+  (specification section 10), a scope such as "long walks" cannot be matched to a future day, and
+  easing costs nothing where another eligible piece exists, so every open board is eased.
 - The Calendar event links to `<base>/board/<date>`, where the base is the owner's
   `calendar.boardBaseUrl` setting when set and otherwise `DailyDeps.boardBaseUrl`. With neither there
   is no link.
 - When the owner edited the managed outfit text in Calendar, the next projection replaces his edit
   but keeps what he wrote before or after it: the managed region is located by the lines of the last
-  projection that are still there. If none is left the description is replaced.
+  projection that are still there. If none is left the description is replaced. A description Google
+  returns as HTML (`<br>` or paragraph breaks, links, entities) is read as its plain text first and
+  written back as plain text. A single line directly above the surviving managed lines, when exactly the first managed
+  line is missing, is taken as that line rewritten in place.
+- The Open-Meteo adapter asks for one extra day each side of the range. When the extra day after the
+  range is beyond what the provider forecasts (HTTP 400 naming `end_date`), the request is repeated
+  once without it, so the last forecastable day is still forecast.
+- Every adapter request has a deadline (15 s, body included); Google's access-token lookup has its
+  own deadline of the same length before the request, and a caller's own abort signal still aborts
+  the request.
+- An accessory on an option is optional: when it stops being wearable the option goes without it.
 - A garment temperature note whose basis the inventory sheet did not state is assessed on the basis of
   the owner's active rule for that role (shirts, trousers and socks on the daytime peak, outerwear on
   the departure hour). Without such a rule it is not enforced and is reported as unsettled.
@@ -114,8 +151,8 @@ phase times, wearing intervals, freshness thresholds, the outfit calendar and it
 - Watches and jewellery are recognised by the garment attribute `accessoryKind` (set at creation or
   import), not by name: `watch`, `ring`, `chain`, `bracelet`, `necklace`, `cufflinks` and similar are
   never part of an outfit. Names are only a backstop for records with no kind, and a generic
-  `accessory` with no kind is never offered by the service (`accessory_unclassified`); the owner can
-  still add it himself, as a stated advisory.
+  `accessory` with no kind is never placed on an outfit (`accessory_unclassified`, blocking), by the
+  service or as anyone's explicit pick, until a kind is recorded on it.
 - When the owner reports the healing restriction over, the sneaker and welted format comes into
   force: every open board keeps its options, their IDs and his selection, and each option gains an
   eligible welted alternative in the same commit.

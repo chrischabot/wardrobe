@@ -129,8 +129,9 @@ export function garmentViolations(ctx: RecommendationContext, garmentId: string,
   if (ex) {
     const verdict = accessoryVerdict(g, ex.words);
     if (verdict === "excluded") out.push(v("accessory_excluded", `${g.name} is not suggested: watches and jewellery are absent by choice`, [garmentId], ex.key));
-    // Unclassified: never suggested by the service; the owner's own explicit pick is his to make.
-    else if (verdict === "unclassified") out.push(v("accessory_unclassified", `${g.name} has no accessory kind recorded, so it cannot be checked against the rule that watches and jewellery are never suggested`, [garmentId], ex.key, explicit.has(garmentId) ? "advisory" : "blocking"));
+    // Unclassified: it cannot be shown NOT to be a watch or jewellery, so it is never placed on an outfit,
+    // by the service or as anyone's explicit pick, until a kind is recorded on the garment.
+    else if (verdict === "unclassified") out.push(v("accessory_unclassified", `${g.name} has no accessory kind recorded, so it cannot be checked against the rule that watches and jewellery are never suggested; record what kind of accessory it is first`, [garmentId], ex.key));
   }
 
   if (ctx.brief.exclude.includes(garmentId)) out.push(v("excluded_by_brief", `${g.name} was excluded for this day`, [garmentId]));
@@ -167,13 +168,14 @@ export function garmentViolations(ctx: RecommendationContext, garmentId: string,
 
   // Repeat horizon: recorded wear only. A trip's deliberate reuse is an explicit exception for that trip.
   const repeat = ctx.rules.repeat;
-  if (repeat.categories.includes(g.category) && !opts.allowRepeat && !ctx.brief.allowRepeat && !ctx.tripId) {
+  if (repeat.categories.includes(g.category) && !opts.allowRepeat && !(ctx.brief.allowRepeat && ctx.repeatExceptions) && !ctx.tripId) {
     const from = addDays(ctx.localDate, -repeat.days);
     const hit = g.wornDates.filter((d) => d >= from && d < ctx.localDate).pop();
     // A piece the request names as one that must stay is the owner's explicit override of the repeat
     // preference for that piece, for that request only (specification section 7). It is reported, not
     // refused; every other piece of the outfit still obeys the horizon and no standing rule changes.
-    if (hit && ctx.brief.include.includes(garmentId)) out.push(v("repeat_at_owner_request", `${g.name} was worn on ${hit}; it is repeated because it was asked for by name`, [garmentId], repeat.key, "advisory"));
+    // The override is the owner's alone: a request made by an assistant cannot repeat a piece this way.
+    if (hit && ctx.repeatExceptions && ctx.brief.include.includes(garmentId)) out.push(v("repeat_at_owner_request", `${g.name} was worn on ${hit}; it is repeated because it was asked for by name`, [garmentId], repeat.key, "advisory"));
     else if (hit) out.push(v("repeat_within_horizon", `${g.name} was worn on ${hit}, inside the ${repeat.days}-day repeat horizon`, [garmentId], repeat.key));
   }
   return out;
@@ -285,7 +287,7 @@ export function validateCandidate(ctx: RecommendationContext, candidate: { slots
     const counts = new Map<string, string[]>();
     for (const g of [outer, get("mid_layer"), top, get("one_piece"), bottom, get("belt"), get("socks"), footwear]) {
       if (!g) continue;
-      for (const family of neutralFamiliesOf(g.colour ?? g.name)) counts.set(family, [...(counts.get(family) ?? []), g.garmentId]);
+      for (const family of neutralFamiliesOf(g.colour || g.name)) counts.set(family, [...(counts.get(family) ?? []), g.garmentId]);
     }
     for (const [family, ids] of counts) {
       if (ids.length > neutral.max) violations.push(v("neutral_three_times", `The same neutral (${family.replace("_", " ")}) appears ${ids.length} times`, ids, neutral.key, "advisory"));

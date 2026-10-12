@@ -52,7 +52,7 @@ export { managedEventId, isValidGoogleEventId } from "./calendar/event-id.ts";
 export { weighEvents, relevantEvents, suitableMajority } from "./calendar/influence.ts";
 
 // Building blocks for the assistant and test workstreams
-export { assembleContext, type AssembleOptions, type Overlay } from "./context.ts";
+export { assembleContext, dailySettings, latestWeatherSnapshot, type AssembleOptions, type Overlay } from "./context.ts";
 export { renderContextText, renderContextData } from "./context-text.ts";
 export { validateCandidate, garmentViolations, type ValidateOptions } from "./validate.ts";
 export { composeBoard, eligibleFor, factualReason, verifyExplanation, findReplacement, type ComposedOption, type ComposeOptions, type ComposeResult } from "./compose.ts";

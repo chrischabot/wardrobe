@@ -15,6 +15,7 @@ import type { FetchLike, ProviderHour } from "../src/ports.ts";
 import { OPEN_METEO_ATTRIBUTION, OPEN_METEO_HOURLY_VARIABLES, createOpenMeteoGeocoder, createOpenMeteoProvider } from "../src/weather/open-meteo.ts";
 
 const problems: string[] = [];
+let daylightSavingSkipped = false;
 const check = (ok: boolean, message: string) => {
   console.log(`  ${ok ? "ok  " : "FAIL"} ${message}`);
   if (!ok) problems.push(message);
@@ -93,6 +94,23 @@ try {
   check((exchange.body as Record<string, unknown> | null)?.error === true, 'body carries "error": true');
 }
 
+/* -------------------------- last forecastable day ---------------------- */
+// The adapter pads the range by a day each side. For the last day the provider forecasts, the padding day
+// is out of range (HTTP 400) and the adapter repeats the request without it.
+console.log("\nLast forecastable day: the day after it is out of range");
+try {
+  const edge = addDays(today, 15);
+  const before = exchanges.length;
+  const forecast = await createOpenMeteoProvider({ fetch: recordingFetch }).forecast({ ...london, timezone, startDate: edge, endDate: edge });
+  const made = exchanges.slice(before);
+  console.log(`  ${edge}: ${made.map((e) => `HTTP ${e.status}${e.status === 400 ? ` ${JSON.stringify(e.body)}` : ""}`).join(" then ")}`);
+  check(made[made.length - 1]?.status === 200, `the adapter obtains a forecast for ${edge} (${made.length} request${made.length === 1 ? "" : "s"})`);
+  const onDay = forecast.hours.filter((h) => h.localTime.startsWith(edge));
+  check(onDay.length >= 23 && onDay.some((h) => h.temperatureC !== null), `${onDay.length} hours on ${edge}, with temperatures`);
+} catch (error) {
+  check(false, `forecast for the last forecastable day failed: ${error instanceof Error ? error.message : String(error)}`);
+}
+
 /* ------------------------------- geocoding ----------------------------- */
 console.log("\nGeocoding");
 try {
@@ -116,25 +134,28 @@ try {
 // so real local hours must be derived from the instant. Checked on the next change inside the forecast range.
 console.log("\nDaylight-saving change inside the forecast range");
 try {
+  // America/Santiago is not probed: its clock changes at local midnight, so the day's own 00:00 does not
+  // exist (or occurs twice) and the day-length arithmetic below would misplace the change.
   const zones = [
     { timezone: "Australia/Sydney", latitude: -33.87, longitude: 151.21 },
     { timezone: "Europe/London", latitude: 51.51, longitude: -0.13 },
     { timezone: "America/New_York", latitude: 40.71, longitude: -74.01 },
-    { timezone: "America/Santiago", latitude: -33.45, longitude: -70.67 },
     { timezone: "Pacific/Auckland", latitude: -36.85, longitude: 174.76 },
   ];
   const dayHours = (date: string, tz: string) => Math.round((zonedToUtcMs(addDays(date, 1), "00:00", tz) - zonedToUtcMs(date, "00:00", tz)) / 3_600_000);
   let found: { zone: (typeof zones)[number]; date: string; hours: number } | null = null;
   for (const zone of zones) {
     const start = localDateOf(Date.now(), zone.timezone);
-    for (let i = 1; i <= 12 && !found; i++) {
+    // From the zone's current local date: a change that happens today is a change inside the range too.
+    for (let i = 0; i <= 12 && !found; i++) {
       const date = addDays(start, i);
       const hours = dayHours(date, zone.timezone);
       if (hours !== 24) found = { zone, date, hours };
     }
   }
   if (!found) {
-    console.log("  skipped: no clock change in the next 12 days in any of the probed timezones (not a failure, and not a pass)");
+    daylightSavingSkipped = true;
+    console.log("  SKIPPED: no clock change in the next 12 days in any of the probed timezones. The adapter's handling of a clock change was NOT verified by this run.");
   } else {
     const { zone, date, hours } = found;
     const forecast = await createOpenMeteoProvider({ fetch: recordingFetch }).forecast({ latitude: zone.latitude, longitude: zone.longitude, timezone: zone.timezone, startDate: addDays(date, -1), endDate: addDays(date, 1) });
@@ -159,4 +180,6 @@ if (problems.length > 0) {
   console.log(`\nRESULT: FAILED, ${problems.length} problem(s): the live contract does not match the adapter.`);
   process.exit(1);
 }
-console.log("\nRESULT: OK, the live Open-Meteo contract matches the adapter.");
+console.log(daylightSavingSkipped
+  ? "\nRESULT: OK for the forecast, error and geocoding contract. NOT VERIFIED: the daylight-saving check was skipped (no clock change in range)."
+  : "\nRESULT: OK, the live Open-Meteo contract matches the adapter.");

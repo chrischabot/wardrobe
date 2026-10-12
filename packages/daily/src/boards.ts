@@ -10,7 +10,7 @@ import { DAILY_COMMANDS, DayBrief } from "@garderobe/contracts/ext/daily";
 import type { BoardDocument, DayConditions, OptionEvidence, OutfitSlot, OutfitValidation } from "@garderobe/contracts/ext/daily";
 import {
   CommandError, define, exposurePublish, exposureSelect, first, localDateOf, stmt,
-  type CommandContext, type CommandPlan, type CommandRegistry, type PlannedEffect, type PlannedOutbox, type Precondition, type Stmt,
+  type CommandContext, type CommandPlan, type CommandRegistry, type Db, type PlannedEffect, type PlannedOutbox, type Precondition, type Principal, type Stmt,
 } from "@garderobe/domain";
 import type { EntityVersion } from "@garderobe/contracts";
 import { assembleContext, calendarSnapshotById, dailySettings, latestWeatherSnapshot, weatherSnapshotById } from "./context.ts";
@@ -99,12 +99,54 @@ export function revisionContext(rc: RecommendationContext, extra: Record<string,
     availabilityModel: AVAILABILITY_MODEL_VERSION_OR_DEFAULT,
     estimatorParameters: { ...rc.settings.estimator, parameterStatus: "hypothesis" },
     composer: COMPOSER_VERSION,
+    // Whose brief this revision carries: false when it entered from an assistant, so every later
+    // revalidation of the board withholds the owner's repeat override too (see `honoursRepeatExceptions`).
+    repeatExceptions: rc.repeatExceptions,
     ...extra,
   };
 }
 
+/** Whether a stored revision's brief may use the owner's repeat exceptions (absent on older revisions: yes). */
+export function honoursRepeatExceptions(revision: { context: Record<string, unknown> } | null | undefined): boolean {
+  return revision?.context?.repeatExceptions !== false;
+}
+
+/**
+ * Whether a brief entering with this principal may use the repeat exceptions: an assistant's may not;
+ * a scheduled run inherits what the board it works over was published with; and the owner's may, unless
+ * the brief he publishes is the board's stored brief unchanged - a rebuild, a single-option rebuild or a
+ * repair republishes that brief, and it stays whoever's it was (an assistant's brief does not become the
+ * owner's by being carried into his revision). Any brief that differs from the stored one is his.
+ */
+export async function repeatExceptionsFor(db: Db, principal: Principal, existing: BoardRow | null, brief?: Partial<DayBrief>): Promise<boolean> {
+  if (principal.actor === "assistant") return false;
+  if (!existing) return true;
+  const revision = await loadRevision(db, principal.userId, existing.board_id, existing.current_revision);
+  if (principal.actor === "owner" && (brief === undefined || !revision || !sameBrief(existing.scope, brief, revision.brief))) return true;
+  return honoursRepeatExceptions(revision);
+}
+
+/** Two briefs compared as `assembleContext` stores them (parsed, with an evening board's segment). */
+function sameBrief(scope: string, a: Partial<DayBrief>, b: Partial<DayBrief>): boolean {
+  let evening = false;
+  try {
+    evening = parseScope(scope).evening;
+  } catch {
+    return false;
+  }
+  const normal = (x: Partial<DayBrief>) => JSON.stringify(DayBrief.parse({ ...x, ...(evening ? { segment: "evening" } : {}) }));
+  return normal(a) === normal(b);
+}
+
+/** The statements of pieces repeated inside the repeat horizon because the owner named them, one per piece. */
+export function repeatStatements(offered: { evidence: { validation: { violations: { code: string; message: string; garmentIds: string[] }[] } } }[]): string[] {
+  const repeated = new Map<string, string>();
+  for (const o of offered) for (const x of o.evidence.validation.violations) if (x.code === "repeat_at_owner_request" && x.garmentIds[0]) repeated.set(x.garmentIds[0], `${x.message}.`);
+  return [...repeated.values()];
+}
+
 /** One brief explanation outside the outfit copy: source limitations first, then any shortage. */
-export function boardNotice(rc: RecommendationContext, shortage: string | null): string | null {
+export function boardNotice(rc: RecommendationContext, shortage: string | null, offered: Parameters<typeof repeatStatements>[0]): string | null {
   const parts: string[] = [];
   if (rc.conditions.freshness === "unavailable") parts.push("The forecast is unavailable, so temperature rules could not be checked.");
   else if (rc.conditions.freshness === "stale") parts.push(rc.weather?.limitation ?? "The forecast is older than usual.");
@@ -112,6 +154,8 @@ export function boardNotice(rc: RecommendationContext, shortage: string | null):
   else if (rc.calendar?.status === "error") parts.push("Calendar could not be read, so the day's events were not considered.");
   else if (rc.calendar?.status === "stale") parts.push(rc.calendar.limitation ?? "The calendar read is older than usual.");
   if (shortage) parts.push(shortage);
+  // A piece repeated inside the repeat horizon because the owner asked for it by name is said so on the board.
+  parts.push(...repeatStatements(offered));
   return parts.length > 0 ? parts.join(" ") : null;
 }
 
@@ -295,7 +339,11 @@ export const boardPublish = define({
     if (p.weatherSnapshotId && !weather) throw new CommandError("not_found", "unknown weather snapshot");
     const calendar = p.calendarSnapshotId ? await calendarSnapshotById(ctx.db, ctx.userId, p.calendarSnapshotId) : undefined;
     if (p.calendarSnapshotId && !calendar) throw new CommandError("not_found", "unknown calendar snapshot");
-    const rc = await assembleContext(ctx.db, ctx.principal, { localDate: p.localDate, nowMs: ctx.nowMs, scope: p.scope, brief: p.brief, weather, calendar, withoutProfileText: true });
+    // The repeat exceptions a brief can carry are the owner's override: an assistant's publication
+    // neither uses them nor stores them, and a scheduled run inherits what the board was published with.
+    const ownersBrief = await repeatExceptionsFor(ctx.db, ctx.principal, existing, p.brief);
+    const brief = ctx.principal.actor === "assistant" ? { ...p.brief, allowRepeat: false } : p.brief;
+    const rc = await assembleContext(ctx.db, ctx.principal, { localDate: p.localDate, nowMs: ctx.nowMs, scope: p.scope, brief, weather, calendar, withoutProfileText: true, repeatExceptions: ownersBrief });
     if (p.localDate < rc.today) throw new CommandError("invalid_command", "a board cannot be published for a past day", { localDate: p.localDate, today: rc.today });
 
     // Recheck every candidate against the state this command read: a stale candidate cannot commit.
@@ -392,7 +440,7 @@ export const boardPublish = define({
       context: revisionContext(rc, { composedAgainst: p.composedAgainst ?? null, droppedAtPublish: dropped }),
       weatherLine: rc.weather && rc.weather.freshness !== "unavailable" ? rc.weather.line : null,
       suitabilityLine,
-      notice: boardNotice(rc, shortage),
+      notice: boardNotice(rc, shortage, offered),
       changes,
       weatherSnapshotId: rc.weather?.snapshotId ?? null,
       calendarSnapshotId: rc.calendar?.snapshotId ?? null,
@@ -494,7 +542,7 @@ export async function contextForBoard(ctx: CommandContext, board: BoardRow): Pro
   if (!revision) throw new CommandError("internal", "the board's current revision is missing");
   const weather = revision.weather_snapshot_id ? await weatherSnapshotById(ctx.db, ctx.userId, revision.weather_snapshot_id) : null;
   const calendar = revision.calendar_snapshot_id ? await calendarSnapshotById(ctx.db, ctx.userId, revision.calendar_snapshot_id) : null;
-  const rc = await assembleContext(ctx.db, ctx.principal, { localDate: board.local_date, nowMs: ctx.nowMs, scope: board.scope, brief: revision.brief, conditions: revision.conditions, weather, calendar, withoutProfileText: true });
+  const rc = await assembleContext(ctx.db, ctx.principal, { localDate: board.local_date, nowMs: ctx.nowMs, scope: board.scope, brief: revision.brief, conditions: revision.conditions, weather, calendar, withoutProfileText: true, repeatExceptions: honoursRepeatExceptions(revision) });
   return { rc, options: await loadOptions(ctx.db, ctx.userId, board.board_id, board.current_revision), requestedCount: revision.requested_count, suitabilityLine: revision.suitability_line };
 }
 
@@ -555,7 +603,7 @@ export const boardSwapSlot = define({
     const basis = await swapWeatherBasis(ctx, board, revision, p.role, p.weatherSnapshotId ?? null);
     // A newer forecast governs the swap - and, in the same revision, every other option on the board.
     const rc = basis.snapshot
-      ? await assembleContext(ctx.db, ctx.principal, { localDate: board.local_date, nowMs: ctx.nowMs, scope: board.scope, brief: revision.brief, weather: basis.snapshot, calendar: base.rc.calendar, withoutProfileText: true })
+      ? await assembleContext(ctx.db, ctx.principal, { localDate: board.local_date, nowMs: ctx.nowMs, scope: board.scope, brief: revision.brief, weather: basis.snapshot, calendar: base.rc.calendar, withoutProfileText: true, repeatExceptions: honoursRepeatExceptions(revision) })
       : base.rc;
     const offered = options.filter((o) => o.state === "offered");
     const option = offered.find((o) => o.optionId === p.optionId);
@@ -612,9 +660,12 @@ export const boardSwapSlot = define({
       nextOffered = offered.map((o) => (o.optionId === option.optionId ? swapped : storedToDraft(o)));
       nextReserves = options.filter((o) => o.state === "reserve" && !o.slots.some((s) => slots.some((n) => n.garmentId === s.garmentId && (s.role === "top" || s.role === "bottom")))).map((o) => storedToDraft(o));
     }
-    const carried = (revision.notice ?? "").replace(STALE_SWAP_NOTE, "").trim();
+    // The carried notice keeps everything but the repeat statements, which are rebuilt from the options as they now are.
+    let carried = (revision.notice ?? "").replace(STALE_SWAP_NOTE, "");
+    for (const statement of repeatStatements(offered)) carried = carried.replace(statement, "");
+    carried = carried.replace(/\s+/g, " ").trim();
     const staleNote = basis.kind === "stale" ? `The forecast behind this board is ${formatAge(basis.ageMinutes ?? 0)} old. The swap was checked against it and is rechecked when a fresh forecast is read.` : null;
-    const notice = basis.snapshot ? boardNotice(rc, shortage) : [carried, staleNote].filter(Boolean).join(" ") || null;
+    const notice = basis.snapshot ? boardNotice(rc, shortage, nextOffered) : [carried, ...repeatStatements(nextOffered), staleNote].filter(Boolean).join(" ") || null;
     const write = await planRevisionWrite(ctx, {
       existing: board,
       scope: board.scope,

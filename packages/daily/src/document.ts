@@ -124,6 +124,14 @@ export async function getPauseState(db: Db, principal: Principal): Promise<Pause
 const LINE_ORDER: Role[] = ["outer", "mid_layer", "top", "one_piece", "bottom", "belt", "socks", "footwear", "accessory"];
 
 function qualificationFor(evidence: OptionEvidence, names: Map<string, { name: string }>): string | null {
+  // A piece repeated inside the repeat horizon at the owner's request is always stated on its option,
+  // together with any availability qualification.
+  const repeat = evidence.validation.violations.filter((x) => x.code === "repeat_at_owner_request").map((x) => `${x.message}.`);
+  const availability = availabilityQualification(evidence, names);
+  return [...new Set(repeat), ...(availability ? [availability] : [])].join(" ") || null;
+}
+
+function availabilityQualification(evidence: OptionEvidence, names: Map<string, { name: string }>): string | null {
   // Shown only when uncertainty materially affects the choice; never a percentage.
   if (evidence.jointAvailability >= 0.5) return null;
   const garments = ((evidence.validation.evidence as any)?.availability?.garments ?? []) as { garmentId: string; pAvailable: number; status: string }[];

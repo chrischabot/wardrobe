@@ -20,7 +20,7 @@ describe("profile verdicts on the real owner's boards", () => {
     const h = await createDailyHarness({ startAt: "2026-09-15T07:30:00Z", isolate: true });
     const owner = await realOwner(h);
     const rows = await garmentRows(h, owner);
-    const family = (id: string | undefined) => (id ? colourFamily(rows.get(id)!.colour ?? rows.get(id)!.name) : null);
+    const family = (id: string | undefined) => (id ? colourFamily(rows.get(id)!.colour || rows.get(id)!.name) : null);
     let options = 0;
     for (const [date, forecast] of [["2026-09-16", MILD_DAY], ["2026-09-17", COLD_DAY], ["2026-09-18", MILD_DAY]] as const) {
       h.weather.setForecast(date, forecast);
@@ -31,8 +31,17 @@ describe("profile verdicts on the real owner's boards", () => {
         const label = `${date} option ${o.number} (${o.name})`;
         const socks = piece(o, "socks")!;
         expect(rows.get(socks.garmentId)!.attributes.fabricClass, label).toBe("merino");
-        const upper = [family(piece(o, "outer")?.garmentId), family(piece(o, "top")?.garmentId)].filter(Boolean);
-        expect(upper, `${label}: the sock echoes the jacket or the shirt`).toContain(family(socks.garmentId));
+        const upper = [family(piece(o, "outer")?.garmentId), family(piece(o, "top")?.garmentId)].filter(Boolean) as string[];
+        // The sock echoes the jacket or the shirt wherever it can. It cannot when no merino sock exists in
+        // that colour, or when that colour is a neutral the jacket, shirt, trousers and shoes already
+        // wear twice (the sock would be the third piece in it); then it is the outfit's single flash.
+        if (!upper.includes(family(socks.garmentId)!)) {
+          for (const f of upper) {
+            const sockInFamily = [...rows.values()].some((r) => r.category === "socks" && r.attributes.fabricClass === "merino" && colourFamily(r.colour || r.name) === f);
+            const worn = ["outer", "top", "bottom", "footwear"].filter((role) => family(piece(o, role)?.garmentId) === f).length;
+            expect(!sockInFamily || (NEUTRAL_FAMILIES.has(f as never) && worn >= 2), `${label}: a ${f} sock could have echoed the ${f} worn higher up`).toBe(true);
+          }
+        }
         expect(family(socks.garmentId), `${label}: the sock does not repeat the trouser`).not.toBe(family(piece(o, "bottom")!.garmentId));
         const counts = new Map<string, number>();
         for (const role of ["outer", "top", "bottom", "belt", "socks", "footwear"]) {
@@ -101,7 +110,7 @@ describe("profile verdicts on the real owner's boards", () => {
     expect(v.violations.map((x) => x.code)).not.toContain("neutral_three_times");
   });
 
-  it("SYNTHETIC: when the only eligible shoe is the third navy piece the outfit is still offered, and the validator reports the soft verdict", async () => {
+  it("SYNTHETIC control: when the only eligible shoe is the third navy piece the outfit is still offered, and the validator reports the soft verdict", async () => {
     const h = await createDailyHarness({ startAt: "2026-09-15T07:30:00Z", isolate: true });
     const owner = await syntheticOwner(h, { garments: [...NAVY_OVER_NAVY, shoe("shoe-navy", "navy sneakers", "Navy")] as never });
     await owner.exec("style.upsert_rule", NEUTRAL_RULE);
@@ -112,7 +121,7 @@ describe("profile verdicts on the real owner's boards", () => {
     expect(piece(o, "footwear")!.garmentId).toBe("shoe-navy");
     const v = await validateOutfit(h.db, owner.principal(), { forDate: "2026-09-16", nowMs: h.clock.now(), slots: o.garments.map((g) => ({ role: g.role, garmentId: g.garmentId })) as never });
     expect(v.violations.filter((x) => x.severity === "blocking")).toEqual([]);
-    // With one jacket and one shoe, the jacket is kept for the cold start and the verdict is advisory.
+    // With one jacket and one shoe, the jacket is kept for the 12 °C start and the verdict is advisory.
     expect(piece(o, "outer")!.garmentId).toBe("jacket-navy");
     expect(v.violations.find((x) => x.code === "neutral_three_times")).toMatchObject({ severity: "advisory" });
   });
