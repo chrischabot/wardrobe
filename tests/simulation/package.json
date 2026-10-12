@@ -1,0 +1,20 @@
+{
+  "name": "@garderobe/simulation",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Seeded multi-week simulation of the Garderobe MCP server: a real MCP client (OAuth, tool calls) against any base URL, with invariants checked on application state and receipts after every step.",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test test/simulator.test.mjs",
+    "sim:local": "node bin/local.mjs",
+    "sim": "node bin/run.mjs"
+  },
+  "dependencies": {
+    "@garderobe/contracts": "1.0.0",
+    "@garderobe/domain": "1.0.0",
+    "@garderobe/worker": "1.0.0",
+    "@modelcontextprotocol/client": "2.0.0",
+    "jose": "6.2.12"
+  }
+}
