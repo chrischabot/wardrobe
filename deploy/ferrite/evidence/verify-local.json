@@ -1,19 +1,19 @@
 {
-  "checkedAt": "2026-10-12T14:41:48.279Z",
+  "checkedAt": "2026-10-12T15:05:10.776Z",
   "target": "local",
   "origin": {
     "scheme": "http",
     "host": "127.0.0.1",
     "port": 8790
   },
-  "runId": "mv5d1p0g-67ab0eb13645e675",
+  "runId": "mv5dvr93-c74f7a66f822ea43",
   "results": [
     {
       "group": "health",
       "name": "the public health route answers without a token",
       "status": "pass",
       "required": true,
-      "ms": 4,
+      "ms": 3,
       "httpStatus": 200,
       "contractVersion": "1.1.0"
     },
@@ -22,7 +22,7 @@
       "name": "no token is refused with 401 unauthenticated and an error-only body",
       "status": "pass",
       "required": true,
-      "ms": 4,
+      "ms": 2,
       "httpStatus": 401,
       "code": "unauthenticated"
     },
@@ -40,7 +40,7 @@
       "name": "the owner reads the imported inventory: 127 garments, 144 owned units, from the supplied CSV",
       "status": "pass",
       "required": true,
-      "ms": 18,
+      "ms": 16,
       "httpStatus": 200,
       "items": 127,
       "distinctIds": 127,
@@ -67,7 +67,7 @@
       "name": "a lowercase bearer scheme with the owner's token reads the same inventory",
       "status": "pass",
       "required": true,
-      "ms": 20,
+      "ms": 19,
       "httpStatus": 200
     },
     {
@@ -75,7 +75,7 @@
       "name": "the connected assistant reads the same inventory: garments, balances, versions, counts, source and revision",
       "status": "pass",
       "required": true,
-      "ms": 16,
+      "ms": 15,
       "httpStatus": 200,
       "items": 127
     },
@@ -94,9 +94,9 @@
       "name": "the assistant relays \"both in the wash\": applied at once, a receipt that offers undo, exactly those balances moved",
       "status": "pass",
       "required": true,
-      "ms": 21,
+      "ms": 19,
       "httpStatus": 200,
-      "commandId": "cmd_398d5845b4999e9fdd7ded4fdda2e1a8",
+      "commandId": "cmd_cab78d6541e9fb82dc1cf38546bcdb48",
       "ownedByRun": true,
       "units": 2,
       "revisionBefore": 0,
@@ -107,7 +107,7 @@
       "name": "the receipt is stored and listed newest first",
       "status": "pass",
       "required": true,
-      "ms": 4,
+      "ms": 6,
       "httpStatus": 200,
       "listed": 1
     },
@@ -116,7 +116,7 @@
       "name": "the same request again is answered from its receipt; nothing runs twice",
       "status": "pass",
       "required": true,
-      "ms": 33,
+      "ms": 34,
       "httpStatus": 200,
       "replayed": true
     },
@@ -125,7 +125,7 @@
       "name": "the same key with another body is refused with 409 idempotency_key_reuse and writes nothing",
       "status": "pass",
       "required": true,
-      "ms": 37,
+      "ms": 39,
       "httpStatus": 409,
       "code": "idempotency_key_reuse"
     },
@@ -134,7 +134,7 @@
       "name": "the assistant cannot claim an owner tap (403 forbidden, nothing written)",
       "status": "pass",
       "required": true,
-      "ms": 44,
+      "ms": 34,
       "httpStatus": 403,
       "code": "forbidden"
     },
@@ -143,7 +143,7 @@
       "name": "the owner's token cannot send on the assistant's channel (403 forbidden, nothing written)",
       "status": "pass",
       "required": true,
-      "ms": 41,
+      "ms": 34,
       "httpStatus": 403,
       "code": "forbidden"
     },
@@ -152,7 +152,7 @@
       "name": "a receipt cannot be read without a token",
       "status": "pass",
       "required": true,
-      "ms": 4,
+      "ms": 2,
       "httpStatus": 401
     },
     {
@@ -168,9 +168,9 @@
       "name": "the owner taps undo: every balance back as before, the undo receipt names the original",
       "status": "pass",
       "required": true,
-      "ms": 23,
+      "ms": 16,
       "httpStatus": 200,
-      "undoCommandId": "cmd_cb7a8642b944005c7228b087641e05c2",
+      "undoCommandId": "cmd_3279d3275cb861d7f81e4bcd0b526b49",
       "revisionAfter": 2
     },
     {
@@ -178,7 +178,7 @@
       "name": "the original receipt no longer offers undo, and a second undo is refused (409 not_undoable)",
       "status": "pass",
       "required": true,
-      "ms": 50,
+      "ms": 38,
       "receiptUndoAvailable": false,
       "secondUndoStatus": 409,
       "code": "not_undoable"
@@ -188,14 +188,14 @@
       "name": "two identical requests sent at once commit once and share one receipt",
       "status": "pass",
       "required": true,
-      "ms": 36,
+      "ms": 35,
       "statuses": [
         200,
         200
       ],
       "replayed": [
-        true,
-        false
+        false,
+        true
       ],
       "revisionDelta": 1
     },
@@ -204,7 +204,7 @@
       "name": "invalid, unknown and impossible commands are refused with their codes and write nothing",
       "status": "pass",
       "required": true,
-      "ms": 49,
+      "ms": 46,
       "outcomes": [
         {
           "what": "fraction",
@@ -279,7 +279,7 @@
       "name": "the consent page refuses a wrong owner token and a form it did not issue: nothing granted, no redirect",
       "status": "pass",
       "required": true,
-      "ms": 42,
+      "ms": 29,
       "statuses": [
         200,
         401,
@@ -292,7 +292,7 @@
       "name": "the owner allows \"Make changes\": the code returns with state and issuer, and the PKCE exchange grants read and write",
       "status": "pass",
       "required": true,
-      "ms": 21,
+      "ms": 17,
       "step": null,
       "httpStatus": null,
       "scopes": [
@@ -305,7 +305,7 @@
       "name": "the owner leaves \"Make changes\" off: the same request is granted read only",
       "status": "pass",
       "required": true,
-      "ms": 20,
+      "ms": 16,
       "step": null,
       "httpStatus": null,
       "scopes": [
@@ -317,9 +317,10 @@
       "name": "an MCP client session: initialize, initialized, tools/list offers the read and write tools, and a snapshot read equals the owner's inventory",
       "status": "pass",
       "required": true,
-      "ms": 45,
+      "ms": 39,
       "protocolVersion": "2025-11-25",
       "tools": [
+        "garderobe_today",
         "garderobe_inventory",
         "garderobe_command"
       ],
@@ -336,19 +337,20 @@
       "name": "over MCP the assistant relays \"it is in the wash\": a committed receipt with undo moves exactly that balance, and command.undo over MCP takes it back",
       "status": "pass",
       "required": true,
-      "ms": 51,
+      "ms": 48,
       "httpStatus": 200,
-      "commandId": "cmd_69fc0c88f790af25ae50b81b8eba18e8",
+      "commandId": "cmd_b65410c0cbec71c6a9b8de3b642327f3",
       "ownedByRun": true,
-      "undoCommandId": "cmd_9662257efde74751e843fedc43f01406"
+      "undoCommandId": "cmd_67854e6f2bf42a7af6ca0cc22bb8995a"
     },
     {
       "group": "scopes",
       "name": "a read-only grant reads, is not offered the write tool, and calling it is refused with 403 insufficient_scope; nothing is written",
       "status": "pass",
       "required": true,
-      "ms": 51,
+      "ms": 39,
       "tools": [
+        "garderobe_today",
         "garderobe_inventory"
       ],
       "statuses": [
@@ -374,10 +376,10 @@
       "name": "the run's OAuth grants end (owner disconnect, RFC 7009 revocation): their access and refresh tokens are refused on the next request and they are listed as revoked",
       "status": "pass",
       "required": true,
-      "ms": 37,
+      "ms": 35,
       "grants": [
         {
-          "grantId": "grt_000094dbc0a8691adeb8783c07b723cb",
+          "grantId": "grt_00002d799e14e6cedb54009e20aa80da",
           "endedBy": "owner_disconnect",
           "httpStatus": 200,
           "fallbackStatus": null,
@@ -387,7 +389,7 @@
           "listedAs": "revoked"
         },
         {
-          "grantId": "grt_0001dbae6dde57c74973783b9a385122",
+          "grantId": "grt_0001770c3282613794b884532cac6a58",
           "endedBy": "revocation",
           "httpStatus": 200,
           "fallbackStatus": null,
@@ -405,16 +407,16 @@
       "name": "the wardrobe is left exactly as it began (only this run's own receipts undone, found by replaying its requests)",
       "status": "pass",
       "required": true,
-      "ms": 86,
+      "ms": 90,
       "ownReceipts": 4,
       "ownReceiptsStillOpen": 0,
       "undoneByCleanup": [
         {
-          "commandId": "cmd_06fbf637780be3ec241e3c6e7d5791de",
+          "commandId": "cmd_42915273c1bea0f0dcd86fbf6ac0f2d9",
           "httpStatus": 200
         },
         {
-          "commandId": "cmd_72ad963d2df03b86873675e56398c2a4",
+          "commandId": "cmd_038f3bce46807f215bc459d52a86d916",
           "httpStatus": 200
         }
       ],
