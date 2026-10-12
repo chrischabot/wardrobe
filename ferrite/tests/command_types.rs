@@ -1,9 +1,10 @@
 //! `GET /v1/command-types` (`CommandTypeList`): the command types this port executes, described as the
-//! TypeScript registry describes them and narrowed to what the port's handlers accept. Each published
-//! payload field is sent through `POST /v1/commands` to show the handler accepts it as a field, and an
-//! unpublished one to show it is refused by name, so the list cannot claim more or less than the port.
+//! TypeScript registry describes them and narrowed to what the port's handlers accept. Valid payloads
+//! that together use every published field are checked against the published schema and executed
+//! through `POST /v1/commands`; an unpublished field and each value the schema narrows away are
+//! refused by both, so the list cannot claim more or less than the port does.
 //!
-//! The store is an in-memory test double of the APE binding; nothing is committed by these requests.
+//! The store is an in-memory test double of the APE binding; the garments are the real seed.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -97,6 +98,12 @@ async fn the_list_names_exactly_the_ported_commands_as_the_typescript_registry_d
     assert!(publish["payloadSchema"]["properties"].get("requestFingerprint").is_none(), "{publish}");
     assert_eq!(publish["payloadSchema"]["required"], json!(["localDate", "options", "requestedCount"]));
     assert_eq!(type_of(&list, "board.select")["payloadSchema"]["required"], json!(["boardId", "optionId"]));
+    // What the port categorically refuses is narrowed: no trips, only the home board and the default
+    // brief, no weather or Calendar snapshot.
+    assert_eq!(wear["payloadSchema"]["properties"]["tripId"], json!({"type": "null", "default": null}));
+    assert_eq!(publish["payloadSchema"]["properties"]["scope"]["const"], "home");
+    assert_eq!(publish["payloadSchema"]["properties"]["weatherSnapshotId"]["type"], "null");
+    assert!(type_of(&list, "board.swap_slot")["payloadSchema"]["properties"].get("weatherSnapshotId").is_none());
 }
 
 #[tokio::test]
@@ -111,46 +118,208 @@ async fn a_connected_assistant_reads_the_same_list_and_an_unsigned_request_is_re
     assert_eq!(status, 401, "{body}");
 }
 
-/// The payload a command needs before its handler checks the fields at all.
-fn base(kind: &str) -> Value {
-    match kind {
-        "board.select" | "board.swap_slot" => json!({"boardId": "brd_never_published"}),
-        _ => json!({}),
+/// A JSON Schema check for the keywords the published payload schemas use (`pattern` is not checked;
+/// the handler's own date and ID checks cover it).
+fn check(schema: &Value, v: &Value, at: &str) -> Result<(), String> {
+    let fail = |why: &str| Err(format!("{at}: {why} ({v})"));
+    if let Some(c) = schema.get("const") {
+        if c != v {
+            return fail(&format!("expected {c}"));
+        }
+    }
+    if let Some(e) = schema.get("enum").and_then(Value::as_array) {
+        if !e.contains(v) {
+            return fail("not one of the enumerated values");
+        }
+    }
+    if let Some(any) = schema.get("anyOf").and_then(Value::as_array) {
+        if !any.iter().any(|s| check(s, v, at).is_ok()) {
+            return fail("matches no anyOf branch");
+        }
+    }
+    if let Some(t) = schema.get("type") {
+        let types: Vec<&str> = match t {
+            Value::String(s) => vec![s.as_str()],
+            Value::Array(a) => a.iter().filter_map(Value::as_str).collect(),
+            _ => vec![],
+        };
+        let is = |name: &str| match name {
+            "object" => v.is_object(),
+            "array" => v.is_array(),
+            "string" => v.is_string(),
+            "integer" => v.is_i64() || v.is_u64(),
+            "number" => v.is_number(),
+            "boolean" => v.is_boolean(),
+            "null" => v.is_null(),
+            _ => false,
+        };
+        if !types.iter().any(|name| is(name)) {
+            return fail(&format!("expected type {t}"));
+        }
+    }
+    if let Some(s) = v.as_str() {
+        let n = s.chars().count() as u64;
+        if schema.get("minLength").and_then(Value::as_u64).map_or(false, |m| n < m) || schema.get("maxLength").and_then(Value::as_u64).map_or(false, |m| n > m) {
+            return fail("length out of bounds");
+        }
+    }
+    if let Some(x) = v.as_f64() {
+        let below = schema.get("minimum").and_then(Value::as_f64).map_or(false, |m| x < m) || schema.get("exclusiveMinimum").and_then(Value::as_f64).map_or(false, |m| x <= m);
+        if below || schema.get("maximum").and_then(Value::as_f64).map_or(false, |m| x > m) {
+            return fail("number out of bounds");
+        }
+    }
+    if let Some(a) = v.as_array() {
+        let n = a.len() as u64;
+        if schema.get("minItems").and_then(Value::as_u64).map_or(false, |m| n < m) || schema.get("maxItems").and_then(Value::as_u64).map_or(false, |m| n > m) {
+            return fail("item count out of bounds");
+        }
+        if let Some(items) = schema.get("items") {
+            for (i, x) in a.iter().enumerate() {
+                check(items, x, &format!("{at}[{i}]"))?;
+            }
+        }
+    }
+    if let Some(o) = v.as_object() {
+        for r in schema.get("required").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
+            if !o.contains_key(r) {
+                return fail(&format!("{r} is required"));
+            }
+        }
+        let props = schema.get("properties").and_then(Value::as_object);
+        for (k, x) in o {
+            match props.and_then(|p| p.get(k)) {
+                Some(s) => check(s, x, &format!("{at}.{k}"))?,
+                None if schema.get("additionalProperties") == Some(&Value::Bool(false)) => return fail(&format!("{k} is not a published field")),
+                None => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+// Real garments of the owner's seed (the same outfits the dev flow publishes).
+const OXFORD_BLUE: &str = "gmt_3894b6a6295908d5e687af4f";
+const OXFORD_PINK: &str = "gmt_41c2da80e7f41e5dc6a4340b";
+const AKITA_CREAM: &str = "gmt_0bd82c642c7606199361d3d4";
+const GREY_CHINO: &str = "gmt_b8744c2627cd88a3b937f851";
+const SOCK_BISCUIT: &str = "gmt_9eb32f6a40ea3e5e4dee484b";
+const SOCK_GREY: &str = "gmt_67d3228f744d17138e400729";
+const NB_GREY: &str = "gmt_14bc4338d6760f6a13434b2f";
+const NB_OLIVE: &str = "gmt_185ccf753d109848f21f7cec";
+const BELT_BROWN: &str = "gmt_6335e17bcb19fb15f77c31bf";
+const BELT_BLACK: &str = "gmt_4f778d8afb62d536e5fc036b";
+
+fn outfit(top: &str, bottom: &str, socks: &str, shoes: &str, belt: &str) -> Value {
+    json!({"slots": [{"role": "top", "garmentId": top}, {"role": "bottom", "garmentId": bottom}, {"role": "belt", "garmentId": belt}, {"role": "socks", "garmentId": socks}, {"role": "footwear", "garmentId": shoes}], "reason": ""})
+}
+
+struct Run {
+    store: MemStore,
+    list: Value,
+    n: usize,
+    used: BTreeMap<String, Vec<String>>,
+}
+
+impl Run {
+    fn schema(&self, kind: &str) -> Value {
+        type_of(&self.list, kind)["payloadSchema"].clone()
+    }
+    async fn post(&mut self, kind: &str, payload: &Value) -> (u16, Value) {
+        self.n += 1;
+        let envelope = json!({"type": kind, "payload": payload, "idempotencyKey": format!("command-types-{:04}", self.n), "authorization": "owner_tap", "source": {"channel": "ios"}});
+        send(&mut self.store, Some(OWNER), "POST", "/v1/commands", envelope).await
+    }
+    /// A payload the published schema accepts, which the port then executes.
+    async fn accepted(&mut self, kind: &str, payload: Value) -> Value {
+        check(&self.schema(kind), &payload, kind).unwrap_or_else(|e| panic!("the published schema refuses a payload the port should run: {e}"));
+        let (status, receipt) = self.post(kind, &payload).await;
+        assert_eq!(status, 200, "{kind} {payload}: {receipt}");
+        self.used.entry(kind.to_string()).or_default().extend(payload.as_object().unwrap().keys().cloned());
+        receipt
+    }
+    /// A payload the published schema refuses, which the port refuses too and records nothing for.
+    async fn refused(&mut self, kind: &str, payload: Value, says: &str) {
+        assert!(check(&self.schema(kind), &payload, kind).is_err(), "the published schema accepts {kind} {payload}");
+        let (status, body) = self.post(kind, &payload).await;
+        assert_ne!(status, 200, "{kind} {payload}: {body}");
+        assert!(body.to_string().contains(says), "{kind} {payload}: expected '{says}' in {body}");
     }
 }
 
-async fn refusal(store: &mut MemStore, kind: &str, payload: Value, n: usize) -> String {
-    let envelope = json!({"type": kind, "payload": payload, "idempotencyKey": format!("command-types-{kind}-{n}"), "authorization": "owner_tap", "source": {"channel": "ios"}});
-    let (status, body) = send(store, Some(OWNER), "POST", "/v1/commands", envelope).await;
-    assert_ne!(status, 200, "{kind}: a malformed payload was accepted: {body}");
-    body.to_string()
+fn with(base: &Value, key: &str, value: Value) -> Value {
+    let mut p = base.clone();
+    p[key] = value;
+    p
 }
 
 #[tokio::test]
-async fn every_published_payload_field_is_one_the_handler_accepts_and_no_other_is() {
+async fn payloads_the_published_schemas_accept_run_and_the_values_they_refuse_are_refused() {
     let mut store = MemStore::default();
     let (_, list) = send(&mut store, Some(OWNER), "GET", "/v1/command-types", Value::Null).await;
-    let mut n = 0;
-    for t in list["types"].as_array().unwrap() {
-        let kind = t["type"].as_str().unwrap();
-        let props = t["payloadSchema"]["properties"].as_object().unwrap();
-        assert!(!props.is_empty(), "{kind}");
-        for field in props.keys() {
-            // A value of the wrong type: refused for its value (or for another field), never as an
-            // unknown field.
-            let mut payload = base(kind);
-            payload[field] = json!(true);
-            n += 1;
-            let body = refusal(&mut store, kind, payload, n).await;
-            assert!(!body.contains("not a field of this command"), "{kind}.{field} is published but refused as a field: {body}");
-        }
-        let mut payload = base(kind);
-        payload["notPublished"] = json!(true);
-        n += 1;
-        let body = refusal(&mut store, kind, payload, n).await;
-        assert!(body.contains("notPublished: not a field of this command"), "{kind}: {body}");
+    let mut run = Run { store, list, n: 0, used: BTreeMap::new() };
+
+    // A board, published with every field of board.publish.
+    let publish = json!({
+        "localDate": "2026-09-11", "scope": "home", "reason": "compose",
+        "options": [outfit(OXFORD_BLUE, AKITA_CREAM, SOCK_BISCUIT, NB_GREY, BELT_BROWN)],
+        "reserves": [outfit(OXFORD_PINK, GREY_CHINO, SOCK_GREY, NB_OLIVE, BELT_BLACK)],
+        "brief": {"text": null, "segment": "day"}, "requestedCount": 1,
+        "weatherSnapshotId": null, "calendarSnapshotId": null, "notice": "Published by the command-types test",
+        "composedAgainst": {"wardrobeRevision": 0, "styleRevision": 0}, "expectedBoardRevision": 0,
+    });
+    for (key, value, says) in [
+        ("scope", json!("trip:trp_1"), "only the home board"),
+        ("brief", json!({"segment": "evening"}), "send the default brief"),
+        ("weatherSnapshotId", json!("wx_1"), "unknown weather snapshot"),
+        ("calendarSnapshotId", json!("cal_1"), "unknown calendar snapshot"),
+        ("requestFingerprint", json!("0123456789abcdef"), "requestFingerprint: not a field of this command"),
+    ] {
+        run.refused("board.publish", with(&publish, key, value), says).await;
     }
-    // Nothing was written by any of them.
-    let (_, receipts) = send(&mut store, Some(OWNER), "GET", "/v1/commands", Value::Null).await;
-    assert_eq!(receipts["receipts"], json!([]), "{receipts}");
+    let published = run.accepted("board.publish", publish).await;
+    let board_id = published["result"]["boardId"].as_str().unwrap().to_string();
+    let option_id = published["result"]["optionIds"][0].as_str().unwrap().to_string();
+
+    let select = json!({"boardId": board_id, "optionId": option_id, "footwearGarmentId": null});
+    run.refused("board.select", with(&select, "notPublished", json!(true)), "notPublished: not a field of this command").await;
+    run.accepted("board.select", select).await;
+
+    let swap = json!({"boardId": board_id, "optionId": option_id, "role": "socks", "garmentId": SOCK_GREY});
+    run.refused("board.swap_slot", with(&swap, "weatherSnapshotId", json!("wx_1")), "unknown weather snapshot").await;
+    let swapped = run.accepted("board.swap_slot", swap).await;
+
+    let undo = json!({"commandId": swapped["commandId"], "reason": "Swapped by mistake"});
+    run.refused("command.undo", with(&undo, "notPublished", json!(true)), "notPublished: not a field of this command").await;
+    run.accepted("command.undo", undo).await;
+
+    let wear = json!({"wearingDate": "2026-09-09", "garmentIds": [OXFORD_PINK], "timezone": "Europe/London", "segment": "day", "additionalUnits": [], "tripId": null, "note": "Worn to the office"});
+    run.refused("wear.record", with(&wear, "tripId", json!("trp_1")), "trips are not ported").await;
+    run.accepted("wear.record", wear).await;
+
+    let dirty = json!({"items": [{"garmentId": GREY_CHINO, "quantity": 1}]});
+    run.refused("care.mark_dirty", with(&dirty, "notPublished", json!(true)), "notPublished: not a field of this command").await;
+    run.accepted("care.mark_dirty", dirty).await;
+
+    let collect = json!({"batchId": "lb-command-types-1", "exclude": [], "include": []});
+    run.refused("laundry.collect", with(&collect, "notPublished", json!(true)), "notPublished: not a field of this command").await;
+    run.accepted("laundry.collect", collect).await;
+
+    let back = json!({"batchId": "lb-command-types-1", "stillAway": []});
+    run.refused("laundry.return", with(&back, "notPublished", json!(true)), "notPublished: not a field of this command").await;
+    run.accepted("laundry.return", back).await;
+
+    let washed = json!({"items": [{"garmentId": OXFORD_PINK}]});
+    run.refused("care.washed", with(&washed, "notPublished", json!(true)), "notPublished: not a field of this command").await;
+    run.accepted("care.washed", washed).await;
+    run.accepted("care.washed", json!({"allOfChannel": "handwash"})).await;
+
+    // Together the accepted payloads used every published field of every type.
+    for t in run.list["types"].as_array().unwrap() {
+        let kind = t["type"].as_str().unwrap();
+        let used = run.used.get(kind).cloned().unwrap_or_default();
+        for field in t["payloadSchema"]["properties"].as_object().unwrap().keys() {
+            assert!(used.contains(field), "{kind}.{field} is published but no accepted payload used it");
+        }
+    }
 }

@@ -7,7 +7,9 @@
 //! `scripts/build-command-types.mjs`. It is narrowed here to what this port does, from the same
 //! constants the port's handlers use, so the list cannot claim more than the port accepts:
 //!   * the payload schema keeps only the fields the handler accepts, and says so with
-//!     `additionalProperties: false` (the handler refuses any other field by name);
+//!     `additionalProperties: false` (the handler refuses any other field by name); a field whose
+//!     every non-default value the port refuses is narrowed to the value it accepts
+//!     ([`NARROWED`]), and a field it accepts no value for is left out;
 //!   * the authorizations are those the command service accepts ([`api::ACCEPTED_AUTHORIZATIONS`]);
 //!   * `consequential` is the port's own connected-assistant rule ([`api::connected_refusal`]).
 
@@ -37,15 +39,47 @@ pub fn accepted_fields(kind: &str) -> Option<&'static [&'static str]> {
     })
 }
 
-/// The TypeScript schema with only the fields the handler accepts.
-fn narrowed(schema: &Value, fields: &[&str]) -> Value {
+/// Fields the TypeScript schema allows values for that this port categorically refuses, with the schema
+/// of what it does accept (`None`: no value is accepted, so the field is not published). Bounds (list
+/// lengths, text lengths) are not restated here; the handler names them when it refuses.
+fn narrowed_field(kind: &str, field: &str) -> Option<Option<Value>> {
+    let null_only = || Some(json!({"type": "null", "default": null}));
+    match (kind, field) {
+        // wear.rs `parse`: trips are not ported, so any trip is refused.
+        ("wear.record", "tripId") => Some(null_only()),
+        // board.rs `publish_input`: only the home board, the default day brief, and no snapshot (weather
+        // and Calendar are not read, so a named snapshot is never found).
+        ("board.publish", "scope") => Some(Some(json!({"const": "home", "default": "home"}))),
+        ("board.publish", "brief") => Some(Some(json!({
+            "type": "object",
+            "properties": {
+                "text": {"const": null}, "requestedCount": {"const": null}, "include": {"const": []}, "exclude": {"const": []},
+                "occasionOnly": {"const": false}, "allowRepeat": {"const": false}, "segment": {"const": "day"},
+            },
+            "additionalProperties": false,
+        }))),
+        ("board.publish", "weatherSnapshotId" | "calendarSnapshotId") => Some(null_only()),
+        // board.rs `swap`: a weather snapshot ID is never found, and nothing else is accepted for it.
+        ("board.swap_slot", "weatherSnapshotId") => Some(None),
+        _ => None,
+    }
+}
+
+/// The TypeScript schema with only the fields the handler accepts, each as the port accepts it.
+fn narrowed(kind: &str, schema: &Value, fields: &[&str]) -> Value {
     let mut out = schema.clone();
     if let Some(obj) = out.as_object_mut() {
         if let Some(Value::Object(props)) = obj.get_mut("properties") {
-            props.retain(|k, _| fields.contains(&k.as_str()));
+            props.retain(|k, _| fields.contains(&k.as_str()) && narrowed_field(kind, k) != Some(None));
+            for (k, v) in props.iter_mut() {
+                if let Some(Some(accepted)) = narrowed_field(kind, k) {
+                    *v = accepted;
+                }
+            }
         }
+        let published: Vec<String> = obj.get("properties").and_then(Value::as_object).map(|p| p.keys().cloned().collect()).unwrap_or_default();
         if let Some(Value::Array(required)) = obj.get_mut("required") {
-            required.retain(|k| k.as_str().map_or(false, |k| fields.contains(&k)));
+            required.retain(|k| k.as_str().map_or(false, |k| published.iter().any(|p| p == k)));
         }
         obj.insert("additionalProperties".into(), Value::Bool(false));
     }
@@ -74,7 +108,7 @@ fn describe() -> Result<Value, String> {
         t.insert("requiredScope".into(), entry["requiredScope"].clone());
         t.insert("authorizations".into(), json!(authorizations));
         t.insert("consequential".into(), json!(api::connected_refusal(kind, None).is_some()));
-        t.insert("payloadSchema".into(), narrowed(&entry["payloadSchema"], fields));
+        t.insert("payloadSchema".into(), narrowed(kind, &entry["payloadSchema"], fields));
         types.push(Value::Object(t));
     }
     Ok(json!({"types": types, "contractVersion": CONTRACT_VERSION}))

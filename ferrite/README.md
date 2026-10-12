@@ -78,7 +78,7 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `GET /v1/connections`, `POST /v1/connections/{grantId}/disconnect` (owner only) | Settings › Connected assistants: the OAuth grants, and disconnecting one, effective on its next request |
 | `POST /mcp` (OAuth) | the MCP server of `apps/worker/src/mcp`, see below |
 | `GET /v1/meta` | `MetaResponse`: API and contract versions, mounted modules (media is reported as not mounted), server time, the MCP endpoint and its protocol versions. Without a valid `WARDROBE_PUBLIC_ORIGIN` it is refused by that secret's name |
-| `GET /v1/command-types` | `CommandTypeList`, as `describeCommandTypes`: the nine command types this port executes, each with the class, required scope and payload JSON Schema the TypeScript registry gives it (`src/seed/command-types.json`, written by `scripts/build-command-types.mjs`), narrowed to this port: only the payload fields its handler accepts, with `additionalProperties: false` (so `board.publish` has no `requestFingerprint`), only the `owner_tap` and `owner_statement` authorizations (a publication by schedule is not ported), and `consequential` from the port's own connected-assistant rule, under which none of the nine waits for the owner. Values the port refuses inside an accepted field (a non-default `brief`, a `tripId`, a weather or Calendar snapshot ID) are not expressed in the schema; the command names them when it refuses |
+| `GET /v1/command-types` | `CommandTypeList`, as `describeCommandTypes`: the nine command types this port executes, each with the class, required scope and payload JSON Schema the TypeScript registry gives it (`src/seed/command-types.json`, written by `scripts/build-command-types.mjs`), narrowed to this port: only the payload fields its handler accepts, with `additionalProperties: false` (so `board.publish` has no `requestFingerprint`), only the `owner_tap` and `owner_statement` authorizations (a publication by schedule is not ported), and `consequential` from the port's own connected-assistant rule, under which none of the nine waits for the owner. A field whose other values the port always refuses is published as the value it accepts: `wear.record` `tripId` null only; `board.publish` `scope` `"home"`, `brief` the default day brief, `weatherSnapshotId` and `calendarSnapshotId` null only; `board.swap_slot` `weatherSnapshotId` is left out (no value is accepted). Size bounds (list and text lengths) are not restated; the command names them when it refuses |
 | `POST /v1/commands/batch` | the phone's offline replay (`CommandBatchResponse`): 1 to 50 envelopes in order, each run as `POST /v1/commands` runs it, independent of the others, with `retryable` from the error code as `isRetryable` decides it |
 | `POST /v1/recommendations` | `RecommendResponse`. `preview` (default): the recommender's validated options, nothing published. `board`: those options published as the day's home board through `board.publish` under the key `board-compose:{clientRequestId}`, answered with the board. A retransmission answers from the saved run and the publication's receipt. `date` is required (no owner timezone); `lockedGarmentIds` and `occasionOnly: true` are refused as not ported |
 | `POST /v1/boards/{id}/swap` | `SwapSlotResponse`: `board.swap_slot` under the key `board-swap:{clientRequestId}`, `expectedRevision` sent as the board's expected version, answered with the receipt and the board as it now stands. No fresher forecast is fetched first (weather is not ported) |
@@ -679,6 +679,9 @@ lines of milestone C:
     conflicts on the selection version).
   - A swap revalidates only the changed option. The other options and the
     reserves are copied into the new revision as they were.
+  - An automatic swap (no `garmentId`) of a `one_piece` slot does not avoid
+    shirts and one-pieces already offered in other options, as publication
+    does for `top` and `one_piece`.
   - A publication has no undo (as in the TypeScript service, which the
     reviewer counts as a gap under the 2026-10-05 contract).
 - **Laundry.**
@@ -686,6 +689,17 @@ lines of milestone C:
     to detect a repeat.
   - A back-dated laundry report can change another bag's holdings without
     raising that bag's version.
+  - A pickup's explicit `include` quantities are not held to the rule that a
+    unit recorded worn on the pickup day stays with the owner.
+- **Wear.**
+  - A wear report does not settle laundry exceptions or resolve the day's
+    board exposure sets (neither is ported).
+  - Without an owner timezone, a wear date is checked against the earliest
+    and latest timezones on Earth and ordered at noon UTC, not at the owner's
+    civil day.
+- **Restrictions.** Only the import's restrictions exist, and no restriction
+  command is ported, so the owner cannot yet end the healing restriction
+  with a receipt (a connected assistant never can).
 - **OAuth.**
   - Issuing a ninth access token within 15 minutes evicts the oldest one
     while it is still live.
