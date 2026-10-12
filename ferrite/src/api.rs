@@ -4,6 +4,7 @@
 //!
 //! Storage is the app's APE binding (`state`), reached through [`Store`]:
 //!   `ledger`     the owner's ledger (`crate::ledger::Ledger`), the commit guard;
+//!   `b/<id>`     a day board (`crate::board::Board`), written with the ledger;
 //!   `c/<id>`     a command: its stored receipt, payload hash and undo data;
 //!   `i/<sha256>` an idempotency key → command ID and request hash.
 //! Every command rewrites `ledger`, and the receipt and marker are committed
@@ -17,11 +18,12 @@ use ferrite_app::client::ApeClusterClient;
 use ferrite_app::serde_json::{self, json, Value};
 use ferrite_app::IngressRequest;
 
+use crate::board::{self, Board};
 use crate::canonical::{canonical, keys_are_plain, numbers_are_whole, whole, MAX_SAFE};
-use crate::ledger::{self, CmdError, Ctx, Ledger, Plan, StoredCommand};
+use crate::ledger::{self, BoardRef, CmdError, Ctx, Ledger, Plan, StoredCommand};
 use crate::seed::{catalogue, Catalogue};
 use crate::sha256::{constant_time_eq, hex_digest};
-use crate::time::{instant, parse_instant};
+use crate::time::{earliest_day, instant, parse_instant, parse_local_date};
 use crate::{mcp, oauth};
 
 /// `CONTRACT_VERSION` in packages/contracts/src/version.ts.
@@ -221,6 +223,10 @@ pub async fn handle<S: Store>(store: &mut S, tokens: &Tokens, now_ms: u64, req: 
             let category = query.iter().find(|(k, _)| k == "category").map(|(_, v)| v.as_str());
             read_wardrobe(store, now_ms, category).await
         }
+        ("GET", "/v1/today") => {
+            let date = query.iter().find(|(k, _)| k == "date").map(|(_, v)| v.as_str());
+            read_today(store, now_ms, date).await
+        }
         ("GET", "/v1/commands") => {
             let limit = query.iter().find(|(k, _)| k == "limit").and_then(|(_, v)| v.parse::<usize>().ok()).unwrap_or(50).clamp(1, 200);
             list_receipts(store, limit).await
@@ -289,6 +295,36 @@ async fn read_ledger<S: Store>(store: &mut S) -> Result<(Option<Vec<u8>>, Ledger
 
 fn command_key(id: &str) -> Vec<u8> {
     format!("c/{id}").into_bytes()
+}
+
+fn board_key(id: &str) -> Vec<u8> {
+    format!("b/{id}").into_bytes()
+}
+
+/// Read one board. Absent is `Ok(None)`; a record that is not a board this code wrote is an error.
+async fn load_board<S: Store>(store: &mut S, id: &str) -> Result<Option<Board>, CmdError> {
+    if id.is_empty() || id.len() > 64 {
+        return Ok(None);
+    }
+    let bytes = store.get(&board_key(id)).await.map_err(|_| internal("the board could not be read just now; try again"))?;
+    match bytes {
+        None => Ok(None),
+        Some(b) => serde_json::from_slice::<Value>(&b)
+            .ok()
+            .and_then(|v| Board::from_json(&v))
+            .filter(|board| board.board_id == id)
+            .map(Some)
+            .ok_or_else(|| CmdError::with("internal", "the stored board is unreadable; nothing was changed", json!({"retryable": false, "boardId": id}))),
+    }
+}
+
+/// A board the ledger's index names: absent is as corrupt as unreadable.
+async fn indexed_board<S: Store>(store: &mut S, r: Option<&BoardRef>) -> Result<Option<Board>, CmdError> {
+    let Some(r) = r else { return Ok(None) };
+    match load_board(store, &r.board_id).await? {
+        Some(b) => Ok(Some(b)),
+        None => Err(CmdError::with("internal", "the day's board is listed but its record is missing; nothing was changed", json!({"retryable": false, "boardId": r.board_id}))),
+    }
 }
 
 fn idempotency_key(key: &str) -> Vec<u8> {
@@ -360,9 +396,11 @@ pub fn validate_record(bytes: &[u8], command_id: &str) -> Option<Record> {
     // `undoes` names the target of an undo, and only of an undo; `result` is
     // exactly what each command type writes.
     let result = rc["result"].as_object()?;
+    let board_result = result.get("boardId").and_then(Value::as_str).is_some() && result.get("revision").and_then(Value::as_u64).is_some();
     match (&value["undoes"], kind.as_str()) {
         (Value::String(s), "command.undo") if is_command_id(s) => {
-            if result.len() != 1 || result.get("undoneCommandId") != Some(&value["undoes"]) {
+            // A stock undo writes only the target; a board undo adds the board it restored.
+            if result.get("undoneCommandId") != Some(&value["undoes"]) || (result.len() > 1 && !board_result) {
                 return None;
             }
         }
@@ -373,6 +411,7 @@ pub fn validate_record(bytes: &[u8], command_id: &str) -> Option<Record> {
                 return None;
             }
         }
+        (Value::Null, "board.publish" | "board.select" | "board.swap_slot") if board_result => {}
         _ => return None,
     }
     // Exactly one of: undo data (offered by the receipt), or the reason the
@@ -380,20 +419,13 @@ pub fn validate_record(bytes: &[u8], command_id: &str) -> Option<Record> {
     let undo = value["undo"].as_object()?;
     let available = rc["undo"]["available"].as_bool()?;
     let undo = match (undo.len(), undo.get("data"), undo.get("unavailableReason")) {
-        (1, Some(data), None) if available && rc["undo"]["reason"].is_null() => {
-            let d = data.as_object()?;
-            let ids = d.get("stockEventIds")?.as_array()?;
-            if d.len() != 1 || ids.is_empty() || !ids.iter().all(|x| x.as_str().map_or(false, |s| !s.is_empty())) {
-                return None;
-            }
-            Ok(data.clone())
-        }
+        (1, Some(data), None) if available && rc["undo"]["reason"].is_null() && undo_data_ok(&kind, data) => Ok(data.clone()),
         (1, None, Some(Value::String(reason))) if !available && !reason.is_empty() && rc["undo"]["reason"].as_str() == Some(reason.as_str()) => Err(reason.clone()),
         _ => return None,
     };
-    // A dirty report always carries undo data and an undo never does.
+    // A dirty report, a choice and a swap always carry undo data; an undo and a publication never do.
     match (kind.as_str(), &undo) {
-        ("care.mark_dirty", Ok(_)) | ("command.undo", Err(_)) => {}
+        ("care.mark_dirty" | "board.select" | "board.swap_slot", Ok(_)) | ("command.undo" | "board.publish", Err(_)) => {}
         _ => return None,
     }
     let command = StoredCommand {
@@ -404,6 +436,35 @@ pub fn validate_record(bytes: &[u8], command_id: &str) -> Option<Record> {
         undone_by,
     };
     Some(Record { value, command, request_hash })
+}
+
+/// The undo data each undoable command writes, exactly.
+fn undo_data_ok(kind: &str, data: &Value) -> bool {
+    let Some(d) = data.as_object() else { return false };
+    let keys = |want: &[&str]| d.len() == want.len() && want.iter().all(|k| d.contains_key(*k));
+    let str_or_null = |k: &str| matches!(d.get(k), Some(Value::Null) | Some(Value::String(_)));
+    let id = |k: &str| d.get(k).and_then(Value::as_str).map_or(false, |s| !s.is_empty());
+    match kind {
+        "care.mark_dirty" => {
+            keys(&["stockEventIds"]) && d["stockEventIds"].as_array().map_or(false, |ids| !ids.is_empty() && ids.iter().all(|x| x.as_str().map_or(false, |s| !s.is_empty())))
+        }
+        "board.select" => {
+            keys(&["boardId", "previousOptionId", "previousFootwearId", "previousAt", "wrote"])
+                && id("boardId")
+                && str_or_null("previousOptionId")
+                && str_or_null("previousFootwearId")
+                && str_or_null("previousAt")
+                && d["wrote"].as_object().map_or(false, |w| w.len() == 1 && w.get("version").and_then(Value::as_u64).is_some())
+        }
+        "board.swap_slot" => {
+            keys(&["boardId", "revisionBefore", "revisionAfter", "optionId", "role"])
+                && id("boardId")
+                && id("optionId")
+                && d["role"].as_str().map_or(false, |r| board::ROLES.contains(&r))
+                && matches!((d["revisionBefore"].as_u64(), d["revisionAfter"].as_u64()), (Some(a), Some(b)) if a < b)
+        }
+        _ => false,
+    }
 }
 
 /// A stored receipt as it reads now: an undo already used is no longer offered.
@@ -439,6 +500,32 @@ pub async fn read_wardrobe<S: Store>(store: &mut S, now_ms: u64, category: Optio
 async fn list_receipts<S: Store>(store: &mut S, limit: usize) -> Result<Value, CmdError> {
     let (receipts, _, _) = receipts_page(store, limit).await?;
     Ok(json!({"receipts": receipts}))
+}
+
+/// `GET /v1/today?date=` (`TodayView`): the day's home board, read without inference. No owner
+/// timezone is ported yet, so the day must be named.
+pub async fn read_today<S: Store>(store: &mut S, now_ms: u64, date: Option<&str>) -> Result<Value, CmdError> {
+    let Some(date) = date.filter(|d| parse_local_date(d).is_some()) else {
+        return Err(CmdError::with(
+            "invalid_command",
+            "date: expected the day as YYYY-MM-DD; this server has no owner timezone yet, so the day must be named",
+            json!({"issues": ["date: expected YYYY-MM-DD"]}),
+        ));
+    };
+    // The ledger and the board are separate records committed together; read the ledger again after
+    // the board, so the board and the stock it is checked against belong to the same commit.
+    for _ in 0..3 {
+        let (before, l) = read_ledger(store).await?;
+        let board = indexed_board(store, l.board_for("home", date)).await?;
+        let (after, _) = read_ledger(store).await?;
+        if before != after {
+            continue;
+        }
+        let cat = catalogue();
+        let day = board::Day { cat, stock: ledger::replay(cat, &l.events) };
+        return Ok(board::today(&day, date, board.as_ref(), l.revision, now_ms));
+    }
+    Err(CmdError::with("conflict", "the wardrobe kept changing while the board was read; try again", json!({"retryable": true})))
 }
 
 /// The newest `limit` receipts, whether older ones exist, and the wardrobe
@@ -563,10 +650,10 @@ fn parse_envelope(v: &Value) -> Result<Envelope, CmdError> {
     Ok(Envelope { kind, payload, idempotency_key, expected_versions, occurred_at, authorization, request_hash })
 }
 
-/// `checkAuthorization` in service.ts. Both commands of this slice are of
-/// class observation or edit, which an owner tap or an owner statement
-/// authorizes; only the owner can tap, and an assistant can only relay the
-/// owner's words.
+/// `checkAuthorization` in service.ts. Every command of this port is one an
+/// owner tap or an owner statement authorizes (a publication also by a
+/// schedule, which this port does not have yet); only the owner can tap, and
+/// an assistant can only relay the owner's words.
 fn check_authorization(principal: Principal, env: &Envelope, source_channel: &str) -> Result<(), CmdError> {
     let allowed = ["owner_tap", "owner_statement"];
     if !allowed.contains(&env.authorization.as_str()) {
@@ -582,26 +669,118 @@ fn check_authorization(principal: Principal, env: &Envelope, source_channel: &st
     Ok(())
 }
 
-/// Client-stated versions, checked for edits (`command.undo`); observations
-/// are rebased instead (section 5 of the specification).
-fn check_expected_versions(env: &Envelope, l: &Ledger) -> Result<(), CmdError> {
-    if env.kind != "command.undo" {
+/// Most entries an `expectedVersions` map may name.
+const MAX_EXPECTED: usize = 16;
+
+/// The current revision of every board `expectedVersions` names (absent boards are left out).
+async fn expected_boards<S: Store>(store: &mut S, env: &Envelope) -> Result<Vec<(String, u64)>, CmdError> {
+    let Some(map) = env.expected_versions.as_object() else { return Ok(Vec::new()) };
+    if map.len() > MAX_EXPECTED {
+        return Err(envelope_error(format!("expectedVersions: at most {MAX_EXPECTED} entries")));
+    }
+    let mut out = Vec::new();
+    for key in map.keys() {
+        if let Some(id) = key.strip_prefix("board:") {
+            if let Some(b) = load_board(store, id).await? {
+                out.push((id.to_string(), b.current_revision));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Client-stated versions, checked for every command but an observation
+/// (`care.mark_dirty` is rebased instead, section 5 of the specification).
+/// A board choice does not advance the board's revision, so it can be made
+/// at the version the client read; a revision moved by anyone else is a conflict.
+fn check_expected_versions(env: &Envelope, l: &Ledger, boards: &[(String, u64)]) -> Result<(), CmdError> {
+    if env.kind == "care.mark_dirty" {
         return Ok(());
     }
     if let Some(map) = env.expected_versions.as_object() {
         for (key, want) in map {
             let (kind, id) = key.split_once(':').unwrap_or((key.as_str(), ""));
             let have = match kind {
-                "wardrobe" => l.revision,
-                "garment" => l.garment_version(id),
+                "wardrobe" => Some(l.revision),
+                "garment" => Some(l.garment_version(id)),
+                "board" => boards.iter().find(|(b, _)| b == id).map(|(_, r)| *r),
                 _ => return Err(CmdError::with("invalid_command", format!("unknown expected-version kind '{kind}'"), json!({"key": key}))),
             };
-            if Some(have) != whole(want) {
+            if have.is_none() || have != whole(want) {
                 return Err(CmdError::with("conflict", "this was changed elsewhere since you last saw it; nothing was written", json!({"failed": format!("expected {key} = {want}")})));
             }
         }
     }
     Ok(())
+}
+
+/// What a command is about to write besides the ledger and its record.
+struct Planned {
+    plan: Plan,
+    board: Option<board::Outcome>,
+    original: Option<Record>,
+}
+
+impl Planned {
+    fn stock(plan: Plan) -> Planned {
+        Planned { plan, board: None, original: None }
+    }
+    fn board(out: board::Outcome) -> Planned {
+        Planned { plan: out.plan.clone(), board: Some(out), original: None }
+    }
+}
+
+/// Plan one command against `current`, writing ledger changes into `next`.
+async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envelope, ctx: &Ctx<'_>, current: &Ledger, next: &mut Ledger, undo_target: Option<&str>) -> Result<Planned, CmdError> {
+    let boards = expected_boards(store, env).await?;
+    check_expected_versions(env, current, &boards)?;
+    let day = || board::Day { cat: ctx.cat, stock: ledger::replay(ctx.cat, &current.events) };
+    match (env.kind.as_str(), undo_target) {
+        ("care.mark_dirty", _) => Ok(Planned::stock(ledger::mark_dirty(ctx, next, &env.payload)?)),
+        ("board.publish", _) => {
+            let input = board::publish_input(&env.payload)?;
+            let existing = indexed_board(store, current.board_for(&input.scope, &input.local_date)).await?;
+            Ok(Planned::board(board::publish(ctx, &day(), existing.as_ref(), input)?))
+        }
+        ("board.select", _) => {
+            let id = board::named_board(&env.kind, &env.payload)?;
+            let b = load_board(store, &id).await?;
+            Ok(Planned::board(board::select(ctx, &day(), b.as_ref(), &env.payload)?))
+        }
+        ("board.swap_slot", _) => {
+            let id = board::named_board(&env.kind, &env.payload)?;
+            let b = load_board(store, &id).await?;
+            Ok(Planned::board(board::swap(ctx, &day(), b.as_ref(), &env.payload)?))
+        }
+        ("command.undo", Some(target)) => {
+            let record = load_command(store, target).await?;
+            if principal.actor == ASSISTANT.actor {
+                if let Some(r) = &record {
+                    if connected_refusal(&env.kind, Some(&r.command.kind)).is_some() {
+                        return Err(connected_refusal_error("restriction_not_lifted_by_undo"));
+                    }
+                }
+            }
+            let data = ledger::undo_precheck(record.as_ref().map(|r| &r.command), target)?;
+            let Some(record) = record else { return Err(CmdError::new("not_found", "there is no such action to undo")) };
+            let summary = record.command.summary.clone();
+            let mut planned = match record.command.kind.as_str() {
+                "care.mark_dirty" => Planned::stock(ledger::command_undo(ctx, next, Some(&record.command), target)?),
+                kind @ ("board.select" | "board.swap_slot") => {
+                    let b = load_board(store, data["boardId"].as_str().unwrap_or_default()).await?;
+                    Planned::board(if kind == "board.select" {
+                        board::undo_select(ctx, b.as_ref(), &data, &summary, target)?
+                    } else {
+                        board::undo_swap(ctx, &day(), b.as_ref(), &data, &summary, target)?
+                    })
+                }
+                other => return Err(CmdError::with("not_undoable", "this action has no automatic undo", json!({"commandId": target, "type": other}))),
+            };
+            planned.original = Some(record);
+            Ok(planned)
+        }
+        _ => Err(CmdError::with("unknown_command", format!("unknown command type '{}'", env.kind), json!({"known": ledger::COMMAND_TYPES}))),
+    }
 }
 
 /// The stored receipt for this request's idempotency key, if it was already
@@ -735,25 +914,8 @@ pub async fn execute<S: Store>(store: &mut S, principal: Principal, now_ms: u64,
         let command_id = new_command_id(&env.idempotency_key, now_ms, attempt);
         let ctx = Ctx { cat, command_id: &command_id, now_ms, occurred_at_ms };
         let mut next = current.clone();
-        let mut original_record: Option<Record> = None;
-        let planned: Result<Plan, CmdError> = match check_expected_versions(&env, &current) {
-            Err(e) => Err(e),
-            Ok(()) => match undo_target.as_deref() {
-                None => ledger::mark_dirty(&ctx, &mut next, &env.payload),
-                Some(target) => match load_command(store, target).await {
-                    Ok(Some(record)) if principal.actor == ASSISTANT.actor && connected_refusal(&env.kind, Some(&record.command.kind)).is_some() => {
-                        Err(connected_refusal_error("restriction_not_lifted_by_undo"))
-                    }
-                    Ok(record) => {
-                        original_record = record;
-                        ledger::command_undo(&ctx, &mut next, original_record.as_ref().map(|r| &r.command), target)
-                    }
-                    Err(e) => Err(e),
-                },
-            },
-        };
-        let plan = match planned {
-            Ok(plan) => plan,
+        let planned = match plan_command(store, principal, &env, &ctx, &current, &mut next, undo_target.as_deref()).await {
+            Ok(planned) => planned,
             Err(e) => {
                 // A refusal can be the trace of this very request committed by
                 // another executor after the reads above (an undo it already
@@ -765,6 +927,15 @@ pub async fn execute<S: Store>(store: &mut S, principal: Principal, now_ms: u64,
                 };
             }
         };
+        let Planned { plan, board: board_out, original: original_record } = planned;
+        if let Some(out) = &board_out {
+            if out.created {
+                // Index entries for long-past days are dropped (their records stay); the index stays bounded.
+                let keep_from = earliest_day(now_ms) - board::INDEX_KEPT_DAYS;
+                next.boards.retain(|r| parse_local_date(&r.local_date).map_or(false, |d| d >= keep_from));
+                next.boards.push(BoardRef { board_id: out.board.board_id.clone(), scope: out.board.scope.clone(), local_date: out.board.local_date.clone() });
+            }
+        }
         next.revision = current.revision + 1;
         next.record_command(&command_id);
 
@@ -802,6 +973,9 @@ pub async fn execute<S: Store>(store: &mut S, principal: Principal, now_ms: u64,
             (command_key(&command_id), record.to_string().into_bytes()),
             (idempotency_key(&env.idempotency_key), marker.to_string().into_bytes()),
         ];
+        if let Some(out) = &board_out {
+            entries.push((board_key(&out.board.board_id), out.board.to_json().to_string().into_bytes()));
+        }
         if let (Some(target), Some(original)) = (undo_target.as_deref(), original_record) {
             let mut original = original.value;
             original["undoneBy"] = json!(command_id);

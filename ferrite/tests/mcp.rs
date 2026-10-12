@@ -294,7 +294,7 @@ async fn the_codex_flow_reads_writes_with_a_receipt_and_undoes() {
     assert_eq!(note.status, 202);
     let list = rpc(&mut store, T0, &access, 2, "tools/list", json!({})).await;
     let names: Vec<&str> = list.json["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    assert_eq!(names, vec!["garderobe_inventory", "garderobe_command"]);
+    assert_eq!(names, vec!["garderobe_today", "garderobe_inventory", "garderobe_command"]);
 
     // Reads: the complete inventory, and a page that says it is not the whole.
     let snapshot = call(&mut store, &access, "garderobe_inventory", json!({"view": "snapshot"})).await;
@@ -359,7 +359,7 @@ async fn the_codex_flow_reads_writes_with_a_receipt_and_undoes() {
     assert_eq!((read_only.status, read_only.json["scope"].clone()), (200, json!("wardrobe.read")));
     let ro = read_only.json["access_token"].as_str().unwrap().to_string();
     let ro_list = rpc(&mut store, T0 + 7_000, &ro, 8, "tools/list", json!({})).await;
-    assert_eq!(ro_list.json["result"]["tools"].as_array().unwrap().len(), 1);
+    assert_eq!(ro_list.json["result"]["tools"].as_array().unwrap().len(), 2);
     // Narrowing is permanent: a later refresh cannot win write back, asked or not.
     let rn = read_only.json["refresh_token"].as_str().unwrap().to_string();
     let back = send(&mut store, T0 + 7_000, "POST", "/oauth/token", None, form(&[("grant_type", "refresh_token"), ("refresh_token", &rn), ("client_id", &client), ("scope", "wardrobe.read wardrobe.write")])).await;
@@ -369,7 +369,7 @@ async fn the_codex_flow_reads_writes_with_a_receipt_and_undoes() {
     // The write-scoped access token issued before narrowing is held to read too.
     let early_write = t3.json["access_token"].as_str().unwrap();
     let r = rpc(&mut store, T0 + 7_000, early_write, 8, "tools/list", json!({})).await;
-    assert_eq!(r.json["result"]["tools"].as_array().unwrap().len(), 1);
+    assert_eq!(r.json["result"]["tools"].as_array().unwrap().len(), 2);
 
     // An access token expires after 15 minutes.
     assert_eq!(rpc(&mut store, T0 + 7_000, &access, 9, "ping", json!({})).await.status, 200, "the first access token is still kept");
@@ -399,13 +399,73 @@ async fn the_codex_flow_reads_writes_with_a_receipt_and_undoes() {
 }
 
 #[tokio::test]
+async fn the_codex_verifier_board_steps_run_over_mcp() {
+    let mut store = MemStore::default();
+    let (_, tokens) = connect(&mut store, true).await;
+    let access = tokens["access_token"].as_str().unwrap().to_string();
+    let date = "2026-09-11";
+    let none = call(&mut store, &access, "garderobe_today", json!({"date": date})).await;
+    assert_eq!(none["structuredContent"]["board"], Value::Null);
+    assert_eq!(error_of(&call(&mut store, &access, "garderobe_today", json!({})).await)["code"], "invalid_command");
+
+    // The owner's app publishes the day's board (until the recommender is ported).
+    let outfit = |top: &str, bottom: &str, socks: &str, shoes: &str| json!({"slots": [{"role": "top", "garmentId": top}, {"role": "bottom", "garmentId": bottom}, {"role": "socks", "garmentId": socks}, {"role": "footwear", "garmentId": shoes}], "reason": ""});
+    let publish = json!({"type": "board.publish", "idempotencyKey": "owner-publish-1", "authorization": "owner_tap", "source": {"channel": "ios"}, "payload": {"localDate": date, "requestedCount": 2, "options": [
+        outfit("gmt_3894b6a6295908d5e687af4f", "gmt_0bd82c642c7606199361d3d4", "gmt_9eb32f6a40ea3e5e4dee484b", "gmt_14bc4338d6760f6a13434b2f"),
+        outfit("gmt_41c2da80e7f41e5dc6a4340b", "gmt_b8744c2627cd88a3b937f851", "gmt_67d3228f744d17138e400729", "gmt_185ccf753d109848f21f7cec"),
+    ]}});
+    let r = send(&mut store, T0, "POST", "/v1/commands", Some(&format!("Bearer {OWNER}")), publish.to_string().into_bytes()).await;
+    assert_eq!(r.status, 200, "{}", r.text);
+
+    let read = |store: &mut MemStore| {
+        let access = access.clone();
+        let mut s = store.clone();
+        async move {
+            let r = call(&mut s, &access, "garderobe_today", json!({"date": date})).await;
+            (s, r["structuredContent"]["board"].clone())
+        }
+    };
+    let (s, board) = read(&mut store).await;
+    store = s;
+    let id = board["boardId"].as_str().unwrap().to_string();
+    let versions = |b: &Value| json!({format!("board:{}", b["boardId"].as_str().unwrap()): b["revision"]});
+    // As the verifier's boardState: the choice and every option's pieces (not the revision or change marks).
+    let state = |b: &Value| (b["selection"]["optionId"].clone(), b["selection"]["footwearGarmentId"].clone(), b["options"].as_array().unwrap().iter().map(|o| (o["optionId"].clone(), o["garments"].as_array().unwrap().iter().map(|g| format!("{}:{}", g["role"], g["garmentId"])).collect::<Vec<_>>())).collect::<Vec<_>>());
+    let option = board["options"][1]["optionId"].clone();
+
+    let sel = call(&mut store, &access, "garderobe_command", json!({"type": "board.select", "payload": {"boardId": id, "optionId": option}, "expectedVersions": versions(&board), "idempotencyKey": "codex-verify-select-1"})).await;
+    let receipt = sel["structuredContent"]["receipt"].clone();
+    assert_eq!((receipt["actor"].clone(), receipt["channel"].clone()), (json!("assistant"), json!("mcp")));
+    let (s, after) = read(&mut store).await;
+    store = s;
+    // The verifier adopts the read only when its revision is the receipt's board version.
+    assert_eq!(receipt["affected"][0], json!({"kind": "board", "id": id, "version": after["revision"]}));
+    assert_eq!(after["selection"]["optionId"], option);
+    let undo = call(&mut store, &access, "garderobe_command", json!({"type": "command.undo", "payload": {"commandId": receipt["commandId"]}, "expectedVersions": versions(&after), "idempotencyKey": "codex-verify-undo-1"})).await;
+    assert!(undo["structuredContent"]["receipt"]["commandId"].is_string(), "{undo}");
+    let (s, restored) = read(&mut store).await;
+    store = s;
+    assert_eq!(state(&restored), state(&board));
+
+    let swap = call(&mut store, &access, "garderobe_command", json!({"type": "board.swap_slot", "payload": {"boardId": id, "optionId": option, "role": "top"}, "expectedVersions": versions(&restored), "idempotencyKey": "codex-verify-swap-1"})).await;
+    let sr = swap["structuredContent"]["receipt"].clone();
+    let (s, swapped) = read(&mut store).await;
+    store = s;
+    assert_eq!(sr["affected"][0]["version"], swapped["revision"]);
+    assert_ne!(swapped["options"][1]["garments"][0], restored["options"][1]["garments"][0]);
+    call(&mut store, &access, "garderobe_command", json!({"type": "command.undo", "payload": {"commandId": sr["commandId"]}, "expectedVersions": versions(&swapped), "idempotencyKey": "codex-verify-undo-2"})).await;
+    let (_, back) = read(&mut store).await;
+    assert_eq!(state(&back), state(&board), "after undoing the swap the board is exactly as before");
+}
+
+#[tokio::test]
 async fn a_read_only_connection_is_not_offered_the_write_tool_and_is_stepped_up() {
     let mut store = MemStore::default();
     let (_, tokens) = connect(&mut store, false).await;
     assert_eq!(tokens["scope"], "wardrobe.read");
     let access = tokens["access_token"].as_str().unwrap();
     let list = rpc(&mut store, T0, access, 1, "tools/list", json!({})).await;
-    assert_eq!(list.json["result"]["tools"].as_array().unwrap().len(), 1);
+    assert_eq!(list.json["result"]["tools"].as_array().unwrap().len(), 2);
     let r = rpc(&mut store, T0, access, 2, "tools/call", json!({"name": "garderobe_command", "arguments": {"type": "care.mark_dirty", "payload": {}, "idempotencyKey": "codex-ro-0001"}})).await;
     assert_eq!(r.status, 403);
     assert!(r.header("www-authenticate").unwrap().starts_with("Bearer error=\"insufficient_scope\", scope=\"wardrobe.read wardrobe.write\""));

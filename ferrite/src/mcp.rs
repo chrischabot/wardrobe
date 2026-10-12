@@ -5,6 +5,7 @@
 //!
 //! The tools are those of apps/worker/src/mcp/server.ts that the ported
 //! commands can back, with the same names, arguments and results:
+//!   `garderobe_today`     the day's board (`TodayView`), for a named day;
 //!   `garderobe_inventory` views `items`, `snapshot` and `receipts`;
 //!   `garderobe_command`   the ported commands, offered only to a grant with
 //!                         `wardrobe.write` and refused to any other with the
@@ -27,9 +28,11 @@ use crate::time::instant;
 pub const PROTOCOL_VERSIONS: [&str; 2] = ["2025-11-25", "2025-06-18"];
 
 const GUIDE: &str = "Garderobe: the connected owner's private wardrobe. The owner is fixed by this connection; no tool takes an owner or user. \
+garderobe_today reads the day's outfit board for a named date (YYYY-MM-DD): its options, their pieces and the owner's choice. \
 garderobe_inventory reads the wardrobe (views items, snapshot, receipts); check `complete` and `nextCursor` before saying how many things exist. \
 garderobe_command makes one typed change the owner reported or asked for (needs the write permission) and returns its verified receipt; \
-send a stable idempotencyKey per intended change, and take a change back with command.undo and the receipt's commandId. \
+send a stable idempotencyKey per intended change, send the board's revision as expectedVersions ({\"board:<boardId>\": revision}) for a board change, and take a change back with command.undo and the receipt's commandId. \
+Choosing an outfit is an intention, not a recorded wear. \
 Lifting a restriction, or undoing the command that recorded one, is refused here. Only send what the owner actually reported or asked for.";
 
 fn header<'a>(req: &'a IngressRequest, name: &str) -> Option<&'a str> {
@@ -110,6 +113,7 @@ pub async fn handle<S: Store>(store: &mut S, origin: &str, now_ms: u64, req: &In
                 Some(_) => return rpc_error(200, id, -32602, "params.arguments must be an object"),
             };
             match name {
+                "garderobe_today" => rpc_result(id, today(store, now_ms, &args).await),
                 "garderobe_inventory" => rpc_result(id, inventory(store, now_ms, &args).await),
                 "garderobe_command" if !caller.can_write() => oauth::insufficient_scope(origin),
                 "garderobe_command" => rpc_result(id, command(store, now_ms, &args).await),
@@ -122,7 +126,20 @@ pub async fn handle<S: Store>(store: &mut S, origin: &str, now_ms: u64, req: &In
 
 /// The tool list for this connection: a read-only grant is not offered the write tool.
 pub fn tools(caller: &Caller) -> Vec<Value> {
-    let mut list = vec![json!({
+    let mut list = vec![
+        json!({
+            "name": "garderobe_today",
+            "title": "Read the day's board",
+            "description": "The owner's outfit board for one day: each option's pieces (role and garmentId), the owner's choice, the board revision to send as expectedVersions, and what the board could not take into account (forecast, Calendar). Name the day; this server has no owner timezone yet.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["date"],
+                "properties": {"date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "the owner's calendar day, YYYY-MM-DD"}}
+            },
+            "annotations": {"title": "Read the day's board", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+        }),
+        json!({
         "name": "garderobe_inventory",
         "title": "Read the wardrobe",
         "description": "Read the owner's garments with their clean and dirty balances (view items, paged; or snapshot, complete), or the newest command receipts (view receipts). `complete` and `nextCursor` say whether the data is the whole result.",
@@ -137,12 +154,13 @@ pub fn tools(caller: &Caller) -> Vec<Value> {
             }
         },
         "annotations": {"title": "Read the wardrobe", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
-    })];
+        }),
+    ];
     if caller.can_write() {
         list.push(json!({
             "name": "garderobe_command",
             "title": "Change the wardrobe",
-            "description": "One typed change the owner reported or asked for, applied at once with a verified receipt and an undo: care.mark_dirty (payload {items: [{garmentId, quantity?}]}, the owner's wash report) and command.undo (payload {commandId}). Repeating the same idempotencyKey never repeats the change. Lifting a restriction, or undoing the command that recorded one, is refused.",
+            "description": "One typed change the owner reported or asked for, applied at once with a verified receipt and an undo: care.mark_dirty (payload {items: [{garmentId, quantity?}]}, the owner's wash report); board.select (payload {boardId, optionId, footwearGarmentId?}; optionId null clears the choice; an intention, not a wear); board.swap_slot (payload {boardId, optionId, role, garmentId?}; without garmentId another eligible piece is chosen); board.publish (payload {localDate, requestedCount, options: [{slots: [{role, garmentId}], reason}]}; every option is validated against the wardrobe); command.undo (payload {commandId}). Send expectedVersions {\"board:<boardId>\": revision} for a board change. Repeating the same idempotencyKey never repeats the change. Lifting a restriction, or undoing the command that recorded one, is refused.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": false,
@@ -179,6 +197,33 @@ fn only_keys(args: &Map<String, Value>, allowed: &[&str]) -> Result<(), CmdError
     match args.keys().find(|k| !allowed.contains(&k.as_str())) {
         Some(k) => Err(invalid(format!("'{k}' is not an argument this server takes for this tool"))),
         None => Ok(()),
+    }
+}
+
+async fn today<S: Store>(store: &mut S, now_ms: u64, args: &Map<String, Value>) -> Value {
+    if let Err(e) = only_keys(args, &["date"]) {
+        return tool_error(e);
+    }
+    let date = args.get("date").and_then(Value::as_str);
+    match api::read_today(store, now_ms, date).await {
+        Ok(view) => {
+            let board = &view["board"];
+            let summary = if board.is_null() {
+                view["emptyReason"].as_str().unwrap_or("No board for this day.").to_string()
+            } else {
+                let options = board["options"].as_array().map_or(0, Vec::len);
+                let chosen = board["selection"]["optionId"].as_str().and_then(|c| board["options"].as_array()?.iter().find(|o| o["optionId"] == c).map(|o| o["number"].clone()));
+                format!(
+                    "Board for {} (revision {}): {options} option(s){}. {}",
+                    view["localDate"].as_str().unwrap_or(""),
+                    board["revision"],
+                    chosen.map_or(String::new(), |n| format!("; the owner chose option {n}")),
+                    board["notice"].as_str().unwrap_or(""),
+                )
+            };
+            tool_ok(view, summary.trim_end().to_string())
+        }
+        Err(e) => tool_error(e),
     }
 }
 

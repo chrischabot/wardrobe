@@ -5,7 +5,7 @@
 
 use std::sync::OnceLock;
 
-use ferrite_app::serde_json::{self, Value};
+use ferrite_app::serde_json::{self, Map, Value};
 
 const SEED: &str = include_str!("seed/owner-inventory.json");
 
@@ -20,6 +20,33 @@ pub struct Garment {
     pub acquisition: String,
     pub quantity: u32,
     pub source_rows: Vec<u64>,
+    /// The roles the garment can take in an outfit (`Role` in packages/contracts).
+    pub roles: Vec<String>,
+    /// The recorded colour text, as imported.
+    pub colour: Option<String>,
+    /// The imported attributes (`fabricClass`, `footwearKind`, `model`, `jacketLike`, ...).
+    pub attributes: Map<String, Value>,
+}
+
+impl Garment {
+    /// A string attribute, or `""`.
+    pub fn attr_str(&self, key: &str) -> &str {
+        self.attributes.get(key).and_then(Value::as_str).unwrap_or("")
+    }
+    /// Whether a boolean attribute is `true`.
+    pub fn attr_true(&self, key: &str) -> bool {
+        self.attributes.get(key) == Some(&Value::Bool(true))
+    }
+}
+
+/// One of the owner's profile rules as the importer records it
+/// (packages/domain/src/import/profile.ts): the board validator reads the
+/// parameters of the rules it enforces from here.
+#[derive(Debug, Clone)]
+pub struct Rule {
+    pub key: String,
+    pub status: String,
+    pub params: Value,
 }
 
 #[derive(Debug)]
@@ -29,11 +56,19 @@ pub struct Catalogue {
     pub source_sha256: String,
     pub import_run_id: String,
     pub unit_count: u64,
+    pub rules: Vec<Rule>,
+    /// The profile's healing restriction (sneakers only until the owner says his feet have healed).
+    pub healing_restriction_id: String,
 }
 
 impl Catalogue {
     pub fn get(&self, id: &str) -> Option<&Garment> {
         self.garments.iter().find(|g| g.id == id)
+    }
+
+    /// The rule with this key, only while it is active.
+    pub fn active_rule(&self, key: &str) -> Option<&Rule> {
+        self.rules.iter().find(|r| r.key == key && r.status == "active")
     }
 }
 
@@ -66,8 +101,24 @@ fn parse(seed: &str) -> Catalogue {
                     .and_then(Value::as_array)
                     .map(|a| a.iter().filter_map(Value::as_u64).collect())
                     .unwrap_or_default(),
+                roles: g
+                    .get("roles")
+                    .and_then(Value::as_array)
+                    .expect("every seeded garment has roles")
+                    .iter()
+                    .filter_map(|r| r.as_str().map(str::to_string))
+                    .collect(),
+                colour: g.get("colour").and_then(Value::as_str).map(str::to_string),
+                attributes: g.get("attributes").and_then(Value::as_object).cloned().unwrap_or_default(),
             }
         })
+        .collect();
+    let rules = doc
+        .get("rules")
+        .and_then(Value::as_array)
+        .expect("seed has a rules array")
+        .iter()
+        .map(|r| Rule { key: text(r, "key"), status: text(r, "status"), params: r.get("params").cloned().unwrap_or(Value::Null) })
         .collect();
     Catalogue {
         garments,
@@ -75,6 +126,8 @@ fn parse(seed: &str) -> Catalogue {
         source_sha256: text(&doc, "sourceSha256"),
         import_run_id: text(&doc, "importRunId"),
         unit_count: doc.get("unitCount").and_then(Value::as_u64).unwrap_or(0),
+        rules,
+        healing_restriction_id: text(&doc, "healingRestrictionId"),
     }
 }
 
@@ -99,5 +152,14 @@ mod tests {
         let reims = c.get("gmt_a8fe5fe3a6c0754361249bf8").expect("Paraboot Reims");
         assert_eq!(reims.name, "Paraboot Reims — noir (black)");
         assert_eq!(reims.care_channel, "none");
+        assert_eq!(reims.roles, vec!["footwear".to_string()]);
+        assert_eq!(reims.attr_str("footwearKind"), "welted");
+        assert!(c.garments.iter().all(|g| !g.roles.is_empty()));
+        // The profile's rules as imported, with their states.
+        let so = c.active_rule("footwear.sneakers_only_until_healed").expect("sneakers-only is active");
+        assert_eq!(so.params["allowedFootwearKinds"], ferrite_app::serde_json::json!(["sneaker"]));
+        assert!(c.active_rule("footwear.name_sneaker_and_welted_alternative").is_none(), "dormant while the restriction holds");
+        assert!(c.active_rule("thermal.cotton_linen_from").is_none(), "research thresholds stay off");
+        assert_eq!(c.healing_restriction_id, "rst_profile_sneakers_only");
     }
 }

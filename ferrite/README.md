@@ -7,15 +7,16 @@ asked for Wardrobe and its Codex plugin to be hosted fully on Ferrite; this
 directory is that port, built flow by flow. The TypeScript backend stays the
 behaviour reference until the port reaches parity.
 
-**Status: first slice plus the MCP endpoint (milestone 1a).** The owner's
+**Status: the MCP endpoint and the board (milestone 1b).** The owner's
 real inventory can be read, and one undoable command runs end to end: "it is
 in the wash" (`care.mark_dirty`) with its receipt, and `command.undo` to take
 it back, from the owner's app or a connected assistant, through Ferrite's
 request queue and APE store. A connected assistant such as the Codex plugin
 reaches the same commands through the MCP endpoint (`/mcp`), signing in with
-the app's own OAuth. The board (`garderobe_today`, `board.select` and its
-undo) is next (milestone 1b), then laundry collection and return. Nothing has
-been deployed: see "Deploying".
+the app's own OAuth. The day's outfit board is ported (`board.publish`,
+`board.select`, `board.swap_slot` with their undo, and `garderobe_today`);
+laundry collection and return is next (milestone 1c). Nothing has been
+deployed: see "Deploying".
 
 ## Running it
 
@@ -63,12 +64,14 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `GET /health` (public) | service status |
 | `GET /v1/wardrobe[?category=]` | the inventory: every imported garment with its balances (clean, dirty) and version. A subset of `listInventory`: no availability estimate, aliases, colours or wear counts yet |
 | `POST /v1/commands` | the command envelope of `packages/contracts` (`type`, `payload`, `idempotencyKey`, `authorization`, `source.channel`, optional `occurredAt`, `expectedVersions`) |
+| `GET /v1/today?date=YYYY-MM-DD` | Today: the board published for that date (`TodayView`), or none. `date` is required, because the port has no timezone yet |
 | `GET /v1/commands[?limit=]`, `GET /v1/commands/{id}` | receipts, newest first; an undo already used is no longer offered |
 | `GET /v1/connections`, `POST /v1/connections/{grantId}/disconnect` (owner only) | Settings › Connected assistants: the OAuth grants, and disconnecting one, effective on its next request |
 | `POST /mcp` (OAuth) | the MCP server of `apps/worker/src/mcp`, see below |
 | `/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` | the MCP authorization server, see below |
 
-Commands: `care.mark_dirty` and `command.undo`. Each applies at once and
+Commands: `care.mark_dirty`, `board.publish`, `board.select`,
+`board.swap_slot` and `command.undo`. Each applies at once and
 answers with the receipt of `CommandReceipt` (contract 1.1.0): summary built
 from the ledger, affected entity versions, repairs, result, undo
 availability, wardrobe revision, actor and channel. The same idempotency key
@@ -102,8 +105,9 @@ The 2026-10-05 contract (changes apply at once with undo on every surface):
 the owner's app (`owner_tap`, channel `ios`) and a connected assistant
 (`owner_statement`, channel `mcp`) run the same commands and get the same
 receipt and undo. An assistant cannot claim an owner tap, and the command's
-channel must match the connection. Neither command ported so far is one
-of the cases that wait for the owner (erasure, authorization towards another
+channel must match the connection. No command ported so far is one
+of the cases that wait for the owner (choosing from the board and swapping a
+slot are routine, undoable changes on both surfaces) (erasure, authorization towards another
 party, model or connection reach, the profile document, read-only
 connections, turns without owner words). A connected assistant, on the MCP
 endpoint or with the assistant token, is refused a restriction lift
@@ -112,6 +116,38 @@ looked up, and the undo of a command whose type is `restriction.add`
 (`forbiddenForConnectedAssistant` in the assistant package). Restrictions
 themselves are not ported yet, so the second rule has no record to apply to
 until they are; it is covered by a unit test of the rule.
+
+## The board
+
+`board.publish` publishes the day's outfit options for a local date (today up
+to 14 days ahead) in the home scope, as `packages/daily` boards do: each
+option names its slots and garments, and every garment is validated against
+the replayed ledger and the owner's rules (role, layering-only pieces,
+availability, conditional pieces, the sneakers-only healing restriction from
+the seed's rule parameters, accessories, required roles and duplicates;
+unverified thermal and jacket bands are reported, and a jacket outside the
+verified band is accepted only when named explicitly). At most 8 options and
+3 reserves; a board keeps its last 16 revisions. `board.select` records the
+chosen option without advancing the revision; `board.swap_slot` replaces one
+slot's garment (the owner's choice, or a replacement found by colour family
+and then fabric class) and writes a new revision with the changes described
+in factual copy. `board.select` and `board.swap_slot` have an undo through
+`command.undo`; as in the TypeScript service, a publication has none (publish
+a new revision instead; earlier revisions stay in history). Choices unwind
+only newest first, and an undone choice is itself a change of choice, so an
+earlier one is chosen again rather than undone (also as in TypeScript).
+`expectedVersions` accepts `board:<boardId>`.
+
+Automatic repair is not ported, so a board is checked again against the
+current stock whenever it is read: an option a later report made unwearable
+(its shirt went in the wash, say) carries a `qualification` saying why and the
+board reads as degraded, and `board.select` refuses it.
+
+Not ported yet: the recommender itself (so the owner's app publishes the
+board until it is), weather, Calendar, wear history, the owner's timezone
+(`timezone` is null and the date is required), freshness (`unavailable`), and
+scopes other than home. A board's validity is therefore reported as limited
+or degraded, never as fully checked.
 
 ## The MCP endpoint and its OAuth
 
@@ -129,6 +165,7 @@ revision is answered with 2025-11-25.
 
 Tools, with the TypeScript server's names, arguments and results:
 
+- `garderobe_today`: the board for `{date}` (required), as `/v1/today`.
 - `garderobe_inventory`: views `items` (paged, `limit` and `nextCursor`),
   `snapshot` (complete) and `receipts`. The response says whether it is the
   whole result (`complete`, `total`). The TypeScript server's other views
@@ -139,10 +176,9 @@ Tools, with the TypeScript server's names, arguments and results:
   grant that calls it gets HTTP 403 with the OAuth `insufficient_scope`
   challenge.
 
-`garderobe_today`, `garderobe_recommend`, `garderobe_ask`,
-`garderobe_research` and `garderobe_run` are not offered yet: the board comes
-with milestone 1b, the others with the daily service and the conversation
-actor.
+`garderobe_recommend`, `garderobe_ask`, `garderobe_research` and
+`garderobe_run` are not offered yet: they come with the daily service and the
+conversation actor.
 
 The authorization server follows the TypeScript Worker's Workers OAuth
 provider and consent page:
@@ -242,8 +278,8 @@ Differences from the TypeScript backend, to close in later milestones: one
 owner per deployment; no laundry service yet (collection, return, still-away
 pieces and exceptions arrive with milestone 1), so the inventory has no
 "at the laundry" balance; no wear records; no weekly reset; no effects or
-outbox; `expectedVersions` is checked for `command.undo` only (observations
-are rebased, as in the TypeScript service).
+outbox; `expectedVersions` is checked for every command except the wash
+report (observations are rebased, as in the TypeScript service).
 
 ## Ferrite limits and what they mean for Wardrobe
 
@@ -270,8 +306,8 @@ small change of its own, and passes `ferrite check`, `ferrite test` and
 `ferrite dev` before the next starts.
 
 1. **MCP for the Codex plugin.** (a) Done: the MCP endpoint, its OAuth, the
-   inventory and command tools, and the restriction-lift refusals. (b) The
-   board: `board.publish` (the owner's app, until the recommender is ported),
+   inventory and command tools, and the restriction-lift refusals. (b) Done:
+   the board: `board.publish` (the owner's app, until the recommender is ported),
    `board.select` with its undo, `board.swap_slot`, and `garderobe_today`. (c)
    Batch laundry collection and return, with pickup events, still-away pieces
    and exceptions. Then the Codex plugin (`integrations/codex`) is pointed at

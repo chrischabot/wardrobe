@@ -4,6 +4,7 @@
 //! app. See README.md for what is ported, the platform limits and the plan.
 
 pub mod api;
+pub mod board;
 pub mod canonical;
 pub mod ledger;
 pub mod mcp;

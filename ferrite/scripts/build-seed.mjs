@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, "../..");
 const { buildInventoryImportPlan } = await import(path.join(repo, "packages/domain/src/import/inventory.ts"));
+const { PROFILE_RULES, HEALING_RESTRICTION_ID } = await import(path.join(repo, "packages/domain/src/import/profile.ts"));
 
 const csvPath = path.join(repo, "requirements/wardrobe_inventory_clean.csv");
 const csvText = readFileSync(csvPath, "utf8");
@@ -30,9 +31,16 @@ const garments = plan.garments.map((g) => {
     acquisition: p.acquisition,
     quantity: p.quantity,
     initialBucket: p.initialBucket,
+    roles: p.roles,
+    colour: p.colour ?? null,
+    attributes: p.attributes ?? {},
     sourceRows: g.sourceRows,
   };
 });
+
+// The profile's rules as the importer records them (key, status, params): the board validator reads the
+// ones it enforces from here, so their parameters are never retyped in Rust.
+const rules = PROFILE_RULES.map((r) => ({ key: r.key, status: r.status, params: r.params }));
 
 const header = {
   generatedBy: "ferrite/scripts/build-seed.mjs from packages/domain/src/import/inventory.ts",
@@ -42,11 +50,15 @@ const header = {
   importRunId: plan.importRunId,
   garmentCount: plan.totals.garments,
   unitCount: plan.totals.units,
+  healingRestrictionId: HEALING_RESTRICTION_ID,
 };
 // One garment per line keeps reviews of a changed inventory readable.
 const text =
   "{\n" +
   Object.entries(header).map(([k, v]) => `  ${JSON.stringify(k)}: ${JSON.stringify(v)},\n`).join("") +
+  '  "rules": [\n' +
+  rules.map((r) => `    ${JSON.stringify(r)}`).join(",\n") +
+  "\n  ],\n" +
   '  "garments": [\n' +
   garments.map((g) => `    ${JSON.stringify(g)}`).join(",\n") +
   "\n  ]\n}\n";

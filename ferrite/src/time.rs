@@ -104,9 +104,59 @@ pub fn parse_instant(text: &str) -> Option<u64> {
     u64::try_from(total).ok()
 }
 
+/// A `LocalDate` (`YYYY-MM-DD`, a real date) as days since 1970-01-01.
+pub fn parse_local_date(text: &str) -> Option<i64> {
+    let b = text.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return None;
+    }
+    let (y, m, d) = (digits(&b[0..4])?, digits(&b[5..7])?, digits(&b[8..10])?);
+    if !(1..=12).contains(&m) || d < 1 || d > days_in_month(y, m) {
+        return None;
+    }
+    Some(days_from_civil(y, m, d))
+}
+
+/// Days since 1970-01-01 as a `LocalDate`.
+pub fn local_date(days: i64) -> String {
+    let (y, m, d) = civil_from_days(days);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// The earliest calendar date anywhere on Earth at `ms` (UTC-12): a date
+/// before it is past for every owner, whatever his timezone.
+pub fn earliest_day(ms: u64) -> i64 {
+    ((ms / 1000) as i64 - 12 * 3600).div_euclid(86_400)
+}
+
+/// The latest calendar date anywhere on Earth at `ms` (UTC+14).
+pub fn latest_day(ms: u64) -> i64 {
+    ((ms / 1000) as i64 + 14 * 3600).div_euclid(86_400)
+}
+
+/// "Friday 16 October".
+pub fn day_line(days: i64) -> String {
+    const WEEKDAYS: [&str; 7] = ["Thursday", "Friday", "Saturday", "Sunday", "Monday", "Tuesday", "Wednesday"];
+    const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    let (_, m, d) = civil_from_days(days);
+    format!("{} {d} {}", WEEKDAYS[days.rem_euclid(7) as usize], MONTHS[(m - 1) as usize])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn local_dates() {
+        assert_eq!(parse_local_date("2026-10-16"), Some(days_from_civil(2026, 10, 16)));
+        assert_eq!(local_date(parse_local_date("2026-10-16").unwrap() + 16), "2026-11-01");
+        assert_eq!(parse_local_date("2026-02-29"), None);
+        assert_eq!(parse_local_date("2026-10-16T00:00:00Z"), None);
+        assert_eq!(parse_local_date("2026-1-16"), None);
+        assert_eq!(day_line(parse_local_date("2026-10-16").unwrap()), "Friday 16 October");
+        // The earliest calendar date anywhere at 2026-10-16T05:00Z is the 15th (UTC-12).
+        assert_eq!(local_date(earliest_day(parse_instant("2026-10-16T05:00:00Z").unwrap())), "2026-10-15");
+    }
 
     #[test]
     fn formats_like_to_instant() {

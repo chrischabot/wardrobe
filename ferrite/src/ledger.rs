@@ -21,7 +21,8 @@ use crate::seed::{Catalogue, Garment};
 
 /// Receipt text for an undone stock command (`UNDO_STOCK_SUMMARY` in handlers/common.ts).
 pub const UNDO_STOCK_SUMMARY: &str = "The quantities are as they were before";
-const ALREADY_AN_UNDO: &str = "this is already an undo; repeat the original action instead";
+/// Why an undo offers no undo of its own (handlers/undo.ts).
+pub const ALREADY_AN_UNDO: &str = "this is already an undo; repeat the original action instead";
 /// Bounds this port applies to a command payload's lists (the TypeScript
 /// contracts leave them to the 4 MB body limit, which Ferrite does not have).
 pub const MAX_ITEMS: usize = 200;
@@ -29,8 +30,8 @@ pub const MAX_QUANTITY: u64 = 999;
 /// Command IDs kept in the ledger's recent list, newest first.
 pub const RECENT_LIMIT: usize = 200;
 
-/// The command types this slice executes. Anything else is `unknown_command`.
-pub const COMMAND_TYPES: &[&str] = &["care.mark_dirty", "command.undo"];
+/// The command types this port executes. Anything else is `unknown_command`.
+pub const COMMAND_TYPES: &[&str] = &["care.mark_dirty", "command.undo", "board.publish", "board.select", "board.swap_slot"];
 
 // ───────────────────────────── errors ─────────────────────────────
 
@@ -76,6 +77,16 @@ pub struct Ledger {
     pub versions: BTreeMap<String, u64>,
     /// Command IDs, newest first, at most [`RECENT_LIMIT`].
     pub recent: Vec<String>,
+    /// The day boards (`crate::board`), each stored under `b/<boardId>`.
+    pub boards: Vec<BoardRef>,
+}
+
+/// Where a day's board is stored: one entry per (scope, day).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoardRef {
+    pub board_id: String,
+    pub scope: String,
+    pub local_date: String,
 }
 
 fn arr<'a>(v: &'a Value, k: &str) -> &'a [Value] {
@@ -94,6 +105,7 @@ impl Ledger {
             })).collect::<Vec<_>>(),
             "versions": self.versions,
             "recent": self.recent,
+            "boards": self.boards.iter().map(|b| json!({"boardId": b.board_id, "scope": b.scope, "localDate": b.local_date})).collect::<Vec<_>>(),
         })
     }
 
@@ -135,7 +147,19 @@ impl Ledger {
         for x in v.get("recent")?.as_array()? {
             recent.push(x.as_str()?.to_string());
         }
-        Some(Ledger { revision: u(v, "revision")?, next_seq: u(v, "nextSeq")?, events, versions, recent })
+        // Ledgers written before boards were ported have no index: none exist.
+        let mut boards = Vec::new();
+        if let Some(list) = v.get("boards") {
+            for b in list.as_array()? {
+                boards.push(BoardRef { board_id: st(b, "boardId")?, scope: st(b, "scope")?, local_date: st(b, "localDate")? });
+            }
+        }
+        Some(Ledger { revision: u(v, "revision")?, next_seq: u(v, "nextSeq")?, events, versions, recent, boards })
+    }
+
+    /// The board of this scope and day, if one was published.
+    pub fn board_for(&self, scope: &str, local_date: &str) -> Option<&BoardRef> {
+        self.boards.iter().find(|b| b.scope == scope && b.local_date == local_date)
     }
 
     pub fn garment_version(&self, id: &str) -> u64 {
@@ -240,11 +264,11 @@ pub fn name_list(names: &[String]) -> String {
     }
 }
 
-fn invalid(command: &str, issue: impl Into<String>) -> CmdError {
+pub(crate) fn invalid(command: &str, issue: impl Into<String>) -> CmdError {
     CmdError::with("invalid_command", format!("invalid payload for '{command}'"), json!({"issues": [issue.into()]}))
 }
 
-fn only_keys(payload: &Value, command: &str, allowed: &[&str]) -> Result<(), CmdError> {
+pub(crate) fn only_keys(payload: &Value, command: &str, allowed: &[&str]) -> Result<(), CmdError> {
     let Some(obj) = payload.as_object() else { return Err(invalid(command, "expected an object")) };
     match obj.keys().find(|k| !allowed.contains(&k.as_str())) {
         Some(k) => Err(invalid(command, format!("{k}: not a field of this command"))),
@@ -362,19 +386,26 @@ pub struct StoredCommand {
     pub undone_by: Option<String>,
 }
 
-/// `command.undo`: a compensating command. The original is never deleted;
-/// `crate::api` links the two in the same commit.
-pub fn command_undo(ctx: &Ctx<'_>, ledger: &mut Ledger, original: Option<&StoredCommand>, target: &str) -> Result<Plan, CmdError> {
+/// The checks every undo makes before its handler plans it (handlers/undo.ts):
+/// the action exists, was not undone already, and offered an undo. Returns its undo data.
+pub fn undo_precheck(original: Option<&StoredCommand>, target: &str) -> Result<Value, CmdError> {
     let Some(original) = original else {
         return Err(CmdError::with("not_found", "there is no such action to undo", json!({"commandId": target})));
     };
     if let Some(by) = &original.undone_by {
         return Err(CmdError::with("not_undoable", "that action was already undone", json!({"undoneBy": by})));
     }
-    let data = match &original.undo {
-        Ok(d) => d.clone(),
-        Err(reason) => return Err(CmdError::with("not_undoable", reason.clone(), json!({"commandId": target}))),
-    };
+    match &original.undo {
+        Ok(d) => Ok(d.clone()),
+        Err(reason) => Err(CmdError::with("not_undoable", reason.clone(), json!({"commandId": target}))),
+    }
+}
+
+/// `command.undo`: a compensating command. The original is never deleted;
+/// `crate::api` links the two in the same commit.
+pub fn command_undo(ctx: &Ctx<'_>, ledger: &mut Ledger, original: Option<&StoredCommand>, target: &str) -> Result<Plan, CmdError> {
+    let data = undo_precheck(original, target)?;
+    let Some(original) = original else { return Err(CmdError::new("not_found", "there is no such action to undo")) };
     if original.kind != "care.mark_dirty" {
         return Err(CmdError::with("not_undoable", "this action has no automatic undo", json!({"commandId": target, "type": original.kind})));
     }
