@@ -386,9 +386,9 @@ key (Unified Billing).
 Configuration is one deploy secret, `WARDROBE_AI_GATEWAY`, a JSON object:
 `{"accountId": "<32 hex>", "gatewayId": "garderobe-dev", "token": "<gateway token>", "model": "claude-opus-5-5"}`.
 `gatewayId` must be `garderobe-dev` or `garderobe-prod` (`default` is never
-used, as in `gateway.ts`); `model` is optional and may be `claude-opus-5-5`
-(the default) or `claude-odango-eap` (the API model ID
-`packages/assistant/src/inference/registry.ts` names). Without the secret,
+used, as in `gateway.ts`); `model` is optional and, when given, must be
+`claude-opus-5-5`, the only model the project allows for this inference (the
+TypeScript registry's `claude-odango-eap` is refused). Without the secret,
 with a value that does not parse, or without the egress handle, both tools
 answer `module_unavailable` (HTTP 501 in the error table) naming what is
 missing, before anything is read, sent or saved. There is no fallback

@@ -143,6 +143,7 @@ async fn without_the_gateway_secret_both_tools_are_refused_by_name_and_nothing_i
         ("no token", json!({"accountId": account, "gatewayId": "garderobe-dev"}).to_string()),
         ("a token with a space", json!({"accountId": account, "gatewayId": "garderobe-dev", "token": "a b"}).to_string()),
         ("an unknown model", json!({"accountId": account, "gatewayId": "garderobe-dev", "token": TOKEN, "model": "gpt-5"}).to_string()),
+        ("a model the project does not allow", json!({"accountId": account, "gatewayId": "garderobe-dev", "token": TOKEN, "model": "claude-odango-eap"}).to_string()),
         ("an extra key", json!({"accountId": account, "gatewayId": "garderobe-dev", "token": TOKEN, "apiKey": "sk"}).to_string()),
     ] {
         let mut bad = Inference::new(Some(value), Some(Gateway::default()));

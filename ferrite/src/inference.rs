@@ -43,9 +43,9 @@ pub const EGRESS_HANDLE: &str = "inference";
 pub const DESTINATION_PREFIX: &str = "https://gateway.ai.cloudflare.com/v1/";
 /// `ALLOWED_GATEWAY_IDS` in gateway.ts: the implicit `default` gateway is never used.
 pub const GATEWAY_IDS: [&str; 2] = ["garderobe-dev", "garderobe-prod"];
-/// The models this app may name. `claude-opus-5-5` is the project's model; `claude-odango-eap` is
-/// the API model ID the TypeScript registry (packages/assistant/src/inference/registry.ts) names.
-pub const MODELS: [&str; 2] = ["claude-opus-5-5", "claude-odango-eap"];
+/// The models this app may name: only `claude-opus-5-5`, the model the project brief requires for
+/// all inference. (The TypeScript registry's `claude-odango-eap` is not accepted.)
+pub const MODELS: [&str; 1] = ["claude-opus-5-5"];
 pub const DEFAULT_MODEL: &str = "claude-opus-5-5";
 /// The whole-call egress budget of one model call, under the 8 s ingress deadline.
 pub const MODEL_DEADLINE_MS: u64 = 6_000;
