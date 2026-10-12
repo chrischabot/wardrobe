@@ -50,6 +50,7 @@ export declare function listIn(body: unknown, key: string): any[] | null;
 export declare function replacedNamesListed(lines: string[], currentNames: Iterable<string>, replacedNames: Iterable<string>): string[];
 export declare function importDrained(pendingCounts: number[]): boolean;
 export declare function pendingCount(value: unknown): number;
+export declare function garmentsCreatedByReceipts(receipts: unknown): string[] | null;
 export declare function ownerQuestions(input: { proposals?: number; turnAsked?: number; otherRunsWaiting?: number; replyText?: string | null; runsUncertain?: boolean }): { questions: number; total: number | null; replyQuestions: string[] };
 export declare function repairApprovalQuestions(structured: RequestForm[], replyText: string | null | undefined): { count: number | null; matching: string[]; other: string[] };
 export declare function wearConfirmationRequests(structured: RequestForm[], replyText: string | null | undefined): { count: number | null; matching: string[]; other: string[] };

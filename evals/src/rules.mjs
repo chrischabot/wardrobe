@@ -278,6 +278,25 @@ export function garmentsCreated(idsBefore, idsAfter) {
   return [...new Set(idsAfter.map(String))].filter((id) => !before.has(id));
 }
 
+/**
+ * B009: the garments that committed `garment.create` receipts of the interval created, kept even when the garment
+ * was later removed or merged away. A committed creation whose garment cannot be read from its receipt leaves the
+ * result null (a creation happened, but which one is unknown).
+ */
+export function garmentsCreatedByReceipts(receipts) {
+  if (!Array.isArray(receipts)) return null;
+  const ids = new Set();
+  for (const r of receipts) {
+    if (r?.type !== "garment.create" || r.outcome !== "committed") continue;
+    const fromAffected = (Array.isArray(r.affected) ? r.affected : []).filter((a) => a?.kind === "garment" && typeof a.id === "string" && a.id.length > 0).map((a) => a.id);
+    const fromResult = typeof r.result?.garmentId === "string" && r.result.garmentId.length > 0 ? [r.result.garmentId] : [];
+    const found = [...fromAffected, ...fromResult];
+    if (found.length === 0) return null;
+    for (const id of found) ids.add(id);
+  }
+  return [...ids];
+}
+
 const requestText = (s) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
 /**

@@ -12,7 +12,7 @@
 import { connectMcp, publishBoard, testApp } from "@garderobe/worker/testing";
 import { addDays, exec, isoWeekday, mcpCommand, quantityIn, wholeWardrobe } from "../../../tests/journeys/src/world.ts";
 import { fixtureGarmentPayload, receiptsSince, unrebase, type BehaviourDriver, type DriverContext, type World } from "../kit.ts";
-import { garmentsCreated, ownerQuestions } from "../rules.mjs";
+import { garmentsCreated, garmentsCreatedByReceipts, ownerQuestions } from "../rules.mjs";
 
 const noon = (date: string) => `${date}T12:00:00.000Z`;
 
@@ -415,21 +415,24 @@ const B009: BehaviourDriver = {
   async scripted({ world, memo }) {
     memo.receipt = await tell(world, "wear.record", { wearingDate: world.today, garmentIds: [garment(world, "jacket-blue-work")] });
   },
-  async observe({ world, memo }) {
+  async observe({ world, memo, actStartedAt }) {
     const coat = garment(world, "jacket-blue-work");
     const after = await item(world, coat);
     const today = await dayRecord(world, world.today);
     const idsAfter = (await wholeWardrobe(world.owner.api)).items.map((i: any) => String(i.garment.garmentId));
     const garmentsAfter = idsAfter.length;
     // Garments that exist now and did not before: a duplicate is counted even if another garment was removed or merged meanwhile.
-    const created = garmentsCreated(memo.garmentIdsBefore as string[] | undefined, idsAfter);
+    const surviving = garmentsCreated(memo.garmentIdsBefore as string[] | undefined, idsAfter);
+    // Creations recorded in the interval's receipts: a duplicate created and then removed or merged away still counts.
+    const byReceipt = garmentsCreatedByReceipts(await receiptsSince(world, actStartedAt));
+    const created = surviving === null || byReceipt === null ? null : [...new Set([...surviving, ...byReceipt])];
     return {
       observed: {
         current_location: locationOf(after.detail),
         current_wear_recorded: (today.garments as any[]).some((line) => line.garmentId === coat) && after.detail.lastRecordedWear === world.today,
         duplicate_garments_created: created === null ? null : created.length,
       },
-      evidence: { before: memo.before, balances: after.detail.balances, total_owned_units: after.detail.totalOwnedUnits, garments_before: memo.garmentsBefore, garments_after: garmentsAfter, garments_created: created, receipt: memo.receipt ? { commandId: memo.receipt.commandId, outcome: memo.receipt.outcome, summary: memo.receipt.summary, repairs: memo.receipt.repairs } : null, waiting_before: memo.waitingBefore, waiting_after: await waiting(world), location_rule: "with_owner when every unit the application holds is in the clean or dirty bucket at home; otherwise the bucket names" },
+      evidence: { before: memo.before, balances: after.detail.balances, total_owned_units: after.detail.totalOwnedUnits, garments_before: memo.garmentsBefore, garments_after: garmentsAfter, garments_created: created, garments_created_still_present: surviving, garments_created_by_receipt: byReceipt, receipt: memo.receipt ? { commandId: memo.receipt.commandId, outcome: memo.receipt.outcome, summary: memo.receipt.summary, repairs: memo.receipt.repairs } : null, waiting_before: memo.waitingBefore, waiting_after: await waiting(world), location_rule: "with_owner when every unit the application holds is in the clean or dirty bucket at home; otherwise the bucket names" },
     };
   },
 };

@@ -47,7 +47,7 @@ function syntheticRegistry() {
   );
 }
 import { judgmentProblem } from "./src/node/judge-format.mjs";
-import { anySessionValid, garmentsCreated, recoveryReuseOutcome, sessionOutcome, candidateRoutes, checksumCoverage, comfortObservationMatch, countsAsMorningNotice, credentialOutcome, credentialShapesIn, distinctRequests, exportOfRequest, homeOnlyItems, importDrained, importOutcome, judgeAvailability, lateDeliveryCoverage, listIn, otherWaitingRuns, pendingCount, pendingInputForm, proposalForm, replacedNamesListed, scoredRemoteRevision, newGarmentProhibitions, ownerQuestions, ownerScenario, phaseRefusal, questionnaireOutcome, questionsIn, relayModel, repairApprovalQuestions, requestsInReply, reserveJudgeRoute, safeName, selectCases, suitcaseLaundry, wearConfirmationRequests, wearConfirmationTasks } from "./src/rules.mjs";
+import { anySessionValid, garmentsCreated, garmentsCreatedByReceipts, recoveryReuseOutcome, sessionOutcome, candidateRoutes, checksumCoverage, comfortObservationMatch, countsAsMorningNotice, credentialOutcome, credentialShapesIn, distinctRequests, exportOfRequest, homeOnlyItems, importDrained, importOutcome, judgeAvailability, lateDeliveryCoverage, listIn, otherWaitingRuns, pendingCount, pendingInputForm, proposalForm, replacedNamesListed, scoredRemoteRevision, newGarmentProhibitions, ownerQuestions, ownerScenario, phaseRefusal, questionnaireOutcome, questionsIn, relayModel, repairApprovalQuestions, requestsInReply, reserveJudgeRoute, safeName, selectCases, suitcaseLaundry, wearConfirmationRequests, wearConfirmationTasks } from "./src/rules.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, "..");
@@ -1574,6 +1574,10 @@ async function selftest() {
   check("B009: a duplicate garment is counted by identity, even when another garment was removed meanwhile", () => {
     must(garmentsCreated(["g1", "g2"], ["g1", "g3"])?.join() === "g3", "a duplicate created while another garment was removed was not counted");
     must(garmentsCreated(["g1", "g2"], ["g1", "g2"])?.length === 0, "an unchanged wardrobe counted a garment");
+    must(garmentsCreatedByReceipts([{ type: "garment.create", outcome: "committed", affected: [{ kind: "garment", id: "g9" }] }, { type: "garment.delete", outcome: "committed", affected: [{ kind: "garment", id: "g9" }] }])?.join() === "g9", "a duplicate created and then removed was not counted");
+    must(garmentsCreatedByReceipts([{ type: "garment.create", outcome: "committed" }]) === null, "a creation whose garment is unreadable was counted as none");
+    must(garmentsCreatedByReceipts([{ type: "garment.create", outcome: "rejected", affected: [{ kind: "garment", id: "g9" }] }])?.length === 0, "a refused creation was counted");
+    must(garmentsCreatedByReceipts(null) === null, "an unreadable receipt list was counted as no creation");
     must(garmentsCreated(null, ["g1"]) === null && garmentsCreated(["g1"], undefined) === null, "an unreadable list established a count");
   });
   check("B011, B018: polite requests without a question mark count; a proposal is classified from its summary", () => {
