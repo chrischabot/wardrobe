@@ -82,7 +82,10 @@ export async function plannedReuse(db: Db, userId: string, tripId: string): Prom
   const out = new Map<string, { dates: Set<string>; units: number }>();
   for (const [garmentId, d] of dates) {
     const units = Math.max(1, proposal?.items.find((i) => i.garmentId === garmentId)?.quantity ?? 1);
-    if (d.size > units) out.set(garmentId, { dates: d, units });
+    // Every reusable piece the proposal plans is listed with the days it plans it on: those days are the
+    // piece's wear budget for the trip, whichever days he actually wears it (a piece planned once and
+    // worn once has no budget left).
+    out.set(garmentId, { dates: d, units });
   }
   return { pieces: out, packedSeq: packed.seq };
 }

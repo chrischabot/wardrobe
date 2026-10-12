@@ -170,11 +170,17 @@ export async function assembleContext(db: Db, principal: Principal, opts: Assemb
   if (parsedScope.tripId) {
     const tripId = parsedScope.tripId;
     // Deliberate reuse the packing proposal planned: a unit of such a piece that was WORN ON THIS TRIP
-    // is still in the suitcase and still wearable on a day the proposal plans it, up to the number of
-    // units the proposal packs. Everything else worn on the trip, anything packed already awaiting
-    // care, and a piece the owner reported dirty after packing for the trip, stays out.
+    // is still in the suitcase and still wearable while the days it was worn before this one are fewer
+    // than the days the proposal plans it on, up to the number of units the proposal packs. The planned
+    // days are a budget, not fixed dates: trousers planned for days one and two and worn on day two
+    // instead are still wearable on day three. Everything else worn on the trip, anything packed already
+    // awaiting care, and a piece the owner reported dirty after packing for the trip, stays out.
     const { pieces: reuse, packedSeq } = await plannedReuse(db, userId, tripId);
     const wornOnTrip = new Set<string>();
+    const wornDaysBefore = new Map<string, Set<string>>();
+    const countDay = (garmentId: string, date: string) => {
+      if (date < localDate) wornDaysBefore.set(garmentId, (wornDaysBefore.get(garmentId) ?? new Set()).add(date));
+    };
     const reportedDirty = new Set<string>();
     if (reuse.size > 0 && tripDepartsOn) {
       // A wear counts when its stock event names this trip (a wear whose event is not linked is taken by its date).
@@ -186,8 +192,15 @@ export async function assembleContext(db: Db, principal: Principal, opts: Assemb
             AND (e.event_id IS NULL OR json_extract(e.payload_json, '$.tripId') = ?)`,
         userId, tripDepartsOn, localDate, tripId,
       );
-      for (const r of rows) if (!overlay.removeWears?.some((w) => w.garmentId === r.garment_id && w.wearingDate === r.wearing_date)) wornOnTrip.add(r.garment_id);
-      for (const w of overlay.addWears ?? []) if (w.wearingDate >= tripDepartsOn && w.wearingDate <= localDate) wornOnTrip.add(w.garmentId);
+      for (const r of rows) {
+        if (overlay.removeWears?.some((w) => w.garmentId === r.garment_id && w.wearingDate === r.wearing_date)) continue;
+        wornOnTrip.add(r.garment_id);
+        countDay(r.garment_id, r.wearing_date);
+      }
+      for (const w of overlay.addWears ?? []) if (w.wearingDate >= tripDepartsOn && w.wearingDate <= localDate) {
+        wornOnTrip.add(w.garmentId);
+        countDay(w.garmentId, w.wearingDate);
+      }
       const dirty = await all<{ garment_id: string }>(db, "SELECT DISTINCT garment_id FROM stock_events WHERE user_id = ? AND kind = 'mark_dirty' AND voided_by_command_id IS NULL AND garment_id IS NOT NULL AND seq > ?", userId, packedSeq ?? 0);
       for (const r of dirty) reportedDirty.add(r.garment_id);
     }
@@ -196,7 +209,8 @@ export async function assembleContext(db: Db, principal: Principal, opts: Assemb
     for (const g of input.garments) {
       const worn = g.balances.filter((b) => b.bucket === "trip" && b.ref === `${tripId}#dirty`).reduce((n, b) => n + b.quantity, 0);
       const planned = reuse.get(g.garmentId);
-      const rewearable = planned?.dates.has(localDate) && wornOnTrip.has(g.garmentId) && !reportedDirty.has(g.garmentId) ? Math.min(worn, planned.units) : 0;
+      const budgetLeft = planned ? planned.dates.size - (wornDaysBefore.get(g.garmentId)?.size ?? 0) : 0;
+      const rewearable = planned && budgetLeft > 0 && wornOnTrip.has(g.garmentId) && !reportedDirty.has(g.garmentId) ? Math.min(worn, planned.units) : 0;
       const clean = (packedClean.get(g.garmentId) ?? 0) + rewearable;
       packedClean.set(g.garmentId, clean);
       g.balances = [
