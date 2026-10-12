@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { exitPolicy } from "../lib/cli.mjs";
+import { redact } from "../lib/redact.mjs";
 import { balancesOf, committedWithUndo, csvSha256, evidenceValue, exactlyChanged, gatePasses, httpClient, installInterruptHandlers, keepLocksForWritesInFlight, launderableClean, lineTail, portFree, refusal, runVerification, sameInventory, verifyLocal, writesInFlight, writesUnanswered } from "../verify.mjs";
 import { tokensFile } from "../lib/state.mjs";
 
@@ -283,6 +284,26 @@ test("no command is sent when the starting receipt list cannot be read", async (
   assert.equal(app.state.posts, 0, "nothing was written");
   assert.equal(report.passed, false);
   assert.ok(report.results.some((r) => r.status === "not_run" && /receipt list could not be read/.test(r.reason ?? "")));
+});
+
+test("truncation runs only on redacted text: no cut point exposes URL userinfo cut before '@' or a known secret straddling it", () => {
+  const known = "knownSecretValue" + "Z9q";
+  const text = `start\nfetch http://usr:abcQ\ndefZZ@host.example/x done\nkey ${known} end\n`;
+  const leaks = /usr|abcQ|defZZ|knownSec|ecretVal|Z9q/;
+  for (let maxChars = 1; maxChars <= text.length + 5; maxChars++) {
+    const t = lineTail([known], 50);
+    // Fed in pieces cut just before the '@' and inside the known secret.
+    const at = text.indexOf("@");
+    const mid = text.indexOf(known) + 7;
+    t.push(text.slice(0, at));
+    t.push(text.slice(at, mid));
+    t.push(text.slice(mid));
+    const out = t.text(maxChars);
+    assert.equal(leaks.test(out), false, `maxChars ${maxChars}: ${out}`);
+  }
+  // Evidence: redaction runs on the whole detail before the evidence shape reduces it.
+  const reduced = evidenceValue(redact({ reason: `see http://usr:abcQ@host and ${known}` }, [known]));
+  assert.equal(leaks.test(JSON.stringify(reduced)), false, JSON.stringify(reduced));
 });
 
 test("evidence keeps only the promised fields: an unexpected remote field never reaches a file", () => {

@@ -19,6 +19,13 @@ test("CLI evidence holds the command, exit status, timing and sizes only; diagno
   assert.equal(cliDiagnostics(r, []).includes(leaked), false);
 });
 
+test("CLI diagnostics redact the whole output before cutting: no cut point exposes userinfo before '@' or a straddling known secret", () => {
+  const known = "knownSecretValue" + "Z9q";
+  const r = { args: ["deploy"], status: 1, stdout: `fetch http://usr:abcQ\ndefZZ@host.example/x\n`, stderr: `key ${known} end`, error: null };
+  const leaks = /usr|abcQ|defZZ|knownSec|ecretVal|Z9q/;
+  for (let max = 1; max <= 120; max++) assert.equal(leaks.test(cliDiagnostics(r, [known], max)), false, `max ${max}`);
+});
+
 test("account state: each CLI answer maps to its exact reason", () => {
   const r = (stdout, status = 0, stderr = "") => ({ stdout, stderr, status, error: null });
   assert.equal(accountState(r("account: not logged in\nendpoint: not configured\n")).state, "not_logged_in");
