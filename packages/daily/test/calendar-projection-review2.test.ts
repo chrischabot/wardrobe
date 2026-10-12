@@ -335,7 +335,7 @@ describe("a missing event is fenced before anything is concluded from its absenc
     await owner.exec("settings.update", { patch: { extensions: { daily: { calendar: { outfitCalendarId: "outfits-moved@test.calendar" } } } } });
     h.clock.advanceMinutes(2);
     await owner.exec("board.swap_slot", { boardId: doc.boardId, optionId: doc.options[0]!.optionId, role: "top" });
-    expect(await run(h)).toEqual(["projected"]);
+    expect(await run(h)).toEqual(["superseded", "projected"]);
     await expect(h.calendar.patchEvent(owner.userId, OUTFIT_CALENDAR, event.eventId, { status: "confirmed" }, cancelledEtag)).rejects.toMatchObject({ detail: { reason: "precondition" } });
   });
 
@@ -422,10 +422,12 @@ describe("a call given up on ends the run", () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
     h.calendar.delayNext("patchEvent", () => held); // the all-day patch stays in flight
-    expect(await run(h)).toEqual(["retry"]);
+    // The settings change queued its own projection; it waits while the given-up write keeps the lease.
+    expect(await run(h)).toEqual(["retry", "busy"]);
     await owner.exec("settings.update", { patch: { extensions: { daily: { calendar: { presentation: "timed" } } } } });
     h.clock.advanceMinutes(2);
-    expect(await run(h)).toEqual(["projected"]);
+    // The given-up effect and both settings changes' own projections: one fence write, then the event is current.
+    expect(await run(h)).toEqual(["projected", "projected", "projected"]);
     const fencedEvent = live(h, owner)[0]!;
     // The event already showed the wanted write, yet it was written again: its etag moved on.
     expect(fencedEvent.etag).not.toBe(delivered.etag);

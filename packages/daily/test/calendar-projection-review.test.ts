@@ -198,7 +198,8 @@ describe("finding 3: an event is current only when every managed field reads bac
     await owner.exec("settings.update", { patch: { extensions: { daily: { calendar: { presentation: "all_day", reminderMinutesBefore: 10 } } } } });
     expect((await current(h, owner)).revision).toBe(1); // same revision, same text: only presentation changed
     h.clock.advanceMinutes(5);
-    expect(await run(h)).toEqual(["projected"]);
+    // The settings change queued its own projection: the first run writes the presentation, the second finds it current.
+    expect(await run(h)).toEqual(["projected", "projected"]);
     expect(live(h, owner)[0]).toMatchObject({ time: { kind: "all_day", localDate: DAY }, reminderMinutesBefore: 10 });
     expect(writes(h).map((w) => w.op)).toEqual(["insertEvent", "patchEvent"]);
   });
@@ -264,7 +265,7 @@ describe("finding 5: a change of outfit calendar moves the managed event", () =>
     // The previous calendar refuses the removal (a note); the insert into the new one gets no answer (TEST FAKE).
     h.calendar.failNext("deleteEvent", 1, new CalendarApiError("TEST FAKE: forbidden", { status: 403, retryable: false, reason: "forbidden" }));
     h.calendar.failNext("insertEvent", 4, new CalendarApiError("TEST FAKE: backend error", { status: 503, retryable: true }));
-    expect(await run(h)).toEqual(["retry"]);
+    expect(await run(h)).toEqual(["superseded", "retry"]);
     const row = await first<{ calendar_id: string; attempted_text: string | null }>(h.db, "SELECT calendar_id, attempted_text FROM calendar_projections WHERE user_id = ?", owner.userId);
     expect(row!.calendar_id).toBe(NEW_CALENDAR);
     expect(JSON.parse(row!.attempted_text ?? "[]")).toContain("UNVERIFIED LINE");
@@ -298,13 +299,60 @@ describe("finding 5: a change of outfit calendar moves the managed event", () =>
     await owner.exec("settings.update", { patch: { extensions: { daily: { calendar: { outfitCalendarId: NEW_CALENDAR } } } } });
     h.clock.advanceMinutes(2);
     await swap(owner, doc, 0);
-    expect(await run(h)).toEqual(["projected"]);
+    expect(await run(h)).toEqual(["superseded", "projected"]);
     const fenced = live(h, owner, OUTFIT_CALENDAR)[0]!;
     expect(fenced.etag).not.toBe(stale); // not removed (not ours), but its etag moved on
     await expect(h.calendar.patchEvent(owner.userId, OUTFIT_CALENDAR, old.eventId, { privateProperties: { garderobeBoard: doc.boardId } }, stale)).rejects.toMatchObject({ detail: { reason: "precondition" } });
     const row = await first<{ uncertain_calendars: string | null }>(h.db, "SELECT uncertain_calendars FROM calendar_projections WHERE user_id = ?", owner.userId);
     expect(row!.uncertain_calendars).toBeNull();
   });
+  it("moving the outfit calendar alone moves the event, with no new board revision; settings that change nothing in the event queue nothing", async () => {
+    const { h, owner } = await setup();
+    await compose(h, owner, DAY);
+    expect(await run(h)).toEqual(["projected"]);
+    await owner.exec("settings.update", { patch: { extensions: { daily: { calendar: { outfitCalendarId: NEW_CALENDAR } } } } });
+    expect((await current(h, owner)).revision).toBe(1);
+    h.clock.advanceMinutes(2);
+    expect(await run(h)).toEqual(["projected"]);
+    expect(live(h, owner, OUTFIT_CALENDAR)).toHaveLength(0);
+    expect(live(h, owner, NEW_CALENDAR)).toHaveLength(1);
+    expect(await projection(h, owner)).toMatchObject({ state: "projected", calendar_id: NEW_CALENDAR, projected_revision: 1 });
+    // A setting the event is not written from queues no projection.
+    await owner.exec("settings.update", { patch: { extensions: { daily: { calendar: { readCalendarIds: ["primary", "work@test.calendar"] } } } } });
+    h.clock.advanceMinutes(2);
+    expect(await run(h)).toEqual([]);
+  });
+
+  it("undoing a move of the outfit calendar moves the event back", async () => {
+    const { h, owner } = await setup();
+    await compose(h, owner, DAY);
+    expect(await run(h)).toEqual(["projected"]);
+    const moved = await owner.exec("settings.update", { patch: { extensions: { daily: { calendar: { outfitCalendarId: NEW_CALENDAR } } } } });
+    h.clock.advanceMinutes(2);
+    expect(await run(h)).toEqual(["projected"]);
+    await owner.exec("command.undo", { commandId: moved.commandId });
+    h.clock.advanceMinutes(2);
+    expect(await run(h)).toEqual(["projected"]);
+    expect(live(h, owner, NEW_CALENDAR)).toHaveLength(0);
+    expect(live(h, owner, OUTFIT_CALENDAR)).toHaveLength(1);
+    expect(await projection(h, owner)).toMatchObject({ state: "projected", calendar_id: OUTFIT_CALENDAR });
+  });
+
+  it("a timezone change that makes today an earlier date re-projects that day's open board too", async () => {
+    const { h, owner } = await setup();
+    const EVE = "2026-09-15";
+    h.weather.setForecast(EVE, MILD_DAY);
+    await compose(h, owner, EVE); // composed at 21:00 BST on the 15th
+    expect(await run(h)).toEqual(["projected"]);
+    // 00:30 BST on the 16th in London is still 19:30 on the 15th in New York.
+    h.clock.advanceMinutes(210);
+    const before = h.calendar.log.length;
+    await owner.exec("settings.update", { patch: { timezone: "America/New_York" } });
+    const outcomes = await run(h);
+    expect(outcomes.length).toBeGreaterThan(0);
+    expect(h.calendar.log.slice(before).some((l) => l.op === "getEvent" || l.op === "patchEvent")).toBe(true);
+  });
+
   it("removes the event from the previous calendar and delivers it to the new one, instead of reading it as deleted by the owner", async () => {
     const { h, owner } = await setup();
     const doc = (await compose(h, owner, DAY)).board!;
@@ -312,7 +360,7 @@ describe("finding 5: a change of outfit calendar moves the managed event", () =>
     await owner.exec("settings.update", { patch: { extensions: { daily: { calendar: { outfitCalendarId: NEW_CALENDAR } } } } });
     h.clock.advanceMinutes(2);
     await swap(owner, doc, 0);
-    expect(await run(h)).toEqual(["projected"]);
+    expect(await run(h)).toEqual(["superseded", "projected"]);
     expect(h.calendar.allEvents(owner.userId, OUTFIT_CALENDAR).map((e) => e.status)).toEqual(["cancelled"]);
     const moved = live(h, owner, NEW_CALENDAR);
     expect(moved).toHaveLength(1);
@@ -339,11 +387,12 @@ describe("finding 5: a change of outfit calendar moves the managed event", () =>
       h.calendar.externalDelete(owner.userId, OUTFIT_CALENDAR, oldEvent.eventId, { purge: true });
     });
     h.calendar.failNext("deleteEvent", 1, new CalendarApiError("TEST FAKE: backend error after commit", { status: 503, retryable: true }));
-    expect(await run(h)).toEqual(["retry"]);
+    expect(await run(h)).toEqual(["superseded", "retry"]);
 
     await owner.exec("settings.update", { patch: { extensions: { daily: { calendar: { outfitCalendarId: OUTFIT_CALENDAR } } } } });
     h.clock.advanceMinutes(31);
-    expect(await run(h)).toEqual(["projected"]);
+    // The retried effect and the switch-back's own projection: the second finds the event current.
+    expect(await run(h)).toEqual(["projected", "projected"]);
     expect(live(h, owner, OUTFIT_CALENDAR)).toHaveLength(1);
     expect(await projection(h, owner)).toMatchObject({ state: "projected", calendar_id: OUTFIT_CALENDAR });
     expect(await first<{ removing_event_id: string | null }>(h.db, "SELECT removing_event_id FROM calendar_projections WHERE user_id = ?", owner.userId)).toEqual({ removing_event_id: null });
@@ -359,7 +408,7 @@ describe("finding 5: a change of outfit calendar moves the managed event", () =>
     await swap(owner, doc, 0);
     // TEST FAKE: the owner edits the old event between our read and our delete.
     h.calendar.delayNext("deleteEvent", () => h.calendar.externalEdit(owner.userId, OUTFIT_CALENDAR, oldEvent.eventId, (e) => { e.summary = "edited meanwhile"; }));
-    expect(await run(h)).toEqual(["retry"]);
+    expect(await run(h)).toEqual(["superseded", "retry"]);
     expect(await projection(h, owner)).toMatchObject({ calendar_id: OUTFIT_CALENDAR });
     expect(live(h, owner, OUTFIT_CALENDAR)).toHaveLength(1);
     h.clock.advanceMinutes(31);
@@ -377,13 +426,14 @@ describe("finding 5: a change of outfit calendar moves the managed event", () =>
     h.clock.advanceMinutes(2);
     await swap(owner, doc, 0);
     h.calendar.failNext("deleteEvent", 1, new CalendarApiError("TEST FAKE: forbidden", { status: 403, retryable: true }));
-    expect(await run(h)).toEqual(["retry"]);
+    expect(await run(h)).toEqual(["superseded", "retry"]);
     expect(await first<{ removing_event_id: string | null }>(h.db, "SELECT removing_event_id FROM calendar_projections WHERE user_id = ?", owner.userId)).toEqual({ removing_event_id: null });
 
     await owner.exec("settings.update", { patch: { extensions: { daily: { calendar: { outfitCalendarId: OUTFIT_CALENDAR } } } } });
     h.calendar.externalDelete(owner.userId, OUTFIT_CALENDAR, oldEvent.eventId, { purge: true });
     h.clock.advanceMinutes(31);
-    expect(await run(h)).toEqual(["suppressed_deleted_externally"]);
+    // The second effect (the switch-back's own projection) finds the day already suppressed.
+    expect(await run(h)).toEqual(["suppressed_deleted_externally", "skipped_deleted_externally"]);
     expect(live(h, owner, OUTFIT_CALENDAR)).toHaveLength(0);
   });
 });
@@ -589,7 +639,7 @@ describe("review: tombstones and earlier calendars", () => {
     await swap(owner, doc, 0);
     // The previous calendar refuses its reads for now (TEST FAKE: access lost).
     h.calendar.failNext("getEvent", 2, new CalendarApiError("TEST FAKE: forbidden", { status: 403, retryable: false, reason: "forbidden" }));
-    expect(await run(h)).toEqual(["projected"]);
+    expect(await run(h)).toEqual(["superseded", "projected"]);
     expect(live(h, owner, NEW_CALENDAR)).toHaveLength(1);
     expect(live(h, owner, OUTFIT_CALENDAR)).toHaveLength(1); // still there, not yet cleaned up
     let row = await first<{ uncertain_calendars: string | null }>(h.db, "SELECT uncertain_calendars FROM calendar_projections WHERE user_id = ?", owner.userId);
@@ -615,7 +665,7 @@ describe("review: tombstones and earlier calendars", () => {
     await swap(owner, doc, 0);
     // The previous calendar refuses its reads (TEST FAKE: access lost), so its entry stays outstanding.
     h.calendar.failNext("getEvent", 2, new CalendarApiError("TEST FAKE: forbidden", { status: 403, retryable: false, reason: "forbidden" }));
-    expect(await run(h)).toEqual(["projected"]);
+    expect(await run(h)).toEqual(["superseded", "projected"]);
     let row = await first<{ uncertain_calendars: string | null; attempted_text: string | null }>(h.db, "SELECT uncertain_calendars, attempted_text FROM calendar_projections WHERE user_id = ?", owner.userId);
     expect(JSON.parse(row!.uncertain_calendars ?? "[]")).toEqual([[OUTFIT_CALENDAR, old.eventId]]);
     expect(JSON.parse(row!.attempted_text ?? "[]")).toContain("UNVERIFIED IN A");
@@ -637,7 +687,7 @@ describe("review: tombstones and earlier calendars", () => {
     await swap(owner, doc, 0);
     // Every removal in the previous calendar is refused for now (TEST FAKE).
     h.calendar.failNext("deleteEvent", 2, new CalendarApiError("TEST FAKE: forbidden", { status: 403, retryable: false, reason: "forbidden" }));
-    expect(await run(h)).toEqual(["projected"]);
+    expect(await run(h)).toEqual(["superseded", "projected"]);
     expect(live(h, owner, OUTFIT_CALENDAR)).toHaveLength(1);
     let row = await first<{ uncertain_calendars: string | null }>(h.db, "SELECT uncertain_calendars FROM calendar_projections WHERE user_id = ?", owner.userId);
     expect(JSON.parse(row!.uncertain_calendars ?? "[]")).toEqual([[OUTFIT_CALENDAR, old.eventId]]);
@@ -645,7 +695,7 @@ describe("review: tombstones and earlier calendars", () => {
     await owner.exec("settings.update", { patch: { extensions: { daily: { calendar: { outfitCalendarId: OUTFIT_CALENDAR } } } } });
     h.clock.advanceMinutes(2);
     await swap(owner, doc, 1);
-    expect(await run(h)).toEqual(["projected"]);
+    expect(await run(h)).toEqual(["superseded", "projected"]);
     expect(live(h, owner, NEW_CALENDAR)).toHaveLength(0);
     const back = live(h, owner, OUTFIT_CALENDAR);
     expect(back).toHaveLength(1);

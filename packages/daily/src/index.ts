@@ -7,7 +7,7 @@
  */
 import type { CommandRegistry } from "@garderobe/domain";
 import { registerBoardCommands } from "./boards.ts";
-import { registerPauseCommands } from "./pause.ts";
+import { calendarSettingsHook, registerPauseCommands } from "./pause.ts";
 import { boardRepairHook } from "./repair.ts";
 import { registerSnapshotCommands } from "./snapshots.ts";
 import { registerTripCommands } from "./trips.ts";
@@ -18,6 +18,7 @@ export function registerDaily(registry: CommandRegistry): void {
   registerTripCommands(registry);
   registerSnapshotCommands(registry);
   registry.addCommitHook("daily.board_repair", boardRepairHook);
+  registry.addCommitHook("daily.calendar_settings", calendarSettingsHook);
 }
 
 export { DAILY_SERVICE_VERSION, COMPOSER_VERSION } from "./version.ts";

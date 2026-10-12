@@ -8,7 +8,8 @@
  */
 import { DAILY_COMMANDS } from "@garderobe/contracts/ext/daily";
 import type { BoardDocument } from "@garderobe/contracts/ext/daily";
-import { all, assertPrincipal, CommandError, define, first, localDateOf, requireScope, stmt, type CommandContext, type CommandPlan, type CommandRegistry, type PlannedEffect, type Principal } from "@garderobe/domain";
+import { addDays, all, assertPrincipal, CommandError, deepMerge, define, first, localDateOf, requireScope, stmt, type CommandContext, type CommandPlan, type CommandRegistry, type CommitHook, type PlanFragment, type PlannedEffect, type Principal } from "@garderobe/domain";
+import type { OwnerSettings } from "@garderobe/contracts";
 import { CALENDAR_EFFECT_KIND, projectionTarget } from "./boards.ts";
 import { dailySettings, loadOwner } from "./context.ts";
 import { nowOf, type DailyDeps } from "./deps.ts";
@@ -27,6 +28,41 @@ async function calendarEffectsFor(ctx: CommandContext, from: string, until: stri
       return { kind: CALENDAR_EFFECT_KIND, targetKey, operationKey: `${CALENDAR_EFFECT_KIND}:${targetKey}:${ctx.commandId}`, desiredRevision: ctx.nowMs, payload: { boardId: b.board_id, localDate: b.local_date, scope: b.scope } };
     });
 }
+
+/** The settings a managed outfit event is written from: a change to any of them means the event must be written again. */
+function projectionSettings(settings: OwnerSettings): string {
+  // Which calendars are read for context is not part of the event written.
+  const { readCalendarIds: _read, ...written } = dailySettings(settings).calendar;
+  return JSON.stringify([written, settings.delivery?.morningLocalTime ?? null, settings.timezone]);
+}
+
+/**
+ * A settings change that alters what the projection writes - another outfit calendar, presentation,
+ * reminder, link base, morning time or timezone - re-projects every open board in the same commit, so
+ * moving the outfit calendar moves the events without waiting for the next board revision. An undo of a
+ * settings change re-projects too: the projector writes nothing when the event is already current.
+ */
+export const calendarSettingsHook: CommitHook = async (ctx, plan): Promise<PlanFragment | void> => {
+  if (plan.outcome === "noop") return;
+  const type = ctx.envelope.type;
+  const today = localDateOf(ctx.nowMs, ctx.settings.timezone);
+  let from: string;
+  if (type === "settings.update") {
+    const patch = (ctx.envelope.payload as { patch?: Record<string, unknown> }).patch ?? {};
+    const after = deepMerge(ctx.settings, patch) as OwnerSettings;
+    if (projectionSettings(after) === projectionSettings(ctx.settings)) return;
+    // A new timezone can make today an earlier date than it was; that day's board is still open.
+    const todayAfter = localDateOf(ctx.nowMs, after.timezone);
+    from = todayAfter < today ? todayAfter : today;
+  } else if (type === "command.undo" && (plan.affected ?? []).some((a) => a.kind === "settings")) {
+    // The restored timezone is not known here: start a day earlier so a board still open under it is included.
+    from = addDays(today, -1);
+  } else {
+    return;
+  }
+  const effects = await calendarEffectsFor(ctx, from, null);
+  return effects.length ? { effects } : undefined;
+};
 
 export const servicePause = define({
   type: "service.pause",
