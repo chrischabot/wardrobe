@@ -18,6 +18,14 @@ import { fetchWeatherSnapshot } from "./snapshots.ts";
 import { prepareBoard, type PrepareBoardResult } from "./service.ts";
 import { destinationFor, occasionSnapshot } from "./trip-day.ts";
 
+/**
+ * Clean units at home, observed or counted clean by the weekly laundry baseline alike: what packing plans
+ * with. `cleanObserved` counts only the units an observation showed clean; it is evidence, not stock.
+ */
+function cleanAtHome(a: { balances: { bucket: string; quantity: number }[] }): number {
+  return a.balances.filter((b) => b.bucket === "clean").reduce((n, b) => n + b.quantity, 0);
+}
+
 function checkDestinations(departsOn: string, returnsOn: string, destinations: TripDestination[]): void {
   if (returnsOn < departsOn) throw new CommandError("invalid_command", "the return date is before the departure date");
   for (const d of destinations) {
@@ -275,7 +283,7 @@ export async function proposePacking(deps: DailyDeps, principal: Principal, inpu
       let option = await cascade();
       let socksRanOut = false;
       // Clean pairs at home that are not yet planned for an earlier day (they may still not suit this day).
-      const unplannedCleanSocks = [...rc.garments.values()].some((g) => g.roles.includes("socks") && g.availability.cleanObserved > 0 && !allocatedSocks.includes(g.garmentId));
+      const unplannedCleanSocks = [...rc.garments.values()].some((g) => g.roles.includes("socks") && cleanAtHome(g.availability) > 0 && !allocatedSocks.includes(g.garmentId));
       if (!option && allocatedSocks.length > 0) {
         // Every clean pair of socks at home is already planned for an earlier day. That is said in so
         // many words, and the rest of the day is still planned (and packed): the day is composed as if
@@ -288,7 +296,7 @@ export async function proposePacking(deps: DailyDeps, principal: Principal, inpu
         // With no eligible pair of socks at all the day cannot be composed; the note still names socks, and
         // says whether no pair is clean at home or clean pairs exist that do not suit the day.
         const noEligibleSocks = eligibleFor(rc, "socks", { allowRepeat: true }).length === 0;
-        const cleanSocksAtHome = [...rc.garments.values()].some((g) => g.roles.includes("socks") && g.availability.cleanObserved > 0);
+        const cleanSocksAtHome = [...rc.garments.values()].some((g) => g.roles.includes("socks") && cleanAtHome(g.availability) > 0);
         const where = `${date}${segment === "evening" ? " (evening)" : ""}`;
         notes.push(!noEligibleSocks
           ? `No complete valid outfit could be proposed for ${where} from what is available at home.`
@@ -312,8 +320,8 @@ export async function proposePacking(deps: DailyDeps, principal: Principal, inpu
         if (s.role === "socks") {
           // Only a sock with a clean pair on the ledger can be chosen at all (a garment with no clean
           // unit at home is hard-excluded by the availability estimator), so the pairs that can be
-          // packed are exactly the clean pairs counted there.
-          const units = Math.max(1, g.availability.cleanObserved);
+          // packed are exactly the clean pairs counted there, observed or counted by the weekly baseline.
+          const units = Math.max(1, cleanAtHome(g.availability));
           sockUnits.set(s.garmentId, units);
           entry.quantity = sameDayReuse ? entry.quantity : Math.min(entry.quantity + 1, units);
         } else entry.quantity = 1;

@@ -283,7 +283,9 @@ export function estimateGarment(input: EstimatorInput, g: EstimatorGarment): Gar
     acquisition: g.acquisition,
     planningPolicy: g.planningPolicy,
     balances: g.balances.map((b) => ({ bucket: b.bucket, ref: b.ref, quantity: b.quantity })),
-    cleanObserved: clean,
+    // Observed means observed: units only the weekly laundry baseline counted clean are an estimate, not
+    // an observation (specification section 5), so they are left out here; the clean balance still has them.
+    cleanObserved: g.careChannel === "none" ? clean : clean - Math.min(clean, Math.max(0, g.cleanInferred ?? 0)),
     basis,
   };
 }
