@@ -11,7 +11,7 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
-    "test": "vitest run && node tools/composite-example.mjs --check",
+    "test": "vitest run && node tools/composite-example.mjs --check && node --test tools/composite-example.test.mjs",
     "example:write": "node tools/composite-example.mjs",
     "example:check": "node tools/composite-example.mjs --check"
   },
