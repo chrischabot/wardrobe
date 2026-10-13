@@ -268,6 +268,16 @@ async fn a_piece_the_packing_proposal_plans_again_is_offered_again_within_its_pl
     assert_eq!(ids_of(&today["board"]["options"][0]), vec![OXFORD_BLUE, AKITA_CREAM, SOCK_GREY, NB_GREY], "{today}");
     assert!(!today.to_string().contains("already worn on this trip"), "{today}");
 
+    // On the day itself, the pink shirt the proposal plans for that one day is not offered again once
+    // worn; the chinos planned for two days are.
+    let r = ok(&mut store, "2026-10-20T21:30:00Z", "publish-trip-same-day", "board.publish", json!({"localDate": "2026-10-20", "scope": TRIP, "requestedCount": 2, "options": [
+        outfit(OXFORD_PINK, AKITA_CREAM, SOCK_GREY, NB_GREY),
+        outfit(OXFORD_BLUE, AKITA_CREAM, SOCK_GREY, NB_GREY),
+    ]})).await;
+    assert_eq!(r["result"]["offered"], 1, "{}", r["result"]);
+    let dropped = violations(&r["result"]);
+    assert!(dropped.contains("oxford — pink is not available: already worn on this trip") && !dropped.contains("Akita"), "{dropped}");
+
     // Reported dirty after packing, the chinos are not offered again whatever the plan says.
     let mut dirty = store.clone();
     ok(&mut dirty, "2026-10-20T22:00:00Z", "dirty-0001", "care.mark_dirty", json!({"items": [{"garmentId": AKITA_CREAM}]})).await;

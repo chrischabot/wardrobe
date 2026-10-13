@@ -496,7 +496,10 @@ its stock event names the trip. Socks are never reused this way. A clean unit
 still in the suitcase counts against the proposal's units, so a worn unit is
 re-offered only while clean and re-offered units together stay within them (a
 deliberate difference: TypeScript adds up to the proposal's units on top of
-the clean ones, which can offer more units than the proposal allows).
+the clean ones, which can offer more units than the proposal allows). A piece
+the proposal plans for one day only is never reused (another deliberate
+difference: TypeScript keeps it in the reuse map, so after its one wear it is
+offered again on that same day).
 The owner's other rules hold as on the home board. Choosing and swapping work
 as on the home board, and a swap draws only on the suitcase. `GET
 /v1/today?scope=trip:<tripId>` reads the trip's board; the home board of the

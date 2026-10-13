@@ -531,8 +531,8 @@ async fn inventory_inner<S: Store>(store: &mut S, now_ms: u64, args: &Map<String
 
 /// The views that are one landed REST read each (`laundry` `/v1/laundry`, `style` `/v1/style`,
 /// `command_types` `/v1/command-types`, `trips` `/v1/trips`, `returns` `/v1/returns`, `orders`
-/// `/v1/orders`), in the TypeScript envelope with its summaries. As there, the wardrobe revision is
-/// read first and each is the whole result; only `style` takes an argument, the day.
+/// `/v1/orders`), in the TypeScript envelope with its summaries. The wardrobe revision named is the
+/// one the data was read at; each is the whole result; only `style` takes an argument, the day.
 async fn other_view<S: Store>(store: &mut S, now_ms: u64, view: &str, args: &Map<String, Value>) -> Result<Value, CmdError> {
     let takes_date = view == "style";
     if let Some(k) = args.keys().find(|k| k.as_str() != "view" && !(takes_date && k.as_str() == "date")) {
@@ -543,15 +543,29 @@ async fn other_view<S: Store>(store: &mut S, now_ms: u64, view: &str, args: &Map
         Some(Value::String(d)) => Some(d.as_str()),
         Some(_) => return Err(invalid("date must be a date, YYYY-MM-DD")),
     };
-    let (_, ledger) = api::read_ledger(store).await?;
-    let revision = ledger.revision;
-    let envelope = |data: Value, total: Option<usize>| json!({"view": view, "complete": true, "total": total, "nextCursor": null, "wardrobeRevision": revision, "readAt": instant(now_ms), "data": data});
+    // The view's records are separate from the ledger; read the ledger again after them, so the
+    // revision named is the one the data belongs to (as `read_today_scoped` does).
+    for _ in 0..3 {
+        let (before, ledger) = api::read_ledger(store).await?;
+        let (data, total, summary) = view_data(store, now_ms, view, date).await?;
+        let (after, _) = api::read_ledger(store).await?;
+        if before != after {
+            continue;
+        }
+        let envelope = json!({"view": view, "complete": true, "total": total, "nextCursor": null, "wardrobeRevision": ledger.revision, "readAt": instant(now_ms), "data": data});
+        return Ok(tool_ok(envelope, summary));
+    }
+    Err(CmdError::with("conflict", "the wardrobe kept changing while the view was read; try again", json!({"retryable": true})))
+}
+
+/// One of [`other_view`]'s reads: the data, its total (`None` for laundry and style) and the summary.
+async fn view_data<S: Store>(store: &mut S, now_ms: u64, view: &str, date: Option<&str>) -> Result<(Value, Option<usize>, String), CmdError> {
     let count = |v: &Value, k: &str| v[k].as_array().map_or(0, Vec::len);
     match view {
         "laundry" => {
             let data = crate::app_routes::laundry(store, now_ms).await?;
             let summary = format!("Awaiting service laundry: {} item(s); awaiting hand-wash: {}; batches: {}.", count(&data, "awaitingService"), count(&data, "awaitingHandwash"), count(&data, "batches"));
-            Ok(tool_ok(envelope(data, None), summary))
+            Ok((data, None, summary))
         }
         "style" => {
             let data = crate::style::context(date)?;
@@ -563,7 +577,7 @@ async fn other_view<S: Store>(store: &mut S, now_ms: u64, view: &str, args: &Map
                 count(&data, "directions"),
                 data["precedence"].as_str().unwrap_or_default()
             );
-            Ok(tool_ok(envelope(data, None), summary))
+            Ok((data, None, summary))
         }
         "command_types" => {
             let data = crate::command_types::list()?;
@@ -571,20 +585,20 @@ async fn other_view<S: Store>(store: &mut S, now_ms: u64, view: &str, args: &Map
             // Under the owner's 2026-10-05 contract nothing waits for a confirmation here: a type marked
             // consequential (a restriction lift) is refused from this connection.
             let summary = format!("{n} command types, each with the authorizations it accepts. A type marked consequential (lifting a restriction) is refused from this connection, as is undoing the record of a restriction.");
-            Ok(tool_ok(envelope(data, Some(n)), summary))
+            Ok((data, Some(n), summary))
         }
         "trips" => {
             let data = api::read_trips(store).await?;
             let n = count(&data, "trips");
-            Ok(tool_ok(envelope(data, Some(n)), format!("{n} trip(s).")))
+            Ok((data, Some(n), format!("{n} trip(s).")))
         }
         "returns" => {
             let data = api::read_returns(store).await?;
             let n = count(&data, "returns");
-            Ok(tool_ok(envelope(data, Some(n)), format!("{n} return or exchange case(s).")))
+            Ok((data, Some(n), format!("{n} return or exchange case(s).")))
         }
         // Orders come from purchase import, which is not ported (`GET /v1/orders` is empty too).
-        _ => Ok(tool_ok(envelope(json!({"orders": []}), Some(0)), "0 order(s).".to_string())),
+        _ => Ok((json!({"orders": []}), Some(0), "0 order(s).".to_string())),
     }
 }
 

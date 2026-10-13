@@ -431,6 +431,9 @@ impl TripPlan {
                 }
             }
         }
+        // Reuse is the exception for a piece planned on more than one day; one planned for a single
+        // day is worn once like anything else (else it would be offered again on the day it was worn).
+        reuse.retain(|_, (dates, _)| dates.len() > 1);
         let items = p["items"].as_array();
         for (id, (_, units)) in reuse.iter_mut() {
             let quantity = items.and_then(|l| l.iter().find(|i| i["garmentId"] == id.as_str())).and_then(|i| i["quantity"].as_u64()).unwrap_or(1);
