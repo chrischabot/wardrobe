@@ -45,4 +45,6 @@ export { GoogleApi, GOOGLE_SCOPES, createGmailSource, createDriveClient, createS
 export { createBrowserRunBackend, type BrowserRunBackend, type BrowserRunBinding, type BrowserRunOptions, type BrowserQuickAction } from "./connections/browser-run.ts";
 export { checkConnectionHealth, mcpProbe, googleProbe, type ConnectionProbe, type HealthCheckDeps, type HealthCheckResult, type HealthPhase } from "./connections/health.ts";
 export { runPurchaseInvestigation, minimumExcerpt, OrderEmailExtraction, PurchaseInvestigationParams, ORDER_FACT_SCHEMA_VERSION, type PurchaseInvestigationDeps, type PurchaseInvestigationResult } from "./jobs/purchases.ts";
+export { refundShares, DELIVERABLE_LINE_STATES } from "./commands/purchases.ts";
+export { caseNeedsNoReminders } from "./commands/returns.ts";
 export { runAssistantJob, runPendingAssistantJobs, handleAssistantJobQueue, runAssistantJobStep, ASSISTANT_JOB_KINDS, type AssistantJobDeps, type AssistantJobMessage, type JobRunOutcome } from "./jobs/runner.ts";

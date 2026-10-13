@@ -1,5 +1,5 @@
 import { ASSISTANT_COMMANDS as C, type ReturnTerms } from "@garderobe/contracts/ext/assistant";
-import { CommandError, addDays, define, endOfLocalDateMs, first, json, stmt, toInstant, type CommandContext, type PlannedEffect, type Stmt } from "@garderobe/domain";
+import { CommandError, addDays, all, define, endOfLocalDateMs, first, json, stmt, toInstant, type CommandContext, type PlannedEffect, type Stmt } from "@garderobe/domain";
 import { NO_UNDO, assistantSettings, money, newEffects, requireGarments, named } from "./common.ts";
 
 export interface DeadlineResult {
@@ -49,6 +49,15 @@ function reminderEffects(ctx: CommandContext, caseId: string, deadline: Deadline
 function describeDeadline(d: DeadlineResult): string {
   if (d.status === "established") return `Deadline to ${d.concerns === "retailer_receipt" ? "reach the retailer" : d.concerns}: ${d.localDate} (${d.timezone})`;
   return `Deadline unresolved: ${d.reason}`;
+}
+
+/**
+ * Whether a case in this state needs no more deadline reminders. One rule for an update and for its undo:
+ * a posted parcel still needs reminding when the deadline concerns the retailer receiving it.
+ */
+export function caseNeedsNoReminders(state: string, concerns: string | null): boolean {
+  if (["refunded", "exchanged", "closed", "cancelled", "retailer_received"].includes(state)) return true;
+  return state === "posted" && concerns !== "retailer_receipt";
 }
 
 interface CaseRow {
@@ -117,20 +126,35 @@ export const returnOpenCase = define({
       affected: [{ kind: "return_case", id: caseId, version: 1 }],
       effects,
       result: { caseId, deadline, reminders: effects.map((e) => ({ dueAt: e.availableAt, daysBefore: e.payload.daysBefore })) },
-      undo: { data: { caseId } },
+      undo: { data: { caseId, version: 1 } },
     };
   },
   async planUndo(ctx, _o, data) {
+    const caseId = String(data["caseId"]);
+    const row = await first<{ version: number; state: string }>(ctx.db, "SELECT version, state FROM return_cases WHERE user_id = ? AND case_id = ?", ctx.userId, caseId);
+    if (!row) throw new CommandError("not_undoable", "that return is no longer on record", { caseId });
+    if (row.state === "cancelled") throw new CommandError("not_undoable", "that return is already cancelled; nothing to take back", { caseId });
+    // Opening is taken back only while the case is exactly as it was opened; later progress is corrected by an update.
+    const openedVersion = typeof data["version"] === "number" ? (data["version"] as number) : 1;
+    if (row.version !== openedVersion) throw new CommandError("not_undoable", "the return has been updated since it was opened; update it to cancel it instead", { caseId, version: row.version });
     return {
       summary: "Return cancelled; the item stays as it was",
       statements: [
-        stmt("UPDATE return_cases SET state = 'cancelled', version = version + 1, updated_at = ? WHERE user_id = ? AND case_id = ?", ctx.now, ctx.userId, data.caseId),
-        stmt("UPDATE effects SET state = 'cancelled', updated_at = ? WHERE user_id = ? AND kind = 'notification.return_reminder' AND target_key = ? AND state = 'pending'", ctx.now, ctx.userId, `return:${data.caseId}`),
+        stmt("UPDATE return_cases SET state = 'cancelled', version = version + 1, updated_at = ? WHERE user_id = ? AND case_id = ? AND version = ?", ctx.now, ctx.userId, caseId, openedVersion),
+        stmt("UPDATE effects SET state = 'cancelled', updated_at = ? WHERE user_id = ? AND kind = 'notification.return_reminder' AND target_key = ? AND state = 'pending'", ctx.now, ctx.userId, `return:${caseId}`),
       ],
+      preconditions: [{ label: `return ${caseId} unchanged since it was opened`, sql: "(SELECT version FROM return_cases WHERE user_id = ? AND case_id = ?) = ?", params: [ctx.userId, caseId, openedVersion], class: "state" }],
+      affected: [{ kind: "return_case", id: caseId, version: openedVersion + 1 }],
       undo: NO_UNDO("already an undo"),
     };
   },
 });
+
+/** The columns of a return case an update writes; undo restores exactly these. */
+const RESTORABLE_CASE_COLUMNS = [
+  "state", "terms_json", "trigger_date", "deadline_status", "deadline_at", "deadline_local_date", "deadline_concerns", "deadline_reason", "next_action", "label_ref", "collection_preference", "shipment_ref", "retailer_received_on",
+  "refund_expected_minor", "refund_received_minor", "currency", "notes_json",
+] as const;
 
 const STATE_LABEL: Record<string, string> = {
   requested: "Return requested",
@@ -200,11 +224,29 @@ export const returnUpdateCase = define({
       ),
     ];
     // A changed deadline supersedes reminders computed for the old one; a finished case needs none.
-    const finished = ["refunded", "exchanged", "closed", "cancelled", "posted", "retailer_received"].includes(state) && (deadline.concerns !== "retailer_receipt" || state !== "posted");
-    if (finished || deadline.at !== row.deadline_at) {
+    const finished = caseNeedsNoReminders(state, deadline.concerns);
+    const cancelsPending = finished || deadline.at !== row.deadline_at;
+    const cancelledReminderIds = cancelsPending
+      ? (
+          await all<{ effect_id: string }>(
+            ctx.db,
+            "SELECT effect_id FROM effects WHERE user_id = ? AND kind = 'notification.return_reminder' AND target_key = ? AND state = 'pending'",
+            ctx.userId,
+            `return:${p.caseId}`,
+          )
+        ).map((e) => e.effect_id)
+      : [];
+    if (cancelsPending) {
       statements.push(stmt("UPDATE effects SET state = 'cancelled', updated_at = ? WHERE user_id = ? AND kind = 'notification.return_reminder' AND target_key = ? AND state = 'pending'", ctx.now, ctx.userId, `return:${p.caseId}`));
     }
     const effects = finished ? [] : await newEffects(ctx, reminderEffects(ctx, p.caseId, deadline, label));
+    const createdOperationKeys = effects.map((e) => e.operationKey);
+    // return.update_case writes ONLY return_cases (RESTORABLE_CASE_COLUMNS) and notification.return_reminder
+    // effects; it never alters garments, stock_balances, stock_events or order_lines (physical departure is a
+    // separate garment.retire / garment.move command with its own undo). Everything this update can change is
+    // recorded here so planUndo restores the return case and its reminders atomically.
+    const previous: Record<string, unknown> = {};
+    for (const column of RESTORABLE_CASE_COLUMNS) previous[column] = (row as unknown as Record<string, unknown>)[column] ?? null;
     return {
       summary: `${named(label)}: ${parts.join(". ")}.${stockNote}`,
       statements,
@@ -212,7 +254,56 @@ export const returnUpdateCase = define({
       affected: [{ kind: "return_case", id: p.caseId, version: row.version + 1 }],
       effects,
       result: { caseId: p.caseId, state, deadline, refund: { expectedMinor: expected, receivedMinor: received, state: refundStateOf(expected, received) } },
-      undo: NO_UNDO("update the return again to correct it"),
+      undo: { data: { caseId: p.caseId, version: row.version + 1, previous, cancelledReminderIds, createdOperationKeys } },
+    };
+  },
+  async planUndo(ctx, _original, data) {
+    // Restores every column of return_cases and every notification.return_reminder effect touched by
+    // return.update_case (which makes no garment, stock or order-line mutations).
+    const caseId = String(data["caseId"]);
+    const row = await first<CaseRow>(ctx.db, "SELECT * FROM return_cases WHERE user_id = ? AND case_id = ?", ctx.userId, caseId);
+    if (!row) throw new CommandError("not_undoable", "that return is no longer on record", { caseId });
+    // Undo rechecks intervening changes: a later update would be silently overwritten, so it is refused.
+    if (row.version !== Number(data["version"])) throw new CommandError("not_undoable", "the return has been updated again since; update it once more to correct it", { caseId });
+    const previous = (data["previous"] ?? {}) as Record<string, unknown>;
+    const columns = RESTORABLE_CASE_COLUMNS.filter((c) => c in previous);
+    const label = await subjectLabel(ctx, row.garment_id, row.order_id, row.line_id);
+    const deadlineAt = (previous["deadline_at"] as string | null) ?? null;
+    const finished = caseNeedsNoReminders(String(previous["state"]), (previous["deadline_concerns"] as string | null) ?? null);
+    const createdKeys = Array.isArray(data["createdOperationKeys"]) ? (data["createdOperationKeys"] as unknown[]).filter((k): k is string => typeof k === "string") : null;
+    const cancelledIds = Array.isArray(data["cancelledReminderIds"]) ? (data["cancelledReminderIds"] as unknown[]).filter((id): id is string => typeof id === "string") : null;
+    const statements: Stmt[] = [
+      stmt(
+        `UPDATE return_cases SET ${columns.map((c) => `${c} = ?`).join(", ")}, version = version + 1, updated_at = ? WHERE user_id = ? AND case_id = ? AND version = ?`,
+        ...columns.map((c) => previous[c] as string | number | null), ctx.now, ctx.userId, caseId, row.version,
+      ),
+    ];
+    // A restored finished case needs no reminders at all; otherwise withdraw the reminders this update created.
+    if (finished) {
+      statements.push(stmt("UPDATE effects SET state = 'cancelled', updated_at = ? WHERE user_id = ? AND kind = 'notification.return_reminder' AND target_key = ? AND state = 'pending'", ctx.now, ctx.userId, `return:${caseId}`));
+    } else if (createdKeys) {
+      if (createdKeys.length > 0) {
+        statements.push(stmt(`UPDATE effects SET state = 'cancelled', updated_at = ? WHERE user_id = ? AND kind = 'notification.return_reminder' AND target_key = ? AND state = 'pending' AND operation_key IN (${createdKeys.map(() => "?").join(", ")})`, ctx.now, ctx.userId, `return:${caseId}`, ...createdKeys));
+      }
+    } else {
+      statements.push(stmt("UPDATE effects SET state = 'cancelled', updated_at = ? WHERE user_id = ? AND kind = 'notification.return_reminder' AND target_key = ? AND state = 'pending' AND json_extract(payload_json, '$.deadlineAt') IS NOT ?", ctx.now, ctx.userId, `return:${caseId}`, deadlineAt));
+    }
+    // Restore only the reminders this update cancelled that are still ahead.
+    if (!finished) {
+      if (cancelledIds) {
+        if (cancelledIds.length > 0) {
+          statements.push(stmt(`UPDATE effects SET state = 'pending', updated_at = ? WHERE user_id = ? AND kind = 'notification.return_reminder' AND target_key = ? AND state = 'cancelled' AND effect_id IN (${cancelledIds.map(() => "?").join(", ")}) AND available_at > ?`, ctx.now, ctx.userId, `return:${caseId}`, ...cancelledIds, ctx.now));
+        }
+      } else if (deadlineAt) {
+        statements.push(stmt("UPDATE effects SET state = 'pending', updated_at = ? WHERE user_id = ? AND kind = 'notification.return_reminder' AND target_key = ? AND state = 'cancelled' AND json_extract(payload_json, '$.deadlineAt') = ? AND available_at > ?", ctx.now, ctx.userId, `return:${caseId}`, deadlineAt, ctx.now));
+      }
+    }
+    return {
+      summary: `${named(label)}: the return is back to how it was before that update (${STATE_LABEL[String(previous["state"])] ?? String(previous["state"])})`,
+      statements,
+      preconditions: [{ label: `return ${caseId} not updated since`, sql: "(SELECT version FROM return_cases WHERE user_id = ? AND case_id = ?) = ?", params: [ctx.userId, caseId, row.version], class: "state" }],
+      affected: [{ kind: "return_case", id: caseId, version: row.version + 1 }],
+      undo: NO_UNDO("this is already an undo; repeat the original update instead"),
     };
   },
 });
@@ -230,16 +321,24 @@ export const returnLinkExchange = define({
     const line = await first<{ product_name: string; size: string | null; garment_id: string | null }>(ctx.db, "SELECT product_name, size, garment_id FROM order_lines WHERE user_id = ? AND order_id = ? AND line_id = ?", ctx.userId, p.incomingOrderId, p.incomingLineId);
     if (!line) throw new CommandError("not_found", "the incoming order line is not recorded; nothing was written");
     if (line.garment_id && line.garment_id === row.garment_id) throw new CommandError("conflict", "the incoming variant must be its own incoming record, not the garment being sent back");
+    const incomingOrder = await first<{ version: number }>(ctx.db, "SELECT version FROM orders WHERE user_id = ? AND order_id = ?", ctx.userId, p.incomingOrderId);
+    if (!incomingOrder) throw new CommandError("not_found", "the incoming order is not recorded; nothing was written");
+    const linksLine = !!(row.order_id && row.line_id);
     const statements: Stmt[] = [
       stmt("UPDATE return_cases SET version = version + 1, exchange_order_id = ?, exchange_line_id = ?, updated_at = ? WHERE user_id = ? AND case_id = ?", p.incomingOrderId, p.incomingLineId, ctx.now, ctx.userId, p.caseId),
+      stmt("UPDATE orders SET version = version + 1, updated_at = ? WHERE user_id = ? AND order_id = ?", ctx.now, ctx.userId, p.incomingOrderId),
     ];
-    if (row.order_id && row.line_id) {
+    if (linksLine) {
       statements.push(stmt("UPDATE order_lines SET replaces_order_id = ?, replaces_line_id = ? WHERE user_id = ? AND order_id = ? AND line_id = ?", row.order_id, row.line_id, ctx.userId, p.incomingOrderId, p.incomingLineId));
     }
     return {
       summary: `Exchange linked: ${named(line.product_name)}${line.size ? ` (${line.size})` : ""} is the incoming replacement. It counts as owned only once it arrives, and the outgoing piece until it leaves`,
       statements,
-      affected: [{ kind: "return_case", id: p.caseId, version: row.version + 1 }],
+      preconditions: [
+        { label: `return ${p.caseId} unchanged since read`, sql: "(SELECT version FROM return_cases WHERE user_id = ? AND case_id = ?) = ?", params: [ctx.userId, p.caseId, row.version], class: "internal" },
+        { label: `order ${p.incomingOrderId} unchanged since read`, sql: "(SELECT version FROM orders WHERE user_id = ? AND order_id = ?) = ?", params: [ctx.userId, p.incomingOrderId, incomingOrder.version], class: "internal" },
+      ],
+      affected: [{ kind: "return_case", id: p.caseId, version: row.version + 1 }, { kind: "order", id: p.incomingOrderId, version: incomingOrder.version + 1 }],
       result: { caseId: p.caseId, incomingOrderId: p.incomingOrderId, incomingLineId: p.incomingLineId },
       undo: NO_UNDO("link again to correct it"),
     };

@@ -265,7 +265,8 @@ export const PurchaseImportOrder = z.object({
   sourceRefs: z.array(z.string().max(500)).default([]),
   /**
    * Wardrobe records to create as INCOMING (ordered, not arrived) for lines of this order, in the same
-   * command as the order itself. Only a line this command adds, that has no record yet, gets one.
+   * command as the order itself. A line this command adds, or a line logged earlier that is still without a
+   * record and still ordered or dispatched, gets one; a line that already has a record never gets a second.
    */
   incoming: z
     .array(z.object({ lineKey: z.string().min(1).max(200), category: z.string().min(1).max(40), roles: z.array(z.string().min(1).max(40)).min(1), careChannel: z.enum(["service", "handwash", "none"]), maker: z.string().max(200).nullable().default(null) }))
