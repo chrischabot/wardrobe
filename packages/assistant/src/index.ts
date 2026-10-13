@@ -16,7 +16,7 @@ export * from "./queries.ts";
 export { exportAssistantData, importAssistantData, discardImportedData, type AssistantExport } from "./export.ts";
 
 export { ModelService, BudgetExceededError, NoSelectableProfileError, InferenceFailedError, classifyError, BREAKER_THRESHOLD, type ModelServiceDeps, type RunScope, type ModelCallMeta } from "./inference/service.ts";
-export { PROFILE_SPECS, TASK_SPECS, DEFAULT_DAILY_BUDGETS, profileSpec, selectability, type ProfileSpec, type TaskSpec } from "./inference/registry.ts";
+export { PROFILE_SPECS, TASK_SPECS, DEFAULT_DAILY_BUDGETS, ENFORCED_MODEL_ROUTE, PRIMARY_PROFILE_ID, FALLBACK_PROFILE_ID, profileSpec, pricingSpecFor, selectability, type ProfileSpec, type TaskSpec } from "./inference/registry.ts";
 export { createGatewayModel, createGatewayModelService, assertGatewayId, gatewayMetadata, ALLOWED_GATEWAY_IDS, GatewayConfigError } from "./inference/gateway.ts";
 export { reconcileInferenceReservations, ABANDONED_AFTER_MS, LOOKUP_NOT_BEFORE_MS, LOOKUP_WINDOW_MS, DEFAULT_LOOKUPS_PER_SWEEP, type ProviderUsageLookup, type ProviderUsageFinding, type DispatchedCall, type ReconcileDeps, type ReconcileResult } from "./inference/reconcile.ts";
 export { createGatewayLogsLookup, findingFrom, refusedUpstream, type GatewayLogsOptions, type GatewayLogEntry } from "./inference/gateway-usage.ts";
@@ -47,4 +47,4 @@ export { checkConnectionHealth, mcpProbe, googleProbe, type ConnectionProbe, typ
 export { runPurchaseInvestigation, minimumExcerpt, OrderEmailExtraction, PurchaseInvestigationParams, ORDER_FACT_SCHEMA_VERSION, type PurchaseInvestigationDeps, type PurchaseInvestigationResult } from "./jobs/purchases.ts";
 export { refundShares, DELIVERABLE_LINE_STATES } from "./commands/purchases.ts";
 export { caseNeedsNoReminders } from "./commands/returns.ts";
-export { runAssistantJob, runPendingAssistantJobs, handleAssistantJobQueue, runAssistantJobStep, ASSISTANT_JOB_KINDS, type AssistantJobDeps, type AssistantJobMessage, type JobRunOutcome } from "./jobs/runner.ts";
+export { runAssistantJob, runPendingAssistantJobs, handleAssistantJobQueue, runAssistantJobStep, jobFailure, ASSISTANT_JOB_KINDS, type AssistantJobDeps, type AssistantJobMessage, type JobRunOutcome } from "./jobs/runner.ts";

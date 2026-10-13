@@ -76,14 +76,32 @@ export async function runAssistantJob(deps: AssistantJobDeps, userId: string, jo
     });
     return { handled: true, state: "completed" };
   } catch (e) {
-    if (e instanceof ConnectionError) return fail(e.code === "auth" ? "the connection was rejected; sign in again to continue" : e.message.slice(0, 280));
-    // Anything else must not leave the job 'running' for ever (adversarial finding I05-4): it settles as
-    // failed with a fixed reason. The error's own text is never stored: it could carry a key-bearing
-    // address. Only when even that cannot be recorded is the error passed on.
-    return fail("the work stopped on an internal error before it finished; nothing more was recorded. It can be asked for again").catch(() => {
+    const failure = jobFailure(e);
+    // Diagnostics name the error's class and code only; its text could carry a key-bearing address.
+    console.error(JSON.stringify({ event: "assistant_job_failed", jobId, kind: job.kind, ...failure.diagnostic }));
+    // Nothing must leave the job 'running' for ever (adversarial finding I05-4): it settles as failed with a
+    // reason written by trusted code. Only when even that cannot be recorded is the error passed on.
+    return fail(failure.reason).catch(() => {
       throw e;
     });
   }
+}
+
+/** Codes of an outside service's failure that are temporary: the same request can succeed later. */
+const TRANSIENT_CONNECTION_CODES = new Set(["rate_limited", "upstream", "timeout"]);
+
+/**
+ * What a failed job records and logs. The reason is the owner-facing text (a connection's own message only
+ * for a permanent connection refusal, which trusted code wrote); the diagnostic never holds the error's text.
+ */
+export function jobFailure(e: unknown): { reason: string; transient: boolean; diagnostic: { error: string; code: string | null } } {
+  const diagnostic = { error: e instanceof Error ? e.constructor.name || e.name : typeof e, code: e instanceof ConnectionError ? e.code : null };
+  if (e instanceof ConnectionError) {
+    if (e.code === "auth") return { reason: "the connection was rejected; sign in again to continue", transient: false, diagnostic };
+    if (TRANSIENT_CONNECTION_CODES.has(e.code)) return { reason: "the outside service was temporarily unavailable; nothing more was recorded. It can be asked for again", transient: true, diagnostic };
+    return { reason: e.message.slice(0, 280), transient: false, diagnostic };
+  }
+  return { reason: "the work stopped on an internal error before it finished; nothing more was recorded. It can be asked for again", transient: false, diagnostic };
 }
 
 /** Sweep entry: run every queued job of the kinds handled here, oldest and highest priority first. */

@@ -16,7 +16,7 @@
  * uncertain and keeps counting against its day's budget.
  */
 import { all, isCommandError, systemPrincipalFor, toInstant, type CommandService, type Db } from "@garderobe/domain";
-import { actualCostMicroUsd, profileSpec } from "./registry.ts";
+import { actualCostMicroUsd, pricingSpecFor } from "./registry.ts";
 
 /** One dispatched model call, as it can be identified in the provider's record. */
 export interface DispatchedCall {
@@ -184,9 +184,9 @@ export async function reconcileInferenceReservations(deps: ReconcileDeps, opts: 
         if (changed(receipt)) result.released++;
         continue;
       }
-      const spec = profileSpec(row.profile_id);
+      const spec = pricingSpecFor(row.profile_id);
       if (!spec) {
-        // The price of a profile that is no longer in the registry is not known; the reservation is not priced by guess.
+        // The price of a profile that is neither active nor in the retired-profile compatibility table is not known; the reservation is not priced by guess.
         result.stillUncertain++;
         continue;
       }

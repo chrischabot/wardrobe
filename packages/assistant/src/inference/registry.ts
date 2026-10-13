@@ -6,6 +6,12 @@
  * every operation the task needs (recorded with `inference.record_probe`). Prices and context sizes
  * are reservation hypotheses with no observation date until a deployment probe records one; they are
  * deliberately conservative and only bound spend, they are not claims about provider pricing.
+ *
+ * Owner rule: every role and every fallback runs on the single model the deployment gateway enforces,
+ * `anthropic/claude-odango-eap`. No Fable model is ever listed. The fallback profile is the same model
+ * with a longer timeout and its own circuit breaker, so a run that timed out or tripped the primary's
+ * breaker gets one more bounded attempt; it is not a different model. The unverified provider families
+ * below stay listed only as pending entries with no route, and no task names them.
  */
 import type { BudgetClass, InferenceTask, ModelOperation, ModelProbe, ModelProfile } from "@garderobe/contracts/ext/assistant";
 
@@ -32,16 +38,22 @@ export interface ProfileSpec {
 
 const NO_TRAINING = "Requests go through the named AI Gateway with prompt and response body logging disabled; no provider key is sent (Unified Billing).";
 
+/** The one model route the deployment gateway enforces for every role and fallback. */
+export const ENFORCED_MODEL_ROUTE = "anthropic/claude-odango-eap";
+export const PRIMARY_PROFILE_ID = "odango-eap";
+export const FALLBACK_PROFILE_ID = "odango-eap-fallback";
+
 export const PROFILE_SPECS: readonly ProfileSpec[] = [
   {
-    profileId: "deepseek-v41-flash",
-    label: "DeepSeek V4.1 Flash",
-    provider: "deepseek",
-    apiModelId: "deepseek-flash",
-    gatewayRoute: "deepseek/deepseek-flash",
+    profileId: PRIMARY_PROFILE_ID,
+    label: "Claude Odango EAP",
+    provider: "anthropic",
+    apiModelId: "claude-odango-eap",
+    gatewayRoute: ENFORCED_MODEL_ROUTE,
     supportedOperations: ["text", "tools", "structured_output", "vision"],
     inputTypes: ["text", "image"],
     effort: {},
+    // Conservative window until a deployment probe observes the real one.
     contextTokens: 128_000,
     maxOutputTokens: 8_000,
     timeoutMs: 60_000,
@@ -50,35 +62,18 @@ export const PROFILE_SPECS: readonly ProfileSpec[] = [
     pendingReason: null,
   },
   {
-    profileId: "fable-5-1",
-    label: "Fable 5.1 (heavyweight fallback candidate)",
+    profileId: FALLBACK_PROFILE_ID,
+    label: "Claude Odango EAP (fallback: same model, longer timeout)",
     provider: "anthropic",
-    apiModelId: "claude-fable-5-1",
-    gatewayRoute: "anthropic/claude-fable-5-1",
-    supportedOperations: ["text", "tools", "structured_output", "vision"],
-    inputTypes: ["text", "image"],
-    // Forced tool use is restricted on this model; the application never depends on forcing a read.
-    effort: {},
-    contextTokens: 200_000,
-    maxOutputTokens: 8_000,
-    timeoutMs: 120_000,
-    price: { inputMicroUsdPerMTok: 15_000_000, outputMicroUsdPerMTok: 75_000_000, observedOn: null },
-    dataPermissions: NO_TRAINING,
-    pendingReason: null,
-  },
-  {
-    profileId: "gpt-6-astra",
-    label: "GPT-6 Astra",
-    provider: "openai",
-    apiModelId: "gpt-6-astra",
-    gatewayRoute: "openai/gpt-6-astra",
+    apiModelId: "claude-odango-eap",
+    gatewayRoute: ENFORCED_MODEL_ROUTE,
     supportedOperations: ["text", "tools", "structured_output", "vision"],
     inputTypes: ["text", "image"],
     effort: {},
-    contextTokens: 200_000,
+    contextTokens: 128_000,
     maxOutputTokens: 8_000,
     timeoutMs: 120_000,
-    price: { inputMicroUsdPerMTok: 15_000_000, outputMicroUsdPerMTok: 60_000_000, observedOn: null },
+    price: { inputMicroUsdPerMTok: 1_000_000, outputMicroUsdPerMTok: 4_000_000, observedOn: null },
     dataPermissions: NO_TRAINING,
     pendingReason: null,
   },
@@ -128,7 +123,7 @@ export const PROFILE_SPECS: readonly ProfileSpec[] = [
     timeoutMs: 120_000,
     price: { inputMicroUsdPerMTok: 15_000_000, outputMicroUsdPerMTok: 60_000_000, observedOn: null },
     dataPermissions: NO_TRAINING,
-    pendingReason: "the requested label 'GPT Extra' does not resolve to a verified API model name; it is not equated with GPT-6 Astra",
+    pendingReason: "the requested label 'GPT Extra' does not resolve to a verified API model name; it is not equated with any other model",
   },
   {
     profileId: "search-embedding",
@@ -177,15 +172,16 @@ export interface TaskSpec {
 }
 
 export const TASK_SPECS: Record<InferenceTask, TaskSpec> = {
-  conversation: { task: "conversation", budgetClass: "interactive", requiredOperations: ["text", "tools"], candidates: ["deepseek-v41-flash", "fable-5-1", "gpt-6-astra"], maxOutputTokens: 4_000, retries: 1 },
-  outfit_composition: { task: "outfit_composition", budgetClass: "daily_board", requiredOperations: ["text", "structured_output"], candidates: ["deepseek-v41-flash", "fable-5-1", "gpt-6-astra"], maxOutputTokens: 6_000, retries: 1 },
-  extraction: { task: "extraction", budgetClass: "research", requiredOperations: ["text", "structured_output"], candidates: ["deepseek-v41-flash", "fable-5-1"], maxOutputTokens: 4_000, retries: 1 },
-  photo_matching: { task: "photo_matching", budgetClass: "interactive", requiredOperations: ["vision"], candidates: ["deepseek-v41-flash", "fable-5-1", "gpt-6-astra"], maxOutputTokens: 2_000, retries: 1 },
-  historical_research: { task: "historical_research", budgetClass: "research", requiredOperations: ["text", "tools"], candidates: ["fable-5-1", "gpt-6-astra", "deepseek-v41-flash"], maxOutputTokens: 6_000, retries: 1 },
-  catalogue_editing: { task: "catalogue_editing", budgetClass: "image_backfill", requiredOperations: ["image_edit"], candidates: ["image-edit"], maxOutputTokens: 1, retries: 0 },
-  compaction: { task: "compaction", budgetClass: "maintenance", requiredOperations: ["text"], candidates: ["deepseek-v41-flash", "fable-5-1"], maxOutputTokens: 3_000, retries: 1 },
-  recall_enrichment: { task: "recall_enrichment", budgetClass: "maintenance", requiredOperations: ["text", "structured_output"], candidates: ["deepseek-v41-flash", "fable-5-1"], maxOutputTokens: 2_000, retries: 1 },
-  semantic_indexing: { task: "semantic_indexing", budgetClass: "search", requiredOperations: ["embedding"], candidates: ["search-embedding"], maxOutputTokens: 1, retries: 1 },
+  conversation: { task: "conversation", budgetClass: "interactive", requiredOperations: ["text", "tools"], candidates: [PRIMARY_PROFILE_ID, FALLBACK_PROFILE_ID], maxOutputTokens: 4_000, retries: 1 },
+  outfit_composition: { task: "outfit_composition", budgetClass: "daily_board", requiredOperations: ["text", "structured_output"], candidates: [PRIMARY_PROFILE_ID, FALLBACK_PROFILE_ID], maxOutputTokens: 6_000, retries: 1 },
+  extraction: { task: "extraction", budgetClass: "research", requiredOperations: ["text", "structured_output"], candidates: [PRIMARY_PROFILE_ID, FALLBACK_PROFILE_ID], maxOutputTokens: 4_000, retries: 1 },
+  photo_matching: { task: "photo_matching", budgetClass: "interactive", requiredOperations: ["vision"], candidates: [PRIMARY_PROFILE_ID, FALLBACK_PROFILE_ID], maxOutputTokens: 2_000, retries: 1 },
+  // Research prefers the longer timeout first; both profiles are the same enforced model.
+  historical_research: { task: "historical_research", budgetClass: "research", requiredOperations: ["text", "tools"], candidates: [FALLBACK_PROFILE_ID, PRIMARY_PROFILE_ID], maxOutputTokens: 6_000, retries: 1 },
+  catalogue_editing: { task: "catalogue_editing", budgetClass: "image_backfill", requiredOperations: ["image_edit"], candidates: [PRIMARY_PROFILE_ID, FALLBACK_PROFILE_ID], maxOutputTokens: 1, retries: 0 },
+  compaction: { task: "compaction", budgetClass: "maintenance", requiredOperations: ["text"], candidates: [PRIMARY_PROFILE_ID, FALLBACK_PROFILE_ID], maxOutputTokens: 3_000, retries: 1 },
+  recall_enrichment: { task: "recall_enrichment", budgetClass: "maintenance", requiredOperations: ["text", "structured_output"], candidates: [PRIMARY_PROFILE_ID, FALLBACK_PROFILE_ID], maxOutputTokens: 2_000, retries: 1 },
+  semantic_indexing: { task: "semantic_indexing", budgetClass: "search", requiredOperations: ["embedding"], candidates: [PRIMARY_PROFILE_ID, FALLBACK_PROFILE_ID], maxOutputTokens: 1, retries: 1 },
 };
 
 /** Daily application budgets in micro-USD (personal-use defaults; owner-editable under settings.extensions.assistant.budgets). */
@@ -200,6 +196,30 @@ export const DEFAULT_DAILY_BUDGETS: Record<BudgetClass, number> = {
 
 export function profileSpec(profileId: string): ProfileSpec | undefined {
   return PROFILE_SPECS.find((p) => p.profileId === profileId);
+}
+
+/**
+ * Historical pricing and default model IDs for profiles retired when routing moved to `ENFORCED_MODEL_ROUTE`.
+ * Kept only so `reconcileInferenceReservations` can still price and settle `uncertain` reservations that were
+ * recorded before the cutover; retired profiles are not in `PROFILE_SPECS` and cannot be selected or reserved.
+ */
+const RETIRED_PROFILE_PRICING: Readonly<Record<string, Pick<ProfileSpec, "apiModelId" | "price">>> = {
+  "deepseek-v41-flash": {
+    apiModelId: "deepseek-flash",
+    price: { inputMicroUsdPerMTok: 1_000_000, outputMicroUsdPerMTok: 4_000_000, observedOn: null },
+  },
+  "fable-5-1": {
+    apiModelId: "claude-fable-5-1",
+    price: { inputMicroUsdPerMTok: 15_000_000, outputMicroUsdPerMTok: 75_000_000, observedOn: null },
+  },
+  "gpt-6-astra": {
+    apiModelId: "gpt-6-astra",
+    price: { inputMicroUsdPerMTok: 15_000_000, outputMicroUsdPerMTok: 60_000_000, observedOn: null },
+  },
+};
+
+export function pricingSpecFor(profileId: string): Pick<ProfileSpec, "apiModelId" | "price"> | undefined {
+  return profileSpec(profileId) ?? RETIRED_PROFILE_PRICING[profileId];
 }
 
 export interface ProbeRow {
@@ -263,6 +283,6 @@ export function estimateReservationMicroUsd(spec: ProfileSpec, inputTokens: numb
   return Math.ceil((input * spec.price.inputMicroUsdPerMTok + maxOutputTokens * spec.price.outputMicroUsdPerMTok) / 1_000_000);
 }
 
-export function actualCostMicroUsd(spec: ProfileSpec, inputTokens: number, outputTokens: number): number {
+export function actualCostMicroUsd(spec: Pick<ProfileSpec, "price">, inputTokens: number, outputTokens: number): number {
   return Math.ceil((inputTokens * spec.price.inputMicroUsdPerMTok + outputTokens * spec.price.outputMicroUsdPerMTok) / 1_000_000);
 }

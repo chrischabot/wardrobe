@@ -86,7 +86,7 @@ describe("continuous conversation: recall, compaction and forgetting (real Think
   it("compacts the working context through the model service while keeping every original message and the complete profile", async () => {
     const checkpoints = await all<{ covered_ids_json: string; model_profile: string; prompt_version: string; summary_sha256: string; status: string }>(w.h.db, "SELECT covered_ids_json, model_profile, prompt_version, summary_sha256, status FROM compaction_checkpoints WHERE user_id = ?", w.owner.userId);
     expect(checkpoints.length).toBeGreaterThan(0);
-    expect(checkpoints[0]).toMatchObject({ model_profile: "deepseek-v41-flash", prompt_version: "garderobe-compaction/1.0.0" });
+    expect(checkpoints[0]).toMatchObject({ model_profile: "odango-eap", prompt_version: "garderobe-compaction/1.0.0" });
     expect(checkpoints[0]!.summary_sha256).toHaveLength(64);
     // The compaction call reserved and settled budget like any other model call.
     const spend = await all<{ state: string }>(w.h.db, "SELECT state FROM inference_reservations WHERE user_id = ? AND task = 'compaction'", w.owner.userId);

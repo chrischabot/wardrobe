@@ -246,7 +246,7 @@ describe("purchase investigation as a durable job (REAL Gmail adapter over the F
   let w: World;
   let google: ReturnType<typeof createFakeGoogle>;
   let deps: AssistantJobDeps;
-  const extractor = () => fakeModelFor("deepseek-v41-flash");
+  const extractor = () => fakeModelFor("odango-eap");
   const excerptOf = (r: FakeRequest) => r.messages.filter((m) => m.role === "user").map((m) => m.text).join("\n");
   /** FAKE extraction answers keyed on what the excerpt contains. */
   const answer = (r: FakeRequest) => {
@@ -258,7 +258,7 @@ describe("purchase investigation as a durable job (REAL Gmail adapter over the F
   const isExtraction = (r: FakeRequest) => r.system.includes("You read ONE email excerpt");
 
   beforeAll(async () => {
-    w = await createWorld({ probes: ["deepseek-v41-flash", "fable-5-1"] });
+    w = await createWorld({ probes: ["odango-eap", "odango-eap-fallback"] });
     setNow(w, "2026-09-15T08:00:00Z");
     google = createFakeGoogle({ mail: [ORDER_MAIL, DISPATCH_MAIL, NEWSLETTER], pageSize: 2 });
     const c = await w.owner.exec("connection.register", { kind: "gmail", label: "Gmail", endpoint: "https://gmail.googleapis.com/", namespace: "gmail", secretRef: "GOOGLE_GRANT", scopes: [GOOGLE_SCOPES.gmailRead] });
@@ -313,7 +313,7 @@ describe("purchase investigation as a durable job (REAL Gmail adapter over the F
     const reserved = await all<{ task: string; budget_class: string; schema_version: string; evidence_json: string; parent_kind: string; resolved_model: string; effort_json: string }>(w.h.db, "SELECT task, budget_class, schema_version, evidence_json, parent_kind, resolved_model, effort_json FROM inference_reservations WHERE user_id = ? AND parent_id = ?", w.owner.userId, jobId);
     expect(reserved).toHaveLength(3);
     // The model the provider reported as having answered is what is recorded, with the effort parameters that were sent.
-    expect(reserved.every((r) => r.resolved_model === "fake-deepseek-v41-flash" && typeof JSON.parse(r.effort_json) === "object")).toBe(true);
+    expect(reserved.every((r) => r.resolved_model === "fake-odango-eap" && typeof JSON.parse(r.effort_json) === "object")).toBe(true);
     expect(reserved.every((r) => r.task === "extraction" && r.budget_class === "research" && r.schema_version === "order-email-fact/1.0.0" && r.parent_kind === "job" && JSON.parse(r.evidence_json).messageId)).toBe(true);
     expect((await all(w.h.db, "SELECT 1 FROM mail_seen WHERE user_id = ?", w.owner.userId))).toHaveLength(3);
 
@@ -343,8 +343,8 @@ describe("purchase investigation as a durable job (REAL Gmail adapter over the F
     google.state.mail = [ORDER_MAIL, GARBLED];
     await w.h.db.prepare("DELETE FROM mail_seen WHERE user_id = ?").bind(w.owner.userId).run();
     await w.h.db.prepare("DELETE FROM mail_sync_state WHERE user_id = ?").bind(w.owner.userId).run();
-    const primary = fakeModelFor("deepseek-v41-flash");
-    const fallback = fakeModelFor("fable-5-1");
+    const primary = fakeModelFor("odango-eap");
+    const fallback = fakeModelFor("odango-eap-fallback");
     primary.reset();
     fallback.reset();
     // Order mail: first answer is not valid JSON, the repair attempt is. Garbled mail: both profiles stay invalid.
@@ -471,7 +471,7 @@ describe("schema-validated product facts from a page (real extraction router and
   const RECORD = { name: "Shetland crewneck", maker: "Harley of Scotland", fabric: "100% Shetland wool", price: { amount: "145.00", currency: "GBP" }, variant: { colour: "Moss", availability: "unknown" }, sizeChart: [{ size: "44", measurements: { chest: { value: 56, unit: "cm", kind: "flat_half" } } }, { size: "46", measurements: { chest: { value: 58.5, unit: "cm", kind: "flat_half" } } }], returnTerms: "Returns within 14 days of delivery" };
 
   it("returns the record with what the page did not state listed as missing, repairs an invalid answer once, and creates nothing", async () => {
-    const w = await createWorld({ probes: ["deepseek-v41-flash"] });
+    const w = await createWorld({ probes: ["odango-eap"] });
     const { setTestPorts } = await import("../src/testing/index.ts");
     setTestPorts({ extraction: new research.ExtractionRouter({ tavily: { extract: async (req) => ({ results: req.urls.map((url) => ({ url, content: PAGE, images: [] })), failed: [] }) }, browser: { render: async () => { throw new Error("not needed"); } }, clock: () => w.h.clock.now() }) });
     const garments = (await listInventory(w.h.db, w.owner.principal())).total;
@@ -527,15 +527,15 @@ describe("proactive compaction threshold", () => {
 
 describe("spend controls on discretionary work (real reservation ledger; FAKE MODEL)", () => {
   it("stops optional research before the day's total reaches its ceiling while the conversation keeps working, and caps calls in flight", async () => {
-    const w = await createWorld({ real: false, probes: ["deepseek-v41-flash"] });
-    await passProbes(w.h, w.owner, "fable-5-1");
+    const w = await createWorld({ real: false, probes: ["odango-eap"] });
+    await passProbes(w.h, w.owner, "odango-eap-fallback");
     const reserve = (over: Record<string, unknown>) =>
-      w.owner.exec("inference.reserve", { reservationId: `rsv_${crypto.randomUUID().slice(0, 12)}`, runId: `run_${crypto.randomUUID().slice(0, 12)}`, task: "conversation", budgetClass: "interactive", profileId: "deepseek-v41-flash", reservedMicroUsd: 400, budgetDay: "2026-09-15", dailyLimitMicroUsd: 1_000_000, parent: { kind: "turn", id: "trn_x" }, gatewayId: TEST_GATEWAY_ID, ...over }, SYSTEM);
+      w.owner.exec("inference.reserve", { reservationId: `rsv_${crypto.randomUUID().slice(0, 12)}`, runId: `run_${crypto.randomUUID().slice(0, 12)}`, task: "conversation", budgetClass: "interactive", profileId: "odango-eap", reservedMicroUsd: 400, budgetDay: "2026-09-15", dailyLimitMicroUsd: 1_000_000, parent: { kind: "turn", id: "trn_x" }, gatewayId: TEST_GATEWAY_ID, ...over }, SYSTEM);
     await reserve({});
     await reserve({});
     // 800 already committed today across classes; research is optional and stops at its ceiling of 1000.
-    await expect(reserve({ task: "historical_research", budgetClass: "research", profileId: "fable-5-1", reservedMicroUsd: 300, discretionaryCeilingMicroUsd: 1_000 })).rejects.toMatchObject({ code: "precondition_failed" });
-    await expect(reserve({ task: "historical_research", budgetClass: "research", profileId: "fable-5-1", reservedMicroUsd: 100, discretionaryCeilingMicroUsd: 1_000 })).resolves.toBeTruthy();
+    await expect(reserve({ task: "historical_research", budgetClass: "research", profileId: "odango-eap-fallback", reservedMicroUsd: 300, discretionaryCeilingMicroUsd: 1_000 })).rejects.toMatchObject({ code: "precondition_failed" });
+    await expect(reserve({ task: "historical_research", budgetClass: "research", profileId: "odango-eap-fallback", reservedMicroUsd: 100, discretionaryCeilingMicroUsd: 1_000 })).resolves.toBeTruthy();
     // The same ceiling does not stop the conversation or the board.
     await expect(reserve({ reservedMicroUsd: 300, discretionaryCeilingMicroUsd: 1_000 })).resolves.toBeTruthy();
     await expect(reserve({ task: "outfit_composition", budgetClass: "daily_board", reservedMicroUsd: 300, discretionaryCeilingMicroUsd: 1_000 })).resolves.toBeTruthy();

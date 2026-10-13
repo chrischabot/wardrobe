@@ -112,7 +112,7 @@ describe("photo intake through the conversation (REAL media upload and private r
     expect(await getDailyRecord(w.h.db, p(), "2026-09-15")).toEqual(before);
   });
 
-  it("a shop photo becomes a product record outside the wardrobe, never a garment", async () => {
+  it("a shop photo becomes a product record outside the wardrobe; an owned garment the model adds on top is only a request, because asking about a purchase is not owning it", async () => {
     const shop = await upload(p(), "attachment");
     const garments = (await listInventory(w.h.db, p())).total;
     w.model.script(
@@ -150,7 +150,7 @@ describe("photo intake through the conversation (REAL media upload and private r
     expect(w.model.requests.every((r) => !r.messages.some((m) => m.text.includes(theirs.assetId)))).toBe(true);
 
     // A profile whose vision probe did not pass is never used for a photograph; the request is kept.
-    for (const profileId of ["deepseek-v41-flash", "fable-5-1", "gpt-6-astra"]) {
+    for (const profileId of ["odango-eap", "odango-eap-fallback"]) {
       await w.owner.exec("inference.record_probe", { profileId, operation: "vision", result: "failed", billing: "unified_billing", reason: "TEST FIXTURE: vision probe failed", gatewayId: TEST_GATEWAY_ID }, { actor: "system", channel: "system", scopes: ["read", "write", "admin"], authorization: "system_schedule" });
     }
     const mine = await upload(p(), "attachment");
@@ -192,7 +192,7 @@ describe("photo intake through the conversation (REAL media upload and private r
   });
 
   it("the test actor keeps the ports the composition root configured (only the model is replaced); a test port takes precedence", async () => {
-    await passProbes(w.h, w.owner, "deepseek-v41-flash", ["vision"]);
+    await passProbes(w.h, w.owner, "odango-eap", ["vision"]);
     const realOpen = async (principal: Principal, assetId: string) => {
       const opened = await openAssetImage(rt, principal, assetId);
       return { bytes: new Uint8Array(await new Response(opened.body).arrayBuffer()), contentType: opened.contentType };

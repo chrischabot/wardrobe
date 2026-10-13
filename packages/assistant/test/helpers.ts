@@ -39,13 +39,13 @@ export async function createWorld(opts: { real?: boolean; probes?: string[]; sta
   opts.extend?.(registry);
   const h = await createHarness({ registry, startAt: opts.startAt ?? START });
   const owner = opts.real === false ? await h.createSyntheticOwner() : (await h.createRealOwner()).owner;
-  for (const profileId of opts.probes ?? ["deepseek-v41-flash"]) await passProbes(h, owner, profileId);
+  for (const profileId of opts.probes ?? ["odango-eap"]) await passProbes(h, owner, profileId);
   const clientFor = (principal: Principal) => assistantClient(env as never, principal);
   return {
     h,
     owner,
     client: clientFor(owner.principal({ channel: "ios" })),
-    model: fakeModelFor("deepseek-v41-flash"),
+    model: fakeModelFor("odango-eap"),
     clientFor,
     async garment(search: string) {
       const page = await listInventory(h.db, owner.principal(), { search });
@@ -87,6 +87,41 @@ export async function confirm(w: World, turn: TurnRecord, index = 0): Promise<Co
     authorization: "owner_tap",
     source: { channel: "ios", parentKind: "turn", parentId: turn.turnId },
   });
+}
+
+/**
+ * The owner's undo of every change a turn applied, newest first, exactly as the app sends it: `command.undo`
+ * through the shared command service as the signed-in owner. Returns the undo receipts, and the receipts
+ * that could not be undone with the reason.
+ */
+export async function undoTurn(w: World, turn: Pick<TurnRecord, "receipts">, label = "undo"): Promise<{ undone: CommandReceipt[]; notUndone: string[] }> {
+  const undone: CommandReceipt[] = [];
+  const notUndone: string[] = [];
+  for (const r of [...turn.receipts].reverse()) {
+    try {
+      const receipt = await w.h.service.execute(w.owner.principal({ channel: "ios" }), { type: "command.undo", payload: { commandId: r.commandId, reason: null }, idempotencyKey: `${label}:${r.commandId}`, authorization: "owner_tap", source: { channel: "ios" } });
+      if (receipt.outcome !== "committed") {
+        notUndone.push(`${r.type}: undo outcome was ${receipt.outcome}`);
+      } else {
+        undone.push(receipt);
+      }
+    } catch (e) {
+      notUndone.push(`${r.type}: ${(e as Error).message}`);
+    }
+  }
+  return { undone, notUndone };
+}
+
+/** The grants trusted code recorded with a turn: why each applied change was applied. */
+export async function grantsOf(w: World, turnId: string): Promise<{ type: string; basis: string; messageId?: string; statement?: string; garments?: { garmentId: string; basis: string; matched: string[] }[] }[]> {
+  const row = await all<{ grants_json: string; user_message_id: string }>(w.h.db, "SELECT grants_json, user_message_id FROM assistant_turns WHERE user_id = ? AND turn_id = ?", w.owner.userId, turnId);
+  return JSON.parse(row[0]?.grants_json ?? "[]");
+}
+
+/** The ID of the owner's message that started a turn. */
+export async function userMessageOf(w: World, turnId: string): Promise<string> {
+  const row = await all<{ user_message_id: string }>(w.h.db, "SELECT user_message_id FROM assistant_turns WHERE user_id = ? AND turn_id = ?", w.owner.userId, turnId);
+  return row[0]!.user_message_id;
 }
 
 export function corpusContext(w: World): CorpusContext {

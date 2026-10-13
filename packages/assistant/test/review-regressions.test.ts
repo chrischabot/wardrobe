@@ -14,7 +14,7 @@ import { createWorld, submission, type World } from "./helpers.ts";
 describe("review findings 6 to 13 and the carried items (real owner; FAKE MODEL)", () => {
   let w: World;
   beforeAll(async () => {
-    w = await createWorld({ probes: ["deepseek-v41-flash", "fable-5-1"] });
+    w = await createWorld({ probes: ["odango-eap", "odango-eap-fallback"] });
   });
 
   it("finding 6: text a model wrote appears in a receipt or a proposal only as a quoted value, never as the system's own sentence", async () => {
@@ -177,9 +177,9 @@ describe("review findings 6 to 13 and the carried items (real owner; FAKE MODEL)
 
   it("carried: the composition model gives up at the daily service's deadline, and recall hits carry the product investigation they refer to", async () => {
     const c = await createWorld({ real: false, probes: [] });
-    await c.owner.exec("inference.record_probe", { profileId: "deepseek-v41-flash", operation: "text", result: "passed", billing: "unified_billing", reason: "TEST FIXTURE", gatewayId: TEST_GATEWAY_ID }, { actor: "system", channel: "system", scopes: ["read", "write", "admin"], authorization: "system_schedule" });
-    await c.owner.exec("inference.record_probe", { profileId: "deepseek-v41-flash", operation: "structured_output", result: "passed", billing: "unified_billing", reason: "TEST FIXTURE", gatewayId: TEST_GATEWAY_ID }, { actor: "system", channel: "system", scopes: ["read", "write", "admin"], authorization: "system_schedule" });
-    const slow = fakeModelFor("deepseek-v41-flash");
+    await c.owner.exec("inference.record_probe", { profileId: "odango-eap", operation: "text", result: "passed", billing: "unified_billing", reason: "TEST FIXTURE", gatewayId: TEST_GATEWAY_ID }, { actor: "system", channel: "system", scopes: ["read", "write", "admin"], authorization: "system_schedule" });
+    await c.owner.exec("inference.record_probe", { profileId: "odango-eap", operation: "structured_output", result: "passed", billing: "unified_billing", reason: "TEST FIXTURE", gatewayId: TEST_GATEWAY_ID }, { actor: "system", channel: "system", scopes: ["read", "write", "admin"], authorization: "system_schedule" });
+    const slow = fakeModelFor("odango-eap");
     let aborted = false;
     slow.script(async (request) => {
       await new Promise<void>((resolve) => {

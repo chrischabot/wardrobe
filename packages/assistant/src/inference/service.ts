@@ -88,6 +88,8 @@ export interface RunScope {
   requiredOperations?: ModelOperation[];
   /** Profiles not to use for this run (already tried and rejected for invalid structured output). */
   excludeProfiles?: string[];
+  /** Use only this profile (a structured-output repair goes back to the profile that produced the invalid answer). */
+  onlyProfile?: string;
   /** Recorded with every reservation of the run: structured-output schema version and input versions. */
   schemaVersion?: string;
   evidence?: Record<string, unknown>;
@@ -119,10 +121,13 @@ export class ModelService {
   }
 
   /** The ordered profiles that may serve a task right now, with the precise reason for each one skipped. */
-  async profileChain(userId: string, task: InferenceTask, minContextTokens = 0, extra: { requiredOperations?: ModelOperation[]; excludeProfiles?: string[] } = {}): Promise<{ chain: ProfileSpec[]; skipped: { profileId: string; reason: string }[] }> {
+  async profileChain(userId: string, task: InferenceTask, minContextTokens = 0, extra: { requiredOperations?: ModelOperation[]; excludeProfiles?: string[]; onlyProfile?: string } = {}): Promise<{ chain: ProfileSpec[]; skipped: { profileId: string; reason: string }[] }> {
     const spec = { ...TASK_SPECS[task], requiredOperations: [...new Set([...TASK_SPECS[task].requiredOperations, ...(extra.requiredOperations ?? [])])] };
     const routing = await first<{ profile_id: string; fallbacks_json: string }>(this.db, "SELECT profile_id, fallbacks_json FROM inference_routing WHERE user_id = ? AND task = ?", userId, task);
-    const order = routing ? [routing.profile_id, ...json<string[]>(routing.fallbacks_json, [])] : spec.candidates;
+    const routed = routing ? [routing.profile_id, ...json<string[]>(routing.fallbacks_json, [])] : [];
+    // A stored override that names only profiles the registry no longer has (a retired model) is stale: the task's
+    // own candidates serve it, rather than an empty chain. Unknown names in a partly valid override are skipped below.
+    const order = routed.some((id) => profileSpec(id)) ? routed : spec.candidates;
     const probes = await all<ProbeRow>(this.db, "SELECT profile_id, operation, result, billing, reason, resolved_model, probed_at FROM model_probes WHERE gateway_id = ?", this.gatewayId);
     const breakers = await all<{ profile_id: string; state: string; opened_at: string | null }>(this.db, "SELECT profile_id, state, opened_at FROM model_breakers WHERE gateway_id = ?", this.gatewayId);
     const chain: ProfileSpec[] = [];
@@ -133,6 +138,7 @@ export class ModelService {
         skipped.push({ profileId: id, reason: "unknown profile" });
         continue;
       }
+      if (extra.onlyProfile !== undefined && id !== extra.onlyProfile) continue;
       if (extra.excludeProfiles?.includes(id)) {
         skipped.push({ profileId: id, reason: "its structured output stayed invalid after a bounded repair" });
         continue;
@@ -246,8 +252,8 @@ export class ModelService {
       }
     }
 
-    async function dispatchInner<T>(options: LanguageModelV4CallOptions, call: (model: LanguageModelV4, options: LanguageModelV4CallOptions) => PromiseLike<T>, onResult: (result: T, ctx: { spec: ProfileSpec; reservationId: string; finish: (ok: boolean, usage: { input: number | null; output: number | null }, errorClass?: string, reportedModel?: string | null) => Promise<void> }) => T): Promise<T> {
-      const { chain, skipped } = await self.profileChain(scope.userId, scope.task, scope.minContextTokens ?? 0, { ...(scope.requiredOperations ? { requiredOperations: scope.requiredOperations } : {}), ...(scope.excludeProfiles ? { excludeProfiles: scope.excludeProfiles } : {}) });
+    async function dispatchInner<T>(options: LanguageModelV4CallOptions, call: (model: LanguageModelV4, options: LanguageModelV4CallOptions) => PromiseLike<T>, onResult: (result: T, ctx: { spec: ProfileSpec; reservationId: string; finish: (ok: boolean, usage: { input: number | null; output: number | null }, errorClass?: string, reportedModel?: string | null) => Promise<void>; classify: (error: unknown) => ErrorClass }) => T): Promise<T> {
+      const { chain, skipped } = await self.profileChain(scope.userId, scope.task, scope.minContextTokens ?? 0, { ...(scope.requiredOperations ? { requiredOperations: scope.requiredOperations } : {}), ...(scope.excludeProfiles ? { excludeProfiles: scope.excludeProfiles } : {}), ...(scope.onlyProfile !== undefined ? { onlyProfile: scope.onlyProfile } : {}) });
       if (chain.length === 0) throw new NoSelectableProfileError(scope.task, skipped);
       const runId = newId("run");
       const attempts: RunRecord["attempts"] = [];
@@ -259,10 +265,21 @@ export class ModelService {
           const maxOut = Math.min(options.maxOutputTokens ?? taskSpec.maxOutputTokens, spec.maxOutputTokens);
           // Reservation precedes dispatch. A budget refusal propagates: it is never a reason to try another route.
           const reservationId = await self.reserve(scope, spec, runId, attempt, maxOut);
-          scope.onAttempt?.({ profileId: spec.profileId, attempt, fallbackOf: i > 0 ? chain[0]!.profileId : null });
+          // Nothing has been dispatched yet: if the caller's hook throws, the reservation is released, not left open.
+          try {
+            scope.onAttempt?.({ profileId: spec.profileId, attempt, fallbackOf: i > 0 ? chain[0]!.profileId : null });
+          } catch (error) {
+            await self.settle(scope.userId, reservationId, { outcome: "released", errorClass: "not_dispatched" });
+            throw error;
+          }
           const finish = async (ok: boolean, usage: { input: number | null; output: number | null }, errorClass?: string, reportedModel?: string | null) => {
-            if (ok) {
-              // The model the provider says answered is recorded (an alias such as `deepseek-flash` can redirect).
+            if (ok && (usage.input === null || usage.output === null)) {
+              // An answer without complete usage figures has an unknown charge: it stays reserved for reconciliation
+              // instead of being settled as if unknown token counts were zero.
+              await self.settle(scope.userId, reservationId, { outcome: "uncertain", errorClass: "usage_missing" });
+              lastRun = { profileId: spec.profileId, resolvedModel: reportedModel ?? spec.apiModelId, inputTokens: usage.input, outputTokens: usage.output, attempts };
+            } else if (ok) {
+              // The model the provider says answered is recorded (a gateway alias can redirect to a different model version).
               const resolvedModel = reportedModel ?? spec.apiModelId;
               await self.settle(scope.userId, reservationId, { outcome: "settled", actualMicroUsd: actualCostMicroUsd(spec, usage.input ?? 0, usage.output ?? 0), inputTokens: usage.input, outputTokens: usage.output, resolvedModel });
               lastRun = { profileId: spec.profileId, resolvedModel, inputTokens: usage.input, outputTokens: usage.output, attempts };
@@ -281,17 +298,20 @@ export class ModelService {
             clear();
             await finish(ok, usage, errorClass, reportedModel);
           };
+          // A cleared timer, not AbortSignal.timeout(): a pending timer would keep the actor from hibernating.
+          const timeout = new AbortController();
+          // The caller's own cancellation wins; otherwise our own timer firing is a timeout, whatever error the
+          // provider threw when its fetch was aborted (commonly an AbortError). Used before and after a stream opens.
+          const classify = (error: unknown): ErrorClass => (options.abortSignal?.aborted ? "aborted" : timeout.signal.aborted ? "timeout" : classifyError(error));
           try {
             const model = self.createLanguageModel(spec, { runId, task: scope.task, attempt });
-            // A cleared timer, not AbortSignal.timeout(): a pending timer would keep the actor from hibernating.
-            const timeout = new AbortController();
             timer = setTimeout(() => timeout.abort(new DOMException("the model call timed out", "TimeoutError")), spec.timeoutMs);
             const signal = options.abortSignal ? AbortSignal.any([options.abortSignal, timeout.signal]) : timeout.signal;
             const result = await call(model, { ...options, maxOutputTokens: maxOut, abortSignal: signal, providerOptions: { ...(options.providerOptions ?? {}) } });
-            return onResult(result, { spec, reservationId, finish: finishAndClear });
+            return onResult(result, { spec, reservationId, finish: finishAndClear, classify });
           } catch (error) {
             clear();
-            const errorClass = options.abortSignal?.aborted ? "aborted" : classifyError(error);
+            const errorClass = classify(error);
             attempts.push({ profileId: spec.profileId, errorClass, message: String((error as Error)?.message ?? error).slice(0, 300) });
             await finish(false, { input: null, output: null }, errorClass);
             if (!FALLBACK_CLASSES.includes(errorClass)) throw error;
@@ -321,7 +341,55 @@ export class ModelService {
         return result;
       },
       async doStream(options: LanguageModelV4CallOptions) {
-        return dispatch(options, (m, o) => m.doStream(o), (result: any, ctx) => {
+        // The first parts are read inside dispatch: a stream that fails (an error part or a rejected read) before
+        // any substantive answer arrives is thrown there, so it is classified, settled and can fall back like
+        // doGenerate. Framing parts ("stream-start", "response-metadata", "text-start", "reasoning-start", an empty
+        // delta, the start of a tool input) are buffered and are not an answer: an error right after them falls back.
+        const substantive = (part: LanguageModelV4StreamPart): boolean => {
+          const p = part as { type: string; delta?: unknown };
+          if (p.type === "text-delta") return typeof p.delta === "string" && p.delta.length > 0;
+          return p.type === "tool-call" || p.type === "tool-result" || p.type === "file" || p.type === "finish";
+        };
+        const MAX_BUFFERED_FRAMING_PARTS = 256;
+        const open = async (m: LanguageModelV4, o: LanguageModelV4CallOptions) => {
+          const result: any = await m.doStream(o);
+          const reader = (result.stream as ReadableStream<LanguageModelV4StreamPart>).getReader();
+          const buffered: LanguageModelV4StreamPart[] = [];
+          try {
+            let answered = false;
+            let sawContentDelta = false;
+            for (;;) {
+              const next = await reader.read();
+              if (next.done) break;
+              if (next.value.type === "error") throw (next.value as { error: unknown }).error;
+              buffered.push(next.value);
+              const p = next.value as { type: string; delta?: unknown };
+              if ((p.type === "tool-input-delta" || p.type === "reasoning-delta") && typeof p.delta === "string" && p.delta.length > 0) {
+                sawContentDelta = true;
+              }
+              if (substantive(next.value)) {
+                answered = true;
+                break;
+              }
+              if (buffered.length >= MAX_BUFFERED_FRAMING_PARTS) {
+                if (sawContentDelta) {
+                  answered = true;
+                  break;
+                }
+                throw Object.assign(new Error("the model stream emitted too many framing parts before any answer"), { statusCode: 502 });
+              }
+            }
+            // A stream that ends before any answer part is an upstream failure, not an empty success: it is
+            // settled as such and follows the bounded fallback like a transport error.
+            if (!answered) throw Object.assign(new Error("the model stream ended before any answer (connection closed)"), { statusCode: 502 });
+          } catch (error) {
+            await reader.cancel().catch(() => undefined);
+            throw error;
+          }
+          return { result, reader, buffered };
+        };
+        const opened = await dispatch(options, open, (o, ctx) => {
+          const { reader, buffered } = o;
           let settled = false;
           let reportedModel: string | null = null;
           const settleOnce = async (ok: boolean, usage: { input: number | null; output: number | null }, errorClass?: string) => {
@@ -329,25 +397,41 @@ export class ModelService {
             settled = true;
             await ctx.finish(ok, usage, errorClass, reportedModel);
           };
-          const stream = (result.stream as ReadableStream<LanguageModelV4StreamPart>).pipeThrough(
-            new TransformStream<LanguageModelV4StreamPart, LanguageModelV4StreamPart>({
-              async transform(part, controller) {
-                if (part.type === "response-metadata" && typeof (part as { modelId?: unknown }).modelId === "string") reportedModel = (part as { modelId: string }).modelId;
-                if (part.type === "finish") await settleOnce(true, tokens(part.usage));
-                else if (part.type === "error") await settleOnce(false, { input: null, output: null }, classifyError(part.error));
-                controller.enqueue(part);
-              },
-              async flush() {
-                // A stream that ended without a finish part has an unknown charge.
-                await settleOnce(false, { input: null, output: null }, "unknown");
-              },
-              async cancel() {
-                await settleOnce(false, { input: null, output: null }, "aborted");
-              },
-            } as Transformer<LanguageModelV4StreamPart, LanguageModelV4StreamPart>),
-          );
-          return { ...result, stream };
+          const observe = async (part: LanguageModelV4StreamPart) => {
+            if (part.type === "response-metadata" && typeof (part as { modelId?: unknown }).modelId === "string") reportedModel = (part as { modelId: string }).modelId;
+            if (part.type === "finish") await settleOnce(true, tokens(part.usage));
+            else if (part.type === "error") {
+              await settleOnce(false, { input: null, output: null }, ctx.classify((part as { error: unknown }).error));
+              scope.onFailure?.((part as { error: unknown }).error);
+            }
+          };
+          const stream = new ReadableStream<LanguageModelV4StreamPart>({
+            async pull(controller) {
+              try {
+                const part = buffered.length ? { done: false as const, value: buffered.shift()! } : await reader.read();
+                if (part.done) {
+                  // A stream that ended without a finish part has an unknown charge.
+                  await settleOnce(false, { input: null, output: null }, "unknown");
+                  controller.close();
+                  return;
+                }
+                await observe(part.value);
+                controller.enqueue(part.value);
+              } catch (error) {
+                // A rejected read after the answer began: the charge is unknown and nothing is retried elsewhere.
+                await settleOnce(false, { input: null, output: null }, ctx.classify(error));
+                scope.onFailure?.(error);
+                controller.error(error);
+              }
+            },
+            async cancel(reason) {
+              await settleOnce(false, { input: null, output: null }, "aborted");
+              await reader.cancel(reason).catch(() => undefined);
+            },
+          });
+          return { ...o, result: { ...o.result, stream } };
         });
+        return opened.result;
       },
     } as unknown as LanguageModelV4 & { readonly lastRun: RunRecord | null };
   }
@@ -400,10 +484,27 @@ export class ModelService {
       const a = parse(first.text);
       if (a.ok) return { value: a.value, run: first.run, repaired: false };
       const profileId = first.run?.profileId ?? "unknown";
-      const second = await this.generateText({ ...scoped, excludeProfiles: [...(scoped.excludeProfiles ?? [])] }, { ...input, prompt: `${input.prompt}\n\nYour previous answer was rejected: ${a.error}\nAnswer again with ONLY a JSON object that satisfies the schema.` });
+      // The repair goes back to the profile that produced the invalid answer, and only to it. If that profile then
+      // fails in transport, it is set aside and the next verified profile answers the original request.
+      let second: { text: string; run: RunRecord | null };
+      try {
+        second = await this.generateText({ ...scoped, ...(first.run ? { onlyProfile: first.run.profileId } : {}) }, { ...input, prompt: `${input.prompt}\n\nYour previous answer was rejected: ${a.error}\nAnswer again with ONLY a JSON object that satisfies the schema.` });
+      } catch (e) {
+        if (e instanceof InferenceFailedError) {
+          attempts.push(...e.attempts);
+          tried.push(profileId);
+          continue;
+        }
+        if (e instanceof NoSelectableProfileError) {
+          attempts.push({ profileId, errorClass: "invalid_structured_output", message: a.error.slice(0, 300) });
+          tried.push(profileId);
+          continue;
+        }
+        throw e;
+      }
       const b = parse(second.text);
       if (b.ok) return { value: b.value, run: second.run, repaired: true };
-      attempts.push({ profileId, errorClass: "invalid_structured_output", message: b.error.slice(0, 300) });
+      attempts.push({ profileId: second.run?.profileId ?? profileId, errorClass: "invalid_structured_output", message: b.error.slice(0, 300) });
       tried.push(profileId);
     }
   }

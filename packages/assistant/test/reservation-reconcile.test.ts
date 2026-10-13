@@ -84,12 +84,12 @@ describe("uncertain model-call reservations are closed only on the provider's re
   it("a record of usage settles the reservation at the cost of that usage; a record of no charge releases it; both are ledger commands naming the record", async () => {
     const [first, second] = await rows(w);
     const record = fakeRecord({
-      1: { status: "charged", inputTokens: 1200, outputTokens: 80, resolvedModel: "deepseek-chat (FAKE RECORD)", ref: "gateway-log:log-attempt-1" },
+      1: { status: "charged", inputTokens: 1200, outputTokens: 80, resolvedModel: "claude-odango-eap (FAKE RECORD)", ref: "gateway-log:log-attempt-1" },
       2: { status: "not_charged", ref: "gateway-log:log-attempt-2" },
     });
     expect(await sweep(record)).toEqual({ markedUncertain: 0, settled: 1, released: 1, stillUncertain: 0, lookupFailures: 0, notLookedUp: 0 });
     const after = await rows(w);
-    const price = profileSpec("deepseek-v41-flash")!.price;
+    const price = profileSpec("odango-eap")!.price;
     const cost = Math.ceil((1200 * price.inputMicroUsdPerMTok + 80 * price.outputMicroUsdPerMTok) / 1_000_000);
     expect(cost).toBeGreaterThan(0);
     expect(after[0]).toMatchObject({ reservation_id: first!.reservation_id, state: "settled", actual_microusd: cost, input_tokens: 1200, output_tokens: 80, error_class: "transport" });
@@ -110,7 +110,7 @@ describe("uncertain model-call reservations are closed only on the provider's re
 
   it("a reservation left open by a call that can no longer be running is recorded as uncertain by the scheduled sweep, not released", async () => {
     const abandoned = async (id: string) => {
-      await w.owner.exec("inference.reserve", { reservationId: id, runId: `run_${id}`, task: "conversation", budgetClass: "interactive", profileId: "deepseek-v41-flash", attempt: 1, reservedMicroUsd: 700, budgetDay: "2026-09-15", dailyLimitMicroUsd: 10_000_000, parent: { kind: "turn", id: "turn_evicted" }, gatewayId: TEST_GATEWAY_ID }, SYSTEM);
+      await w.owner.exec("inference.reserve", { reservationId: id, runId: `run_${id}`, task: "conversation", budgetClass: "interactive", profileId: "odango-eap", attempt: 1, reservedMicroUsd: 700, budgetDay: "2026-09-15", dailyLimitMicroUsd: 10_000_000, parent: { kind: "turn", id: "turn_evicted" }, gatewayId: TEST_GATEWAY_ID }, SYSTEM);
     };
     await abandoned("rsv_evicted_actor");
     setNow(w, at(60));
@@ -132,7 +132,7 @@ describe("uncertain model-call reservations are closed only on the provider's re
 describe("third review, pull request 25: the sweep reaches every reservation and counts only what it closed (FAKE PROVIDER RECORD)", () => {
   let w: World;
   const reserve = (id: string, attempt = 1) =>
-    w.owner.exec("inference.reserve", { reservationId: id, runId: `run_${id}`, task: "conversation", budgetClass: "interactive", profileId: "deepseek-v41-flash", attempt, reservedMicroUsd: 10, budgetDay: "2026-09-15", dailyLimitMicroUsd: 10_000_000, parent: { kind: "turn", id: `turn_${id}` }, gatewayId: TEST_GATEWAY_ID }, SYSTEM);
+    w.owner.exec("inference.reserve", { reservationId: id, runId: `run_${id}`, task: "conversation", budgetClass: "interactive", profileId: "odango-eap", attempt, reservedMicroUsd: 10, budgetDay: "2026-09-15", dailyLimitMicroUsd: 10_000_000, parent: { kind: "turn", id: `turn_${id}` }, gatewayId: TEST_GATEWAY_ID }, SYSTEM);
   const states = async () => Object.fromEntries((await rows(w)).map((r) => [r.reservation_id, r.state]));
 
   beforeAll(async () => {
@@ -183,7 +183,7 @@ describe("third review, pull request 25: the sweep reaches every reservation and
     // While the lookup for the first is in flight, both close some other way (the call's own late settlement).
     const record = {
       find: async (call: DispatchedCall): Promise<ProviderUsageFinding> => {
-        for (const id of ["rsv_a", "rsv_b"]) await w.owner.exec("inference.settle", { reservationId: id, outcome: "settled", actualMicroUsd: 5, inputTokens: 10, outputTokens: 1, resolvedModel: "deepseek-chat (TEST)", errorClass: null }, { ...SYSTEM });
+        for (const id of ["rsv_a", "rsv_b"]) await w.owner.exec("inference.settle", { reservationId: id, outcome: "settled", actualMicroUsd: 5, inputTokens: 10, outputTokens: 1, resolvedModel: "claude-odango-eap (TEST)", errorClass: null }, { ...SYSTEM });
         if (call.runId === "run_rsv_a") return { status: "not_charged", ref: "gateway-log:a" };
         return call.runId === "run_rsv_b" ? { status: "charged", inputTokens: 999, outputTokens: 9, resolvedModel: null, ref: "gateway-log:b" } : { status: "not_found" };
       },
@@ -209,11 +209,31 @@ describe("third review, pull request 25: the sweep reaches every reservation and
     expect(after["rsv_exact"]!.actual_microusd).toBeLessThan(10);
     expect(after["rsv_bound"]).toMatchObject({ state: "settled", actual_microusd: 10 });
   });
+
+  it("an uncertain reservation recorded under a retired profile before cutover still reconciles at its historical price", async () => {
+    w = await createWorld({ real: false });
+    await w.h.db
+      .prepare(
+        "INSERT INTO inference_reservations (user_id, reservation_id, run_id, task, budget_class, profile_id, attempt, budget_day, reserved_microusd, actual_microusd, state, parent_kind, parent_id, gateway_id, effort_json, evidence_json, created_at) VALUES (?, 'rsv_retired_fable', 'run_retired_fable', 'conversation', 'interactive', 'fable-5-1', 1, '2026-09-15', 500, 0, 'uncertain', 'turn', 'trn_retired', ?, '{}', '{}', ?)",
+      )
+      .bind(w.owner.userId, TEST_GATEWAY_ID, START)
+      .run();
+    setNow(w, at(ABANDONED_AFTER_MS / 60_000 + 5));
+    const record = {
+      find: async (call: DispatchedCall): Promise<ProviderUsageFinding> =>
+        call.runId === "run_retired_fable" ? { status: "charged", inputTokens: 1000, outputTokens: 100, resolvedModel: "claude-fable-5-1 (HISTORICAL)", ref: "gateway-log:retired" } : { status: "not_found" },
+    };
+    const r = await reconcileInferenceReservations({ db: w.h.db, service: w.h.service, nowMs: w.h.clock.now(), usageLookup: record }, { limit: 500 });
+    expect(r.settled).toBe(1);
+    const settled = (await rows(w)).find((x) => x.reservation_id === "rsv_retired_fable")!;
+    // fable-5-1 historical price: 15_000_000 / MTok input, 75_000_000 / MTok output -> (1000 * 15_000_000 + 100 * 75_000_000) / 1_000_000 = 22_500 micro-USD
+    expect(settled).toMatchObject({ state: "settled", actual_microusd: 22500, input_tokens: 1000, output_tokens: 100 });
+  });
 });
 
 describe("the AI Gateway logs adapter (FAKE fetch in the documented shape of 'List Gateway Logs'; no Gateway contacted)", () => {
   const call: DispatchedCall = { gatewayId: TEST_GATEWAY_ID, runId: "run_abc123", attempt: 2, task: "conversation", reservedAt: START };
-  const entry = (over: Record<string, unknown>) => ({ id: "log-1", cached: false, created_at: START, duration: 900, model: "deepseek-chat", path: "chat/completions", provider: "deepseek", success: true, tokens_in: 1500, tokens_out: 60, status_code: 200, metadata: JSON.stringify({ garderobe_run: "run_abc123", garderobe_task: "conversation", garderobe_attempt: 2, garderobe_env: "dev" }), ...over });
+  const entry = (over: Record<string, unknown>) => ({ id: "log-1", cached: false, created_at: START, duration: 900, model: "claude-odango-eap", path: "chat/completions", provider: "anthropic", success: true, tokens_in: 1500, tokens_out: 60, status_code: 200, metadata: JSON.stringify({ garderobe_run: "run_abc123", garderobe_task: "conversation", garderobe_attempt: 2, garderobe_env: "dev" }), ...over });
   const lookupWith = (respond: (url: URL, init: RequestInit) => Response) => {
     const requests: { url: URL; init: RequestInit }[] = [];
     const fakeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -235,7 +255,7 @@ describe("the AI Gateway logs adapter (FAKE fetch in the documented shape of 'Li
         entry({ id: "log-unreadable-metadata", metadata: "run_abc123 attempt 2", tokens_in: 9999, tokens_out: 9999 }),
       ]),
     );
-    expect(await lookup.find(call)).toEqual({ status: "charged", inputTokens: 3000, outputTokens: 100, resolvedModel: "deepseek-chat", ref: "gateway-log:log-retry-a,log-retry-b" });
+    expect(await lookup.find(call)).toEqual({ status: "charged", inputTokens: 3000, outputTokens: 100, resolvedModel: "claude-odango-eap", ref: "gateway-log:log-retry-a,log-retry-b" });
     expect(requests).toHaveLength(1);
     const { url, init } = requests[0]!;
     expect(`${url.origin}${url.pathname}`).toBe(`https://api.cloudflare.com/client/v4/accounts/acct-test/ai-gateway/gateways/${TEST_GATEWAY_ID}/logs`);
@@ -256,7 +276,7 @@ describe("the AI Gateway logs adapter (FAKE fetch in the documented shape of 'Li
     // One such entry among the call's entries leaves the whole call uncertain, whatever the others say.
     expect(await lookupWith(() => list([entry({ id: "log-refused", success: false, status_code: 429, tokens_in: 0, tokens_out: 0 }), entry({ id: "log-dropped", success: false, status_code: 499, tokens_in: 0, tokens_out: 0 })])).lookup.find(call)).toEqual({ status: "not_found" });
     // A dropped stream beside a charged retry: the usage is known as a lower bound, and the call can be closed.
-    expect(await lookupWith(() => list([entry({ id: "log-dropped", success: false, status_code: 502, tokens_in: 0, tokens_out: 0 }), entry({ id: "log-paid" })])).lookup.find(call)).toEqual({ status: "charged", inputTokens: 1500, outputTokens: 60, resolvedModel: "deepseek-chat", ref: "gateway-log:log-dropped,log-paid", atLeast: true });
+    expect(await lookupWith(() => list([entry({ id: "log-dropped", success: false, status_code: 502, tokens_in: 0, tokens_out: 0 }), entry({ id: "log-paid" })])).lookup.find(call)).toEqual({ status: "charged", inputTokens: 1500, outputTokens: 60, resolvedModel: "claude-odango-eap", ref: "gateway-log:log-dropped,log-paid", atLeast: true });
     expect(await lookupWith(() => list([entry({ id: "log-cached", cached: true })])).lookup.find(call)).toEqual({ status: "not_charged", ref: "gateway-log:log-cached" });
     expect(await lookupWith(() => list([])).lookup.find(call)).toEqual({ status: "not_found" });
     expect(await lookupWith(() => list([entry({ metadata: undefined })])).lookup.find(call)).toEqual({ status: "not_found" });
@@ -302,7 +322,7 @@ describe("the AI Gateway logs adapter (FAKE fetch in the documented shape of 'Li
       const slice = all120.slice((page - 1) * 50, page * 50);
       return Response.json({ success: true, result: slice, result_info: { count: slice.length, page, per_page: 50, total_count: all120.length } });
     });
-    expect(await paged.lookup.find(call)).toEqual({ status: "charged", inputTokens: 700, outputTokens: 30, resolvedModel: "deepseek-chat", ref: "gateway-log:log-failed,log-paid-late" });
+    expect(await paged.lookup.find(call)).toEqual({ status: "charged", inputTokens: 700, outputTokens: 30, resolvedModel: "claude-odango-eap", ref: "gateway-log:log-failed,log-paid-late" });
     expect(paged.requests.map((r) => r.url.searchParams.get("page"))).toEqual(["1", "2", "3"]);
     // Without a total, a full page means there may be more.
     const noTotal = lookupWith((url) => Response.json({ success: true, result: all120.slice((Number(url.searchParams.get("page")) - 1) * 50, Number(url.searchParams.get("page")) * 50) }));
