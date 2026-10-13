@@ -481,9 +481,17 @@ export const StyleConflictList = z.object({ conflicts: z.array(StyleFactConflict
 export const AvailabilityQuery = z.object({ date: LocalDate.optional() });
 export const TemperaturePreviewQuery = z.object({ temperatureC: z.coerce.number().min(-40).max(50) });
 export const ImageQuery = z.object({ width: z.coerce.number().int().optional().describe("One of 160, 320, 640, 1280.") });
-export const AssetImageQuery = z.object({ variant: z.enum(["display", "original", "cutout", "catalogue"]).optional(), width: z.coerce.number().int().optional() });
-/** The answer is the visual wardrobe's `SignedMediaUrl` (path relative to the API origin, expiry). The lifetime is capped by the server. */
-export const SignRenditionRequest = z.object({ width: z.number().int().optional().describe("One of 160, 320, 640, 1280."), ttlSeconds: z.number().int().min(30).max(3600).optional() });
+export const AssetImageQuery = z.object({
+  variant: z.enum(["display", "original", "cutout", "catalogue"]).optional(),
+  width: z.coerce.number().int().optional(),
+  /** `true`: the original as supplied, with its location data, for the signed-in owner in the app only (variant `original`, no width). Absent: without location data. */
+  withLocation: z.enum(["true"]).optional(),
+});
+/** The answer is the visual wardrobe's `SignedMediaUrl` (path relative to the API origin, expiry). The lifetime is capped by the server. Signed links are opened without a session, so they never carry location data: a request naming `withLocation` is refused with 400. */
+export const SignRenditionRequest = z.object({
+  width: z.number().int().optional().describe("One of 160, 320, 640, 1280."),
+  ttlSeconds: z.number().int().min(30).max(3600).optional(),
+});
 
 export const ItemResponse = z.object({
   detail: GarmentDetail,
@@ -784,7 +792,13 @@ export const Proposal = z.object({
 export type Proposal = z.infer<typeof Proposal>;
 export const ProposalsQuery = z.object({ state: z.enum(["pending", "all"]).default("pending") });
 export const ProposalList = z.object({ proposals: z.array(Proposal), pending: z.number().int().nonnegative(), readAt: Instant });
-export const ProposalDecisionRequest = z.object({ decision: z.enum(["confirm", "reject"]) });
+/**
+ * `acknowledgedRestrictionIds` (confirm only, garment corrections only): the restrictions the owner has been
+ * told this correction takes a piece out of (a confirmation refused with `correction_would_release_restriction`
+ * names one) and accepts. An acknowledgement inside the proposal itself is never used: only the owner's own
+ * decision supplies one.
+ */
+export const ProposalDecisionRequest = z.object({ decision: z.enum(["confirm", "reject"]), acknowledgedRestrictionIds: z.array(z.string().min(1).max(64)).min(1).max(20).optional() });
 /** `receipt` is the verified receipt of the change when it was confirmed. A refused command answers with the usual error and the proposal stays pending. */
 export const ProposalDecisionResponse = z.object({ proposal: Proposal, receipt: CommandReceipt.nullable(), replayed: z.boolean() });
 
@@ -990,6 +1004,12 @@ export const ExportRequest = z.object({
   clientRequestId: z.string().min(8).max(128),
   /** Optional passphrase encryption (AES-256-GCM, PBKDF2-SHA-256 key). The passphrase is never stored. */
   passphrase: z.string().min(12).max(1024).optional(),
+  /**
+   * Include the supplied photographs as supplied, with their location data (GPS and similar). Off by default:
+   * a portable export leaves the service, so its originals are written without location data. Only the
+   * signed-in owner in the app or on the web can ask for it, for this one export; it is never a stored preference.
+   */
+  includeLocation: z.boolean().optional(),
 });
 export const ExportComponent = z.object({
   name: z.string(),
@@ -1005,6 +1025,8 @@ export const ExportJob = z.object({
   /** True only when every component is complete. A partial package is never reported as complete. */
   complete: z.boolean(),
   encrypted: z.boolean(),
+  /** True when the owner asked for this export's photographs with their location data (`includeLocation`). Written on every job. */
+  includesLocation: z.boolean().optional(),
   formatVersion: z.string(),
   requestedAt: Instant,
   finishedAt: Instant.nullable(),
