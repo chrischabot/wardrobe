@@ -43,6 +43,13 @@ export async function getOrder(db: Db, principal: Principal, orderId: string): P
 async function hydrateOrder(db: Db, userId: string, r: any): Promise<Order> {
   const lines = await all<any>(db, "SELECT * FROM order_lines WHERE user_id = ? AND order_id = ? ORDER BY line_id", userId, r.order_id);
   const events = await all<any>(db, "SELECT * FROM order_events WHERE user_id = ? AND order_id = ? ORDER BY occurred_at, event_id", userId, r.order_id);
+  const returnRefunds = await all<{ line_id: string; refunded: number }>(
+    db,
+    "SELECT line_id, COALESCE(SUM(refund_received_minor), 0) AS refunded FROM return_cases WHERE user_id = ? AND order_id = ? AND line_id IS NOT NULL AND state != 'cancelled' GROUP BY line_id",
+    userId,
+    r.order_id,
+  );
+  const returnRefundByLine = new Map(returnRefunds.map((row) => [row.line_id, Number(row.refunded ?? 0)]));
   return {
     orderId: r.order_id,
     version: r.version,
@@ -70,7 +77,7 @@ async function hydrateOrder(db: Db, userId: string, r: any): Promise<Order> {
       state: l.state,
       garmentId: l.garment_id,
       deliveredOn: l.delivered_on,
-      refundedMinor: l.refunded_minor,
+      refundedMinor: l.refunded_minor > 0 ? l.refunded_minor : (returnRefundByLine.get(l.line_id) ?? 0),
       replaces: l.replaces_order_id && l.replaces_line_id ? { orderId: l.replaces_order_id, lineId: l.replaces_line_id } : null,
     })),
     events: events.map((e) => ({ eventId: e.event_id, kind: e.kind, occurredAt: e.occurred_at, sourceRef: e.source_ref, lineIds: json(e.line_ids_json, []), amountMinor: e.amount_minor })),

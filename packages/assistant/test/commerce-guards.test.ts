@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { all, first, isCommandError } from "@garderobe/domain";
-import { refundShares, caseNeedsNoReminders, classifyChange, describeChange, expectedVersionsFor, indirectReach } from "../src/index.ts";
+import { refundShares, caseNeedsNoReminders, classifyChange, describeChange, expectedVersionsFor, getOrder, indirectReach } from "../src/index.ts";
 import { createWorld, setNow, type World } from "./helpers.ts";
 
 /** The signed-in owner in the app: these tests exercise the purchase and return handlers' own guards. */
@@ -269,5 +269,16 @@ describe("purchase and return guards found in review (real D1, the owner's real 
     const before = await orderVersion(w, orderId);
     await rejects(w.owner.exec("purchase.import_order", { ...base, lines: [{ lineKey: "b", productName: "SYNTH self B", priceMinor: 1000, replacesLineKey: "a" }], replaces: { merchantKey: "synth-self", orderNumber: "SS-1" } }, TAP), "invalid_command");
     expect(await orderVersion(w, orderId)).toBe(before);
+  });
+
+  it("shows a return case's recorded refund on the order line it refunds until order-level refund notices arrive (journey D08-1)", async () => {
+    const o = await w.owner.exec("purchase.import_order", { merchant: "SYNTH Shop", merchantKey: "synth-d08-1", orderNumber: "D08-1", currency: "GBP", lines: [{ lineKey: "shirt-L", productName: "SYNTH shirt", priceMinor: 12_000, currency: "GBP" }] }, TAP);
+    const orderId = String((o.result as { orderId: string }).orderId);
+    const lineId = (await lineRow(w, orderId, "shirt-L")).line_id;
+    const opened = await w.owner.exec("return.open_case", { kind: "return", orderId, lineId, refundExpectedMinor: 12_000, currency: "GBP" }, TAP);
+    const caseId = String(opened.result["caseId"]);
+    await w.owner.exec("return.update_case", { caseId, refundReceivedMinor: 5_000 }, TAP);
+    await w.owner.exec("return.update_case", { caseId, refundReceivedMinor: 7_000 }, TAP);
+    expect((await getOrder(w.h.db, w.owner.principal(), orderId))!.lines[0]!.refundedMinor).toBe(12_000);
   });
 });

@@ -28,7 +28,6 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { connectMcp, provisionOwner, toolResult, type McpConnection, type TestOwner } from "@garderobe/worker/testing";
-import { defect } from "../src/defect.ts";
 import { addDays, exec, internalCodesIn, LONDON, mcpCommand, quantityIn, realOwnerAt, refused, type JourneyOwner } from "../src/world.ts";
 
 const DAY_MS = 86_400_000;
@@ -333,11 +332,9 @@ describe("Journey 08: an overshirt goes back, a knit is exchanged for the right 
     for (const receipt of [received, partial, full]) expect(internalCodesIn(receipt.summary)).toEqual([]);
   });
 
-  defect("D08-1", "a refund recorded on the return also shows on the order line it refunds", { signature: /order line refunded after the case's full refund: expected \+?0 to be 12000/ }, async () => {
-    // Specification section 17 (L1098): returns with "partial refunds, and exchanges retain correct stock
-    // and monetary states"; section 6 keeps "refunds" on orders and order lines (L240). The case above now
-    // says GBP 120.00 of GBP 120.00 was refunded (asserted by the previous step), but the order line it
-    // refunds still says nothing was.
+  it("a refund recorded on the return also shows on the order line it refunds", async () => {
+    // Was defect D08-1; specification section 17 (L1098): returns with "partial refunds, and exchanges
+    // retain correct stock and monetary states"; section 6 keeps "refunds" on orders and order lines (L240).
     expect((await line(orderId, overshirtLine)).refundedMinor, "order line refunded after the case's full refund").toBe(12_000);
   });
 
