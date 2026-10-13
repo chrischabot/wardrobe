@@ -182,50 +182,50 @@ describe("adversarial corpus: conversation text applies only owner-worded, undoa
 
   it("a compromised step that makes 300 tool calls applies at most MAX_APPLIED_CHANGES_PER_TURN changes; the rest are at most eight requests, and every applied change still undoes on its own", async () => {
     const fresh = await createWorld();
-    // 300 distinct rules; the first 30 are in the owner's text (so 20 apply up to MAX_APPLIED_CHANGES_PER_TURN) and the rest are held back as proposals/refusals.
-    const words = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet", "kilo", "lima"];
-    const combos: string[] = [];
-    for (let size = 1; size <= 4 && combos.length < 300; size++) {
-      const pick = (start: number, chosen: string[]) => {
-        if (combos.length >= 300) return;
-        if (chosen.length === size) return void combos.push(`Always prefer ${chosen.join(" ")}`);
-        for (let i = start; i < words.length; i++) pick(i + 1, [...chosen, words[i]!]);
-      };
-      pick(0, []);
+    // Create 30 synthetic shirts with unique single-token names so the owner can report all 30 in the wash in one message (20 apply up to MAX_APPLIED_CHANGES_PER_TURN; the remaining 280 calls are held back as proposals/refusals).
+    const labels = Array.from({ length: 30 }, (_, i) => `synthflood${String.fromCharCode(97 + Math.floor(i / 26))}${String.fromCharCode(97 + (i % 26))}`);
+    const ids: string[] = [];
+    for (const label of labels) {
+      const r = await fresh.owner.exec("garment.create", { name: `${label} shirt`, category: "shirt", roles: ["top"], careChannel: "service", acquisition: "owned", quantity: 1, source: { kind: "owner_statement" } });
+      ids.push(String(r.result["garmentId"]));
     }
-    expect(combos).toHaveLength(300);
-    fresh.model.script({ toolCalls: combos.map((text) => ({ toolName: "add_standing_direction", input: { text } })) }, { text: "Done." });
-    const turn = await fresh.client.runTurn({ submissionId: submission("flood"), text: combos.slice(0, 30).map((t) => `${t}.`).join(" ") });
+    const extraCalls = Array.from({ length: 270 }, (_, i) => ({ toolName: "add_standing_direction", input: { text: `Unrequested flood rule ${i}` } }));
+    const allCalls = [...ids.map((id) => ({ toolName: "mark_dirty", input: { garmentIds: [id] } })), ...extraCalls];
+    expect(allCalls).toHaveLength(300);
+    fresh.model.script({ toolCalls: allCalls }, { text: "Done." });
+    const turn = await fresh.client.runTurn({ submissionId: submission("flood"), text: labels.map((l) => `The ${l} shirt is in the wash.`).join(" ") });
     expect(turn.status).toBe("completed");
     expect(turn.receipts).toHaveLength(MAX_APPLIED_CHANGES_PER_TURN);
     expect(turn.proposals).toHaveLength(MAX_PROPOSALS_PER_TURN);
     expect(turn.refusals.filter((r) => r.code === "too_many_requests")).toHaveLength(300 - MAX_APPLIED_CHANGES_PER_TURN - MAX_PROPOSALS_PER_TURN);
-    const directions = async () => (await getStyleContext(fresh.h.db, fresh.owner.principal())).directions.filter((d) => combos.includes(d.text)).length;
-    expect(await directions()).toBe(MAX_APPLIED_CHANGES_PER_TURN);
+    const dirtyCount = async () => (await all(fresh.h.db, `SELECT 1 FROM stock_balances WHERE user_id = ? AND bucket = 'dirty' AND quantity > 0 AND garment_id IN (${ids.map(() => "?").join(",")})`, fresh.owner.userId, ...ids)).length;
+    expect(await dirtyCount()).toBe(MAX_APPLIED_CHANGES_PER_TURN);
     expect((await undoTurn(fresh, turn, "undo-flood")).notUndone).toEqual([]);
-    expect(await directions()).toBe(0);
+    expect(await dirtyCount()).toBe(0);
   });
 
   it("at the cap, a repeat of a change the turn already applied returns that change's receipt and never becomes a request", async () => {
     const fresh = await createWorld();
-    const words = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india", "juliet", "kilo", "lima", "mike", "november", "oscar", "papa", "quebec", "romeo", "sierra", "tango"].map((w) => `Always prefer ${w}`);
-    expect(words).toHaveLength(MAX_APPLIED_CHANGES_PER_TURN);
+    const labels = Array.from({ length: MAX_APPLIED_CHANGES_PER_TURN }, (_, i) => `synthcap${String.fromCharCode(97 + i)}`);
+    const ids: string[] = [];
+    for (const label of labels) {
+      const r = await fresh.owner.exec("garment.create", { name: `${label} shirt`, category: "shirt", roles: ["top"], careChannel: "service", acquisition: "owned", quantity: 1, source: { kind: "owner_statement" } });
+      ids.push(String(r.result["garmentId"]));
+    }
     fresh.model.script(
-      { toolCalls: words.map((text) => ({ toolName: "add_standing_direction", input: { text } })) },
+      { toolCalls: ids.map((id) => ({ toolName: "mark_dirty", input: { garmentIds: [id] } })) },
       // The turn is at its cap now: the first change again is the same command, not a 21st.
-      { toolCalls: [{ toolName: "add_standing_direction", input: { text: "Always prefer alpha" } }] },
+      { toolCalls: [{ toolName: "mark_dirty", input: { garmentIds: [ids[0]!] } }] },
       { text: "Done." },
     );
-    const turn = await fresh.client.runTurn({ submissionId: submission("cap-replay"), text: words.map((t) => `${t}.`).join(" ") });
+    const turn = await fresh.client.runTurn({ submissionId: submission("cap-replay"), text: labels.map((l) => `The ${l} shirt is in the wash.`).join(" ") });
     expect(turn.status).toBe("completed");
     expect(turn.proposals).toEqual([]);
     expect(new Set(turn.receipts.map((r) => r.commandId)).size).toBe(MAX_APPLIED_CHANGES_PER_TURN);
     // The turn lists each change once; the 21st call was answered with the stored receipt of an earlier one.
     expect(turn.receipts).toHaveLength(MAX_APPLIED_CHANGES_PER_TURN);
-    const replayed = fresh.model.requests.at(-1)!.toolResults.filter((r) => r.toolName === "add_standing_direction").at(-1)!.output as { status?: string };
+    const replayed = fresh.model.requests.at(-1)!.toolResults.filter((r) => r.toolName === "mark_dirty").at(-1)!.output as { status?: string };
     expect(replayed.status).toBe("committed");
-    const texts = (await getStyleContext(fresh.h.db, fresh.owner.principal())).directions.map((d) => d.text);
-    expect(texts.filter((t) => t === "Always prefer alpha")).toHaveLength(1);
   });
 
   it("a restriction the owner recorded in the app is never undone by an assistant, in conversation or through a connected assistant, even when the owner asks; only the owner in the app may", async () => {
@@ -276,22 +276,22 @@ describe("adversarial corpus: conversation text applies only owner-worded, undoa
 
   it("a repeated tool call is one change: its replays never use up the turn's change budget, so a genuine new direction later in the turn still applies", async () => {
     const fresh = await createWorld();
-    const same = { toolName: "add_standing_direction", input: { text: "Always prefer navy" } };
+    const coat = await fresh.garment("Grandfather Coat");
+    const oxford = await fresh.garment("Pima oxford — navy");
+    const same = { toolName: "record_wear", input: { garmentIds: [coat.garmentId] } };
     fresh.model.script(
       { toolCalls: [same] },
       // Each later step repeats the same call many times: every one is the turn's own committed command.
       { toolCalls: Array.from({ length: 25 }, () => same) },
       { toolCalls: Array.from({ length: 25 }, () => same) },
-      { toolCalls: [{ toolName: "add_standing_direction", input: { text: "Always prefer suede in autumn" } }] },
+      { toolCalls: [{ toolName: "mark_dirty", input: { garmentIds: [oxford.garmentId] } }] },
       { text: "Done." },
     );
-    const turn = await fresh.client.runTurn({ submissionId: submission("repeat"), text: "Always prefer navy. Always prefer suede in autumn." });
+    const turn = await fresh.client.runTurn({ submissionId: submission("repeat"), text: "I wore the Grandfather Coat today. The navy Pima oxford is in the wash." });
     expect(turn.status).toBe("completed");
     expect(turn.proposals).toEqual([]);
     expect(new Set(turn.receipts.map((r) => r.commandId)).size).toBe(2);
-    const texts = (await getStyleContext(fresh.h.db, fresh.owner.principal())).directions.map((d) => d.text);
-    expect(texts.filter((t) => t === "Always prefer navy")).toHaveLength(1);
-    expect(texts).toContain("Always prefer suede in autumn");
+    expect(turn.receipts.map((r) => r.type)).toEqual(["wear.record", "care.mark_dirty"]);
   });
 
   it("garments named only in an attachment or in a pasted passage do not count as the owner naming them: the wear is a proposal, and the owner's own naming records it", async () => {

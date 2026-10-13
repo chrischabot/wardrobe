@@ -20,7 +20,7 @@
  * What the model is told afterwards is the receipt's or the request's own summary.
  */
 import type { CommandReceipt } from "@garderobe/contracts";
-import { CommandError, all, first, isCommandError, pendingActionIntents, registerActionIntent, type CommandService, type Db, type Principal } from "@garderobe/domain";
+import { CommandError, all, first, isCommandError, registerActionIntent, type CommandService, type Db, type Principal } from "@garderobe/domain";
 import { classifyChange, forbiddenForConnectedAssistant, indirectReach, targetIdsOf, MAX_APPLIED_CHANGES_PER_TURN } from "../policy/classes.ts";
 import { describeChange, expectedVersionsFor } from "../policy/describe.ts";
 import { endedCovers, statesConditionEnded } from "../policy/ended.ts";
@@ -543,11 +543,22 @@ async function sameTurnReceipt(rt: TurnRuntime, req: CommitRequest): Promise<Com
   } else {
     const wantedTargets = canonical(req.targets);
     const wantedEffect = canonical(req.payload);
-    const intents = await pendingActionIntents(rt.db, rt.principal, "turn", rt.turnId);
-    const hit = intents.find(
-      (i) => i.operation === req.type && i.state === "committed" && i.commandId && canonical(i.targets) === wantedTargets && canonical(i.effect) === wantedEffect,
+    const rows = await all<{ command_id: string | null; targets_json: string; effect_json: string }>(
+      rt.db,
+      "SELECT command_id, targets_json, effect_json FROM action_intents WHERE user_id = ? AND parent_kind = 'turn' AND parent_id = ? AND operation = ? AND state = 'committed'",
+      rt.principal.userId,
+      rt.turnId,
+      req.type,
     );
-    commandId = hit?.commandId ?? null;
+    const hit = rows.find((r) => {
+      if (!r.command_id) return false;
+      try {
+        return canonical(JSON.parse(r.targets_json)) === wantedTargets && canonical(JSON.parse(r.effect_json)) === wantedEffect;
+      } catch {
+        return false;
+      }
+    });
+    commandId = hit?.command_id ?? null;
   }
   if (!commandId) return null;
   const stored = await rt.service.getReceipt(rt.principal, commandId);

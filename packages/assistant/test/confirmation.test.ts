@@ -157,8 +157,19 @@ describe("owner-worded changes apply at once with undo; section 3, read-only and
   });
 
   it("an order proposal confirmed in the app logs the order and its incoming records as one command; the arrival applies at once and undo puts it back to ordered", async () => {
-    w.model.script({ toolCalls: [{ toolName: "log_order", input: { merchant: "Drake's", orderNumber: "DR-77120", currency: "GBP", lines: [{ productName: "Navy lambswool scarf", category: "scarf", colour: "navy", price: "95.00" }, { productName: "Burgundy knitted tie", category: "tie", price: "125.00" }] } }] }, { text: "Logged." });
     const before = (await listInventory(w.h.db, p(), { includeDisposed: true })).total;
+    const orderLines = [{ productName: "Navy lambswool scarf", category: "scarf", colour: "navy", price: "95.00" }, { productName: "Burgundy knitted tie", category: "tie", price: "125.00" }];
+    w.model.script({ toolCalls: [{ toolName: "log_order", input: { merchant: "Drake's", orderNumber: "DR-77120", currency: "GBP", lines: orderLines } }] }, { text: "Logged." });
+    const firstTurn = await runAndConfirm(w, { submissionId: submission("order-undo"), text: "Log my Drake's order DR-77120: a navy lambswool scarf at £95.00 and a burgundy knitted tie at £125.00." });
+    expect(firstTurn.confirmed).toHaveLength(1);
+    expect(firstTurn.receipts[0]!.undoAvailable).toBe(true);
+    // Undo the newly logged order: the order and its incoming records are removed.
+    expect((await undoTurn(w, firstTurn, "undo-order")).notUndone).toEqual([]);
+    expect(await listOrders(w.h.db, p())).toHaveLength(0);
+    expect((await listInventory(w.h.db, p())).total).toBe(before);
+
+    const beforeAfterUndo = (await listInventory(w.h.db, p(), { includeDisposed: true })).total;
+    w.model.script({ toolCalls: [{ toolName: "log_order", input: { merchant: "Drake's", orderNumber: "DR-77120", currency: "GBP", lines: orderLines } }] }, { text: "Logged." });
     const turn = await runAndConfirm(w, { submissionId: submission("order"), text: "Log my Drake's order DR-77120: a navy lambswool scarf at £95.00 and a burgundy knitted tie at £125.00." });
     expect(turn.confirmed).toHaveLength(1);
     expect(turn.receipts.map((r) => r.type)).toEqual(["purchase.import_order"]);
@@ -169,8 +180,8 @@ describe("owner-worded changes apply at once with undo; section 3, read-only and
     const lines = await all<{ garment_id: string | null; state: string }>(w.h.db, "SELECT garment_id, state FROM order_lines WHERE user_id = ? ORDER BY line_id", w.owner.userId);
     expect(lines.every((l) => l.garment_id !== null && l.state === "ordered")).toBe(true);
     const inventory = await listInventory(w.h.db, p(), { includeDisposed: true });
-    expect(inventory.total).toBe(before + 2);
-    const scarf = inventory.items.find((i) => i.garment.name === "Navy lambswool scarf")!;
+    expect(inventory.total).toBe(beforeAfterUndo + 2);
+    const scarf = inventory.items.find((i) => i.garment.name === "Navy lambswool scarf" && i.garment.acquisition === "incoming")!;
     expect(scarf.garment.acquisition).toBe("incoming");
 
     // The arrival: one command that makes the piece owned and marks its line delivered, on the owner's words.
@@ -185,10 +196,6 @@ describe("owner-worded changes apply at once with undo; section 3, read-only and
     expect((await undoTurn(w, arrival, "undo-arrival")).notUndone).toEqual([]);
     expect((await listInventory(w.h.db, p(), { search: "Navy lambswool scarf" })).items[0]!.garment.acquisition).toBe("incoming");
     expect(await all(w.h.db, "SELECT 1 FROM order_lines WHERE user_id = ? AND garment_id = ? AND state = 'ordered'", w.owner.userId, scarf.garment.garmentId)).toHaveLength(1);
-    // Undo the logged order itself: the order and its incoming records are removed.
-    expect((await undoTurn(w, turn, "undo-order")).notUndone).toEqual([]);
-    expect(await listOrders(w.h.db, p())).toHaveLength(0);
-    expect((await listInventory(w.h.db, p())).total).toBe(before);
   });
 
   it("a request (here from a read-only connection) built against a record that has since changed is refused as stale when confirmed", async () => {

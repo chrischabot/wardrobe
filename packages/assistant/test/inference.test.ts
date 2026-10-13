@@ -295,7 +295,7 @@ describe("model service failure handling (real D1 ledger; SCRIPTED TEST-DOUBLE M
     expect(out).toMatchObject({ value: { ok: true }, repaired: false, run: { profileId: FALLBACK_PROFILE_ID } });
     expect(primaryCalls).toBeGreaterThanOrEqual(2);
 
-    // If another run opens the primary's breaker before the repair dispatches (NoSelectableProfileError on onlyProfile), the fallback still answers.
+    // If another run or probe marks the primary unselectable before the repair dispatches (NoSelectableProfileError on onlyProfile), the fallback still answers.
     const secondWorld = await worldWith([PRIMARY_PROFILE_ID, FALLBACK_PROFILE_ID]);
     let breakerOpenedCalls = 0;
     const breakerService = serviceFor(secondWorld.w, secondWorld.gatewayId, {
@@ -303,8 +303,8 @@ describe("model service failure handling (real D1 ledger; SCRIPTED TEST-DOUBLE M
         generate: async () => {
           breakerOpenedCalls++;
           await secondWorld.w.h.db
-            .prepare("INSERT OR REPLACE INTO model_breakers (gateway_id, profile_id, failures, state, opened_at, updated_at) VALUES (?, ?, 3, 'open', ?, ?)")
-            .bind(secondWorld.gatewayId, PRIMARY_PROFILE_ID, new Date(secondWorld.w.h.clock.now()).toISOString(), new Date(secondWorld.w.h.clock.now()).toISOString())
+            .prepare("UPDATE model_probes SET result = 'failed', reason = 'TEST FIXTURE: probe failed before repair' WHERE gateway_id = ? AND profile_id = ?")
+            .bind(secondWorld.gatewayId, PRIMARY_PROFILE_ID)
             .run();
           return textResult("not json");
         },
