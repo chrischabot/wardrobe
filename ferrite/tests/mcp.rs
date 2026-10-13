@@ -428,6 +428,101 @@ async fn the_codex_flow_reads_writes_with_a_receipt_and_undoes() {
 }
 
 #[tokio::test]
+async fn the_inventory_views_and_resources_are_the_landed_reads_in_the_mcp_envelope() {
+    let mut store = MemStore::default();
+    // A read-only grant may read every view and resource.
+    let (_, tokens) = connect(&mut store, false).await;
+    let access = tokens["access_token"].as_str().unwrap().to_string();
+    let owner = format!("Bearer {OWNER}");
+    let now = T0 + 1_000; // the time `call` reads at, so `readAt` agrees
+    // Something behind the views, recorded by the owner in the app: a wash report, a trip and an exchange.
+    let shirt = "gmt_3894b6a6295908d5e687af4f";
+    let trip = json!({
+        "tripId": "trp_lisbon", "name": "Lisbon", "departsOn": "2026-10-20", "returnsOn": "2026-10-23",
+        "destinations": [{"label": "Lisbon", "latitude": 38.7223, "longitude": -9.1393, "timezone": "Europe/Lisbon", "from": "2026-10-20", "to": "2026-10-23"}],
+        "source": {"kind": "owner_statement"},
+    });
+    for (key, kind, payload) in [
+        ("mcp-views-dirty-1", "care.mark_dirty", json!({"items": [{"garmentId": shirt}]})),
+        ("mcp-views-trip-1", "trip.create", trip),
+        ("mcp-views-return-1", "return.open_case", json!({"kind": "exchange", "garmentId": "gmt_14bc4338d6760f6a13434b2f", "timezone": "UTC"})),
+    ] {
+        let envelope = json!({"type": kind, "payload": payload, "idempotencyKey": key, "authorization": "owner_tap", "source": {"channel": "ios"}});
+        let r = send(&mut store, now, "POST", "/v1/commands", Some(&owner), envelope.to_string().into_bytes()).await;
+        assert_eq!(r.status, 200, "{kind}: {}", r.text);
+    }
+
+    // Each view's data is exactly what its REST route serves, in the envelope, as the whole result.
+    for (view, path, total) in [
+        ("laundry", "/v1/laundry", Value::Null),
+        ("style", "/v1/style", Value::Null),
+        ("command_types", "/v1/command-types", json!(19)),
+        ("trips", "/v1/trips", json!(1)),
+        ("returns", "/v1/returns", json!(1)),
+        ("orders", "/v1/orders", json!(0)),
+    ] {
+        let rest = send(&mut store, now, "GET", path, Some(&owner), Vec::new()).await;
+        assert_eq!(rest.status, 200, "{path}: {}", rest.text);
+        let r = call(&mut store, &access, "garderobe_inventory", json!({"view": view})).await;
+        let s = &r["structuredContent"];
+        assert_eq!(s["data"], rest.json, "{view}");
+        assert_eq!(
+            (s["view"].clone(), s["complete"].clone(), s["total"].clone(), s["nextCursor"].clone(), s["wardrobeRevision"].clone()),
+            (json!(view), json!(true), total, Value::Null, json!(3)),
+            "{view}: {s}"
+        );
+    }
+    let text = |r: &Value| r["content"][0]["text"].as_str().unwrap().to_string();
+    let laundry = call(&mut store, &access, "garderobe_inventory", json!({"view": "laundry"})).await;
+    assert_eq!(laundry["structuredContent"]["data"]["awaitingService"][0]["garmentId"], shirt);
+    assert_eq!(text(&laundry), "Awaiting service laundry: 1 item(s); awaiting hand-wash: 0; batches: 0.");
+    let style = call(&mut store, &access, "garderobe_inventory", json!({"view": "style", "date": "2026-10-21"})).await;
+    assert_eq!(style["structuredContent"]["data"]["rules"].as_array().unwrap().len(), 28);
+    assert!(text(&style).starts_with("Style profile version 1 with 0 amendment(s), 28 rule(s), 0 standing direction(s). Precedence:"), "{}", text(&style));
+    let trips = call(&mut store, &access, "garderobe_inventory", json!({"view": "trips"})).await;
+    assert_eq!((trips["structuredContent"]["data"]["trips"][0]["tripId"].clone(), text(&trips)), (json!("trp_lisbon"), "1 trip(s).".to_string()));
+    assert_eq!(text(&call(&mut store, &access, "garderobe_inventory", json!({"view": "returns"})).await), "1 return or exchange case(s).");
+    assert_eq!(text(&call(&mut store, &access, "garderobe_inventory", json!({"view": "orders"})).await), "0 order(s).");
+    assert!(text(&call(&mut store, &access, "garderobe_inventory", json!({"view": "command_types"})).await).starts_with("19 command types"));
+
+    // Arguments that belong to other views are refused, and so is a malformed day.
+    for (args, words) in [
+        (json!({"view": "trips", "limit": 5}), "view 'trips' takes no other argument, not 'limit'"),
+        (json!({"view": "laundry", "date": "2026-10-21"}), "view 'laundry' takes no other argument, not 'date'"),
+        (json!({"view": "style", "category": "shirt"}), "view 'style' takes only date, not 'category'"),
+        (json!({"view": "style", "date": "2026-02-30"}), "date: expected the day as YYYY-MM-DD"),
+        (json!({"view": "style", "date": 20261021}), "date must be a date, YYYY-MM-DD"),
+    ] {
+        let e = error_of(&call(&mut store, &access, "garderobe_inventory", args.clone()).await);
+        assert_eq!((e["code"].clone(), e["message"].as_str().unwrap().contains(words)), (json!("invalid_command"), true), "{args}: {e}");
+    }
+
+    // The resources: offered on initialize, listed, and read as the REST routes serve them.
+    let init = rpc(&mut store, now, &access, 1, "initialize", json!({"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "codex", "version": "0"}})).await;
+    assert_eq!(init.json["result"]["capabilities"]["resources"], json!({"listChanged": false}));
+    let list = rpc(&mut store, now, &access, 2, "resources/list", json!({})).await;
+    let uris: Vec<&str> = list.json["result"]["resources"].as_array().unwrap().iter().map(|r| r["uri"].as_str().unwrap()).collect();
+    assert_eq!(uris, vec!["garderobe://guide", "garderobe://style/profile", "garderobe://commands"]);
+    assert_eq!(rpc(&mut store, now, &access, 3, "resources/templates/list", json!({})).await.json["result"], json!({"resourceTemplates": []}));
+    let read = |r: &Answer| r.json["result"]["contents"][0].clone();
+    let profile = read(&rpc(&mut store, now, &access, 4, "resources/read", json!({"uri": "garderobe://style/profile"})).await);
+    let rest_style = send(&mut store, now, "GET", "/v1/style", Some(&owner), Vec::new()).await.json;
+    assert_eq!((profile["uri"].clone(), profile["mimeType"].clone()), (json!("garderobe://style/profile"), json!("text/markdown")));
+    assert_eq!(profile["text"], rest_style["document"]["content"]);
+    assert!(profile["text"].as_str().unwrap().starts_with("# Chris — Taste, Formation, Preferences and Operating Rules"));
+    assert_eq!(profile["text"].as_str().unwrap().len() as u64, rest_style["document"]["byteLength"].as_u64().unwrap(), "the whole document, byte for byte");
+    let commands = read(&rpc(&mut store, now, &access, 5, "resources/read", json!({"uri": "garderobe://commands"})).await);
+    let rest_types = send(&mut store, now, "GET", "/v1/command-types", Some(&owner), Vec::new()).await.json;
+    assert_eq!((commands["mimeType"].clone(), serde_json::from_str::<Value>(commands["text"].as_str().unwrap()).unwrap()), (json!("application/json"), rest_types));
+    let guide = read(&rpc(&mut store, now, &access, 6, "resources/read", json!({"uri": "garderobe://guide"})).await);
+    assert!(guide["text"].as_str().unwrap().contains("laundry, style, command_types, trips, returns, orders"), "{guide}");
+    let missing = rpc(&mut store, now, &access, 7, "resources/read", json!({"uri": "garderobe://nothing"})).await;
+    assert_eq!((missing.status, missing.json["error"]["code"].clone(), missing.json["error"]["data"]["uri"].clone()), (200, json!(-32002), json!("garderobe://nothing")));
+    let no_uri = rpc(&mut store, now, &access, 8, "resources/read", json!({})).await;
+    assert_eq!(no_uri.json["error"]["code"], -32602);
+}
+
+#[tokio::test]
 async fn the_codex_verifier_board_steps_run_over_mcp() {
     let mut store = MemStore::default();
     let (_, tokens) = connect(&mut store, true).await;

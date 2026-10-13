@@ -9,7 +9,9 @@
 //!   `garderobe_recommend` validated outfit options for a named day, composed
 //!                         and validated by the same code as a board, never
 //!                         published (a durable run per client request ID);
-//!   `garderobe_inventory` views `items`, `snapshot` and `receipts`;
+//!   `garderobe_inventory` views `items`, `snapshot`, `receipts`, `history`,
+//!                         `laundry`, `style`, `command_types`, `trips`, `returns`
+//!                         and `orders`, each the landed REST read in the same envelope;
 //!   `garderobe_run`       a saved run by its ID (status; cancel answers the
 //!                         finished run unchanged; resume and respond are refused,
 //!                         as nothing here runs in the background or waits for the
@@ -26,6 +28,10 @@
 //! A connected assistant acts as `assistant` on channel `mcp` with
 //! authorization `owner_statement`; the command service refuses it a
 //! restriction lift and the undo of a restriction's record.
+//!
+//! The resources are the TypeScript server's three: `garderobe://guide`,
+//! `garderobe://style/profile` (the owner's profile document as imported) and
+//! `garderobe://commands` (the command types, as view `command_types`).
 
 use ferrite_app::serde_json::{self, json, Map, Value};
 use ferrite_app::IngressRequest;
@@ -41,10 +47,14 @@ use crate::time::{instant, parse_local_date};
 // this endpoint refuses (2025-06-18 removed them).
 pub const PROTOCOL_VERSIONS: [&str; 2] = ["2025-11-25", "2025-06-18"];
 
+/// The `garderobe_inventory` views this server answers. The TypeScript server's `item`,
+/// `availability`, `resolve` and `selection` wait on reads that are not ported.
+pub const VIEWS: [&str; 10] = ["items", "snapshot", "receipts", "history", "laundry", "style", "command_types", "trips", "returns", "orders"];
+
 const GUIDE: &str = "Garderobe: the connected owner's private wardrobe. The owner is fixed by this connection; no tool takes an owner or user. \
 garderobe_today reads the day's outfit board for a named date (YYYY-MM-DD): its options, their pieces and the owner's choice. \
 garderobe_recommend returns validated outfit options for a named date and count; never invent garments: only the options returned there exist, and nothing is published. \
-garderobe_inventory reads the wardrobe (views items, snapshot, receipts); check `complete` and `nextCursor` before saying how many things exist. \
+garderobe_inventory reads the wardrobe (views items, snapshot, receipts, history, laundry, style, command_types, trips, returns, orders); check `complete` and `nextCursor` before saying how many things exist. \
 garderobe_run reads a saved run by its runId, or cancels what remains of it. \
 garderobe_ask sends an open request to Garderobe's own assistant, which reads the wardrobe and answers; it changes nothing. \
 garderobe_research asks it for a verdict, a summary and a comparison; it has no web access, so its answer is not a checked price, stock or review. \
@@ -139,13 +149,24 @@ pub async fn handle<S: Store, T: Transport>(store: &mut S, origin: &str, inferen
             let version = if PROTOCOL_VERSIONS.contains(&asked) { asked } else { PROTOCOL_VERSIONS[0] };
             rpc_result(id, json!({
                 "protocolVersion": version,
-                "capabilities": {"tools": {"listChanged": false}},
+                "capabilities": {"tools": {"listChanged": false}, "resources": {"listChanged": false}},
                 "serverInfo": {"name": "garderobe", "title": "Garderobe", "version": CONTRACT_VERSION},
                 "instructions": GUIDE,
             }))
         }
         "ping" => rpc_result(id, json!({})),
         "tools/list" => rpc_result(id, json!({"tools": tools(&caller)})),
+        "resources/list" => rpc_result(id, json!({"resources": resources()})),
+        "resources/templates/list" => rpc_result(id, json!({"resourceTemplates": []})),
+        "resources/read" => {
+            let Some(uri) = params.get("uri").and_then(Value::as_str) else { return rpc_error(200, id, -32602, "params.uri is required") };
+            match read_resource(uri) {
+                Ok(Some(contents)) => rpc_result(id, json!({"contents": [contents]})),
+                // MCP's "resource not found" error, with the URI asked for.
+                Ok(None) => Reply::json(200, json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32002, "message": "Resource not found", "data": {"uri": uri}}})),
+                Err(e) => rpc_error(200, id, -32603, &e.message),
+            }
+        }
         "tools/call" => {
             let Some(name) = params.get("name").and_then(Value::as_str) else { return rpc_error(200, id, -32602, "params.name is required") };
             let args = match params.get("arguments") {
@@ -167,6 +188,27 @@ pub async fn handle<S: Store, T: Transport>(store: &mut S, origin: &str, inferen
         }
         _ => rpc_error(200, id, -32601, &format!("method '{method}' is not available on this server")),
     }
+}
+
+/// The resources (`registerResource` in the TypeScript server), all helpful and none required.
+pub fn resources() -> Vec<Value> {
+    vec![
+        json!({"uri": "garderobe://guide", "name": "guide", "title": "Using the Garderobe tools", "mimeType": "text/markdown"}),
+        json!({"uri": "garderobe://style/profile", "name": "style-profile", "title": "Owner style profile (current version)", "mimeType": "text/markdown"}),
+        json!({"uri": "garderobe://commands", "name": "commands", "title": "Command types and payload schemas", "mimeType": "application/json"}),
+    ]
+}
+
+/// One resource's contents, or `None` for a URI this server does not publish.
+fn read_resource(uri: &str) -> Result<Option<Value>, CmdError> {
+    let (mime, text) = match uri {
+        "garderobe://guide" => ("text/markdown", GUIDE.to_string()),
+        // The current version of the profile document, exactly as `/v1/style` serves it.
+        "garderobe://style/profile" => ("text/markdown", crate::style::context(None)?["document"]["content"].as_str().unwrap_or_default().to_string()),
+        "garderobe://commands" => ("application/json", crate::command_types::list()?.to_string()),
+        _ => return Ok(None),
+    };
+    Ok(Some(json!({"uri": uri, "mimeType": mime, "text": text})))
 }
 
 /// The tool list for this connection: a read-only grant is not offered the write tool.
@@ -203,16 +245,16 @@ pub fn tools(caller: &Caller) -> Vec<Value> {
         json!({
         "name": "garderobe_inventory",
         "title": "Read the wardrobe",
-        "description": "Read the owner's garments with their clean and dirty balances (view items, paged; or snapshot, complete), the newest command receipts (view receipts), or recorded wear (view history: what was worn on a date, or the counted wears from..to, optionally of one garmentId; a day without a record is unknown, not unworn). `complete` and `nextCursor` say whether the data is the whole result.",
+        "description": "Read the owner's garments with their clean and dirty balances (view items, paged; or snapshot, complete), the newest command receipts (view receipts), recorded wear (view history: what was worn on a date, or the counted wears from..to, optionally of one garmentId; a day without a record is unknown, not unworn), the laundry (view laundry: what awaits the service and hand-wash, and the recent bags), the style profile with its rules, measurements and size experiences (view style, optionally for a date), the command types and their payload schemas (view command_types), the owner's trips with what is packed for each (view trips), return and exchange cases (view returns) or orders (view orders). `complete` and `nextCursor` say whether the data is the whole result.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": false,
             "properties": {
-                "view": {"type": "string", "enum": ["items", "snapshot", "receipts", "history"], "default": "items"},
+                "view": {"type": "string", "enum": VIEWS, "default": "items"},
                 "category": {"type": "string", "description": "items, snapshot: only this category"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 500, "description": "items: page size (default 50); receipts: how many (default 50, at most 200)"},
                 "cursor": {"type": "string", "description": "items: the nextCursor of the previous page"},
-                "date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "history: the wearing date to read"},
+                "date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "history: the wearing date to read; style: the day the context is for"},
                 "from": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "history: first date of a range (with to, at most 366 days)"},
                 "to": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "history: last date of a range"},
                 "garmentId": {"type": "string", "description": "history with a range: only this garment"}
@@ -377,10 +419,13 @@ async fn inventory_inner<S: Store>(store: &mut S, now_ms: u64, args: &Map<String
     only_keys(args, &["view", "category", "limit", "cursor", "date", "from", "to", "garmentId"])?;
     let view = match args.get("view") {
         None => "items",
-        Some(Value::String(v)) if ["items", "snapshot", "receipts", "history"].contains(&v.as_str()) => v.as_str(),
-        Some(Value::String(v)) => return Err(invalid(format!("view '{v}' is not available on this server yet; the views are items, snapshot, receipts and history"))),
+        Some(Value::String(v)) if VIEWS.contains(&v.as_str()) => v.as_str(),
+        Some(Value::String(v)) => return Err(invalid(format!("view '{v}' is not available on this server yet; the views are {}", VIEWS.join(", ")))),
         Some(_) => return Err(invalid("view must be a string")),
     };
+    if matches!(view, "laundry" | "style" | "command_types" | "trips" | "returns" | "orders") {
+        return other_view(store, now_ms, view, args).await;
+    }
     if view != "history" && ["date", "from", "to", "garmentId"].iter().any(|k| args.contains_key(*k)) {
         return Err(invalid("date, from, to and garmentId belong to view 'history'"));
     }
@@ -481,6 +526,65 @@ async fn inventory_inner<S: Store>(store: &mut S, now_ms: u64, args: &Map<String
             let next_out = next.clone();
             Ok(tool_ok(envelope(page, complete, Some(total), next_out, &revision), summary))
         }
+    }
+}
+
+/// The views that are one landed REST read each (`laundry` `/v1/laundry`, `style` `/v1/style`,
+/// `command_types` `/v1/command-types`, `trips` `/v1/trips`, `returns` `/v1/returns`, `orders`
+/// `/v1/orders`), in the TypeScript envelope with its summaries. As there, the wardrobe revision is
+/// read first and each is the whole result; only `style` takes an argument, the day.
+async fn other_view<S: Store>(store: &mut S, now_ms: u64, view: &str, args: &Map<String, Value>) -> Result<Value, CmdError> {
+    let takes_date = view == "style";
+    if let Some(k) = args.keys().find(|k| k.as_str() != "view" && !(takes_date && k.as_str() == "date")) {
+        return Err(invalid(if takes_date { format!("view 'style' takes only date, not '{k}'") } else { format!("view '{view}' takes no other argument, not '{k}'") }));
+    }
+    let date = match args.get("date") {
+        None => None,
+        Some(Value::String(d)) => Some(d.as_str()),
+        Some(_) => return Err(invalid("date must be a date, YYYY-MM-DD")),
+    };
+    let (_, ledger) = api::read_ledger(store).await?;
+    let revision = ledger.revision;
+    let envelope = |data: Value, total: Option<usize>| json!({"view": view, "complete": true, "total": total, "nextCursor": null, "wardrobeRevision": revision, "readAt": instant(now_ms), "data": data});
+    let count = |v: &Value, k: &str| v[k].as_array().map_or(0, Vec::len);
+    match view {
+        "laundry" => {
+            let data = crate::app_routes::laundry(store, now_ms).await?;
+            let summary = format!("Awaiting service laundry: {} item(s); awaiting hand-wash: {}; batches: {}.", count(&data, "awaitingService"), count(&data, "awaitingHandwash"), count(&data, "batches"));
+            Ok(tool_ok(envelope(data, None), summary))
+        }
+        "style" => {
+            let data = crate::style::context(date)?;
+            let summary = format!(
+                "Style profile version {} with {} amendment(s), {} rule(s), {} standing direction(s). {}",
+                data["document"]["version"],
+                count(&data, "amendments"),
+                count(&data, "rules"),
+                count(&data, "directions"),
+                data["precedence"].as_str().unwrap_or_default()
+            );
+            Ok(tool_ok(envelope(data, None), summary))
+        }
+        "command_types" => {
+            let data = crate::command_types::list()?;
+            let n = count(&data, "types");
+            // Under the owner's 2026-10-05 contract nothing waits for a confirmation here: a type marked
+            // consequential (a restriction lift) is refused from this connection.
+            let summary = format!("{n} command types, each with the authorizations it accepts. A type marked consequential (lifting a restriction) is refused from this connection, as is undoing the record of a restriction.");
+            Ok(tool_ok(envelope(data, Some(n)), summary))
+        }
+        "trips" => {
+            let data = api::read_trips(store).await?;
+            let n = count(&data, "trips");
+            Ok(tool_ok(envelope(data, Some(n)), format!("{n} trip(s).")))
+        }
+        "returns" => {
+            let data = api::read_returns(store).await?;
+            let n = count(&data, "returns");
+            Ok(tool_ok(envelope(data, Some(n)), format!("{n} return or exchange case(s).")))
+        }
+        // Orders come from purchase import, which is not ported (`GET /v1/orders` is empty too).
+        _ => Ok(tool_ok(envelope(json!({"orders": []}), Some(0)), "0 order(s).".to_string())),
     }
 }
 

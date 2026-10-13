@@ -608,8 +608,12 @@ Tools, with the TypeScript server's names, arguments and results:
 - `garderobe_today`: the board for `{date}`, as `/v1/today`; without a date, the owner's day now in Europe/London.
 - `garderobe_inventory`: views `items` (paged, `limit` and `nextCursor`),
   `snapshot` (complete), `receipts` and `history` (recorded wear, see "Wear
-  records"). The response says whether it is the
-  whole result (`complete`, `total`). The TypeScript server's other views
+  records"), and `laundry`, `style` (optional `date`), `command_types`,
+  `trips`, `returns` and `orders`, whose data is exactly what `/v1/laundry`,
+  `/v1/style`, `/v1/command-types`, `/v1/trips`, `/v1/returns` and
+  `/v1/orders` serve, with the TypeScript server's summaries. The response
+  says whether it is the whole result (`complete`, `total`). The TypeScript
+  server's other views (`item`, `availability`, `resolve`, `selection`)
   answer `invalid_command` until the data behind them is ported.
 - `garderobe_recommend`: validated outfit options for `{date, count?,
   brief?, clientRequestId}` (see "Recommendations"). It is a read, so a
@@ -621,6 +625,16 @@ Tools, with the TypeScript server's names, arguments and results:
   `{receipt}`. Only a grant with `wardrobe.write` is offered it. A read-only
   grant that calls it gets HTTP 403 with the OAuth `insufficient_scope`
   challenge.
+
+Resources, as the TypeScript server registers them (`resources/list`,
+`resources/read`; `resources/templates/list` is empty): `garderobe://guide`
+(the server's guide), `garderobe://style/profile` (the owner's profile
+document, byte for byte as `/v1/style` serves it) and `garderobe://commands`
+(the command types as JSON, as `/v1/command-types`). Any other URI is MCP's
+"Resource not found" error (-32002) with the URI. The `command_types` view's
+summary says that a consequential type (a restriction lift) is refused from
+the connection, where the TypeScript summary says it waits for the owner's
+confirmation; under the owner's 2026-10-05 contract nothing waits here.
 
 `garderobe_ask` and `garderobe_research` are offered to every grant (scope
 `wardrobe.read`, open world, as the contract's tool table says); see "The
@@ -1144,7 +1158,8 @@ milestone, and outside the lines of the milestone in hand:
     profile's date (2026-09-14T00:00:00Z), since this port has no import
     run time.
   - The MCP view `garderobe_inventory` `style` and the
-    `garderobe://style/profile` resource are not ported; the REST route is.
+    `garderobe://style/profile` resource serve this same context and
+    document.
 - **Temperature preview.**
   - `temperatureC` must be plain decimal text, optionally with an exponent
     (the iOS client sends `12.0`). TypeScript's `Number()` also accepts an
