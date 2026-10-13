@@ -222,8 +222,15 @@ export function buildMcpServer(app: App, caller: McpCaller): McpServer {
           }
           case "history": {
             if (args.date) {
-              const record = await getDailyRecord(app.db, principal, args.date);
-              return ok(envelope(record as unknown as Record<string, unknown>, { total: record.garments.length }), record.garments.length > 0 ? `Worn on ${args.date}: ${record.garments.map((g) => g.name).join(", ")}.` : `No wear recorded for ${args.date} (not recorded does not mean nothing was worn).`);
+              const raw = await getDailyRecord(app.db, principal, args.date);
+              const record = args.garmentId
+                ? {
+                    ...raw,
+                    garments: raw.garments.filter((g) => g.garmentId === args.garmentId),
+                    observations: raw.observations.filter((o) => o.garmentId === args.garmentId),
+                  }
+                : raw;
+              return ok(envelope(record as unknown as Record<string, unknown>, { total: record.garments.length }), record.garments.length > 0 ? `Worn on ${args.date}: ${record.garments.map((g) => g.name).join(", ")}.` : `No wear recorded for ${args.date}${args.garmentId ? ` for ${args.garmentId}` : ""} (not recorded does not mean nothing was worn).`);
             }
             const to = args.to ?? localDateOf(nowMs, state.settings.timezone);
             const from = args.from ?? addDays(to, -30);

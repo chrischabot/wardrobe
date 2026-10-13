@@ -196,7 +196,7 @@ describe("restoring a backup", () => {
     // Nothing external is queued for the restored owner.
     const app = await testApp();
     expect((await app.db.prepare("SELECT COUNT(*) AS n FROM effects WHERE user_id = ? AND state IN ('pending', 'in_progress')").bind(target.userId).first<{ n: number }>())!.n).toBe(0);
-    expect((await app.db.prepare("SELECT COUNT(*) AS n FROM outbox WHERE user_id = ? AND acknowledged_at IS NULL AND topic LIKE 'effect%'").bind(target.userId).first<{ n: number }>().catch(() => ({ n: 0 })))!.n).toBe(0);
+    expect((await app.db.prepare("SELECT COUNT(*) AS n FROM outbox WHERE user_id = ? AND state != 'acknowledged' AND topic LIKE 'effect%'").bind(target.userId).first<{ n: number }>())!.n).toBe(0);
     // No sign-in, credential or grant came with it.
     expect((await target.api.json("GET", "/v1/connections")).connections).toEqual([]);
   });
@@ -228,6 +228,41 @@ describe("retention and deletion", () => {
     expect(list.map((b: any) => [b.backupId, b.state])).toEqual([[second.backupId, "completed"], [backup.backupId, "expired"]]);
     expect(await app.env.EXPORT_BUCKET.head(firstKey)).toBeNull();
     expect(await app.env.EXPORT_BUCKET.head(`backups/${owner.userId}/${second.backupId}/package`)).not.toBeNull();
+
+    // A newer incomplete backup does not cause the newest complete backup to expire; and when an owner has only
+    // incomplete backups, older incomplete backups still expire while the newest one is kept.
+    const incOwner = await provisionOwner();
+    const nowMs = Date.now();
+    const insertBackup = async (id: string, state: "completed" | "completed_incomplete", requestedOffsetMs: number) => {
+      const key = `backups/${incOwner.userId}/${id}/package`;
+      await app.env.EXPORT_BUCKET.put(key, "pkg");
+      const reqAt = new Date(nowMs + requestedOffsetMs).toISOString();
+      const expAt = new Date(nowMs + requestedOffsetMs + 1000).toISOString();
+      await app.db
+        .prepare("INSERT INTO export_jobs (user_id, export_id, run_id, client_request_id, state, encrypted, format_version, requested_at, finished_at, expires_at, object_key, purpose) VALUES (?, ?, ?, ?, ?, 0, 'garderobe-export/1', ?, ?, ?, ?, 'backup')")
+        .bind(incOwner.userId, id, `run_${id}`, `req_${id}`, state, reqAt, reqAt, expAt, key)
+        .run();
+      return key;
+    };
+    const oldIncKey = await insertBackup("bkp_inc_old", "completed_incomplete", 10_000);
+    const newIncKey = await insertBackup("bkp_inc_new", "completed_incomplete", 20_000);
+    await sweepExpired(app, nowMs + BACKUP_RETENTION_MS + 86_400_000);
+    const incStates = (await incOwner.api.json("GET", "/v1/backups")).backups.map((b: any) => [b.backupId, b.state]);
+    expect(incStates).toEqual([["bkp_inc_new", "completed_incomplete"], ["bkp_inc_old", "expired"]]);
+    expect(await app.env.EXPORT_BUCKET.head(oldIncKey)).toBeNull();
+    expect(await app.env.EXPORT_BUCKET.head(newIncKey)).not.toBeNull();
+
+    // Now add an older complete backup alongside a newer incomplete backup on owner: both stay protected.
+    const newerIncKey = `backups/${owner.userId}/bkp_after_complete/package`;
+    await app.env.EXPORT_BUCKET.put(newerIncKey, "pkg");
+    const laterIso = new Date(nowMs + 30_000).toISOString();
+    await app.db
+      .prepare("INSERT INTO export_jobs (user_id, export_id, run_id, client_request_id, state, encrypted, format_version, requested_at, finished_at, expires_at, object_key, purpose) VALUES (?, 'bkp_after_complete', 'run_bkp_after', 'req_bkp_after', 'completed_incomplete', 0, 'garderobe-export/1', ?, ?, ?, ?, 'backup')")
+      .bind(owner.userId, laterIso, laterIso, laterIso, newerIncKey)
+      .run();
+    await sweepExpired(app, nowMs + BACKUP_RETENTION_MS + 172_800_000);
+    expect(await app.env.EXPORT_BUCKET.head(`backups/${owner.userId}/${second.backupId}/package`)).not.toBeNull();
+    expect(await app.env.EXPORT_BUCKET.head(newerIncKey)).not.toBeNull();
   });
 
   it("will not restore a backup of an account that was deleted afterwards", async () => {

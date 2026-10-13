@@ -106,6 +106,23 @@ describe("tools", () => {
     expect(fullOut.data.complete).toBe(true);
     expect(fullOut.data.total).toBe(fullOut.data.data.receipts.length);
   });
+
+  it("filters a date-specific history read by garmentId when both date and garmentId are supplied", async () => {
+    const day = await ownerDay(owner);
+    const inventory = await owner.api.json("GET", "/v1/wardrobe");
+    const tops = inventory.items.filter((i: any) => i.garment.acquisition === "owned" && i.garment.roles.includes("top") && i.balances.some((b: any) => b.bucket === "clean" && b.quantity > 0));
+    const first = tops[0].garment;
+    const second = tops[1].garment;
+    await owner.api.command("wear.record", { wearingDate: day, garmentIds: [first.garmentId] });
+    const matched = toolResult(await reader.client.callTool({ name: "garderobe_inventory", arguments: { view: "history", date: day, garmentId: first.garmentId } }));
+    expect(matched.ok).toBe(true);
+    expect(matched.data.total).toBe(1);
+    expect(matched.data.data.garments.map((g: any) => g.garmentId)).toEqual([first.garmentId]);
+    const unmatched = toolResult(await reader.client.callTool({ name: "garderobe_inventory", arguments: { view: "history", date: day, garmentId: second.garmentId } }));
+    expect(unmatched.ok).toBe(true);
+    expect(unmatched.data.total).toBe(0);
+    expect(unmatched.data.data.garments).toEqual([]);
+  });
 });
 
 describe("commands over MCP", () => {

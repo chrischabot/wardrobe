@@ -18,7 +18,10 @@ export async function sweepExpired(app: App, nowMs: number): Promise<{ exportsEx
   const expired = await db
     .prepare(
       `SELECT user_id, export_id, object_key, purpose FROM export_jobs j WHERE expires_at IS NOT NULL AND expires_at <= ? AND state IN ('completed', 'completed_incomplete')
-         AND NOT (purpose = 'backup' AND export_id = (SELECT export_id FROM export_jobs n WHERE n.user_id = j.user_id AND n.purpose = 'backup' AND n.state IN ('completed', 'completed_incomplete') ORDER BY n.requested_at DESC LIMIT 1))
+         AND NOT (purpose = 'backup' AND (
+           export_id IS (SELECT export_id FROM export_jobs n WHERE n.user_id = j.user_id AND n.purpose = 'backup' AND n.state = 'completed' ORDER BY n.requested_at DESC, n.export_id DESC LIMIT 1)
+           OR export_id IS (SELECT export_id FROM export_jobs n WHERE n.user_id = j.user_id AND n.purpose = 'backup' AND n.state IN ('completed', 'completed_incomplete') ORDER BY n.requested_at DESC, n.export_id DESC LIMIT 1)
+         ))
        LIMIT 50`,
     )
     .bind(now)
