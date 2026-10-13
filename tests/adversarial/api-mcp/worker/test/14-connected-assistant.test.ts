@@ -2218,7 +2218,7 @@ describe("B. the cap on undecided requests", () => {
     expect((await mcpCall(first, "garderobe_inventory", { view: "laundry" })).ok).toBe(true);
   });
 
-  defect("M14-6", "a second connection of the same client is given a further 40 undecided requests", async () => {
+  it("[fixed M14-6] a second connection of the same client is given a further 40 undecided requests", async () => {
     // The same registered client (same client_id, same redirect address) is approved again by the owner.
     second = await connectSameClient(capOwner, first, { write: true, clientName: "SYNTHETIC busy assistant" });
     const grants = await grantRows(capOwner);

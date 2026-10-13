@@ -71,10 +71,17 @@ export interface WaitingRequests {
 export async function waitingRequests(db: Db, userId: string, nowMs: number): Promise<WaitingRequests> {
   const sinceSeconds = Math.floor((nowMs - PROPOSAL_LIFETIME_MS) / 1000);
   const out: WaitingRequests = { total: 0, byGrant: new Map(), byTurn: new Map() };
+  const grants = await all<{ grant_id: string; client_id: string }>(db, "SELECT grant_id, client_id FROM mcp_grants WHERE user_id = ?", userId);
+  const clientOfGrant = new Map(grants.map((g) => [g.grant_id, g.client_id]));
+  const byClient = new Map<string, number>();
   const add = (grant: string | null, n: number) => {
     if (n <= 0) return;
     out.total += n;
-    if (grant) out.byGrant.set(grant, (out.byGrant.get(grant) ?? 0) + n);
+    if (grant) {
+      out.byGrant.set(grant, (out.byGrant.get(grant) ?? 0) + n);
+      const clientId = clientOfGrant.get(grant);
+      if (clientId) byClient.set(clientId, (byClient.get(clientId) ?? 0) + n);
+    }
   };
   const submitted = await all<{ grant: string | null; turn_id: string | null; n: number }>(
     db,
@@ -101,6 +108,12 @@ export async function waitingRequests(db: Db, userId: string, nowMs: number): Pr
     userId, sinceSeconds,
   );
   for (const row of turns) add(row.grant, row.proposed - row.decided);
+  // All grants of the same registered OAuth client share its 40-request allowance, so re-approving the same
+  // client gives it no second quota of waiting requests.
+  for (const { grant_id, client_id } of grants) {
+    const clientTotal = byClient.get(client_id) ?? 0;
+    if (clientTotal > 0) out.byGrant.set(grant_id, clientTotal);
+  }
   return out;
 }
 
