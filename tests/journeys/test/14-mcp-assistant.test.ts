@@ -422,6 +422,8 @@ describe("journey 14: a connected assistant reads, reports, asks and is disconne
     expect((await writer.client.listTools()).tools.some((t) => /proposal|confirm|approve/i.test(t.name))).toBe(false);
     const token = writer.oauth.snapshot().accessToken;
     for (const origin of [APP_ORIGIN, MCP_ORIGIN]) {
+      const listed = await SELF.fetch(`${origin}/v1/proposals`, { headers: { Authorization: `Bearer ${token}` } });
+      expect(listed.status, origin).toBe(401);
       const decided = await SELF.fetch(`${origin}/v1/proposals/${proposal.proposalId}/decision`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ decision: "confirm" }) });
       expect(decided.status, origin).toBe(401);
     }
@@ -431,6 +433,8 @@ describe("journey 14: a connected assistant reads, reports, asks and is disconne
     // One tap by the owner in the app carries it out as the owner's own, with a working undo.
     const decision = await owner.api.json("POST", `/v1/proposals/${proposal.proposalId}/decision`, { decision: "confirm" });
     expect(decision).toMatchObject({ proposal: { state: "confirmed" }, receipt: { type: "garment.correct", outcome: "committed", actor: "owner" } });
+    expect(decision.receipt.summary).toContain(secondTop.name);
+    expect(internalCodesIn(decision.receipt.summary)).toEqual([]);
     expect((await owner.api.json("GET", `/v1/items/${secondTop.garmentId}`)).detail.garment.condition).toBe("loose button (journey test)");
     expect((await pending()).some((p) => p.proposalId === proposal.proposalId)).toBe(false);
     const undone = (await (await owner.api.command("command.undo", { commandId: decision.receipt.commandId })).json()) as any;
