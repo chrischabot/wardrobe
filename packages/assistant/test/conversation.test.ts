@@ -146,4 +146,26 @@ describe("conversation in the Durable Object (real Think session, real D1, real 
     expect(queuedSettled.status).toBe("resumable");
     expect(queuedSettled.failure).toMatchObject({ code: "inference_failed", resumable: true });
   });
+
+  it("redacts secrets in an assistant reply before storing in session, transcript, recall, export and next-turn context (adversarial I06-2, D12-2)", async () => {
+    const fresh = await createWorld({ real: false });
+    const secretKey = `${"sk"}-${"proj"}-UnitTestSecret0123456789abcdefghij`;
+    const secretToken = "ya29.unit-test-oauth-token-0123456789abcdef";
+    fresh.model.script({ text: `For the record, the key is ${secretKey} and the token is ${secretToken}.` });
+    const first = await fresh.client.runTurn({ submissionId: submission("reply-secret-1"), text: "Remind me of my connection details." });
+    expect(first.status).toBe("completed");
+    expect(first.reply?.text).not.toContain(secretKey);
+    expect(first.reply?.text).not.toContain(secretToken);
+
+    const transcript = JSON.stringify(await fresh.client.transcript());
+    const recall = JSON.stringify(await fresh.client.recallSearch({ text: "connection details", limit: 20 }));
+    const exported = JSON.stringify(await fresh.client.exportConversation());
+    fresh.model.script({ text: "You are welcome." });
+    await fresh.client.runTurn({ submissionId: submission("reply-secret-2"), text: "Thanks." });
+    const nextContext = JSON.stringify(fresh.model.requests.at(-1)?.messages ?? []);
+    for (const surface of [transcript, recall, exported, nextContext]) {
+      expect(surface).not.toContain(secretKey);
+      expect(surface).not.toContain(secretToken);
+    }
+  });
 });

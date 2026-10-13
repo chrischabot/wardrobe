@@ -544,7 +544,8 @@ export abstract class GarderobeAssistantBase extends Think<any> {
     if (images.length > 0) instructions += PHOTO_RULES;
     // A research task works in its own bounded workspace (files only, never a shell); the conversation has none.
     const workspaceTools = this.taskTurnId ? WORKSPACE_FILE_TOOLS.filter((name) => name in ctx.tools) : [];
-    return { model: model as any, instructions, tools, activeTools: [...Object.keys(tools), ...workspaceTools], sendReasoning: false, ...(images.length > 0 ? { messages: withImages(ctx.messages, images) } : {}) };
+    const sanitizedMessages = redactDeep(ctx.messages);
+    return { model: model as any, instructions, tools, activeTools: [...Object.keys(tools), ...workspaceTools], sendReasoning: false, messages: (images.length > 0 ? withImages(sanitizedMessages, images) : sanitizedMessages) as never };
   }
 
   override async onChatResponse(result: ChatResponseResult): Promise<void> {
@@ -624,12 +625,14 @@ export abstract class GarderobeAssistantBase extends Think<any> {
     let sessionUpdated = false;
     for (const m of replies) {
       const bounded = boundToolInputs(m.parts as unknown[]);
-      if (bounded.changed) {
+      const sanitized = redactDeep(bounded.parts);
+      if (bounded.changed || JSON.stringify(sanitized) !== JSON.stringify(m.parts)) {
         const stored = await this.session.getMessage(m.id);
         if (stored) {
-          await this.session.updateMessage({ ...stored, parts: bounded.parts as never });
+          await this.session.updateMessage({ ...stored, parts: sanitized as never });
           sessionUpdated = true;
         }
+        m.parts = sanitized as never;
       }
     }
     if (sessionUpdated) {
@@ -741,11 +744,13 @@ export abstract class GarderobeAssistantBase extends Think<any> {
     const parts = m.parts as { type: string; text?: string }[];
     // Recall attributes a judgement to the owner only for the owner's own voice: quoted, forwarded and
     // fenced material inside the owner's message is what someone else said.
-    const text = row.role === "user" ? ownerAuthoredText(ownerTextOf(m)).replace(/\n{2,}/g, "\n").trim() : textOf(parts);
+    const rawText = row.role === "user" ? ownerAuthoredText(ownerTextOf(m)).replace(/\n{2,}/g, "\n").trim() : textOf(parts);
+    const text = redactSecrets(rawText).text;
     if (text === FORGOTTEN_TEXT || metaOf(m)?.forgotten) return null;
     // What the message carries besides speech: an owner message's attachments, an assistant message's tool
     // calls and results. Indexed as terms only, so that forgetting a message finds where its words went.
-    const rest = row.role === "user" ? parts.filter((p) => p.type === "text").slice(1).map((p) => p.text ?? "").join("\n") : JSON.stringify(parts.filter((p) => p.type !== "text"));
+    const rawRest = row.role === "user" ? parts.filter((p) => p.type === "text").slice(1).map((p) => p.text ?? "").join("\n") : JSON.stringify(parts.filter((p) => p.type !== "text"));
+    const rest = redactSecrets(rawRest).text;
     return { messageId: row.message_id, position: row.position, role: row.role as "user" | "assistant", text, ...(rest.length > 2 ? { dataText: rest } : {}), authoredAt: row.authored_at, channel: row.channel, turnId: row.turn_id };
   }
 
@@ -948,14 +953,39 @@ export abstract class GarderobeAssistantBase extends Think<any> {
     try {
       if (onEvent) {
         let streamError: string | null = null;
+        const bufferedText = new Map<string, string>();
+        const flushBuffered = async (id: string) => {
+          const full = bufferedText.get(id);
+          if (full === undefined) return;
+          bufferedText.delete(id);
+          await onEvent(JSON.stringify({ type: "text-delta", id, delta: redactSecrets(full).text, replace: true }));
+        };
         await this.runTurn({
           mode: "stream",
           input: [message],
           callback: {
             onStart: () => {},
-            // Reasoning never leaves the actor, whatever a provider emits.
+            // Reasoning never leaves the actor, and text deltas are buffered until the text block finishes so a
+            // credential split across chunks is redacted on the complete text before anything is emitted.
             onEvent: async (chunk: string) => {
-              if (!/"type"\s*:\s*"reasoning/.test(chunk)) await onEvent(chunk);
+              if (/"type"\s*:\s*"reasoning/.test(chunk)) return;
+              try {
+                const parsed = JSON.parse(chunk) as Record<string, unknown>;
+                const type = typeof parsed["type"] === "string" ? parsed["type"] : "";
+                const id = typeof parsed["id"] === "string" ? parsed["id"] : "default";
+                if (type === "text-delta" && typeof parsed["delta"] === "string") {
+                  bufferedText.set(id, (bufferedText.get(id) ?? "") + parsed["delta"]);
+                  return;
+                }
+                if (type === "text-end") {
+                  await flushBuffered(id);
+                } else if (type === "finish" || type === "finish-step") {
+                  for (const key of [...bufferedText.keys()]) await flushBuffered(key);
+                }
+                await onEvent(JSON.stringify(redactDeep(parsed)));
+              } catch {
+                // Ignore malformed non-JSON stream chunks rather than forwarding unparsed text.
+              }
             },
             onDone: () => {},
             onError: (err: string) => {
@@ -963,6 +993,7 @@ export abstract class GarderobeAssistantBase extends Think<any> {
             },
           },
         } as never);
+        for (const key of [...bufferedText.keys()]) await flushBuffered(key);
         if (streamError) await this.finalizeTurn(turnId, this.describeFailure(streamError));
       } else {
         const result = await this.runTurn({ input: [message] });

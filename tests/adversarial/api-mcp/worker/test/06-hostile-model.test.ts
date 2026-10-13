@@ -302,7 +302,7 @@ describe("conversation model: authority it claims and things it says", () => {
     expect((await turnRecord(owner, run.runId)).replyText).not.toContain(CANARY.apiKey);
   });
 
-  defect("I06-2", "a secret the model wrote in its reply is served verbatim by the transcript route and sent back to the model in the next turn's context", async () => {
+  it("[fixed I06-2] a secret the model wrote in its reply is served verbatim by the transcript route and sent back to the model in the next turn's context", async () => {
     // Harness rule for the canaries: none may appear in a transcript, a recall result or model context. The run
     // result is redacted (previous test); the stored message is not.
     const text = `SCRIPTED FAKE MODEL REPLY: for the record, the key is ${CANARY.apiKey} and the token is ${CANARY.googleToken}.`;

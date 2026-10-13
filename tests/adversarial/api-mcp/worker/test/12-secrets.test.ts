@@ -282,7 +282,7 @@ describe("credentials said in conversation", () => {
     expect([...new Set(where)].sort(), "where the missed credential forms are still readable").toEqual([]);
   });
 
-  defect("D12-2", "a credential in the assistant's own reply is removed from the run result but stored and served in clear: transcript text, recall index, export and backup", async () => {
+  it("[fixed D12-2] a credential in the assistant's own reply is removed from the run result but stored and served in clear: transcript text, recall index, export and backup", async () => {
     // The run result (what the app shows as the answer) is redacted, so the product means to remove it.
     const runs = await Promise.all(runIds.map(async (id) => (await victim.api.get(`/v1/runs/${id}`)).text()));
     expect(found(runs.join("\n"), replySecrets), "run results").toEqual([]);
