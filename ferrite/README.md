@@ -81,7 +81,9 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `GET /v1/weather[?date=YYYY-MM-DD]` | `WeatherSnapshot`, for the owner's day now when no date is named: what the TypeScript service answers for an owner with no home city (no settings command is ported, so `homeLocation` is null). There is no forecast: `freshness` is `unavailable`, every window and condition value is null (never zero, dry or calm), the line is "Weather unavailable" and the limitation is "No home city is set, so no forecast was requested." The snapshot is answered and not recorded (`weather.record_snapshot` is not ported) |
 | `GET /v1/days/{date}` (owner only) | the day's recorded wear (`DailyRecord`, as `getDailyRecord`): counted garments and every report with its status. Choosing an outfit never changes it |
 | `GET /v1/commands[?limit=]`, `GET /v1/commands/{id}` | receipts, newest first; an undo already used is no longer offered |
-| `GET /v1/connections`, `POST /v1/connections/{grantId}/disconnect` (owner only) | Settings › Connected assistants: the OAuth grants, and disconnecting one, effective on its next request |
+| `GET /v1/assistants`, `POST /v1/assistants/{grantId}/disconnect` (owner only) | Settings › Connected assistants (`AssistantGrantList`, `AssistantGrant`, as `listGrants` and `disconnectGrant` in `mcp/grants.ts`): the OAuth grants of connected assistants, active ones first, then newest first, and disconnecting one, effective on its next request. An unknown grant, or one of the app's own sign-ins, is `not_found` |
+| `GET /v1/connections`, `POST /v1/connections`, `/v1/connections/{id}/…` (owner only) | Outbound tool connections (Google Workspace, owner-added MCP services) cannot be registered on this server: the list is `{"connections": [], "readAt"}`, registering one answers 501 `module_unavailable` with `details.module: "connections"`, and every route naming a connection (capabilities, disconnect, reconnect, calendars, outfit calendar) is `not_found` |
+| `GET /v1/devices`, `POST /v1/devices`, `POST /v1/devices/{deviceId}/remove` (owner only) | Notification devices (`DeviceList`, `Device`, `DeviceRemoved`, as `notifications/service.ts`): registering or refreshing a device's APNs token (a token registered under another device ID moves to this one), listing, and removing. Nothing is delivered, so `deliveryConfigured` is false and `lastDeliveryAt` null; the token is kept for a later dispatcher and never returned. At most 20 devices are kept |
 | `POST /mcp` (OAuth) | the MCP server of `apps/worker/src/mcp`, see below |
 | `GET /v1/meta` | `MetaResponse`: API and contract versions, mounted modules (media is reported as not mounted), server time, the MCP endpoint and its protocol versions. Without a valid `WARDROBE_PUBLIC_ORIGIN` it is refused by that secret's name |
 | `GET /v1/command-types` | `CommandTypeList`, as `describeCommandTypes`: the nineteen command types this port executes, each with the class, required scope and payload JSON Schema the TypeScript registry gives it (`src/seed/command-types.json`, written by `scripts/build-command-types.mjs`), narrowed to this port: only the payload fields its handler accepts, with `additionalProperties: false` (so `board.publish` has no `requestFingerprint`), only the `owner_tap` and `owner_statement` authorizations (a publication by schedule is not ported), and `consequential` from the port's own connected-assistant rule, under which none of the nineteen waits for the owner. A field whose other values the port always refuses is published as the value it accepts: `board.publish` `scope` `"home"` or `trip:<tripId>` (no evening boards), `brief` the default day brief, `weatherSnapshotId` and `calendarSnapshotId` null only; `board.swap_slot` `weatherSnapshotId` is left out (no value is accepted); `return.open_case` `orderId` and `lineId` null only, `garmentId` a garment ID (never null) and `timezone` `Europe/London` or `UTC`. Size bounds (list and text lengths) are not restated; the command names them when it refuses |
@@ -940,6 +942,24 @@ as TypeScript's `staleVersions: "conflict"` does.
 
 Recorded rather than fixed, under the owner's P0/P1 direction. Each is either minor or outside
 the lines of the milestone it was found in.
+
+- Settings routes (devices, connected assistants, connections):
+  - No push is delivered: the APNs dispatcher and the notification effects it
+    sends are not ported. The device token is kept in the app's private
+    storage as received (lower-cased hexadecimal), not sealed with a
+    credential key as TypeScript seals it; it is never returned by any route.
+    A device ID is limited to letters, digits, `-`, `.`, `_` and `~` (the
+    contract allows any 8 to 128 characters; the app sends `device-<uuid>`),
+    and at most 20 devices are kept (TypeScript sets no bound).
+  - A connected assistant's grant whose code expired unused, or whose refresh
+    token has been idle for 90 days, is listed as `revoked` with a null
+    `revokedAt`: the contract has no expired state. `clientUri` and
+    `clientDomain` are always null (clients register dynamically only), and
+    `lastUsedAt` is the refresh token's last use. Disconnecting writes no audit
+    record (TypeScript audits `assistant.disconnect`).
+  - Outbound connections (Google Workspace, MCP tool services) are not ported,
+    so connection capabilities, Calendar and Gmail order import have nothing
+    to act on.
 
 Milestone C, the Wardrobe tab in the contract shape (`GET /v1/wardrobe` as
 `InventoryPage`, `GET /v1/items/{id}` as `ItemResponse`), is parked unlanded.

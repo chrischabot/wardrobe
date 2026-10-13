@@ -527,18 +527,23 @@ impl Grant {
         self.access.clear();
     }
 
-    /// Public view for the owner's settings: no hashes.
-    pub fn summary(&self, now: u64) -> Value {
-        let redirect_host = self.redirect_uri.split_once("://").map(|(_, r)| r.split(['/', '?']).next().unwrap_or("").to_string()).unwrap_or_default();
+    /// `AssistantGrant` (Settings › Connected assistants), without hashes. The contract knows only
+    /// `active` and `revoked`: a grant that can no longer produce tokens (revoked, its code expired
+    /// unused, or its refresh token idle too long) is `revoked`, with `revokedAt` null when nobody
+    /// revoked it. The port registers clients dynamically only, so `clientUri` and `clientDomain` are
+    /// null; `lastUsedAt` is the refresh token's last use.
+    pub fn assistant_grant(&self, now: u64) -> Value {
         json!({
             "grantId": self.id,
             "clientId": self.client_id,
             "clientName": self.client_name,
-            "redirectHost": redirect_host,
+            "clientUri": null,
+            "clientDomain": null,
             "scopes": self.scopes,
             "access": if self.scopes.iter().any(|s| s == WRITE) { "read_write" } else { "read_only" },
-            "status": if !self.active { "revoked" } else if self.live(now) { "active" } else { "expired" },
+            "status": if self.live(now) { "active" } else { "revoked" },
             "grantedAt": instant(self.created_at),
+            "lastUsedAt": self.refresh.as_ref().map(|r| instant(r.last_used_at)),
             "revokedAt": self.revoked_at.map(instant),
             "version": self.version,
         })
@@ -1543,15 +1548,17 @@ pub fn insufficient_scope(origin: &str) -> Reply {
 
 // ───────────────────────────── owner settings ─────────────────────────────
 
-/// Settings › Connected assistants: every assistant grant still in a slot, newest first (the app's
-/// own sign-ins are not connected assistants and are not listed).
-pub async fn list_grants<S: Store>(store: &mut S, now: u64) -> Result<Value, Fault> {
+/// `GET /v1/assistants` (`AssistantGrantList`): every assistant grant still in a slot, the active ones
+/// first, then newest first (`ORDER BY status, granted_at DESC` in grants.ts). The app's own sign-ins
+/// are not connected assistants and are not listed.
+pub async fn list_assistants<S: Store>(store: &mut S, now: u64) -> Result<Value, Fault> {
     let mut grants: Vec<Grant> = read_grant_slots(store).await?.1.into_iter().filter_map(|(_, g)| g).filter(|g| !g.is_app()).collect();
-    grants.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| b.id.cmp(&a.id)));
-    Ok(json!({"connections": grants.iter().map(|g| g.summary(now)).collect::<Vec<_>>()}))
+    grants.sort_by(|a, b| b.live(now).cmp(&a.live(now)).then_with(|| b.created_at.cmp(&a.created_at)).then_with(|| b.id.cmp(&a.id)));
+    Ok(json!({"grants": grants.iter().map(|g| g.assistant_grant(now)).collect::<Vec<_>>()}))
 }
 
-/// Settings › Connected assistants › Disconnect: effective on the next request.
+/// `POST /v1/assistants/{id}/disconnect` (`AssistantGrant`): effective on the next request. `None` when
+/// there is no such assistant grant.
 pub async fn disconnect<S: Store>(store: &mut S, now: u64, grant_id: &str) -> Result<Option<Value>, Fault> {
     for _ in 0..ATTEMPTS {
         let Some((old, mut grant)) = load_grant(store, grant_id).await? else { return Ok(None) };
@@ -1560,12 +1567,12 @@ pub async fn disconnect<S: Store>(store: &mut S, now: u64, grant_id: &str) -> Re
             return Ok(None);
         }
         if !grant.active && grant.refresh.is_none() && grant.access.is_empty() {
-            return Ok(Some(grant.summary(now)));
+            return Ok(Some(grant.assistant_grant(now)));
         }
         grant.revoke(now, "owner_disconnect");
         grant.version += 1;
         if save_grant(store, &old, &grant).await? {
-            return Ok(Some(grant.summary(now)));
+            return Ok(Some(grant.assistant_grant(now)));
         }
     }
     Err(Fault::Unavailable)

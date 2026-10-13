@@ -368,19 +368,29 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
             Ok(envelope) => execute(store, principal, now_ms, &envelope).await,
             Err(_) => Err(CmdError::new("invalid_command", "the request body is not valid JSON")),
         },
-        // Settings › Connected assistants: the owner's alone.
-        ("GET", "/v1/connections") | ("POST", _) if path.starts_with("/v1/connections") && principal != OWNER => {
-            Err(CmdError::new("forbidden", "only the owner manages connected assistants"))
-        }
-        ("GET", "/v1/connections") => oauth::list_grants(store, now_ms).await.map_err(fault_error),
+        // Settings › Connected assistants, Connections and Notifications: the owner's alone.
+        ("GET" | "POST", p) if owner_settings(p) && principal != OWNER => Err(CmdError::new("forbidden", "only the owner manages connected assistants, connections and notification devices")),
+        ("GET", "/v1/assistants") => oauth::list_assistants(store, now_ms).await.map_err(fault_error),
         ("POST", p) if disconnect_target(p).is_some() => {
             let id = disconnect_target(p).unwrap_or_default();
             match oauth::disconnect(store, now_ms, id).await {
-                Ok(Some(c)) => Ok(json!({"connection": c})),
+                Ok(Some(grant)) => Ok(grant),
                 Ok(None) => Err(CmdError::new("not_found", "that connected assistant was not found")),
                 Err(f) => Err(fault_error(f)),
             }
         }
+        // Outbound tool connections (Google Workspace, owner-added MCP services) cannot be registered
+        // on this server, so there are none: the list is empty and every connection is not found.
+        ("GET", "/v1/connections") => Ok(json!({"connections": [], "readAt": instant(now_ms)})),
+        ("POST", "/v1/connections") => Err(CmdError::with(
+            "module_unavailable",
+            "connecting Google Workspace or an MCP tool service is not ported to this server; the wardrobe works without one",
+            json!({"module": "connections"}),
+        )),
+        ("GET" | "POST", p) if p.starts_with("/v1/connections/") => Err(CmdError::new("not_found", "that connection was not found: this server has no outbound connections (connecting one is not ported)")),
+        ("GET", "/v1/devices") => crate::devices::list(store).await,
+        ("POST", "/v1/devices") => crate::devices::register(store, now_ms, &req.body).await,
+        ("POST", p) if crate::devices::remove_target(p).is_some() => crate::devices::remove(store, crate::devices::remove_target(p).unwrap_or_default()).await,
         _ => Err(CmdError::new("not_found", "no such route")),
     };
     match result {
@@ -397,10 +407,15 @@ fn trip_target(path: &str) -> Option<&str> {
     (!id.is_empty() && !id.contains('/')).then_some(id)
 }
 
-/// The grant ID of `POST /v1/connections/{id}/disconnect`, if the path is one.
+/// The grant ID of `POST /v1/assistants/{id}/disconnect`, if the path is one.
 fn disconnect_target(path: &str) -> Option<&str> {
-    let id = path.strip_prefix("/v1/connections/")?.strip_suffix("/disconnect")?;
+    let id = path.strip_prefix("/v1/assistants/")?.strip_suffix("/disconnect")?;
     (!id.is_empty() && !id.contains('/')).then_some(id)
+}
+
+/// The owner-only settings routes: connected assistants, outbound connections, notification devices.
+fn owner_settings(path: &str) -> bool {
+    ["/v1/assistants", "/v1/connections", "/v1/devices"].iter().any(|p| path == *p || path.strip_prefix(p).is_some_and(|rest| rest.starts_with('/')))
 }
 
 fn fault_error(f: oauth::Fault) -> CmdError {

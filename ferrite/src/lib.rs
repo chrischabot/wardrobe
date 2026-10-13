@@ -11,6 +11,7 @@ pub mod inference;
 pub mod laundry;
 pub mod canonical;
 pub mod command_types;
+pub mod devices;
 pub mod feedback;
 pub mod trips;
 pub mod ledger;

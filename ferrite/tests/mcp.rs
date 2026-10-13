@@ -275,8 +275,8 @@ async fn registration_and_consent_refuse_what_they_must() {
     let r = send(&mut store, T0, "POST", "/oauth/authorize", None, form(&deny)).await;
     assert!(r.header("location").unwrap().starts_with(&format!("{REDIRECT}?error=access_denied")));
     // Nothing was granted by any of that.
-    let list = send(&mut store, T0, "GET", "/v1/connections", Some(&format!("Bearer {OWNER}")), vec![]).await;
-    assert_eq!(list.json["connections"], json!([]));
+    let list = send(&mut store, T0, "GET", "/v1/assistants", Some(&format!("Bearer {OWNER}")), vec![]).await;
+    assert_eq!(list.json["grants"], json!([]));
 }
 
 #[tokio::test]
@@ -423,8 +423,8 @@ async fn the_codex_flow_reads_writes_with_a_receipt_and_undoes() {
         assert_eq!((t.status, t.json["error"].clone()), (400, json!("invalid_grant")));
     }
     let owner = format!("Bearer {OWNER}");
-    let list = send(&mut store, T0 + 9_000, "GET", "/v1/connections", Some(&owner), vec![]).await;
-    assert_eq!(list.json["connections"][0]["status"], "revoked");
+    let list = send(&mut store, T0 + 9_000, "GET", "/v1/assistants", Some(&owner), vec![]).await;
+    assert_eq!(list.json["grants"][0]["status"], "revoked");
 }
 
 #[tokio::test]
@@ -640,8 +640,8 @@ async fn codes_are_bound_to_pkce_and_a_replayed_code_ends_the_grant() {
     assert_eq!((retry.status, retry.json["error"].clone()), (400, json!("invalid_grant")));
     assert_eq!(rpc(&mut store, T0, &access, 2, "ping", json!({})).await.status, 401);
     let owner = format!("Bearer {OWNER}");
-    let list = send(&mut store, T0, "GET", "/v1/connections", Some(&owner), vec![]).await;
-    assert_eq!(list.json["connections"][0]["status"], "revoked");
+    let list = send(&mut store, T0, "GET", "/v1/assistants", Some(&owner), vec![]).await;
+    assert_eq!(list.json["grants"][0]["status"], "revoked");
 
     // Without the verifier too.
     let code = consent(&mut store, &client, "wardrobe.read", false).await;
@@ -718,8 +718,8 @@ async fn pruning_and_refresh_at_the_idle_boundary_never_lose_the_refreshed_grant
     // And the client's new refresh token keeps working.
     let r1 = refreshed.json["refresh_token"].as_str().unwrap();
     assert_eq!(send(&mut store, at_prune + 1, "POST", "/oauth/token", None, refresh(r1)).await.status, 200);
-    let list = send(&mut store, at_prune + 1, "GET", "/v1/connections", Some(&owner), vec![]).await;
-    let active = list.json["connections"].as_array().unwrap().iter().filter(|c| c["status"] == "active").count();
+    let list = send(&mut store, at_prune + 1, "GET", "/v1/assistants", Some(&owner), vec![]).await;
+    let active = list.json["grants"].as_array().unwrap().iter().filter(|c| c["status"] == "active").count();
     assert_eq!(active, 2, "the refreshed grant and the new one");
 }
 
@@ -729,8 +729,8 @@ async fn concurrent_deliveries_of_one_consent_create_one_grant() {
     let owner = format!("Bearer {OWNER}");
     // Slot 0: an older live connection.
     let (client, _) = connect(&mut store, false).await;
-    let list = send(&mut store, T0, "GET", "/v1/connections", Some(&owner), vec![]).await;
-    let old = list.json["connections"][0]["grantId"].as_str().unwrap().to_string();
+    let list = send(&mut store, T0, "GET", "/v1/assistants", Some(&owner), vec![]).await;
+    let old = list.json["grants"][0]["grantId"].as_str().unwrap().to_string();
     let t = T0 + CONSENT_FORM_TTL_MS + CLOCK_SKEW_MS + 10;
     let ch = challenge();
     let mut params = authorize_params(&client, &ch, "wardrobe.read");
@@ -739,7 +739,7 @@ async fn concurrent_deliveries_of_one_consent_create_one_grant() {
     // Delivery B, on a copy: the owner disconnects the old connection, which
     // frees slot 0, and B creates its grant there.
     let mut other = store.clone();
-    assert_eq!(send(&mut other, t, "POST", &format!("/v1/connections/{old}/disconnect"), Some(&owner), vec![]).await.status, 200);
+    assert_eq!(send(&mut other, t, "POST", &format!("/v1/assistants/{old}/disconnect"), Some(&owner), vec![]).await.status, 200);
     let b = send_as(&mut other, t, "POST", "/oauth/authorize", None, signed(&params, t), "consent-c").await;
     assert!(b.header("location").unwrap().contains("code=wac.grt_0000"), "{:?}", b.header("location"));
 
@@ -766,8 +766,8 @@ async fn a_redelivered_consent_or_exchange_is_answered_again_not_repeated() {
     let again = send_as(&mut store, T0 + 500, "POST", "/oauth/authorize", None, signed(&params, T0), "consent-1").await;
     assert_eq!((first.status, again.status), (302, 302));
     assert_eq!(first.header("location"), again.header("location"), "the same code, not a second grant");
-    let list = send(&mut store, T0, "GET", "/v1/connections", Some(&owner), vec![]).await;
-    assert_eq!(list.json["connections"].as_array().unwrap().len(), 1);
+    let list = send(&mut store, T0, "GET", "/v1/assistants", Some(&owner), vec![]).await;
+    assert_eq!(list.json["grants"].as_array().unwrap().len(), 1);
     let location = first.header("location").unwrap().to_string();
     let code = location.split("code=").nth(1).unwrap().split('&').next().unwrap().to_string();
 
@@ -798,8 +798,8 @@ async fn a_redelivered_consent_or_exchange_is_answered_again_not_repeated() {
     // The same spent code in a different request is still a replay.
     let replay = send(&mut store, T0 + 7_000, "POST", "/oauth/token", None, body).await;
     assert_eq!(replay.status, 400);
-    let list = send(&mut store, T0 + 7_000, "GET", "/v1/connections", Some(&owner), vec![]).await;
-    assert_eq!(list.json["connections"][0]["status"], "revoked");
+    let list = send(&mut store, T0 + 7_000, "GET", "/v1/assistants", Some(&owner), vec![]).await;
+    assert_eq!(list.json["grants"][0]["status"], "revoked");
 }
 
 #[tokio::test]
@@ -818,8 +818,8 @@ async fn retries_of_a_replaced_token_never_push_out_a_redelivery_and_a_dead_answ
     // One more retry is refused without ending anything.
     let over = send(&mut store, T0 + 2_000, "POST", "/oauth/token", None, refresh(&r0)).await;
     assert_eq!((over.status, over.json["error"].clone()), (400, json!("invalid_grant")), "{}", over.text);
-    let list = send(&mut store, T0 + 2_000, "GET", "/v1/connections", Some(&owner), vec![]).await;
-    assert_eq!(list.json["connections"][0]["status"], "active");
+    let list = send(&mut store, T0 + 2_000, "GET", "/v1/assistants", Some(&owner), vec![]).await;
+    assert_eq!(list.json["grants"][0]["status"], "active");
     // The first delivery is still recognised: the same answer, nothing changed.
     let before = store.clone();
     let again = send_as(&mut store, T0 + 3_000, "POST", "/oauth/token", None, refresh(&r0), "retry-0").await;
@@ -845,9 +845,9 @@ async fn a_late_consent_redelivery_never_recreates_a_disconnected_grant() {
     params.extend([("owner_token", OWNER), ("decision", "allow")]);
     let first = send_as(&mut store, T0, "POST", "/oauth/authorize", None, signed(&params, T0), "consent-9").await;
     assert_eq!(first.status, 302);
-    let list = send(&mut store, T0, "GET", "/v1/connections", Some(&owner), vec![]).await;
-    let grant = list.json["connections"][0]["grantId"].as_str().unwrap().to_string();
-    assert_eq!(send(&mut store, T0 + 1, "POST", &format!("/v1/connections/{grant}/disconnect"), Some(&owner), vec![]).await.status, 200);
+    let list = send(&mut store, T0, "GET", "/v1/assistants", Some(&owner), vec![]).await;
+    let grant = list.json["grants"][0]["grantId"].as_str().unwrap().to_string();
+    assert_eq!(send(&mut store, T0 + 1, "POST", &format!("/v1/assistants/{grant}/disconnect"), Some(&owner), vec![]).await.status, 200);
 
     // Inside the form's lifetime the disconnected grant keeps its slot: a
     // redelivery is answered from it (its code exchanges for nothing) and a
@@ -896,8 +896,8 @@ async fn a_redelivered_exchange_is_answered_while_its_tokens_are_usable_and_refu
     let stale = send_as(&mut store, T0 + 4_000, "POST", "/oauth/token", None, body, "x-1").await;
     assert_eq!((stale.status, stale.json["error"].clone()), (400, json!("invalid_grant")), "{}", stale.text);
     assert!(store.same_records(&before));
-    let list = send(&mut store, T0 + 4_000, "GET", "/v1/connections", Some(&owner), vec![]).await;
-    assert_eq!(list.json["connections"][0]["status"], "active");
+    let list = send(&mut store, T0 + 4_000, "GET", "/v1/assistants", Some(&owner), vec![]).await;
+    assert_eq!(list.json["grants"][0]["status"], "active");
 }
 
 #[tokio::test]
@@ -913,8 +913,8 @@ async fn a_replaced_refresh_token_is_retried_only_within_its_fixed_window() {
     assert_eq!(send(&mut store, T0 + 1_000 + PREVIOUS_RETRY_MS - 1, "POST", "/oauth/token", None, refresh(&r0)).await.status, 200);
     let after = send(&mut store, T0 + 1_000 + PREVIOUS_RETRY_MS + 1, "POST", "/oauth/token", None, refresh(&r0)).await;
     assert_eq!((after.status, after.json["error"].clone()), (400, json!("invalid_grant")));
-    let list = send(&mut store, T0 + 1_000 + PREVIOUS_RETRY_MS + 1, "GET", "/v1/connections", Some(&owner), vec![]).await;
-    assert_eq!(list.json["connections"][0]["status"], "revoked", "late reuse of a replaced token is a replay");
+    let list = send(&mut store, T0 + 1_000 + PREVIOUS_RETRY_MS + 1, "GET", "/v1/assistants", Some(&owner), vec![]).await;
+    assert_eq!(list.json["grants"][0]["status"], "revoked", "late reuse of a replaced token is a replay");
 
     // Inside the window, using a successor ends the replaced token at once.
     let mut store = MemStore::default();
@@ -926,8 +926,8 @@ async fn a_replaced_refresh_token_is_retried_only_within_its_fixed_window() {
     assert_eq!(send(&mut store, T0 + 2_000, "POST", "/oauth/token", None, refresh(&r1)).await.status, 200);
     let old = send(&mut store, T0 + 3_000, "POST", "/oauth/token", None, refresh(&r0)).await;
     assert_eq!((old.status, old.json["error"].clone()), (400, json!("invalid_grant")), "the successor was used");
-    let list = send(&mut store, T0 + 3_000, "GET", "/v1/connections", Some(&owner), vec![]).await;
-    assert_eq!(list.json["connections"][0]["status"], "revoked");
+    let list = send(&mut store, T0 + 3_000, "GET", "/v1/assistants", Some(&owner), vec![]).await;
+    assert_eq!(list.json["grants"][0]["status"], "revoked");
 }
 
 #[tokio::test]
@@ -948,24 +948,28 @@ async fn expired_authorizations_hold_no_place_and_are_shown_as_expired() {
     assert_eq!(full.status, 409, "{}", full.text);
 
     // Once the codes expire unused (and their consent forms with them) they
-    // are expired, and a new consent fits.
+    // can produce no token (listed as revoked: the contract has no expired
+    // state, and nobody revoked them), and a new consent fits.
     let later = T0 + CONSENT_FORM_TTL_MS + CLOCK_SKEW_MS + 1;
-    let list = send(&mut store, later, "GET", "/v1/connections", Some(&owner), vec![]).await;
-    let statuses: Vec<&str> = list.json["connections"].as_array().unwrap().iter().map(|c| c["status"].as_str().unwrap()).collect();
+    let list = send(&mut store, later, "GET", "/v1/assistants", Some(&owner), vec![]).await;
+    let statuses: Vec<&str> = list.json["grants"].as_array().unwrap().iter().map(|c| c["status"].as_str().unwrap()).collect();
     assert_eq!(statuses.len(), MAX_GRANTS);
-    assert_eq!(statuses.iter().filter(|s| **s == "expired").count(), MAX_GRANTS - 1);
+    assert_eq!(statuses.iter().filter(|s| **s == "revoked").count(), MAX_GRANTS - 1);
     assert_eq!(statuses.iter().filter(|s| **s == "active").count(), 1);
+    let revoked = list.json["grants"].as_array().unwrap().iter().filter(|c| c["status"] == "revoked").collect::<Vec<_>>();
+    assert!(revoked.iter().all(|c| c["revokedAt"].is_null()), "expired, not revoked by anyone: {}", list.text);
+    assert_eq!(list.json["grants"][0]["status"], "active", "active grants are listed first: {}", list.text);
     let fits = send(&mut store, later, "POST", "/oauth/authorize", None, signed(&params, later)).await;
     assert_eq!(fits.status, 302, "{}", fits.text);
-    let list = send(&mut store, later, "GET", "/v1/connections", Some(&owner), vec![]).await;
-    let statuses: Vec<&str> = list.json["connections"].as_array().unwrap().iter().map(|c| c["status"].as_str().unwrap()).collect();
+    let list = send(&mut store, later, "GET", "/v1/assistants", Some(&owner), vec![]).await;
+    let statuses: Vec<&str> = list.json["grants"].as_array().unwrap().iter().map(|c| c["status"].as_str().unwrap()).collect();
     assert_eq!((statuses.len(), statuses.iter().filter(|s| **s == "active").count()), (MAX_GRANTS, 2), "the new grant took an expired grant's slot");
     assert_eq!(store.count(b"o/grant/"), MAX_GRANTS, "storage stays at the slots");
 
-    // A refresh token idle for 90 days: the connection is shown as expired.
+    // A refresh token idle for 90 days: the connection can produce no token and is listed as revoked.
     let idle = T0 + REFRESH_IDLE_MS + 1;
-    let list = send(&mut store, idle, "GET", "/v1/connections", Some(&owner), vec![]).await;
-    assert!(list.json["connections"].as_array().unwrap().iter().all(|c| c["status"] == "expired"), "{}", list.text);
+    let list = send(&mut store, idle, "GET", "/v1/assistants", Some(&owner), vec![]).await;
+    assert!(list.json["grants"].as_array().unwrap().iter().all(|c| c["status"] == "revoked"), "{}", list.text);
 }
 
 #[tokio::test]
@@ -974,16 +978,22 @@ async fn the_owner_disconnects_and_the_next_request_is_refused() {
     let (client, tokens) = connect(&mut store, true).await;
     let access = tokens["access_token"].as_str().unwrap();
     let owner = format!("Bearer {OWNER}");
-    let list = send(&mut store, T0, "GET", "/v1/connections", Some(&owner), vec![]).await;
-    let c = list.json["connections"][0].clone();
-    assert_eq!((c["clientName"].clone(), c["access"].clone(), c["status"].clone(), c["redirectHost"].clone()), (json!("Codex"), json!("read_write"), json!("active"), json!("127.0.0.1:43123")));
+    let list = send(&mut store, T0, "GET", "/v1/assistants", Some(&owner), vec![]).await;
+    let c = list.json["grants"][0].clone();
+    // `AssistantGrant`: exactly the contract's fields.
+    let mut keys: Vec<&str> = c.as_object().unwrap().keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, vec!["access", "clientDomain", "clientId", "clientName", "clientUri", "grantId", "grantedAt", "lastUsedAt", "revokedAt", "scopes", "status", "version"]);
+    assert_eq!((c["clientName"].clone(), c["access"].clone(), c["status"].clone(), c["scopes"].clone()), (json!("Codex"), json!("read_write"), json!("active"), json!(["wardrobe.read", "wardrobe.write"])));
+    assert!(c["lastUsedAt"].is_string() && c["revokedAt"].is_null() && c["version"].as_u64().unwrap() >= 1, "{c}");
     assert!(!list.text.contains("hash"), "{}", list.text);
     let grant = c["grantId"].as_str().unwrap();
 
-    let gone = send(&mut store, T0, "POST", &format!("/v1/connections/{grant}/disconnect"), Some(&owner), vec![]).await;
-    assert_eq!((gone.status, gone.json["connection"]["status"].clone()), (200, json!("revoked")));
+    let gone = send(&mut store, T0, "POST", &format!("/v1/assistants/{grant}/disconnect"), Some(&owner), vec![]).await;
+    assert_eq!((gone.status, gone.json["status"].clone(), gone.json["grantId"].clone()), (200, json!("revoked"), json!(grant)));
+    assert!(gone.json["revokedAt"].is_string(), "{}", gone.text);
     // Malformed disconnect paths are not found, never a crash.
-    for bad in ["/v1/connections/disconnect", "/v1/connections//disconnect", "/v1/connections/a/b/disconnect"] {
+    for bad in ["/v1/assistants/disconnect", "/v1/assistants//disconnect", "/v1/assistants/a/b/disconnect"] {
         assert_eq!(send(&mut store, T0, "POST", bad, Some(&owner), vec![]).await.status, 404, "{bad}");
     }
     let r = rpc(&mut store, T0, access, 1, "ping", json!({})).await;

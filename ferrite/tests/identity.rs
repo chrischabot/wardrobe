@@ -208,11 +208,11 @@ async fn app_and_assistant_tokens_stay_on_their_own_side() {
     assert_eq!((r.status, r.json["error"]["code"].clone()), (401, json!("unauthenticated")));
     assert!(r.json["error"]["message"].as_str().unwrap().contains("/mcp only"), "{}", r.text);
     // Settings › Connected assistants lists the assistant, not the app's sign-in, and cannot disconnect the app.
-    let list = send(&mut store, T0 + 1_000, "GET", "/v1/connections", Some(OWNER), vec![]).await;
-    let names: Vec<&str> = list.json["connections"].as_array().unwrap().iter().map(|c| c["clientName"].as_str().unwrap()).collect();
+    let list = send(&mut store, T0 + 1_000, "GET", "/v1/assistants", Some(OWNER), vec![]).await;
+    let names: Vec<&str> = list.json["grants"].as_array().unwrap().iter().map(|c| c["clientName"].as_str().unwrap()).collect();
     assert_eq!(names, vec!["Codex"]);
     let app_grant = app.split('.').nth(1).unwrap();
-    let r = send(&mut store, T0 + 1_000, "POST", &format!("/v1/connections/{app_grant}/disconnect"), Some(OWNER), vec![]).await;
+    let r = send(&mut store, T0 + 1_000, "POST", &format!("/v1/assistants/{app_grant}/disconnect"), Some(OWNER), vec![]).await;
     assert_eq!(r.status, 404, "{}", r.text);
 
     // The app's request is refused when it asks for anything but the owner scope, or for the MCP resource;
