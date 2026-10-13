@@ -571,13 +571,16 @@ public struct ApiErrorResponse: Codable, Sendable, Equatable {
 public struct AssetImageQuery: Codable, Sendable, Equatable {
     public var variant: Variant?
     public var width: Int?
+    public var withLocation: WithLocation?
 
     public init(
         variant: Variant? = nil,
-        width: Int? = nil
+        width: Int? = nil,
+        withLocation: WithLocation? = nil
     ) {
         self.variant = variant
         self.width = width
+        self.withLocation = withLocation
     }
 
     public enum Variant: String, Codable, Sendable, CaseIterable {
@@ -585,6 +588,17 @@ public struct AssetImageQuery: Codable, Sendable, Equatable {
         case original
         case cutout
         case catalogue
+        /// A member this client version does not know; the contract requires tolerating it.
+        case unknown
+
+        public init(from decoder: Decoder) throws {
+            let rawValue = try decoder.singleValueContainer().decode(String.self)
+            self = Self(rawValue: rawValue) ?? .unknown
+        }
+    }
+
+    public enum WithLocation: String, Codable, Sendable, CaseIterable {
+        case `true`
         /// A member this client version does not know; the contract requires tolerating it.
         case unknown
 
@@ -7730,6 +7744,7 @@ public struct ExportJob: Codable, Sendable, Equatable {
     public var state: State
     public var complete: Bool
     public var encrypted: Bool
+    public var includesLocation: Bool?
     public var formatVersion: String
     public var requestedAt: Instant
     public var finishedAt: Instant?
@@ -7745,6 +7760,7 @@ public struct ExportJob: Codable, Sendable, Equatable {
         state: State,
         complete: Bool,
         encrypted: Bool,
+        includesLocation: Bool? = nil,
         formatVersion: String,
         requestedAt: Instant,
         finishedAt: Instant? = nil,
@@ -7759,6 +7775,7 @@ public struct ExportJob: Codable, Sendable, Equatable {
         self.state = state
         self.complete = complete
         self.encrypted = encrypted
+        self.includesLocation = includesLocation
         self.formatVersion = formatVersion
         self.requestedAt = requestedAt
         self.finishedAt = finishedAt
@@ -7818,13 +7835,16 @@ public struct ExportList: Codable, Sendable, Equatable {
 public struct ExportRequest: Codable, Sendable, Equatable {
     public var clientRequestId: String
     public var passphrase: String?
+    public var includeLocation: Bool?
 
     public init(
         clientRequestId: String,
-        passphrase: String? = nil
+        passphrase: String? = nil,
+        includeLocation: Bool? = nil
     ) {
         self.clientRequestId = clientRequestId
         self.passphrase = passphrase
+        self.includeLocation = includeLocation
     }
 }
 
@@ -13685,11 +13705,14 @@ public struct Proposal: Codable, Sendable, Equatable {
 
 public struct ProposalDecisionRequest: Codable, Sendable, Equatable {
     public var decision: Decision
+    public var acknowledgedRestrictionIds: [String]?
 
     public init(
-        decision: Decision
+        decision: Decision,
+        acknowledgedRestrictionIds: [String]? = nil
     ) {
         self.decision = decision
+        self.acknowledgedRestrictionIds = acknowledgedRestrictionIds
     }
 
     public enum Decision: String, Codable, Sendable, CaseIterable {
