@@ -1076,8 +1076,9 @@ describe("A. every command type, sent by a connected assistant", () => {
     expect((JSON.parse(String((resource.contents[0] as { text?: string }).text)).types as { type: string }[]).map((t) => t.type)).toEqual(types.map((t) => t.type));
     const view = await mcpCall(writer, "garderobe_inventory", { view: "command_types" });
     expect((view.data.data.types as { type: string }[]).map((t) => t.type)).toEqual(types.map((t) => t.type));
-    /** Not available to a connection at all (apps/worker/src/mcp/policy.ts): the system's own bookkeeping, account-level commands, commands that take no statement of the owner's. */
-    const internal = (t: (typeof types)[number]): boolean => t.class === "system" || t.requiredScope === "admin" || !t.authorizations.includes("owner_statement");
+    /** Not available to a connection at all (apps/worker/src/mcp/policy.ts): the system's own bookkeeping, account-level commands, commands that take no statement of the owner's, and HTTP upload-session protocol steps. */
+    const UPLOAD_SESSION_TYPES = new Set(["media.authorize_upload", "media.finalize_upload"]);
+    const internal = (t: (typeof types)[number]): boolean => UPLOAD_SESSION_TYPES.has(t.type) || t.class === "system" || t.requiredScope === "admin" || !t.authorizations.includes("owner_statement");
     // The published flag marks exactly the types a connection's request does not simply run: lifts, internal
     // types, section 3, and a type whose empty request already reaches an unbounded set (a bulk correction).
     for (const t of types) expect(t.consequential, t.type).toBe(LIFT_TYPES.has(t.type) || internal(t) || SECTION3_TYPES.has(t.type) || unboundedChange(t.type, {}));
