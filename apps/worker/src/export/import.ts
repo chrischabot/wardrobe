@@ -34,6 +34,40 @@ function reject(message: string, details: Record<string, unknown> = {}): never {
   throw new ApiException("invalid_command", message, { rejected: true, ...details });
 }
 
+/**
+ * Validate media rendition derivation order before writing any component to D1: a cycle or an unknown
+ * `source_rendition_id` is refused before ledger, daily or assistant records are written.
+ */
+function validateMediaRenditions(mediaFile: unknown): void {
+  if (!mediaFile || typeof mediaFile !== "object") return;
+  const records = (mediaFile as { records?: { records?: { renditions?: Record<string, unknown>[] } } }).records?.records;
+  const rows = Array.isArray(records?.renditions) ? records.renditions : [];
+  if (rows.length === 0) return;
+  const byId = new Map<string, Record<string, unknown>>();
+  for (const r of rows) {
+    if (!r || typeof r !== "object") continue;
+    const id = String(r.rendition_id ?? "");
+    if (!id || byId.has(id)) throw new ApiException("invalid_command", "every imported file record needs its own ID");
+    byId.set(id, r);
+  }
+  const state = new Map<string, "visiting" | "done">();
+  const visit = (r: Record<string, unknown>) => {
+    const id = String(r.rendition_id);
+    const seen = state.get(id);
+    if (seen === "done") return;
+    if (seen === "visiting") throw new ApiException("invalid_command", `file ${id} is derived, through other files, from itself`);
+    state.set(id, "visiting");
+    const source = r.source_rendition_id;
+    if (source !== null && source !== undefined) {
+      const parent = byId.get(String(source));
+      if (!parent) throw new ApiException("invalid_command", `file ${id} names a source file that is not in the same import`);
+      visit(parent);
+    }
+    state.set(id, "done");
+  };
+  for (const r of byId.values()) visit(r);
+}
+
 /** Verify the package against its own manifest and checksum list. Nothing is written before this passes. */
 async function verifyPackage(files: Map<string, Uint8Array>): Promise<z.infer<typeof Manifest>> {
   const manifestBytes = files.get("manifest.json");
@@ -149,6 +183,9 @@ export async function importPackage(app: App, session: OwnerSession, body: Uint8
       }
       ledgerFiles.set(c.name, LedgerFile.parse(raw));
       reports.push({ name: c.name, imported: 0, skipped: 0, note: component(c.name)?.state === "complete" ? null : `The package marks this component as ${component(c.name)?.state ?? "unknown"}.` });
+    }
+    if (app.media && files.has("records/media.json")) {
+      validateMediaRenditions(jsonFile("records/media.json"));
     }
     const mergedInto: { garmentId: string; target: string }[] = [];
     for (const spec of LEDGER_TABLES) {

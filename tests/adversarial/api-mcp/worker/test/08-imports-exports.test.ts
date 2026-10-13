@@ -1347,7 +1347,7 @@ describe("imports: what a well-formed hostile package (manifest and checksums re
     expect(traversal, "what an import whose rendition records name a path with traversal leaves in the target").toEqual({ state: "completed", liveImages: 0, renditionsNotDeleted: 0, storedFiles: [] });
   });
 
-  defect("D08-2", "an import that fails part-way says 'nothing from it was kept' but leaves the records of the modules that had already been written", async () => {
+  it("[fixed D08-2] an import that fails part-way says 'nothing from it was kept' but leaves the records of the modules that had already been written", async () => {
     // The ledger, the daily records, the assistant's records and the conversation import; then the image records are refused.
     // The refusal: every derived image file names itself as its source. Its file and record otherwise match, so it passes every
     // file check, and the importer refuses the image records as a whole when it orders them by source, after the other modules
