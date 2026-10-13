@@ -1544,6 +1544,28 @@ pub async fn authenticate_app<S: Store>(store: &mut S, presented: &str, now: u64
     Ok(grant.id)
 }
 
+/// What an account recovery outside a sign-in ends (`/auth/recovery/complete`, src/recovery.rs): every
+/// grant that can still produce tokens, revoked as `account_recovery`, as the recovery sign-in ends them.
+/// Returns the grant store's version the slots were read at (the caller commits with
+/// [`commit_grants`] on it, so nothing changed meanwhile), the revoked records, and how many app
+/// sign-ins and connected assistants they are.
+pub(crate) async fn recovery_revocations<S: Store>(store: &mut S, now: u64) -> Result<(Option<Vec<u8>>, Vec<(Vec<u8>, Vec<u8>)>, usize, usize), Fault> {
+    let (epoch, slots) = read_grant_slots(store).await?;
+    let mut records = Vec::new();
+    let (mut apps, mut assistants) = (0, 0);
+    for mut g in slots.into_iter().filter_map(|(_, g)| g).filter(|g| g.active || g.refresh.is_some() || !g.access.is_empty()) {
+        if g.is_app() {
+            apps += 1;
+        } else {
+            assistants += 1;
+        }
+        g.revoke(now, "account_recovery");
+        g.version += 1;
+        records.push((grant_key(&g.id).ok_or(Fault::Corrupt)?, g.to_json().to_string().into_bytes()));
+    }
+    Ok((epoch, records, apps, assistants))
+}
+
 /// Sign out everywhere: every sign-in of the owner's app ends now, in one commit; connected
 /// assistants are not touched. Returns how many sign-ins still held tokens.
 pub async fn sign_out_app<S: Store>(store: &mut S, now: u64) -> Result<usize, Fault> {

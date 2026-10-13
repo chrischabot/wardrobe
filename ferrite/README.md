@@ -112,7 +112,9 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `GET /v1/me` | `MeResponse` for the one owner this port serves (`userId: "owner"`), with the caller's channel (`ios` for the owner token and the app's sign-in) and scopes (`read`, `write`, `admin` for the owner; `read`, `write` for the assistant token); no linked identities (no identity provider). `recoveryKit` says whether an unused recovery kit exists and when it was issued; `issuedRecoveryKit` is always null (no claim) |
 | `POST /v1/sessions/revoke` (owner only) | `SignOutEverywhereResponse`: sign out everywhere. Every sign-in of the owner's app ends now (its access and refresh tokens stop working); connected assistants and the owner token are untouched. `sessionsRevokedBefore` is the moment of the request |
 | `POST /v1/recovery-kit` (owner only) | `RecoveryKitIssued`: a new recovery kit, shown once (`kit` with the code, storage instruction and a plain-text download), `replacedKitId` (the unused kit it replaces, which stops working in the same commit, or null) and a `receiptId`. The assistant token is refused (403). See "Recovery kit" |
-| `POST /auth/claim`, `/auth/link/complete`, `/auth/recovery/start`, `/auth/recovery/complete`, `POST /v1/identities/link`, `/v1/identities/unlink`, `/v1/account/delete` | 501 `module_unavailable` with `details.module: "identity"` and `details.reason`: `no_identity_provider` for claims and linked identities (they need an identity provider, Cloudflare Access in the TypeScript Worker); `recovery_on_sign_in_page` for the recovery transaction (the code is used on the app's sign-in page instead); `erasure_unavailable` for account deletion (the storage binding has no delete and no key listing, so it cannot erase every record). The `/auth/` ones answer before any sign-in; the `/v1/` ones after it. Nothing is written |
+| `POST /auth/recovery/start` (no sign-in) | `RecoveryTransaction`: `transactionId` (`rtx_…`), `expiresAt` (15 minutes on) and `attemptsRemaining: 5`. Replaces any earlier transaction (one at a time). See "Recovery kit" |
+| `POST /auth/recovery/complete` (no sign-in) | `RecoveryCompleteResponse` for a valid recovery code in an open transaction: the kit is spent, every app sign-in and connected assistant ends, and the replacement kit is shown once (`replacementKit`), in one commit; `identityLinked: false`, `previousIdentitiesUnlinked: 0` (no identity provider), `connectionsUnchanged: true`. A malformed request is 400 `invalid_command`, an unknown transaction 404, a finished or expired one 410 `expired`, a wrong code 403 `forbidden` (`recovery_credential_not_accepted`, `attemptsRemaining`) and the fifth wrong code 403 `unrecoverable` |
+| `POST /auth/claim`, `/auth/link/complete`, `POST /v1/identities/link`, `/v1/identities/unlink`, `/v1/account/delete` | 501 `module_unavailable` with `details.module: "identity"` and `details.reason`: `no_identity_provider` for claims and linked identities (they need an identity provider, Cloudflare Access in the TypeScript Worker); `erasure_unavailable` for account deletion (the storage binding has no delete and no key listing, so it cannot erase every record). The `/auth/` ones answer before any sign-in; the `/v1/` ones after it. Nothing is written |
 | `GET /v1/recovery` | `RecoveryStatus`: the last published home board for the owner's day (ID, date, revision, publication time) and its Calendar projection, `actions: ["open_today"]` when there is one, and diagnostics (`environment: "ferrite"`, the daily and assistant modules present and media absent, and why there is no board, or the board read's error in at most 200 characters). `pending` is always zero and `connectionIssues` always empty, see Known limits. Nothing is written |
 | `GET /v1/wardrobe/temperature-preview?temperatureC=` | `TemperaturePreview` as `temperaturePreview`: for a temperature from -40 to 50 °C, each owned garment in a top, mid-layer, bottom, outerwear or socks role that its thermal range would exclude, the active hard fabric-class rules that exclude a fabric there, and the outerwear ceiling. It reads the real seed's thermal ranges and rules and writes nothing; a missing or unreadable temperature is `invalid_command` |
 | `GET /v1/style[?date=]` | `StyleContext` as `getStyleContext`: the owner's profile verbatim (document `owner-profile` version 1, its SHA-256 and byte length), the profile's machine rules ordered by key with the passages they quote, his body measurements ordered by key, his size experiences by maker, the contract's precedence statement and `styleRevision` 0. Amendments, standing directions, day briefs and fact conflicts are always empty (no style command is ported). A malformed `date` is `invalid_command`. The owner and a connected assistant read it; nothing is written |
@@ -1000,9 +1002,23 @@ there, in place of the owner token.
   With every grant slot live, a recovery sign-in takes the oldest grant's
   slot. A queue redelivery of a recovery sign-in that already committed
   is answered with the same authorization code and writes nothing.
+- The recovery transaction (`POST /auth/recovery/start` and
+  `/auth/recovery/complete`, as `startRecovery` and `completeRecovery`)
+  serves a client that follows the TypeScript flow, such as the iOS
+  recovery screen. Start needs no sign-in and opens a transaction for 15
+  minutes and 5 attempts; only a hash of its ID is stored, in
+  `o/recovery-txn`, and starting another replaces it. Complete checks the
+  code like the sign-in page: a wrong code uses an attempt, and the fifth
+  fails the transaction (`unrecoverable`). A valid code, in one commit
+  guarded on the grant store's version, spends the kit, revokes every grant
+  as `account_recovery` (every app sign-in and connected assistant), stores
+  a replacement kit and marks the transaction completed. The answer shows
+  the replacement kit once; the owner signs the app in with its code on the
+  sign-in page, or with the owner token, which is unchanged.
 
 `tests/identity.rs` covers issuing, replacing, signing in by code, the
-refusals and the redelivery.
+refusals, the redelivery, and the transaction's success, attempts, expiry
+and replacement.
 
 The inventory is `src/seed/owner-inventory.json`, written by
 `scripts/build-seed.mjs`, which runs the TypeScript importer itself on
@@ -1266,10 +1282,13 @@ milestone, and outside the lines of the milestone in hand:
   - There is no identity provider, so claiming and linking identities answer
     501. Account deletion answers 501 too: the storage binding has no delete
     and no key listing, so an erasure could not reach every record.
-  - Recovery has no transaction (`/auth/recovery/start` and `/complete`
-    answer 501): the code is entered on the app's sign-in page. The iOS
-    client's recovery screen calls the transaction routes, so until it sends
-    the owner to the sign-in page instead, recovery works only from that page.
+  - The recovery transaction links no identity (`identityLinked: false`):
+    completing it does not sign the app in, so the owner then signs in on
+    the sign-in page with the replacement code or the owner token. Its only
+    limit is 5 attempts per transaction; anyone can start a new one, which
+    resets the count and ends the owner's open one. Guessing stays
+    infeasible (256-bit codes), but a stranger could keep replacing the
+    owner's transaction; the sign-in page's recovery field is unaffected.
   - A recovery sign-in is not rate limited: each attempt costs one hash and
     one comparison, and the code holds 256 random bits. It reports no counts
     of the sign-ins and assistants it ended (the page redirects to the app),
@@ -1483,7 +1502,7 @@ small change of its own, and passes `ferrite check`, `ferrite test` and
    weekly laundry reset, restrictions, owner settings (the availability
    estimator is done for its read), and multi-owner storage with a compacted, sharded journal.
    Sign-in with `packages/auth`, portable export and import in parts. Done:
-   the recovery kit and recovery sign-in.
+   the recovery kit, recovery sign-in and the recovery transaction.
 3. **Queues and schedules.** Effects and outbox on Ferrite queues;
    cron work (daily sweep, backups, maintenance) as self-rescheduling delayed
    messages (`publish_at`), since Ferrite has no cron trigger; Calendar

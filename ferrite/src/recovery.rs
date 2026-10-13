@@ -2,10 +2,10 @@
 //! one-time, high-entropy code the owner keeps offline, for signing in to the app when the owner
 //! token is not at hand.
 //!
-//! This port has no identity provider, so the TypeScript Worker's recovery transaction (a new
-//! Google sign-in proving the code at `/auth/recovery/complete`) has nothing to bind to. The app's
-//! only login is its sign-in page (`/oauth/authorize` for the configured app), so that is where
-//! the code is accepted, in place of the owner token. Using it ends every other sign-in of the app,
+//! This port has no identity provider, so the TypeScript Worker's recovery (a new Google sign-in
+//! proving the code inside a recovery transaction) has no new identity to bind. The app's only
+//! login is its sign-in page (`/oauth/authorize` for the configured app), so the code is accepted
+//! there, in place of the owner token. Using it ends every other sign-in of the app,
 //! disconnects every connected assistant and spends the code, in the same commit that creates the
 //! new sign-in. The owner then issues a new kit from Settings (`POST /v1/recovery-kit`); the owner
 //! token itself is unchanged.
@@ -17,13 +17,23 @@
 //! Storage: `o/recovery-kit`, the one kit, written only in commits guarded on the grant store's
 //! version (`oauth::GRANTS_EPOCH_KEY`), so issuing a kit, using it and creating sign-ins are
 //! serialised with one another.
+//!
+//! The recovery transaction (`POST /auth/recovery/start` and `/auth/recovery/complete`, as
+//! `startRecovery` and `completeRecovery`) is served too, for a client that follows the TypeScript
+//! flow: a transaction lasts 15 minutes and allows 5 attempts; a valid code then does in one commit what
+//! the recovery sign-in does (the code is spent, every app sign-in and connected assistant ends) and
+//! issues the replacement kit, shown once, whose code is what the owner signs in with next on the
+//! sign-in page. With no identity provider nothing is linked (`identityLinked: false`). There is one
+//! transaction at a time (`o/recovery-txn`, under the same guard): starting one replaces the last, so the
+//! store never grows with unauthenticated requests.
 
 use ferrite_app::crypto::hmac_sha256;
-use ferrite_app::serde_json::{self, json, Value};
+use ferrite_app::serde_json::{self, json, Map, Value};
 
 use crate::api::Store;
+use crate::ledger::CmdError;
 use crate::oauth::{self, Fault};
-use crate::sha256::{constant_time_eq, hex};
+use crate::sha256::{constant_time_eq, hex, hex_digest};
 use crate::time::instant;
 
 pub const KIT_KEY: &[u8] = b"o/recovery-kit";
@@ -217,6 +227,148 @@ pub async fn issue<S: Store>(store: &mut S, now: u64, session: Option<&str>) -> 
         }
     }
     Err(Fault::Unavailable)
+}
+
+/// The one recovery transaction (`recovery_transactions`).
+pub const TXN_KEY: &[u8] = b"o/recovery-txn";
+/// `RECOVERY_TTL_MS` and `RECOVERY_MAX_ATTEMPTS` in identity/service.ts.
+pub const TXN_TTL_MS: u64 = 15 * 60_000;
+pub const TXN_MAX_ATTEMPTS: u64 = 5;
+
+#[derive(Debug, Clone, PartialEq)]
+struct Txn {
+    /// SHA-256 of the transaction ID; the ID itself is never stored.
+    id_hash: String,
+    expires_at: u64,
+    attempts: u64,
+    /// `open`, `failed` (no attempts left) or `completed`.
+    status: String,
+}
+
+impl Txn {
+    fn to_json(&self) -> Value {
+        json!({"v": 1, "idHash": self.id_hash, "expiresAt": self.expires_at, "attempts": self.attempts, "status": self.status})
+    }
+
+    fn from_json(v: &Value) -> Option<Txn> {
+        (v.get("v")?.as_u64()? == 1).then_some(())?;
+        let status = v.get("status")?.as_str().filter(|s| matches!(*s, "open" | "failed" | "completed"))?.to_string();
+        Some(Txn { id_hash: v.get("idHash")?.as_str()?.to_string(), expires_at: v.get("expiresAt")?.as_u64()?, attempts: v.get("attempts")?.as_u64()?, status })
+    }
+}
+
+fn txn_hash(id: &str) -> String {
+    hex_digest(format!("wardrobe/recovery-txn/v1\n{id}").as_bytes())
+}
+
+async fn read_txn<S: Store>(store: &mut S) -> Result<Option<Txn>, Fault> {
+    match store.get(TXN_KEY).await.map_err(|_| Fault::Unavailable)? {
+        None => Ok(None),
+        Some(bytes) => serde_json::from_slice::<Value>(&bytes).ok().and_then(|v| Txn::from_json(&v)).map(Some).ok_or(Fault::Corrupt),
+    }
+}
+
+fn fault(f: Fault) -> CmdError {
+    match f {
+        Fault::Unavailable => CmdError::with("internal", "the account could not be read just now; try again", json!({"retryable": true})),
+        Fault::Corrupt => CmdError::with("internal", "a stored account record is unreadable; nothing was changed", json!({"retryable": false})),
+    }
+}
+
+/// `POST /auth/recovery/start` (`RecoveryTransaction`): open a recovery transaction, replacing any
+/// earlier one.
+pub async fn start<S: Store>(store: &mut S, now: u64) -> Result<Value, CmdError> {
+    for _ in 0..oauth::ATTEMPTS {
+        let epoch = oauth::read_epoch(store).await.map_err(fault)?;
+        let id = format!("rtx_{}", crate::random::token(24));
+        let txn = Txn { id_hash: txn_hash(&id), expires_at: now + TXN_TTL_MS, attempts: 0, status: "open".into() };
+        let bytes = txn.to_json().to_string().into_bytes();
+        if oauth::commit_grants(store, &epoch, &[(TXN_KEY, &bytes)]).await.map_err(fault)? {
+            return Ok(json!({"transactionId": id, "expiresAt": instant(txn.expires_at), "attemptsRemaining": TXN_MAX_ATTEMPTS}));
+        }
+    }
+    Err(fault(Fault::Unavailable))
+}
+
+fn invalid(issue: &str) -> CmdError {
+    CmdError::with("invalid_command", "that recovery request is not valid", json!({"issues": [issue]}))
+}
+
+/// `POST /auth/recovery/complete` (`RecoveryCompleteRequest` → `RecoveryCompleteResponse`): prove the
+/// recovery code within an open transaction. A wrong code uses an attempt (`forbidden`, with the
+/// attempts left), the last one fails the transaction (`unrecoverable`). A valid code spends the kit,
+/// ends every app sign-in and connected assistant and stores the replacement kit, in one commit.
+pub async fn complete<S: Store>(store: &mut S, now: u64, body: &[u8]) -> Result<Value, CmdError> {
+    let request: Map<String, Value> = match serde_json::from_slice::<Value>(body) {
+        Ok(Value::Object(o)) => o,
+        _ => return Err(invalid("body: expected a JSON object")),
+    };
+    let transaction_id = match request.get("transactionId") {
+        Some(Value::String(t)) => t.clone(),
+        _ => return Err(invalid("transactionId: expected a string")),
+    };
+    let code = match request.get("recoveryCode") {
+        Some(Value::String(c)) if (16..=200).contains(&c.encode_utf16().count()) => c.clone(),
+        _ => return Err(invalid("recoveryCode: expected 16 to 200 characters")),
+    };
+    match request.get("unlinkPreviousIdentities") {
+        None | Some(Value::Bool(_)) => {}
+        Some(_) => return Err(invalid("unlinkPreviousIdentities: expected true or false")),
+    }
+    let presented = txn_hash(&transaction_id);
+    for _ in 0..oauth::ATTEMPTS {
+        // The grant store's version is read first: the transaction, the kit and the grants below are
+        // all read after it and written in one commit guarded on it.
+        let (epoch, revoked, _apps, assistants) = oauth::recovery_revocations(store, now).await.map_err(fault)?;
+        let txn = match read_txn(store).await.map_err(fault)? {
+            Some(t) if constant_time_eq(t.id_hash.as_bytes(), presented.as_bytes()) => t,
+            _ => return Err(CmdError::new("not_found", "that recovery attempt was not found; start again")),
+        };
+        if txn.status != "open" {
+            return Err(CmdError::with("expired", "that recovery attempt is finished; start again", json!({"status": txn.status})));
+        }
+        if now >= txn.expires_at {
+            return Err(CmdError::new("expired", "that recovery attempt has expired; start again"));
+        }
+        let kit = read(store).await.map_err(fault)?;
+        let accepted = kit.as_ref().map_or(false, |k| accepts(k, &code));
+        if !accepted {
+            let attempts = txn.attempts + 1;
+            let failed = attempts >= TXN_MAX_ATTEMPTS;
+            let next = Txn { attempts, status: if failed { "failed".into() } else { "open".into() }, ..txn };
+            let bytes = next.to_json().to_string().into_bytes();
+            if !oauth::commit_grants(store, &epoch, &[(TXN_KEY, &bytes)]).await.map_err(fault)? {
+                continue;
+            }
+            if failed {
+                return Err(CmdError::with(
+                    "unrecoverable",
+                    "the recovery credential was not accepted and no attempts remain. Without a valid recovery code this account cannot be recovered through this route; the owner token still signs in on the sign-in page.",
+                    json!({"attemptsRemaining": 0}),
+                ));
+            }
+            return Err(CmdError::with("forbidden", "the recovery credential was not accepted", json!({"reason": "recovery_credential_not_accepted", "attemptsRemaining": TXN_MAX_ATTEMPTS - attempts})));
+        }
+        let (replacement, view) = new_kit(now);
+        let kit_bytes = replacement.to_json().to_string().into_bytes();
+        let txn_bytes = Txn { status: "completed".into(), ..txn }.to_json().to_string().into_bytes();
+        let mut entries: Vec<(&[u8], &[u8])> = revoked.iter().map(|(k, v)| (k.as_slice(), v.as_slice())).collect();
+        entries.push((KIT_KEY, &kit_bytes));
+        entries.push((TXN_KEY, &txn_bytes));
+        if oauth::commit_grants(store, &epoch, &entries).await.map_err(fault)? {
+            return Ok(json!({
+                "userId": "owner",
+                "identityLinked": false,
+                "sessionsRevokedBefore": instant(now),
+                "assistantGrantsRevoked": assistants,
+                "previousIdentitiesUnlinked": 0,
+                "replacementKit": view,
+                "receiptId": format!("aud_{}", crate::random::token(12)),
+                "connectionsUnchanged": true,
+            }));
+        }
+    }
+    Err(fault(Fault::Unavailable))
 }
 
 #[cfg(test)]

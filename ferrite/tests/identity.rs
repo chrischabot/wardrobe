@@ -4,7 +4,8 @@
 //! with the owner token (PKCE S256, resource = the API origin), and its tokens act as the owner on
 //! `/v1` and nowhere else. Sign out everywhere ends every app sign-in and no connected assistant.
 //! A recovery kit's code signs the app in once in place of the owner token, ending every other
-//! sign-in and assistant. Claims, linked identities, recovery transactions and account deletion
+//! sign-in and assistant; the recovery transaction (`/auth/recovery/start` and `/complete`) does the
+//! same with the code and issues the replacement kit. Claims, linked identities and account deletion
 //! answer `module_unavailable`, each with its reason.
 //!
 //! The store is an in-memory test double of the APE binding (the same guarded-commit semantics).
@@ -320,8 +321,6 @@ async fn identity_routes_this_server_does_not_serve_say_why() {
     for (path, auth, reason) in [
         ("/auth/claim", None, "no_identity_provider"),
         ("/auth/link/complete", None, "no_identity_provider"),
-        ("/auth/recovery/start", None, "recovery_on_sign_in_page"),
-        ("/auth/recovery/complete", None, "recovery_on_sign_in_page"),
         ("/v1/identities/link", Some(OWNER), "no_identity_provider"),
         ("/v1/identities/unlink", Some(OWNER), "no_identity_provider"),
         ("/v1/account/delete", Some(OWNER), "erasure_unavailable"),
@@ -334,6 +333,97 @@ async fn identity_routes_this_server_does_not_serve_say_why() {
     assert_eq!(send(&mut store, T0, "POST", "/v1/account/delete", None, vec![]).await.status, 401);
     assert_eq!(send(&mut store, T0, "POST", "/v1/recovery-kit", None, vec![]).await.status, 401);
     assert!(store.data.is_empty(), "nothing was written");
+}
+
+#[tokio::test]
+async fn the_recovery_transaction_proves_the_code_and_issues_a_replacement_kit() {
+    let mut store = MemStore::default();
+    let (lost_phone, _) = sign_in(&mut store, T0).await;
+    let assistant = connect_assistant(&mut store).await;
+    let issued = send(&mut store, T0 + 1_000, "POST", "/v1/recovery-kit", Some(OWNER), vec![]).await;
+    let code = issued.json["kit"]["recoveryCode"].as_str().unwrap().to_string();
+    let complete = |txn: &str, code: &str| json!({"transactionId": txn, "recoveryCode": code}).to_string().into_bytes();
+
+    // Started without a sign-in (the owner lost his): 15 minutes and 5 attempts.
+    let start = send(&mut store, T0 + 2_000, "POST", "/auth/recovery/start", None, vec![]).await;
+    assert_eq!(start.status, 200, "{}", start.text);
+    let txn = start.json["transactionId"].as_str().unwrap().to_string();
+    assert!(txn.starts_with("rtx_") && txn.len() > 20, "{txn}");
+    assert_eq!((start.json["expiresAt"].clone(), start.json["attemptsRemaining"].clone()), (json!("2026-09-10T00:41:42Z"), json!(5)));
+    assert!(!store.data.values().any(|v| String::from_utf8_lossy(v).contains(&txn)), "only a hash of the transaction is stored");
+
+    // An unknown transaction, or a malformed request, is refused before any attempt is used.
+    let r = send(&mut store, T0 + 3_000, "POST", "/auth/recovery/complete", None, complete("rtx_nope", &code)).await;
+    assert_eq!((r.status, r.json["error"]["code"].clone()), (404, json!("not_found")));
+    for body in [json!({"transactionId": txn}), json!({"transactionId": txn, "recoveryCode": "short"}), json!({"transactionId": txn, "recoveryCode": code, "unlinkPreviousIdentities": "yes"})] {
+        let r = send(&mut store, T0 + 3_000, "POST", "/auth/recovery/complete", None, body.to_string().into_bytes()).await;
+        assert_eq!((r.status, r.json["error"]["code"].clone()), (400, json!("invalid_command")), "{body}");
+    }
+    // A wrong code uses an attempt and ends nothing.
+    let mut wrong = code.clone();
+    let last = wrong.pop().unwrap();
+    wrong.push(if last == 'A' { 'B' } else { 'A' });
+    for left in [4, 3] {
+        let r = send(&mut store, T0 + 4_000, "POST", "/auth/recovery/complete", None, complete(&txn, &wrong)).await;
+        assert_eq!((r.status, r.json["error"]["details"]["reason"].clone(), r.json["error"]["details"]["attemptsRemaining"].clone()), (403, json!("recovery_credential_not_accepted"), json!(left)), "{}", r.text);
+    }
+    assert_eq!(send(&mut store, T0 + 4_000, "GET", "/v1/me", Some(&lost_phone), vec![]).await.status, 200);
+
+    // The right code (any spelling): every app sign-in and assistant ends, and a replacement kit is shown once.
+    let r = send(&mut store, T0 + 5_000, "POST", "/auth/recovery/complete", None, json!({"transactionId": txn, "recoveryCode": code.to_lowercase(), "unlinkPreviousIdentities": true}).to_string().into_bytes()).await;
+    assert_eq!(r.status, 200, "{}", r.text);
+    let j = &r.json;
+    let mut keys: Vec<&str> = j.as_object().unwrap().keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["assistantGrantsRevoked", "connectionsUnchanged", "identityLinked", "previousIdentitiesUnlinked", "receiptId", "replacementKit", "sessionsRevokedBefore", "userId"], "RecoveryCompleteResponse, every field");
+    assert_eq!(j["connectionsUnchanged"], json!(true));
+    assert_eq!((j["userId"].clone(), j["identityLinked"].clone(), j["sessionsRevokedBefore"].clone(), j["assistantGrantsRevoked"].clone(), j["previousIdentitiesUnlinked"].clone()), (json!("owner"), json!(false), json!("2026-09-10T00:26:45Z"), json!(1), json!(0)));
+    let replacement = j["replacementKit"]["recoveryCode"].as_str().unwrap().to_string();
+    assert_ne!(replacement, code);
+    assert!(j["receiptId"].as_str().unwrap().starts_with("aud_"));
+    assert_eq!(send(&mut store, T0 + 6_000, "GET", "/v1/me", Some(&lost_phone), vec![]).await.status, 401);
+    assert_eq!(mcp_status(&mut store, T0 + 6_000, &assistant).await, 401);
+    let me = send(&mut store, T0 + 6_000, "GET", "/v1/me", Some(OWNER), vec![]).await;
+    assert_eq!((me.status, me.json["recoveryKit"]["present"].clone()), (200, json!(true)), "the owner token is unchanged and the replacement kit is active");
+    // The transaction is finished; the old code no longer signs in, the replacement does.
+    let r = send(&mut store, T0 + 7_000, "POST", "/auth/recovery/complete", None, complete(&txn, &code)).await;
+    assert_eq!((r.status, r.json["error"]["code"].clone(), r.json["error"]["details"]["status"].clone()), (410, json!("expired"), json!("completed")));
+    assert_eq!(recover(&mut store, T0 + 8_000, &code, "recover-old").await.status, 401);
+    let recovered = recover(&mut store, T0 + 9_000, &replacement, "recover-new").await;
+    let (signed_in, _) = exchange(&mut store, T0 + 9_000, &redirect_code(&recovered)).await;
+    assert_eq!(send(&mut store, T0 + 9_500, "GET", "/v1/me", Some(&signed_in), vec![]).await.status, 200);
+}
+
+#[tokio::test]
+async fn a_recovery_transaction_ends_after_its_attempts_its_time_or_a_newer_one() {
+    let mut store = MemStore::default();
+    send(&mut store, T0, "POST", "/v1/recovery-kit", Some(OWNER), vec![]).await;
+    let complete = |txn: &str| json!({"transactionId": txn, "recoveryCode": "GRD1-RK0000000000-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA-AAAA"}).to_string().into_bytes();
+    // Five wrong codes: the last is unrecoverable, and the transaction stays failed.
+    let txn = start(&mut store, T0).await;
+    for _ in 0..4 {
+        assert_eq!(send(&mut store, T0, "POST", "/auth/recovery/complete", None, complete(&txn)).await.status, 403);
+    }
+    let r = send(&mut store, T0, "POST", "/auth/recovery/complete", None, complete(&txn)).await;
+    assert_eq!((r.status, r.json["error"]["code"].clone(), r.json["error"]["details"]["attemptsRemaining"].clone()), (403, json!("unrecoverable"), json!(0)), "{}", r.text);
+    let r = send(&mut store, T0, "POST", "/auth/recovery/complete", None, complete(&txn)).await;
+    assert_eq!((r.status, r.json["error"]["details"]["status"].clone()), (410, json!("failed")));
+    // Fifteen minutes on, a transaction has expired.
+    let txn = start(&mut store, T0).await;
+    let r = send(&mut store, T0 + 15 * 60_000, "POST", "/auth/recovery/complete", None, complete(&txn)).await;
+    assert_eq!((r.status, r.json["error"]["message"].clone()), (410, json!("that recovery attempt has expired; start again")));
+    // A newer transaction replaces the last: one at a time.
+    let older = start(&mut store, T0).await;
+    let newer = start(&mut store, T0 + 1).await;
+    assert_eq!(send(&mut store, T0 + 2, "POST", "/auth/recovery/complete", None, complete(&older)).await.status, 404);
+    assert_eq!(send(&mut store, T0 + 2, "POST", "/auth/recovery/complete", None, complete(&newer)).await.status, 403);
+}
+
+/// Starts a recovery transaction and returns its ID.
+async fn start(store: &mut MemStore, now: u64) -> String {
+    let r = send(store, now, "POST", "/auth/recovery/start", None, vec![]).await;
+    assert_eq!(r.status, 200, "{}", r.text);
+    r.json["transactionId"].as_str().unwrap().to_string()
 }
 
 /// The app's sign-in page submitted with a recovery code instead of the owner token, under the

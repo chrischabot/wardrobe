@@ -132,7 +132,8 @@ fn error_status(code: &str) -> u16 {
         "unauthenticated" => 401,
         "forbidden" => 403,
         "not_found" => 404,
-        "conflict" | "idempotency_key_reuse" | "precondition_failed" | "not_undoable" | "ambiguous_target" => 409,
+        "conflict" | "idempotency_key_reuse" | "precondition_failed" | "not_undoable" | "ambiguous_target" | "confirmation_required" => 409,
+        "unrecoverable" => 403,
         "expired" => 410,
         "payload_too_large" => 413,
         "unsupported_media_type" => 415,
@@ -210,15 +211,10 @@ async fn authenticate<S: Store>(store: &mut S, req: &IngressRequest, tokens: &To
 }
 
 /// The identity routes this port does not serve, each with its reason: claims and linked identities
-/// need an identity provider (Cloudflare Access in the TypeScript Worker); recovery happens on the
-/// app's sign-in page instead of a recovery transaction; and account deletion needs an erasure the
-/// storage binding cannot do.
+/// need an identity provider (Cloudflare Access in the TypeScript Worker), and account deletion needs
+/// an erasure the storage binding cannot do.
 fn identity_unavailable(path: &str) -> CmdError {
     let (reason, message) = match path {
-        "/auth/recovery/start" | "/auth/recovery/complete" => (
-            "recovery_on_sign_in_page",
-            "recovery has no transaction on this server: enter the recovery code on the app's sign-in page in place of the owner token (issue a kit first with POST /v1/recovery-kit)",
-        ),
         "/v1/account/delete" => (
             "erasure_unavailable",
             "account deletion is not ported: this server's storage binding has no delete and no key listing, so it cannot erase every stored record; nothing was changed",
@@ -291,8 +287,15 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
         return ok(json!({"status": "ok", "service": "wardrobe", "host": "ferrite", "contractVersion": CONTRACT_VERSION}));
     }
     let app = oauth::AppClient::from_config(tokens.app_client_id.as_deref(), tokens.app_redirect_uri.as_deref());
-    // Claim, link and recovery transactions are not served (see `identity_unavailable`).
-    if req.method == "POST" && matches!(path, "/auth/claim" | "/auth/link/complete" | "/auth/recovery/start" | "/auth/recovery/complete") {
+    // The recovery transaction answers before any sign-in: it is for an owner who lost his (see
+    // src/recovery.rs). Claims and linked identities are not served (see `identity_unavailable`).
+    if req.method == "POST" && path == "/auth/recovery/start" {
+        return crate::recovery::start(store, now_ms).await.map(ok).unwrap_or_else(error_reply);
+    }
+    if req.method == "POST" && path == "/auth/recovery/complete" {
+        return crate::recovery::complete(store, now_ms, &req.body).await.map(ok).unwrap_or_else(error_reply);
+    }
+    if req.method == "POST" && matches!(path, "/auth/claim" | "/auth/link/complete") {
         return error_reply(identity_unavailable(path));
     }
     // OAuth and MCP authenticate themselves (an MCP access token, the owner
