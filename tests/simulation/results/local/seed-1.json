@@ -76,7 +76,7 @@
     "errors": []
   },
   "invariantChecks": {
-    "passed": 12856,
+    "passed": 12855,
     "failed": 0,
     "notApplicable": 5,
     "byCheck": {
@@ -201,7 +201,7 @@
         "notApplicable": 0
       },
       "calendar.projected_revision_is_the_event_s": {
-        "passed": 272,
+        "passed": 271,
         "failed": 0,
         "notApplicable": 0
       },
@@ -1044,8 +1044,8 @@
         "refusalCodes": {}
       },
       "garderobe_run": {
-        "calls": 15,
-        "answered": 9,
+        "calls": 14,
+        "answered": 8,
         "refused": 6,
         "refusalCodes": {
           "precondition_failed": 2,
@@ -1082,7 +1082,7 @@
       "orders": 6
     },
     "runActions": {
-      "status": 10,
+      "status": 9,
       "resume": 2,
       "respond": 2,
       "cancel": 1
@@ -1189,7 +1189,7 @@
     "oauth": {
       "connections": 3,
       "authorizations": 3,
-      "tokenRefreshes": 344
+      "tokenRefreshes": 346
     },
     "ownerRequestsInTheApp": 16,
     "testDoorRequests": 883
@@ -1253,7 +1253,7 @@
       "forecast changes: sudden rain (SIMULATED weather)": 4,
       "forecast outages: daytime (SIMULATED weather)": 1,
       "forecast outages: overnight (SIMULATED weather)": 1,
-      "garderobe_ask (start): cancelled": 1,
+      "garderobe_ask (start): cancelled (no_selectable_profile)": 1,
       "garderobe_ask (wait): failed (no_selectable_profile)": 1,
       "garderobe_research (history): failed (no_selectable_profile)": 1,
       "garderobe_research (product): failed (no_selectable_profile)": 1,
@@ -1361,10 +1361,10 @@
       }
     ]
   },
-  "outcomeDigest": "07809d6dc72172a8",
+  "outcomeDigest": "54c3f67a270634a5",
   "simulated": {
     "from": "2027-03-07T19:30:00Z",
     "to": "2027-04-04T22:10:00Z"
   },
-  "realSeconds": 168
+  "realSeconds": 233
 }

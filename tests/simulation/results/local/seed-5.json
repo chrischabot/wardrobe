@@ -77,7 +77,7 @@
     "errors": []
   },
   "invariantChecks": {
-    "passed": 13143,
+    "passed": 13139,
     "failed": 0,
     "notApplicable": 3,
     "byCheck": {
@@ -177,12 +177,12 @@
         "notApplicable": 0
       },
       "calendar.event_identity_is_stable": {
-        "passed": 311,
+        "passed": 310,
         "failed": 0,
         "notApplicable": 0
       },
       "calendar.event_revision_not_ahead_of_board": {
-        "passed": 311,
+        "passed": 310,
         "failed": 0,
         "notApplicable": 0
       },
@@ -207,7 +207,7 @@
         "notApplicable": 0
       },
       "calendar.projected_revision_is_the_event_s": {
-        "passed": 276,
+        "passed": 274,
         "failed": 0,
         "notApplicable": 0
       },
@@ -1215,7 +1215,7 @@
     "oauth": {
       "connections": 3,
       "authorizations": 3,
-      "tokenRefreshes": 354
+      "tokenRefreshes": 355
     },
     "ownerRequestsInTheApp": 16,
     "testDoorRequests": 890
@@ -1299,7 +1299,7 @@
       "laundry pickups": 3,
       "laundry returns": 2,
       "laundry: a missed bag returned days late": 1,
-      "managed Calendar event writes (insert, replace, remove)": 40,
+      "managed Calendar event writes (insert, replace, remove)": 42,
       "managed Calendar events replaced in place under a newer revision": 26,
       "morning boards with options marked as suiting a calendar entry": 4,
       "morning boards, calendar ok": 23,
@@ -1314,7 +1314,7 @@
       "mornings away on the trip": 3,
       "mornings while the service was paused": 2,
       "most garments at once whose availability was an estimate": 79,
-      "offers checked without a thermal check (forecast unavailable, stale or just changed)": 67,
+      "offers checked without a thermal check (forecast unavailable, stale or just changed)": 66,
       "orders logged (SYNTHETIC order)": 1,
       "outfits chosen the evening before": 5,
       "owner observations contradicting the ledger: a spill (was available)": 1,
@@ -1391,10 +1391,10 @@
       }
     ]
   },
-  "outcomeDigest": "dc4e80474d2ee294",
+  "outcomeDigest": "c1bf3aa8f4b58e21",
   "simulated": {
     "from": "2027-10-10T18:30:00Z",
     "to": "2027-11-07T23:10:00Z"
   },
-  "realSeconds": 173
+  "realSeconds": 237
 }

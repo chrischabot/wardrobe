@@ -76,7 +76,7 @@
     "errors": []
   },
   "invariantChecks": {
-    "passed": 12933,
+    "passed": 12939,
     "failed": 0,
     "notApplicable": 3,
     "byCheck": {
@@ -201,7 +201,7 @@
         "notApplicable": 0
       },
       "calendar.projected_revision_is_the_event_s": {
-        "passed": 273,
+        "passed": 279,
         "failed": 0,
         "notApplicable": 0
       },
@@ -1039,8 +1039,8 @@
         "refusalCodes": {}
       },
       "garderobe_run": {
-        "calls": 15,
-        "answered": 9,
+        "calls": 14,
+        "answered": 8,
         "refused": 6,
         "refusalCodes": {
           "not_found": 4,
@@ -1077,7 +1077,7 @@
       "orders": 5
     },
     "runActions": {
-      "status": 10,
+      "status": 9,
       "cancel": 1,
       "resume": 2,
       "respond": 2
@@ -1184,7 +1184,7 @@
     "oauth": {
       "connections": 3,
       "authorizations": 3,
-      "tokenRefreshes": 356
+      "tokenRefreshes": 360
     },
     "ownerRequestsInTheApp": 16,
     "testDoorRequests": 879
@@ -1265,7 +1265,7 @@
       "laundry exceptions: one piece did not come back with the bag": 1,
       "laundry pickups": 2,
       "laundry returns": 2,
-      "managed Calendar event writes (insert, replace, remove)": 38,
+      "managed Calendar event writes (insert, replace, remove)": 36,
       "managed Calendar events replaced in place under a newer revision": 26,
       "morning boards with options marked as suiting a calendar entry": 4,
       "morning boards, calendar ok": 23,
@@ -1284,7 +1284,8 @@
       "outfits chosen the evening before": 6,
       "owner observations contradicting the ledger: a spill (was available)": 1,
       "owner observations contradicting the ledger: a spill (was estimated)": 1,
-      "owner observations contradicting the ledger: all of it in the hamper (was estimated)": 2,
+      "owner observations contradicting the ledger: all of it in the hamper (was available)": 1,
+      "owner observations contradicting the ledger: all of it in the hamper (was estimated)": 1,
       "owner observations contradicting the ledger: counted clean (was estimated)": 1,
       "owner observations contradicting the ledger: counted clean (was unavailable)": 1,
       "packing proposals (from the destination's SIMULATED forecast)": 1,
@@ -1353,10 +1354,10 @@
       }
     ]
   },
-  "outcomeDigest": "08d7354ed66ec6cc",
+  "outcomeDigest": "365c0326b3b8b0b9",
   "simulated": {
     "from": "2027-09-05T18:30:00Z",
     "to": "2027-10-03T22:10:00Z"
   },
-  "realSeconds": 167
+  "realSeconds": 230
 }

@@ -12,11 +12,11 @@ Stand-ins, at external boundaries only, all labelled: the settable clock, the sc
 
 | Seed | Simulated days | Season | Steps run / planned | Step errors | Checks passed | Checks failed | Not applicable | MCP tool calls | Commands | Plan digest | Outcome digest | Real time |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | 2027-03-08 to 2027-04-04 (28) | spring (summer time begins on 28 March) | 351 / 351 | 0 | 12856 | 0 | 5 | 3014 | 128 | `2c92379c01f31770` | `07809d6dc72172a8` | 168 s |
-| 2 | 2027-05-31 to 2027-06-27 (28) | early summer | 354 / 354 | 0 | 13089 | 0 | 5 | 3099 | 131 | `f6eb348a37466c48` | `8e5af3c9d5690c26` | 169 s |
-| 3 | 2027-07-19 to 2027-08-15 (28) | high summer | 350 / 350 | 0 | 12707 | 0 | 6 | 3088 | 137 | `1a85788fff84d6b7` | `a2b1b766f41cfba6` | 164 s |
-| 4 | 2027-09-06 to 2027-10-03 (28) | autumn | 350 / 350 | 0 | 12933 | 0 | 3 | 3033 | 129 | `3580fda298760236` | `08d7354ed66ec6cc` | 167 s |
-| 5 | 2027-10-11 to 2027-11-07 (28) | late autumn (summer time ends on 31 October) | 355 / 355 | 0 | 13143 | 0 | 3 | 3057 | 129 | `2a6dd87d008a37b6` | `dc4e80474d2ee294` | 173 s |
+| 1 | 2027-03-08 to 2027-04-04 (28) | spring (summer time begins on 28 March) | 351 / 351 | 0 | 12855 | 0 | 5 | 3013 | 128 | `2c92379c01f31770` | `54c3f67a270634a5` | 233 s |
+| 2 | 2027-05-31 to 2027-06-27 (28) | early summer | 354 / 354 | 0 | 13113 | 0 | 4 | 3107 | 132 | `f6eb348a37466c48` | `d5e04f80776ae024` | 234 s |
+| 3 | 2027-07-19 to 2027-08-15 (28) | high summer | 350 / 350 | 0 | 12776 | 0 | 3 | 3118 | 140 | `1a85788fff84d6b7` | `a77dd5d065174913` | 232 s |
+| 4 | 2027-09-06 to 2027-10-03 (28) | autumn | 350 / 350 | 0 | 12939 | 0 | 3 | 3032 | 129 | `3580fda298760236` | `365c0326b3b8b0b9` | 230 s |
+| 5 | 2027-10-11 to 2027-11-07 (28) | late autumn (summer time ends on 31 October) | 355 / 355 | 0 | 13139 | 0 | 3 | 3057 | 129 | `2a6dd87d008a37b6` | `c1bf3aa8f4b58e21` | 237 s |
 
 ## Tool coverage
 
@@ -25,11 +25,11 @@ Calls made through the MCP client, per tool and seed (answered + refused with a 
 | Tool | Seed 1 | Seed 2 | Seed 3 | Seed 4 | Seed 5 | Exercised |
 | --- | --- | --- | --- | --- | --- | --- |
 | `garderobe_ask` | 4 + 0 | 4 + 0 | 4 + 0 | 4 + 0 | 4 + 0 | yes, in every seed |
-| `garderobe_command` | 236 + 11 | 242 + 11 | 250 + 11 | 238 + 11 | 238 + 10 | yes, in every seed |
-| `garderobe_inventory` | 1913 + 3 | 1957 + 3 | 1959 + 3 | 1924 + 3 | 1932 + 3 | yes, in every seed |
+| `garderobe_command` | 236 + 11 | 244 + 11 | 256 + 11 | 238 + 11 | 238 + 10 | yes, in every seed |
+| `garderobe_inventory` | 1913 + 3 | 1965 + 3 | 1983 + 3 | 1924 + 3 | 1932 + 3 | yes, in every seed |
 | `garderobe_recommend` | 8 + 0 | 20 + 0 | 12 + 0 | 6 + 0 | 12 + 0 | yes, in every seed |
 | `garderobe_research` | 2 + 0 | 2 + 0 | 2 + 0 | 2 + 0 | 2 + 0 | yes, in every seed |
-| `garderobe_run` | 9 + 6 | 9 + 6 | 7 + 6 | 9 + 6 | 8 + 6 | yes, in every seed |
+| `garderobe_run` | 8 + 6 | 7 + 6 | 7 + 6 | 8 + 6 | 8 + 6 | yes, in every seed |
 | `garderobe_today` | 822 + 0 | 845 + 0 | 834 + 0 | 830 + 0 | 842 + 0 | yes, in every seed |
 
 `garderobe_inventory` views:
@@ -37,15 +37,15 @@ Calls made through the MCP client, per tool and seed (answered + refused with a 
 | View | Seed 1 | Seed 2 | Seed 3 | Seed 4 | Seed 5 |
 | --- | --- | --- | --- | --- | --- |
 | `items` | 16 | 12 | 12 | 12 | 12 |
-| `snapshot` | 978 | 1008 | 999 | 985 | 994 |
+| `snapshot` | 978 | 1013 | 1011 | 985 | 994 |
 | `item` | 4 | 8 | 6 | 4 | 9 |
 | `availability` | 3 | 1 | 3 | 4 | 2 |
-| `history` | 366 | 369 | 366 | 367 | 370 |
+| `history` | 366 | 368 | 366 | 367 | 370 |
 | `laundry` | 15 | 16 | 16 | 18 | 17 |
 | `style` | 6 | 1 | 3 | 4 | 2 |
 | `resolve` | 1 | 3 | 6 | 3 | 1 |
 | `selection` | 6 | 4 | 2 | 3 | 3 |
-| `receipts` | 502 | 514 | 528 | 506 | 503 |
+| `receipts` | 502 | 518 | 540 | 506 | 503 |
 | `command_types` | 2 | 5 | 4 | 6 | 1 |
 | `trips` | 4 | 6 | 6 | 6 | 6 |
 | `returns` | 7 | 6 | 6 | 4 | 10 |
@@ -58,7 +58,7 @@ Calls made through the MCP client, per tool and seed (answered + refused with a 
 | `cancel` | 1 | 1 | 1 | 1 | 1 |
 | `respond` | 2 | 2 | 2 | 2 | 2 |
 | `resume` | 2 | 2 | 2 | 2 | 2 |
-| `status` | 10 | 10 | 8 | 10 | 9 |
+| `status` | 9 | 8 | 8 | 9 | 9 |
 
 `garderobe_command` types and the route each took (direct, confirmed by the owner in the app, rejected by the owner, refused; `owner app` marks the few commands only the signed-in owner can send):
 
@@ -93,13 +93,13 @@ Calls made through the MCP client, per tool and seed (answered + refused with a 
 | `stock.unpack` | 1 direct | 1 direct | 1 direct | 1 direct | 1 direct |
 | `style.set_brief` | 3 direct | 3 direct | 3 direct | 3 direct | 3 direct |
 | `trip.create` | 1 direct | 1 direct | 1 direct | 1 direct | 1 direct |
-| `wear.amend` | 1 direct | 2 direct | 2 direct | 2 direct | 2 direct |
-| `wear.record` | 33 direct, 2 owner app | 29 direct, 2 owner app | 30 direct, 4 owner app | 28 direct, 2 owner app | 30 direct, 2 owner app |
+| `wear.amend` | 1 direct | 1 direct | 2 direct | 2 direct | 2 direct |
+| `wear.record` | 33 direct, 2 owner app | 31 direct, 2 owner app | 33 direct, 4 owner app | 28 direct, 2 owner app | 30 direct, 2 owner app |
 
 | OAuth and the owner's part | Seed 1 | Seed 2 | Seed 3 | Seed 4 | Seed 5 |
 | --- | --- | --- | --- | --- | --- |
 | Connections authorized through consent | 3 | 3 | 3 | 3 | 3 |
-| Access tokens renewed with the refresh token | 344 | 358 | 360 | 356 | 354 |
+| Access tokens renewed with the refresh token | 346 | 361 | 364 | 360 | 355 |
 | Requests made as the signed-in owner (consent, decisions, setup) | 16 | 16 | 18 | 16 | 16 |
 | Test-door requests (clock, scheduled sweep, scripted conditions) | 883 | 889 | 879 | 879 | 890 |
 | MCP resources read | 3 | 3 | 3 | 3 | 3 |
@@ -174,12 +174,12 @@ Counted while running (what actually happened on the target):
 | forecast changes: sudden rain (SIMULATED weather) | 4 | 4 | 4 | 4 | 4 |
 | forecast outages: daytime (SIMULATED weather) | 1 | 1 | 1 | 1 | 1 |
 | forecast outages: overnight (SIMULATED weather) | 1 | 1 | 1 | 1 | 1 |
-| garderobe_ask (start): cancelled | 1 | 0 | 0 | 1 | 0 |
-| garderobe_ask (start): cancelled (no_selectable_profile) | 0 | 1 | 1 | 0 | 1 |
+| garderobe_ask (start): cancelled | 0 | 0 | 0 | 1 | 0 |
+| garderobe_ask (start): cancelled (no_selectable_profile) | 1 | 1 | 1 | 0 | 1 |
 | garderobe_ask (wait): failed (no_selectable_profile) | 1 | 1 | 1 | 1 | 1 |
 | garderobe_research (history): failed (no_selectable_profile) | 1 | 1 | 1 | 1 | 1 |
 | garderobe_research (product): failed (no_selectable_profile) | 1 | 1 | 1 | 1 | 1 |
-| garments clean again by the weekly baseline alone (a week without laundry reports) | 0 | 0 | 2 | 0 | 4 |
+| garments clean again by the weekly baseline alone (a week without laundry reports) | 0 | 0 | 6 | 0 | 4 |
 | garments made unavailable: at the cleaner (SIMULATED event) | 2 | 2 | 2 | 2 | 2 |
 | garments made unavailable: damaged (SIMULATED event) | 2 | 2 | 2 | 2 | 2 |
 | garments made unavailable: lent (SIMULATED event) | 2 | 2 | 2 | 2 | 2 |
@@ -197,7 +197,7 @@ Counted while running (what actually happened on the target):
 | laundry returns | 1 | 3 | 2 | 2 | 2 |
 | laundry: a missed bag returned days late | 1 | 0 | 1 | 0 | 1 |
 | laundry: a piece that came back late | 0 | 1 | 0 | 0 | 0 |
-| managed Calendar event writes (insert, replace, remove) | 38 | 36 | 34 | 38 | 40 |
+| managed Calendar event writes (insert, replace, remove) | 38 | 37 | 31 | 36 | 42 |
 | managed Calendar events replaced in place under a newer revision | 25 | 26 | 25 | 26 | 26 |
 | morning boards with options marked as suiting a calendar entry | 5 | 5 | 6 | 4 | 4 |
 | morning boards, calendar ok | 22 | 23 | 22 | 23 | 23 |
@@ -212,16 +212,15 @@ Counted while running (what actually happened on the target):
 | mornings away on the trip | 3 | 3 | 3 | 3 | 3 |
 | mornings while the service was paused | 3 | 2 | 3 | 2 | 2 |
 | most garments at once whose availability was an estimate | 79 | 79 | 79 | 79 | 79 |
-| offers checked without a thermal check (forecast unavailable, stale or just changed) | 70 | 69 | 52 | 69 | 67 |
+| offers checked without a thermal check (forecast unavailable, stale or just changed) | 70 | 71 | 55 | 69 | 66 |
 | orders logged (SYNTHETIC order) | 1 | 1 | 1 | 1 | 1 |
 | outfits chosen the evening before | 7 | 12 | 12 | 6 | 5 |
 | owner observations contradicting the ledger: a spill (was available) | 1 | 0 | 0 | 1 | 1 |
 | owner observations contradicting the ledger: a spill (was estimated) | 1 | 2 | 2 | 1 | 1 |
-| owner observations contradicting the ledger: all of it in the hamper (was available) | 1 | 1 | 0 | 0 | 1 |
-| owner observations contradicting the ledger: all of it in the hamper (was estimated) | 1 | 1 | 2 | 2 | 1 |
-| owner observations contradicting the ledger: counted clean (was available) | 0 | 0 | 1 | 0 | 0 |
-| owner observations contradicting the ledger: counted clean (was estimated) | 1 | 2 | 1 | 1 | 2 |
-| owner observations contradicting the ledger: counted clean (was unavailable) | 1 | 0 | 0 | 1 | 0 |
+| owner observations contradicting the ledger: all of it in the hamper (was available) | 1 | 2 | 1 | 1 | 1 |
+| owner observations contradicting the ledger: all of it in the hamper (was estimated) | 1 | 0 | 1 | 1 | 1 |
+| owner observations contradicting the ledger: counted clean (was estimated) | 1 | 1 | 2 | 1 | 2 |
+| owner observations contradicting the ledger: counted clean (was unavailable) | 1 | 1 | 0 | 1 | 0 |
 | packing proposals (from the destination's SIMULATED forecast) | 1 | 1 | 1 | 1 | 1 |
 | parcels posted back (physical departure recorded separately) | 1 | 1 | 1 | 1 | 1 |
 | pauses (until the owner resumes) (SIMULATED circumstance) | 0 | 0 | 1 | 0 | 1 |
@@ -233,23 +232,22 @@ Counted while running (what actually happened on the target):
 | resumes by the owner | 0 | 0 | 1 | 0 | 1 |
 | returns opened (SYNTHETIC order) | 0 | 0 | 1 | 0 | 1 |
 | returns settled | 0 | 0 | 1 | 0 | 1 |
-| route.direct | 120 | 123 | 127 | 121 | 121 |
+| route.direct | 120 | 124 | 130 | 121 | 121 |
 | route.refused | 4 | 4 | 4 | 4 | 4 |
 | scheduled sweeps run (the product's own scheduled handler) | 148 | 148 | 146 | 146 | 147 |
 | suitcases packed | 1 | 1 | 1 | 1 | 1 |
 | suitcases unpacked | 1 | 1 | 1 | 1 | 1 |
 | swaps on tomorrow's board | 2 | 3 | 3 | 3 | 4 |
 | swaps undone | 2 | 3 | 3 | 3 | 4 |
-| trip days undressable because proposed pieces were left at home (SIMULATED owner's packing) | 0 | 2 | 3 | 0 | 0 |
 | trips planned (SIMULATED circumstance) | 1 | 1 | 1 | 1 | 1 |
-| wear reports corrected (route: direct) | 1 | 2 | 2 | 2 | 2 |
-| wear reports from the suitcase | 3 | 1 | 0 | 3 | 3 |
+| wear reports corrected (route: direct) | 1 | 1 | 2 | 2 | 2 |
+| wear reports from the suitcase | 3 | 3 | 3 | 3 | 3 |
 | wear reports made the next morning | 1 | 1 | 0 | 1 | 3 |
 | wear reports made the same evening | 18 | 19 | 22 | 19 | 17 |
 | wear reports repeated as a new report | 9 | 6 | 6 | 3 | 5 |
 | wear reports repeated from the owner's app | 2 | 2 | 4 | 2 | 2 |
 | wear reports undone | 2 | 2 | 2 | 2 | 1 |
-| wear reports with a second pair of socks used | 1 | 3 | 1 | 1 | 1 |
+| wear reports with a second pair of socks used | 1 | 2 | 1 | 1 | 1 |
 | weekly laundry baselines the ledger has applied | 4 | 4 | 4 | 4 | 4 |
 | worn: as chosen | 7 | 9 | 13 | 14 | 13 |
 | worn: one piece differs | 7 | 5 | 4 | 2 | 1 |
@@ -261,7 +259,7 @@ Passed / failed / not applicable, per check and seed. Every check listed under "
 
 | Check | Seed 1 | Seed 2 | Seed 3 | Seed 4 | Seed 5 |
 | --- | --- | --- | --- | --- | --- |
-| `amend.replaces_only_what_it_corrects` | 1 / 0 / 1 | 2 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 |
+| `amend.replaces_only_what_it_corrects` | 1 / 0 / 1 | 1 / 0 / 1 | 2 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 |
 | `ask.returns_a_durable_run` | 2 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 |
 | `ask.same_turn_id_is_the_same_turn` | 2 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 |
 | `availability.clean_by_inference_is_not_called_observed` | - | - | 1 / 0 / 0 | - | 1 / 0 / 0 |
@@ -280,13 +278,13 @@ Passed / failed / not applicable, per check and seed. Every check listed under "
 | `board.revision_never_goes_back` | 514 / 0 / 0 | 547 / 0 / 0 | 521 / 0 / 0 | 534 / 0 / 0 | 541 / 0 / 0 |
 | `board.selection_is_one_of_its_options` | 405 / 0 / 0 | 419 / 0 / 0 | 399 / 0 / 0 | 413 / 0 / 0 | 419 / 0 / 0 |
 | `calendar.a_healthy_calendar_projection_does_not_fail` | 405 / 0 / 0 | 419 / 0 / 0 | 399 / 0 / 0 | 413 / 0 / 0 | 419 / 0 / 0 |
-| `calendar.event_identity_is_stable` | 300 / 0 / 0 | 310 / 0 / 0 | 295 / 0 / 0 | 302 / 0 / 0 | 311 / 0 / 0 |
-| `calendar.event_revision_not_ahead_of_board` | 300 / 0 / 0 | 310 / 0 / 0 | 295 / 0 / 0 | 302 / 0 / 0 | 311 / 0 / 0 |
+| `calendar.event_identity_is_stable` | 300 / 0 / 0 | 310 / 0 / 0 | 294 / 0 / 0 | 302 / 0 / 0 | 310 / 0 / 0 |
+| `calendar.event_revision_not_ahead_of_board` | 300 / 0 / 0 | 310 / 0 / 0 | 294 / 0 / 0 | 302 / 0 / 0 | 310 / 0 / 0 |
 | `calendar.no_outfit_entry_for_a_paused_day` | 34 / 0 / 0 | 26 / 0 / 0 | 35 / 0 / 0 | 28 / 0 / 0 | 24 / 0 / 0 |
 | `calendar.no_outfit_entry_projected_for_a_paused_day` | 34 / 0 / 0 | 26 / 0 / 0 | 35 / 0 / 0 | 28 / 0 / 0 | 24 / 0 / 0 |
 | `calendar.one_managed_event_per_day` | 352 / 0 / 0 | 355 / 0 / 0 | 351 / 0 / 0 | 351 / 0 / 0 | 356 / 0 / 0 |
 | `calendar.outfits_reach_the_calendar` | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 |
-| `calendar.projected_revision_is_the_event_s` | 272 / 0 / 0 | 291 / 0 / 0 | 276 / 0 / 0 | 273 / 0 / 0 | 276 / 0 / 0 |
+| `calendar.projected_revision_is_the_event_s` | 271 / 0 / 0 | 284 / 0 / 0 | 284 / 0 / 0 | 279 / 0 / 0 | 274 / 0 / 0 |
 | `calendar.replacement_names_the_version_it_replaces` | 352 / 0 / 0 | 355 / 0 / 0 | 351 / 0 / 0 | 351 / 0 / 0 | 356 / 0 / 0 |
 | `calendar.revision_never_goes_back` | 352 / 0 / 0 | 355 / 0 / 0 | 351 / 0 / 0 | 351 / 0 / 0 | 356 / 0 / 0 |
 | `choice.accepted_on_the_published_board` | 27 / 0 / 0 | 30 / 0 / 0 | 33 / 0 / 0 | 31 / 0 / 0 | 25 / 0 / 0 |
@@ -295,11 +293,11 @@ Passed / failed / not applicable, per check and seed. Every check listed under "
 | `choice.runs_without_a_tap` | 27 / 0 / 0 | 30 / 0 / 0 | 33 / 0 / 0 | 31 / 0 / 0 | 25 / 0 / 0 |
 | `circumstance.day_brief_recorded` | 3 / 0 / 0 | 3 / 0 / 0 | 3 / 0 / 0 | 3 / 0 / 0 | 3 / 0 / 0 |
 | `command.accepted` | 3 / 0 / 0 | 3 / 0 / 0 | 3 / 0 / 0 | 3 / 0 / 0 | 3 / 0 / 0 |
-| `contract.a_change_the_owner_asks_for_applies_at_once` | 120 / 0 / 0 | 123 / 0 / 0 | 127 / 0 / 0 | 121 / 0 / 0 | 121 / 0 / 0 |
+| `contract.a_change_the_owner_asks_for_applies_at_once` | 120 / 0 / 0 | 124 / 0 / 0 | 130 / 0 / 0 | 121 / 0 / 0 | 121 / 0 / 0 |
 | `contract.a_connected_assistant_cannot_lift_a_restriction` | 4 / 0 / 0 | 4 / 0 / 0 | 4 / 0 / 0 | 4 / 0 / 0 | 4 / 0 / 0 |
 | `contract.a_wear_report_on_a_restricted_piece_is_on_the_record` | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 |
 | `contract.a_wear_report_on_a_restricted_piece_is_recorded_at_once` | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 |
-| `contract.receipt_states_whether_undo_is_available` | 120 / 0 / 0 | 123 / 0 / 0 | 127 / 0 / 0 | 121 / 0 / 0 | 121 / 0 / 0 |
+| `contract.receipt_states_whether_undo_is_available` | 120 / 0 / 0 | 124 / 0 / 0 | 130 / 0 / 0 | 121 / 0 / 0 | 121 / 0 / 0 |
 | `contract.undo_takes_the_report_back` | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 |
 | `feedback.optional_note_recorded` | 3 / 0 / 0 | 1 / 0 / 0 | 3 / 0 / 0 | 1 / 0 / 0 | 4 / 0 / 0 |
 | `import.every_garment_present` | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 |
@@ -349,7 +347,7 @@ Passed / failed / not applicable, per check and seed. Every check listed under "
 | `observation.a_wash_report_runs_without_a_tap` | 4 / 0 / 0 | 4 / 0 / 0 | 4 / 0 / 0 | 4 / 0 / 0 | 4 / 0 / 0 |
 | `observation.the_owner_s_count_is_what_the_ledger_then_says` | 2 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 |
 | `observation.what_the_owner_says_is_dirty_is_dirty` | 4 / 0 / 0 | 4 / 0 / 0 | 4 / 0 / 0 | 4 / 0 / 0 | 4 / 0 / 0 |
-| `owner_text.no_internal_codes` | 460 / 0 / 0 | 466 / 0 / 0 | 440 / 0 / 0 | 465 / 0 / 0 | 476 / 0 / 0 |
+| `owner_text.no_internal_codes` | 460 / 0 / 0 | 469 / 0 / 0 | 446 / 0 / 0 | 465 / 0 / 0 | 476 / 0 / 0 |
 | `pause.nothing_prepared_until_the_owner_resumes` | - | - | 1 / 0 / 0 | - | 1 / 0 / 0 |
 | `pause.nothing_published_for_a_paused_day` | 54 / 0 / 0 | 37 / 0 / 0 | 56 / 0 / 0 | 40 / 0 / 0 | 33 / 0 / 0 |
 | `pause.recorded` | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 |
@@ -358,29 +356,29 @@ Passed / failed / not applicable, per check and seed. Every check listed under "
 | `pause.today_says_paused` | 30 / 0 / 0 | 22 / 0 / 0 | 31 / 0 / 0 | 23 / 0 / 0 | 20 / 0 / 0 |
 | `purchase.an_order_is_not_an_arrival` | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 |
 | `purchase.arrival_is_the_owner_s_observation` | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 |
-| `receipt.an_accepted_command_returns_one` | 120 / 0 / 0 | 123 / 0 / 0 | 127 / 0 / 0 | 121 / 0 / 0 | 121 / 0 / 0 |
-| `receipt.idempotent_repeat` | 116 / 0 / 0 | 119 / 0 / 0 | 123 / 0 / 0 | 117 / 0 / 0 | 117 / 0 / 0 |
+| `receipt.an_accepted_command_returns_one` | 120 / 0 / 0 | 124 / 0 / 0 | 130 / 0 / 0 | 121 / 0 / 0 | 121 / 0 / 0 |
+| `receipt.idempotent_repeat` | 116 / 0 / 0 | 120 / 0 / 0 | 126 / 0 / 0 | 117 / 0 / 0 | 117 / 0 / 0 |
 | `receipt.key_reuse_refused` | 2 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 |
 | `receipt.key_reuse_runs_nothing` | 2 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 | 2 / 0 / 0 |
-| `receipt.names_who_acted` | 116 / 0 / 0 | 119 / 0 / 0 | 123 / 0 / 0 | 117 / 0 / 0 | 117 / 0 / 0 |
-| `receipt.reads_back_as_returned` | 116 / 0 / 0 | 119 / 0 / 0 | 123 / 0 / 0 | 117 / 0 / 0 | 117 / 0 / 0 |
-| `receipt.repeat_writes_nothing` | 116 / 0 / 0 | 119 / 0 / 0 | 123 / 0 / 0 | 117 / 0 / 0 | 117 / 0 / 0 |
-| `receipt.revision_not_ahead_of_ledger` | 116 / 0 / 0 | 119 / 0 / 0 | 123 / 0 / 0 | 117 / 0 / 0 | 117 / 0 / 0 |
-| `receipt.well_formed` | 116 / 0 / 0 | 119 / 0 / 0 | 123 / 0 / 0 | 117 / 0 / 0 | 117 / 0 / 0 |
+| `receipt.names_who_acted` | 116 / 0 / 0 | 120 / 0 / 0 | 126 / 0 / 0 | 117 / 0 / 0 | 117 / 0 / 0 |
+| `receipt.reads_back_as_returned` | 116 / 0 / 0 | 120 / 0 / 0 | 126 / 0 / 0 | 117 / 0 / 0 | 117 / 0 / 0 |
+| `receipt.repeat_writes_nothing` | 116 / 0 / 0 | 120 / 0 / 0 | 126 / 0 / 0 | 117 / 0 / 0 | 117 / 0 / 0 |
+| `receipt.revision_not_ahead_of_ledger` | 116 / 0 / 0 | 120 / 0 / 0 | 126 / 0 / 0 | 117 / 0 / 0 | 117 / 0 / 0 |
+| `receipt.well_formed` | 116 / 0 / 0 | 120 / 0 / 0 | 126 / 0 / 0 | 117 / 0 / 0 | 117 / 0 / 0 |
 | `recommend.answers` | 4 / 0 / 0 | 10 / 0 / 0 | 6 / 0 / 0 | 3 / 0 / 0 | 6 / 0 / 0 |
 | `recommend.no_more_than_asked` | 4 / 0 / 0 | 10 / 0 / 0 | 6 / 0 / 0 | 3 / 0 / 0 | 6 / 0 / 0 |
 | `recommend.publishes_nothing` | 4 / 0 / 0 | 10 / 0 / 0 | 6 / 0 / 0 | 3 / 0 / 0 | 6 / 0 / 0 |
 | `recommend.same_request_same_answer` | 4 / 0 / 0 | 10 / 0 / 0 | 6 / 0 / 0 | 3 / 0 / 0 | 6 / 0 / 0 |
 | `recommend.says_so_when_it_has_too_few` | 4 / 0 / 0 | 10 / 0 / 0 | 6 / 0 / 0 | 3 / 0 / 0 | 6 / 0 / 0 |
-| `recommended.complete_outfit` | 344 / 0 / 0 | 347 / 0 / 0 | 317 / 0 / 0 | 348 / 0 / 0 | 359 / 0 / 0 |
-| `recommended.garments_exist_under_their_names` | 344 / 0 / 0 | 347 / 0 / 0 | 317 / 0 / 0 | 348 / 0 / 0 | 359 / 0 / 0 |
-| `recommended.not_hard_excluded` | 344 / 0 / 0 | 347 / 0 / 0 | 317 / 0 / 0 | 348 / 0 / 0 | 359 / 0 / 0 |
-| `recommended.not_made_unavailable_by_owner` | 344 / 0 / 0 | 347 / 0 / 0 | 317 / 0 / 0 | 348 / 0 / 0 | 359 / 0 / 0 |
-| `recommended.not_restricted` | 344 / 0 / 0 | 347 / 0 / 0 | 317 / 0 / 0 | 348 / 0 / 0 | 359 / 0 / 0 |
-| `recommended.offered_role_is_the_garment_s_own` | 344 / 0 / 0 | 347 / 0 / 0 | 317 / 0 / 0 | 348 / 0 / 0 | 359 / 0 / 0 |
-| `recommended.owned` | 344 / 0 / 0 | 347 / 0 / 0 | 317 / 0 / 0 | 348 / 0 / 0 | 359 / 0 / 0 |
-| `recommended.profile_hard_constraints` | 344 / 0 / 0 | 347 / 0 / 0 | 317 / 0 / 0 | 348 / 0 / 0 | 359 / 0 / 0 |
-| `recommended.trip_day_uses_packed_pieces_only` | 3 / 0 / 0 | 1 / 0 / 0 | - | 3 / 0 / 0 | 3 / 0 / 0 |
+| `recommended.complete_outfit` | 344 / 0 / 0 | 349 / 0 / 0 | 320 / 0 / 0 | 348 / 0 / 0 | 359 / 0 / 0 |
+| `recommended.garments_exist_under_their_names` | 344 / 0 / 0 | 349 / 0 / 0 | 320 / 0 / 0 | 348 / 0 / 0 | 359 / 0 / 0 |
+| `recommended.not_hard_excluded` | 344 / 0 / 0 | 349 / 0 / 0 | 320 / 0 / 0 | 348 / 0 / 0 | 359 / 0 / 0 |
+| `recommended.not_made_unavailable_by_owner` | 344 / 0 / 0 | 349 / 0 / 0 | 320 / 0 / 0 | 348 / 0 / 0 | 359 / 0 / 0 |
+| `recommended.not_restricted` | 344 / 0 / 0 | 349 / 0 / 0 | 320 / 0 / 0 | 348 / 0 / 0 | 359 / 0 / 0 |
+| `recommended.offered_role_is_the_garment_s_own` | 344 / 0 / 0 | 349 / 0 / 0 | 320 / 0 / 0 | 348 / 0 / 0 | 359 / 0 / 0 |
+| `recommended.owned` | 344 / 0 / 0 | 349 / 0 / 0 | 320 / 0 / 0 | 348 / 0 / 0 | 359 / 0 / 0 |
+| `recommended.profile_hard_constraints` | 344 / 0 / 0 | 349 / 0 / 0 | 320 / 0 / 0 | 348 / 0 / 0 | 359 / 0 / 0 |
+| `recommended.trip_day_uses_packed_pieces_only` | 3 / 0 / 0 | 3 / 0 / 0 | 3 / 0 / 0 | 3 / 0 / 0 | 3 / 0 / 0 |
 | `repair.changes_only_what_it_must` | 4 / 0 / 0 | 4 / 0 / 0 | 4 / 0 / 0 | 4 / 0 / 0 | 4 / 0 / 0 |
 | `repair.keeps_the_chosen_outfit` | 4 / 0 / 0 | 4 / 0 / 0 | 4 / 0 / 0 | 4 / 0 / 0 | 4 / 0 / 0 |
 | `repair.makes_a_new_board_revision` | 4 / 0 / 0 | 4 / 0 / 0 | 4 / 0 / 0 | 4 / 0 / 0 | 4 / 0 / 0 |
@@ -425,7 +423,7 @@ Passed / failed / not applicable, per check and seed. Every check listed under "
 | `swap.undo_receipt_names_the_board` | 2 / 0 / 0 | 3 / 0 / 0 | 3 / 0 / 0 | 3 / 0 / 0 | 4 / 0 / 0 |
 | `swap.undo_restores_the_board` | 2 / 0 / 2 | 3 / 0 / 1 | 3 / 0 / 1 | 3 / 0 / 1 | 4 / 0 / 0 |
 | `swap.undo_runs_without_a_tap` | 2 / 0 / 0 | 3 / 0 / 0 | 3 / 0 / 0 | 3 / 0 / 0 | 4 / 0 / 0 |
-| `trip.a_trip_day_is_answered_from_the_suitcase` | 3 / 0 / 0 | 1 / 0 / 2 | 0 / 0 / 3 | 3 / 0 / 0 | 3 / 0 / 0 |
+| `trip.a_trip_day_is_answered_from_the_suitcase` | 3 / 0 / 0 | 3 / 0 / 0 | 3 / 0 / 0 | 3 / 0 / 0 | 3 / 0 / 0 |
 | `trip.packed_is_what_the_suitcase_holds` | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 |
 | `trip.packing_runs_without_a_tap` | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 |
 | `trip.planned_trip_is_listed` | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 | 1 / 0 / 0 |

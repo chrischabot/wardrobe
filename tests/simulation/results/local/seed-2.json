@@ -76,14 +76,14 @@
     "errors": []
   },
   "invariantChecks": {
-    "passed": 13089,
+    "passed": 13113,
     "failed": 0,
-    "notApplicable": 5,
+    "notApplicable": 4,
     "byCheck": {
       "amend.replaces_only_what_it_corrects": {
-        "passed": 2,
+        "passed": 1,
         "failed": 0,
-        "notApplicable": 0
+        "notApplicable": 1
       },
       "ask.returns_a_durable_run": {
         "passed": 2,
@@ -201,7 +201,7 @@
         "notApplicable": 0
       },
       "calendar.projected_revision_is_the_event_s": {
-        "passed": 291,
+        "passed": 284,
         "failed": 0,
         "notApplicable": 0
       },
@@ -246,7 +246,7 @@
         "notApplicable": 0
       },
       "contract.a_change_the_owner_asks_for_applies_at_once": {
-        "passed": 123,
+        "passed": 124,
         "failed": 0,
         "notApplicable": 0
       },
@@ -266,7 +266,7 @@
         "notApplicable": 0
       },
       "contract.receipt_states_whether_undo_is_available": {
-        "passed": 123,
+        "passed": 124,
         "failed": 0,
         "notApplicable": 0
       },
@@ -506,7 +506,7 @@
         "notApplicable": 0
       },
       "owner_text.no_internal_codes": {
-        "passed": 466,
+        "passed": 469,
         "failed": 0,
         "notApplicable": 0
       },
@@ -536,12 +536,12 @@
         "notApplicable": 0
       },
       "receipt.an_accepted_command_returns_one": {
-        "passed": 123,
+        "passed": 124,
         "failed": 0,
         "notApplicable": 0
       },
       "receipt.idempotent_repeat": {
-        "passed": 119,
+        "passed": 120,
         "failed": 0,
         "notApplicable": 0
       },
@@ -556,27 +556,27 @@
         "notApplicable": 0
       },
       "receipt.names_who_acted": {
-        "passed": 119,
+        "passed": 120,
         "failed": 0,
         "notApplicable": 0
       },
       "receipt.reads_back_as_returned": {
-        "passed": 119,
+        "passed": 120,
         "failed": 0,
         "notApplicable": 0
       },
       "receipt.repeat_writes_nothing": {
-        "passed": 119,
+        "passed": 120,
         "failed": 0,
         "notApplicable": 0
       },
       "receipt.revision_not_ahead_of_ledger": {
-        "passed": 119,
+        "passed": 120,
         "failed": 0,
         "notApplicable": 0
       },
       "receipt.well_formed": {
-        "passed": 119,
+        "passed": 120,
         "failed": 0,
         "notApplicable": 0
       },
@@ -606,47 +606,47 @@
         "notApplicable": 0
       },
       "recommended.complete_outfit": {
-        "passed": 347,
+        "passed": 349,
         "failed": 0,
         "notApplicable": 0
       },
       "recommended.garments_exist_under_their_names": {
-        "passed": 347,
+        "passed": 349,
         "failed": 0,
         "notApplicable": 0
       },
       "recommended.not_hard_excluded": {
-        "passed": 347,
+        "passed": 349,
         "failed": 0,
         "notApplicable": 0
       },
       "recommended.not_made_unavailable_by_owner": {
-        "passed": 347,
+        "passed": 349,
         "failed": 0,
         "notApplicable": 0
       },
       "recommended.not_restricted": {
-        "passed": 347,
+        "passed": 349,
         "failed": 0,
         "notApplicable": 0
       },
       "recommended.offered_role_is_the_garment_s_own": {
-        "passed": 347,
+        "passed": 349,
         "failed": 0,
         "notApplicable": 0
       },
       "recommended.owned": {
-        "passed": 347,
+        "passed": 349,
         "failed": 0,
         "notApplicable": 0
       },
       "recommended.profile_hard_constraints": {
-        "passed": 347,
+        "passed": 349,
         "failed": 0,
         "notApplicable": 0
       },
       "recommended.trip_day_uses_packed_pieces_only": {
-        "passed": 1,
+        "passed": 3,
         "failed": 0,
         "notApplicable": 0
       },
@@ -866,9 +866,9 @@
         "notApplicable": 0
       },
       "trip.a_trip_day_is_answered_from_the_suitcase": {
-        "passed": 1,
+        "passed": 3,
         "failed": 0,
-        "notApplicable": 2
+        "notApplicable": 0
       },
       "trip.packed_is_what_the_suitcase_holds": {
         "passed": 1,
@@ -1005,19 +1005,14 @@
       "why": "no garment of the undone report of 2027-06-02 has another report behind it"
     },
     {
-      "check": "trip.a_trip_day_is_answered_from_the_suitcase",
-      "step": 141,
-      "why": "no option for 2027-06-10 (No complete outfit is available for this day: 0 eligible trousers.), but the simulated owner left 1 proposed piece(s) at home: Cord — navy (bottom)"
+      "check": "amend.replaces_only_what_it_corrects",
+      "step": 114,
+      "why": "the report has no shirt to correct, or no other shirt was free"
     },
     {
       "check": "swap.undo_restores_the_board",
       "step": 146,
       "why": "no home board for 2027-06-11 (trip)"
-    },
-    {
-      "check": "trip.a_trip_day_is_answered_from_the_suitcase",
-      "step": 151,
-      "why": "no option for 2027-06-11 (No complete outfit is available for this day: 0 eligible trousers.), but the simulated owner left 1 proposed piece(s) at home: Cord — navy (bottom)"
     },
     {
       "check": "undo.keeps_what_another_report_still_supports",
@@ -1028,16 +1023,16 @@
   "toolCoverage": {
     "byTool": {
       "garderobe_inventory": {
-        "calls": 1960,
-        "answered": 1957,
+        "calls": 1968,
+        "answered": 1965,
         "refused": 3,
         "refusalCodes": {
           "not_found": 3
         }
       },
       "garderobe_command": {
-        "calls": 253,
-        "answered": 242,
+        "calls": 255,
+        "answered": 244,
         "refused": 11,
         "refusalCodes": {
           "not_found": 3,
@@ -1065,8 +1060,8 @@
         "refusalCodes": {}
       },
       "garderobe_run": {
-        "calls": 15,
-        "answered": 9,
+        "calls": 13,
+        "answered": 7,
         "refused": 6,
         "refusalCodes": {
           "precondition_failed": 2,
@@ -1081,12 +1076,12 @@
       }
     },
     "inventoryViews": {
-      "snapshot": 1008,
-      "receipts": 514,
+      "snapshot": 1013,
+      "receipts": 518,
       "items": 12,
       "item": 8,
       "availability": 1,
-      "history": 369,
+      "history": 368,
       "laundry": 16,
       "style": 1,
       "resolve": 3,
@@ -1097,7 +1092,7 @@
       "orders": 7
     },
     "runActions": {
-      "status": 10,
+      "status": 8,
       "resume": 2,
       "respond": 2,
       "cancel": 1
@@ -1113,7 +1108,7 @@
         "direct": 30
       },
       "wear.record": {
-        "direct": 29,
+        "direct": 31,
         "owner_app": 2
       },
       "garment.move": {
@@ -1130,7 +1125,7 @@
         "direct": 4
       },
       "wear.amend": {
-        "direct": 2
+        "direct": 1
       },
       "style.set_brief": {
         "direct": 3
@@ -1204,7 +1199,7 @@
     "oauth": {
       "connections": 3,
       "authorizations": 3,
-      "tokenRefreshes": 358
+      "tokenRefreshes": 361
     },
     "ownerRequestsInTheApp": 16,
     "testDoorRequests": 889
@@ -1286,7 +1281,7 @@
       "laundry pickups": 3,
       "laundry returns": 3,
       "laundry: a piece that came back late": 1,
-      "managed Calendar event writes (insert, replace, remove)": 36,
+      "managed Calendar event writes (insert, replace, remove)": 37,
       "managed Calendar events replaced in place under a newer revision": 26,
       "morning boards with options marked as suiting a calendar entry": 5,
       "morning boards, calendar ok": 23,
@@ -1301,13 +1296,13 @@
       "mornings away on the trip": 3,
       "mornings while the service was paused": 2,
       "most garments at once whose availability was an estimate": 79,
-      "offers checked without a thermal check (forecast unavailable, stale or just changed)": 69,
+      "offers checked without a thermal check (forecast unavailable, stale or just changed)": 71,
       "orders logged (SYNTHETIC order)": 1,
       "outfits chosen the evening before": 12,
       "owner observations contradicting the ledger: a spill (was estimated)": 2,
-      "owner observations contradicting the ledger: all of it in the hamper (was available)": 1,
-      "owner observations contradicting the ledger: all of it in the hamper (was estimated)": 1,
-      "owner observations contradicting the ledger: counted clean (was estimated)": 2,
+      "owner observations contradicting the ledger: all of it in the hamper (was available)": 2,
+      "owner observations contradicting the ledger: counted clean (was estimated)": 1,
+      "owner observations contradicting the ledger: counted clean (was unavailable)": 1,
       "packing proposals (from the destination's SIMULATED forecast)": 1,
       "parcels posted back (physical departure recorded separately)": 1,
       "pauses (with a resume date) (SIMULATED circumstance)": 1,
@@ -1315,23 +1310,22 @@
       "repair probes: marked dirty": 1,
       "repair probes: sent to cleaner": 1,
       "repair probes: worn today late report": 1,
-      "route.direct": 123,
+      "route.direct": 124,
       "route.refused": 4,
       "scheduled sweeps run (the product's own scheduled handler)": 148,
       "suitcases packed": 1,
       "suitcases unpacked": 1,
       "swaps on tomorrow's board": 3,
       "swaps undone": 3,
-      "trip days undressable because proposed pieces were left at home (SIMULATED owner's packing)": 2,
       "trips planned (SIMULATED circumstance)": 1,
-      "wear reports corrected (route: direct)": 2,
-      "wear reports from the suitcase": 1,
+      "wear reports corrected (route: direct)": 1,
+      "wear reports from the suitcase": 3,
       "wear reports made the next morning": 1,
       "wear reports made the same evening": 19,
       "wear reports repeated as a new report": 6,
       "wear reports repeated from the owner's app": 2,
       "wear reports undone": 2,
-      "wear reports with a second pair of socks used": 3,
+      "wear reports with a second pair of socks used": 2,
       "weekly laundry baselines the ledger has applied": 4,
       "worn: as chosen": 9,
       "worn: one piece differs": 5,
@@ -1339,7 +1333,7 @@
     }
   },
   "commands": {
-    "total": 131,
+    "total": 132,
     "refused": [
       {
         "step": 31,
@@ -1375,10 +1369,10 @@
       }
     ]
   },
-  "outcomeDigest": "8e5af3c9d5690c26",
+  "outcomeDigest": "d5e04f80776ae024",
   "simulated": {
     "from": "2027-05-30T18:30:00Z",
     "to": "2027-06-27T22:10:00Z"
   },
-  "realSeconds": 169
+  "realSeconds": 234
 }
