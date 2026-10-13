@@ -1,7 +1,9 @@
 /**
- * A request the owner confirms is the request they were shown. Every proposal that rewrites, moves,
- * receives or removes a wardrobe piece carries the piece's version as read when the proposal was made, and
- * confirming it after the piece changed is refused with `conflict` and writes nothing.
+ * A request the owner confirms is the request they were shown. Every request that rewrites, moves,
+ * receives or removes a wardrobe piece carries the piece's version as read when the request was made, and
+ * confirming it after the piece changed is refused with `conflict` and writes nothing. Under the
+ * change-authority contract such changes apply at once in the owner's own conversation; they are requests
+ * on a read-only connection (and for section 3 types), which is what this file uses to make them.
  *
  * Real conversation Durable Object, real local D1, the shared command service (which makes the refusal)
  * and the owner's REAL imported inventory. The only stand-in is the labelled FAKE MODEL. The owner's
@@ -91,7 +93,7 @@ describe("a proposal about a wardrobe piece is refused as stale when the piece c
     const { garmentId, toolName, input } = await c.setup();
     const ask = async () => {
       w.model.script({ toolCalls: [{ toolName, input }] }, { text: "Recorded as a request to confirm." });
-      const turn = await w.client.runTurn({ submissionId: submission("stale"), text: c.ownerText });
+      const turn = await w.clientFor(w.owner.principal({ channel: "mcp", actor: "assistant", scopes: ["read"] })).runTurn({ submissionId: submission("stale"), text: c.ownerText });
       expect(turn.receipts).toEqual([]);
       expect(turn.proposals.map((x) => x.type)).toEqual([c.type]);
       return turn;
@@ -112,5 +114,47 @@ describe("a proposal about a wardrobe piece is refused as stale when the piece c
     const receipt = await confirm(w, await ask());
     expect(receipt).toMatchObject({ type: c.type, outcome: "committed" });
     expect(await stateOf(garmentId)).not.toEqual(before);
+  });
+
+  it("a bulk-correction proposal is refused as stale when a newly created garment joins its selector before confirmation", async () => {
+    const firstPiece = await w.owner.exec("garment.create", {
+      name: "Bulk selector shirt A (synthetic test piece)",
+      category: "shirt",
+      roles: ["top"],
+      careChannel: "handwash",
+      colour: "chartreuse-bulk-probe",
+      acquisition: "owned",
+      quantity: 1,
+      source: { kind: "owner_statement" },
+    });
+    const firstId = String(firstPiece.result["garmentId"]);
+    const selector = { category: "shirt", colour: "chartreuse-bulk-probe" };
+    w.model.script({ text: "Recorded as a request." });
+    const turn = await w.clientFor(w.owner.principal({ channel: "mcp", actor: "assistant", scopes: ["read"] })).runTurn({
+      submissionId: submission("bulk-stale"),
+      text: "Change the care channel on my chartreuse shirts.",
+    });
+    // Record a bulk_correct proposal on the turn with expectedVersions captured when only firstId matched.
+    const payload = { selector, changes: { careChannel: "service" }, source: { kind: "owner_statement" } };
+    await w.h.db
+      .prepare("UPDATE assistant_turns SET proposals_json = ? WHERE user_id = ? AND turn_id = ?")
+      .bind(JSON.stringify([{ type: "garment.bulk_correct", summary: "Bulk change", payload, expectedVersions: { [`garment_record:${firstId}`]: 1 } }]), w.owner.userId, turn.turnId)
+      .run();
+    const withProposal = (await w.client.getTurn(turn.turnId))!;
+    // A second garment matching the selector is created before the owner confirms the proposal.
+    const secondPiece = await w.owner.exec("garment.create", {
+      name: "Bulk selector shirt B (synthetic test piece)",
+      category: "shirt",
+      roles: ["top"],
+      careChannel: "handwash",
+      colour: "chartreuse-bulk-probe",
+      acquisition: "owned",
+      quantity: 1,
+      source: { kind: "owner_statement" },
+    });
+    const secondId = String(secondPiece.result["garmentId"]);
+    await expect(confirm(w, withProposal)).rejects.toMatchObject({ code: "conflict" });
+    const channels = await all<{ care_channel: string }>(w.h.db, "SELECT care_channel FROM garments WHERE user_id = ? AND garment_id IN (?, ?)", w.owner.userId, firstId, secondId);
+    expect(channels.every((r) => r.care_channel === "handwash")).toBe(true);
   });
 });

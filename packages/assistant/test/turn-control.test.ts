@@ -36,8 +36,8 @@ const lastOwnerText = (r: FakeRequest) => [...r.messages].reverse().find((m) => 
 
 describe("research runs in its own task actor (real Durable Objects; FAKE MODELS)", () => {
   it("a slow investigation does not hold up the conversation, and only one result card enters the continuous transcript", async () => {
-    const w = await createWorld({ real: false, probes: ["deepseek-v41-flash", "fable-5-1"] });
-    const research = fakeModelFor("fable-5-1");
+    const w = await createWorld({ real: false, probes: ["odango-eap", "odango-eap-fallback"] });
+    const research = fakeModelFor("odango-eap-fallback");
     const g = gate();
     research.script(async () => {
       await g.hold();
@@ -95,8 +95,8 @@ describe("research runs in its own task actor (real Durable Objects; FAKE MODELS
   });
 
   it("Stop on a running investigation cancels it in its task actor and reports that it stopped", async () => {
-    const w = await createWorld({ real: false, probes: ["deepseek-v41-flash", "fable-5-1"] });
-    const research = fakeModelFor("fable-5-1");
+    const w = await createWorld({ real: false, probes: ["odango-eap", "odango-eap-fallback"] });
+    const research = fakeModelFor("odango-eap-fallback");
     const g = gate();
     research.script(async () => {
       await g.hold();
@@ -238,7 +238,7 @@ describe("context overflow (real Think session; FAKE MODEL raising the provider'
         await w.client.runTurn({ submissionId: submission("hist"), text: `Earlier question ${i} about tweed and flannel` });
       }
       const before = (await w.client.transcript({ limit: 200 })).messages.length;
-      const summarizer = fakeModelFor("deepseek-v41-flash");
+      const summarizer = fakeModelFor("odango-eap");
       summarizer.script({ error: OVERFLOW() }, { text: "Summary of the earlier exchange: the owner asked four questions about tweed and flannel and was answered." }, { text: "Here is the answer after shortening." });
       const turn = await w.client.runTurn({ submissionId: submission("overflow"), text: "and what about today?" });
       expect(turn.failure).toBeNull();

@@ -58,8 +58,7 @@ describe("forgetting a message removes its text from every store, and says truth
           { toolName: "save_shopping_candidate", input: { name: "Soft-collar shirt for the Zanzibar chemotherapy rash", note: "because of the chemotherapy" } },
           { toolName: "remember", input: { kind: "fact", text: "Collars give a rash since the Zanzibar chemotherapy", saidByOwner: false } },
           { toolName: "start_background_work", input: { kind: "other", title: "Soft collars after Zanzibar chemotherapy", params: { note: "chemotherapy rash" } } },
-          // Proposed, never confirmed.
-          { toolName: "amend_profile", input: { text: "The oxford collar gives me a rash since my Zanzibar chemotherapy", kind: "physical_state" } },
+          // Proposed, never confirmed. (`style.add_amendment` is a proposal confirmed by the owner; the next test covers confirming and keeping it, so this one leaves it out.)
           { toolName: "add_standing_direction", input: { text: "No stiff collars since the Zanzibar chemotherapy" } },
           { toolName: "set_day_brief", input: { localDate: "2026-09-16", text: "Soft collar: Zanzibar chemotherapy rash" } },
           { toolName: "set_reminder", input: { kind: "other", title: "Tailor about the Zanzibar chemotherapy collar", dueAt: "2026-09-18T09:00:00Z" } },
@@ -72,9 +71,10 @@ describe("forgetting a message removes its text from every store, and says truth
       { text: "I am sorry to hear the collar gives you a rash since your Zanzibar chemotherapy. I noted it." },
     );
     const told = await w.client.runTurn({ submissionId: submission("told"), text: `${SAID} Remind me to see the tailor.` });
+    // The bookkeeping is the assistant's, so it applies; the comfort note and other directions stay requests.
     expect(told.receipts.map((r) => r.type).sort()).toEqual(["job.create", "memory.record_conclusion", "product.record", "research.save_note"]);
     expect(told.proposals).toHaveLength(8);
-    expect(told.refusals.map((r) => r.code)).toEqual(["too_many_requests"]);
+    expect(told.refusals.map((r) => r.code)).toEqual([]);
 
     // A later turn in which the assistant repeats it (and a recall tool result carries it).
     w.model.script({ toolCalls: [{ toolName: "recall_conversation", input: { text: "collar rash" } }] }, { text: "You told me the oxford collar gives you a rash since your Zanzibar chemotherapy." });
@@ -138,6 +138,8 @@ describe("forgetting a message removes its text from every store, and says truth
       { text: "Recorded as requests." },
     );
     const told = await k.client.runTurn({ submissionId: submission("kept"), text: SAID });
+    // All three unlisted directions wait as proposals and are confirmed by the owner.
+    expect(told.receipts).toEqual([]);
     expect(told.proposals).toHaveLength(3);
     for (const n of [0, 1, 2]) await confirm(k, told, n);
     const userMessage = (await k.client.transcript({ limit: 50 })).messages.find((m) => m.turnId === told.turnId && m.role === "user")!;
@@ -159,8 +161,8 @@ describe("forgetting a message removes its text from every store, and says truth
   });
 
   it("forgetting a research request removes the topic from the task actor, the job, the result card in the main conversation and everything served", async () => {
-    const r = await createWorld({ real: false, probes: ["deepseek-v41-flash", "fable-5-1"] });
-    fakeModelFor("fable-5-1").script({ text: "Nothing conclusive about the Zanzibar chemotherapy clinic." });
+    const r = await createWorld({ real: false, probes: ["odango-eap", "odango-eap-fallback"] });
+    fakeModelFor("odango-eap-fallback").script({ text: "Nothing conclusive about the Zanzibar chemotherapy clinic." });
     const started = await r.client.startResearch({ submissionId: submission("research"), topic: "History of the Zanzibar chemotherapy clinic I attend", kind: "history" });
     for (let i = 0; i < 400 && (await r.client.getTurn(started.turnId))!.status !== "completed"; i++) await new Promise((x) => setTimeout(x, 25));
     await runAssistantMaintenance({ db: r.h.db, service: r.h.service, env: env as never, gatewayId: TEST_GATEWAY_ID, nowMs: r.h.clock.now() }, { limit: 500 });
