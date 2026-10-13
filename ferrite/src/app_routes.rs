@@ -4,7 +4,8 @@
 //! * `GET /v1/meta`: versions, mounted modules, server time and the MCP endpoint;
 //! * `POST /v1/commands/batch`: the phone's offline replay, each command independent;
 //! * `POST /v1/recommendations`: options in `preview` mode, or a published board in `board` mode;
-//! * `POST /v1/boards/{id}/swap`: one slot of one option, through `board.swap_slot`.
+//! * `POST /v1/boards/{id}/swap`: one slot of one option, through `board.swap_slot`;
+//! * `POST /v1/trips/{id}/packing-proposal`: a packing proposal, through `trip.record_packing_proposal`.
 //!
 //! Nothing here is a second implementation of a command: every change goes through
 //! [`api::execute`] with its receipt and undo, exactly as `POST /v1/commands` runs it.
@@ -222,6 +223,92 @@ pub async fn swap<S: Store>(store: &mut S, principal: Principal, now_ms: u64, bo
     let receipt = api::execute(store, principal, now_ms, &envelope).await?;
     let board = api::board_view(store, board_id).await?;
     Ok(json!({"board": board, "receipt": receipt}))
+}
+
+/// The trip ID of `POST /v1/trips/{id}/packing-proposal`, if the path is one.
+pub fn packing_target(path: &str) -> Option<&str> {
+    let id = path.strip_prefix("/v1/trips/")?.strip_suffix("/packing-proposal")?;
+    (!id.is_empty() && id.len() <= 128 && !id.contains('/')).then_some(id)
+}
+
+/// `POST /v1/trips/{id}/packing-proposal` (`PackingProposal`): a proposal for a planned trip from the
+/// stock at home (`trips::propose`), kept through `trip.record_packing_proposal` under the idempotency
+/// key `packing:{clientRequestId}`, as `proposePacking` sends it. Nothing is packed.
+///
+/// A request already recorded answers with the proposal it recorded, without planning again (so a
+/// retransmission after the stock or the trip changed, or after the trip was cancelled, still gets
+/// its answer). A new plan is sent with the ledger revision and the trip version it was planned
+/// from as `expectedVersions`, so a plan made from a ledger that has since changed is never
+/// recorded: it is planned again, at most three times.
+pub async fn propose_packing<S: Store>(store: &mut S, principal: Principal, now_ms: u64, trip_id: &str, body: &[u8]) -> Result<Value, CmdError> {
+    let m = body_object(body)?;
+    only_keys(&m, &["clientRequestId"], "a packing-proposal request")?;
+    let client = match m.get("clientRequestId") {
+        Some(Value::String(s)) if (8..=128).contains(&s.chars().count()) => s.clone(),
+        _ => return Err(invalid("clientRequestId: expected a stable request ID of 8 to 128 characters")),
+    };
+    let key = format!("packing:{client}");
+    for _ in 0..PLAN_ATTEMPTS {
+        if let Some(answer) = recorded_proposal(store, &key, trip_id).await? {
+            return Ok(answer);
+        }
+        let (_, ledger) = api::read_ledger(store).await?;
+        let trip = api::load_trip(store, trip_id)
+            .await?
+            .filter(|t| t.status == "planned")
+            .ok_or_else(|| CmdError::with("not_found", format!("no active trip '{trip_id}'"), json!({"tripId": trip_id})))?;
+        let payload = crate::trips::propose(crate::seed::catalogue(), &ledger, &trip);
+        let mut expected = ferrite_app::serde_json::Map::new();
+        expected.insert("wardrobe".into(), json!(ledger.revision));
+        expected.insert(format!("trip:{}", trip.trip_id), json!(trip.version));
+        let envelope = json!({
+            "type": "trip.record_packing_proposal",
+            "payload": payload,
+            "idempotencyKey": key,
+            "expectedVersions": expected,
+            "authorization": authorization(principal),
+            "source": {"channel": principal.channel},
+        });
+        match api::execute(store, principal, now_ms, &envelope).await {
+            Ok(receipt) => return stored_proposal(store, &trip.trip_id, &receipt["result"]["revision"]).await,
+            // The ledger moved since the plan was read, or the same request was recorded meanwhile:
+            // look again.
+            Err(e) if e.code == "conflict" || e.code == "idempotency_key_reuse" => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(CmdError::with(
+        "conflict",
+        "the wardrobe kept changing while the proposal was planned; nothing was written. Try again",
+        json!({"retryable": true}),
+    ))
+}
+
+/// Plans tried for one packing request before it is refused as a conflict.
+const PLAN_ATTEMPTS: usize = 3;
+
+/// The proposal a `packing:` key already recorded, if it did. The key is the caller's request ID for
+/// one trip, so a key recorded for another trip or another command is a reuse.
+async fn recorded_proposal<S: Store>(store: &mut S, key: &str, trip_id: &str) -> Result<Option<Value>, CmdError> {
+    let Some((receipt, payload)) = api::recorded_request(store, key).await? else { return Ok(None) };
+    if receipt["type"] != "trip.record_packing_proposal" || payload["tripId"] != trip_id {
+        return Err(CmdError::with("idempotency_key_reuse", "this clientRequestId was already used for another request", json!({"commandId": receipt["commandId"]})));
+    }
+    stored_proposal(store, trip_id, &receipt["result"]["revision"]).await.map(Some)
+}
+
+/// The proposal record of `trip_id` at `revision`, exactly as it was recorded.
+async fn stored_proposal<S: Store>(store: &mut S, trip_id: &str, revision: &Value) -> Result<Value, CmdError> {
+    let unreadable = || CmdError::with("internal", "the recorded packing proposal is unreadable", json!({"retryable": false, "tripId": trip_id}));
+    let revision = revision.as_u64().filter(|r| *r >= 1).ok_or_else(unreadable)?;
+    let bytes = store
+        .get(&crate::trips::proposal_key(trip_id, revision))
+        .await
+        .map_err(|_| CmdError::with("internal", "the packing proposal could not be read just now; try again", json!({"retryable": true})))?;
+    bytes
+        .and_then(|b| ferrite_app::serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|v| crate::trips::proposal_from_json(&v, trip_id, revision))
+        .ok_or_else(unreadable)
 }
 
 // ─────────────────────────── launch and settings reads ───────────────────────────

@@ -7,6 +7,8 @@
 //!   `b/<id>`     a day board (`crate::board::Board`), written with the ledger;
 //!   `c/<id>`     a command: its stored receipt, payload hash and undo data;
 //!   `fb/<id>`    a comfort note (`crate::feedback::Note`), written with the ledger;
+//!   `trip/<id>`  a trip (`crate::trips::Trip`), written with the ledger;
+//!   `tp/<id>/<n>` revision n of a trip's packing proposal, written with the ledger;
 //!   `i/<sha256>` an idempotency key → command ID and request hash.
 //! Every command rewrites `ledger`, and the receipt and marker are committed
 //! in the same guarded write, so two requests that read the same ledger can
@@ -21,9 +23,10 @@ use ferrite_app::IngressRequest;
 
 use crate::board::{self, Board};
 use crate::feedback::{self, Note};
+use crate::trips::{self, Trip};
 use crate::laundry;
 use crate::wear;
-use crate::canonical::{canonical, keys_are_plain, numbers_are_whole, whole, MAX_SAFE};
+use crate::canonical::{canonical, keys_are_plain, numbers_are_accepted, whole, MAX_SAFE};
 use crate::ledger::{self, BoardRef, CmdError, Ctx, Ledger, Plan, StoredCommand};
 use crate::seed::{catalogue, Catalogue};
 use crate::sha256::{constant_time_eq, hex_digest};
@@ -287,7 +290,7 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
             let date = query.iter().find(|(k, _)| k == "date").map(|(_, v)| v.as_str());
             match query.iter().find(|(k, _)| k == "scope").map(|(_, v)| v.as_str()) {
                 None | Some("home") => read_today(store, now_ms, date).await,
-                Some(s) if s.starts_with("trip:") => Err(CmdError::new("invalid_command", "scope: trips are not ported to this server yet; read the home board (scope home)")),
+                Some(s) if s.starts_with("trip:") => Err(CmdError::new("invalid_command", "scope: trip-day boards are not ported to this server yet; read the home board (scope home)")),
                 Some(_) => Err(CmdError::new("invalid_command", "scope: expected home or trip:<tripId>")),
             }
         }
@@ -325,6 +328,12 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
         ("POST", "/v1/identities/link" | "/v1/identities/unlink" | "/v1/recovery-kit" | "/v1/account/delete") => Err(identity_unavailable()),
         ("GET", "/v1/laundry") => crate::app_routes::laundry(store, now_ms).await,
         ("GET", "/v1/feedback") => read_feedback(store, query.iter().find(|(k, _)| k == "garmentId").map(|(_, v)| v.as_str())).await,
+        ("GET", "/v1/trips") => read_trips(store).await,
+        ("GET", p) if trip_target(p).is_some() => read_trip(store, trip_target(p).unwrap_or_default()).await,
+        ("POST", p) if crate::app_routes::packing_target(p).is_some() => {
+            let id = crate::app_routes::packing_target(p).unwrap_or_default();
+            crate::app_routes::propose_packing(store, principal, now_ms, id, &req.body).await
+        }
         ("GET", "/v1/studio") => {
             let q = |name: &str| query.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
             crate::studio::read(store, now_ms, q("mode"), q("date")).await
@@ -364,6 +373,12 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
 }
 
 // ──────────────────────────────── storage ────────────────────────────────
+
+/// The trip ID of `GET /v1/trips/{id}`, if the path is one.
+fn trip_target(path: &str) -> Option<&str> {
+    let id = path.strip_prefix("/v1/trips/")?;
+    (!id.is_empty() && !id.contains('/')).then_some(id)
+}
 
 /// The grant ID of `POST /v1/connections/{id}/disconnect`, if the path is one.
 fn disconnect_target(path: &str) -> Option<&str> {
@@ -464,6 +479,60 @@ pub async fn read_feedback<S: Store>(store: &mut S, garment: Option<&str>) -> Re
         }
     }
     Ok(feedback::listing(notes, garment))
+}
+
+/// Read one trip. Absent is `Ok(None)`; a record that is not a trip this code wrote is an error.
+pub(crate) async fn load_trip<S: Store>(store: &mut S, id: &str) -> Result<Option<Trip>, CmdError> {
+    if id.is_empty() || id.chars().count() > 128 {
+        return Ok(None);
+    }
+    let bytes = store.get(&trips::key(id)).await.map_err(|_| internal("the trip could not be read just now; try again"))?;
+    match bytes {
+        None => Ok(None),
+        Some(b) => serde_json::from_slice::<Value>(&b)
+            .ok()
+            .and_then(|v| Trip::from_json(&v, id))
+            .map(Some)
+            .ok_or_else(|| CmdError::with("internal", "the stored trip is unreadable; nothing was changed", json!({"retryable": false, "tripId": id}))),
+    }
+}
+
+/// A trip with its latest packing proposal, as `GET /v1/trips` reads it.
+async fn trip_with_proposal<S: Store>(store: &mut S, trip: Trip) -> Result<(Trip, Option<Value>), CmdError> {
+    if trip.proposal_revision == 0 {
+        return Ok((trip, None));
+    }
+    let unreadable = || CmdError::with("internal", "the trip's packing proposal is unreadable", json!({"retryable": false, "tripId": trip.trip_id}));
+    let bytes = store.get(&trips::proposal_key(&trip.trip_id, trip.proposal_revision)).await.map_err(|_| internal("the packing proposal could not be read just now; try again"))?;
+    let proposal = bytes
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|v| trips::proposal_from_json(&v, &trip.trip_id, trip.proposal_revision))
+        .ok_or_else(unreadable)?;
+    Ok((trip, Some(proposal)))
+}
+
+/// `GET /v1/trips` (`TripList`): every trip, by departure date then ID.
+pub async fn read_trips<S: Store>(store: &mut S) -> Result<Value, CmdError> {
+    let (_, l) = read_ledger(store).await?;
+    let mut out = Vec::with_capacity(l.trips.len());
+    for id in l.trips.keys() {
+        match load_trip(store, id).await? {
+            Some(t) => out.push(trip_with_proposal(store, t).await?),
+            None => return Err(CmdError::with("internal", "a trip is listed but its record is missing", json!({"retryable": false, "tripId": id}))),
+        }
+    }
+    Ok(trips::listing(out))
+}
+
+/// `GET /v1/trips/{id}` (`Trip`).
+pub async fn read_trip<S: Store>(store: &mut S, id: &str) -> Result<Value, CmdError> {
+    match load_trip(store, id).await? {
+        Some(t) => {
+            let (t, proposal) = trip_with_proposal(store, t).await?;
+            Ok(t.view(proposal))
+        }
+        None => Err(CmdError::new("not_found", "that trip was not found")),
+    }
 }
 
 fn idempotency_key(key: &str) -> Vec<u8> {
@@ -645,6 +714,21 @@ pub fn validate_record(bytes: &[u8], command_id: &str) -> Option<Record> {
                 return None;
             }
         }
+        (Value::Null, k @ ("trip.create" | "trip.update" | "trip.cancel" | "trip.record_packing_proposal")) => {
+            let id = result.get("tripId").and_then(Value::as_str).map_or(false, |s| !s.is_empty());
+            let n = |key: &str, min: u64| result.get(key).and_then(Value::as_u64).map_or(false, |v| v >= min);
+            let ok = match (k, rc["outcome"].as_str()) {
+                ("trip.create", Some("committed")) => result.len() == 1 && id,
+                ("trip.update", Some("committed")) => result.len() == 2 && id && n("version", 2),
+                ("trip.cancel", Some("committed")) => result.len() == 2 && id && n("stillPacked", 0),
+                ("trip.cancel", Some("noop")) => result.is_empty(),
+                ("trip.record_packing_proposal", Some("committed")) => result.len() == 2 && id && n("revision", 1),
+                _ => false,
+            };
+            if !ok {
+                return None;
+            }
+        }
         _ => return None,
     }
     // Exactly one of: undo data (offered by the receipt), or the reason the
@@ -667,9 +751,12 @@ pub fn validate_record(bytes: &[u8], command_id: &str) -> Option<Record> {
         ("feedback.record", Ok(_)) if rc["outcome"] == "committed" => {}
         ("feedback.record", Err(_)) if rc["outcome"] == "noop" => {}
         ("feedback.retract", Err(_)) => {}
+        // A trip's creation is undone by cancelling it; its edits, its cancellation and a proposal are not undone.
+        ("trip.create", Ok(_)) if rc["outcome"] == "committed" => {}
+        ("trip.update" | "trip.cancel" | "trip.record_packing_proposal", Err(_)) => {}
         _ => return None,
     }
-    if rc["outcome"] == "noop" && !kind.starts_with("laundry.") && !kind.starts_with("feedback.") && kind != "care.washed" {
+    if rc["outcome"] == "noop" && !kind.starts_with("laundry.") && !kind.starts_with("feedback.") && kind != "care.washed" && kind != "trip.cancel" {
         return None;
     }
     if rc["outcome"] == "merged" && kind != "wear.record" {
@@ -751,6 +838,7 @@ fn undo_data_ok(kind: &str, data: &Value) -> bool {
     match kind {
         "care.mark_dirty" | "care.washed" => keys(&["stockEventIds"]) && event_ids(d),
         "feedback.record" => keys(&["feedbackId"]) && id("feedbackId"),
+        "trip.create" => keys(&["tripId"]) && id("tripId"),
         "wear.record" => {
             // Each list names each ID once: undo matches them against the journal as sets.
             let list = |k: &str, nonempty: bool| {
@@ -991,10 +1079,10 @@ fn parse_envelope(v: &Value) -> Result<Envelope, CmdError> {
     if let Some(k) = obj.keys().find(|k| !ENVELOPE_KEYS.contains(&k.as_str())) {
         return Err(envelope_error(format!("{k}: not a field of the command envelope")));
     }
-    // Every number a command of this slice carries is a count or a version.
-    // Refusing anything else keeps the request hash exactly JavaScript's.
-    if !numbers_are_whole(v) {
-        return Err(envelope_error(format!("numbers in a command must be whole numbers from 0 to {MAX_SAFE}")));
+    // Every number a command of this slice carries is a count or a version, or a trip destination's
+    // coordinate. Refusing anything else keeps the request hash exactly JavaScript's.
+    if !numbers_are_accepted(v) {
+        return Err(envelope_error(format!("numbers in a command must be whole numbers from 0 to {MAX_SAFE} (a trip destination's latitude and longitude may be any coordinate)")));
     }
     // Likewise every field name is plain ASCII, so key order hashes as in JavaScript.
     if !keys_are_plain(v) {
@@ -1110,6 +1198,7 @@ fn check_expected_versions(env: &Envelope, l: &Ledger, boards: &[(String, u64)])
                 "garment" => Some(l.garment_version(id)),
                 "board" => boards.iter().find(|(b, _)| b == id).map(|(_, r)| *r),
                 "laundry_batch" => l.batch(id).map(|b| b.version),
+                "trip" => l.trips.get(id).copied(),
                 _ => return Err(CmdError::with("invalid_command", format!("unknown expected-version kind '{kind}'"), json!({"key": key}))),
             };
             if have.is_none() || have != whole(want) {
@@ -1138,6 +1227,10 @@ impl Planned {
     }
     fn note((plan, note): (Plan, Option<Note>)) -> Planned {
         let docs = note.map(|n| vec![(feedback::key(&n.feedback_id), n.to_json())]).unwrap_or_default();
+        Planned { plan, board: None, original: None, docs }
+    }
+    fn trip(plan: Plan, trip: Option<Trip>) -> Planned {
+        let docs = trip.map(|t| vec![(trips::key(&t.trip_id), t.to_json())]).unwrap_or_default();
         Planned { plan, board: None, original: None, docs }
     }
 }
@@ -1178,6 +1271,32 @@ async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envel
             let existing = load_note(store, &id).await?;
             Ok(Planned::note(feedback::retract(next, &id, existing.as_ref())?))
         }
+        ("trip.create", _) => {
+            let input = trips::parse_create(&env.payload)?;
+            let (plan, trip) = trips::create(ctx, next, input)?;
+            Ok(Planned::trip(plan, Some(trip)))
+        }
+        ("trip.update", _) => {
+            let input = trips::parse_update(&env.payload)?;
+            let trip = load_trip(store, &input.trip_id).await?;
+            let (plan, trip) = trips::update(ctx, next, trip.as_ref(), input)?;
+            Ok(Planned::trip(plan, Some(trip)))
+        }
+        ("trip.cancel", _) => {
+            let id = trips::parse_cancel(&env.payload)?;
+            let trip = load_trip(store, &id).await?;
+            let (plan, trip) = trips::cancel(ctx, next, &id, trip.as_ref())?;
+            Ok(Planned::trip(plan, trip))
+        }
+        ("trip.record_packing_proposal", _) => {
+            let input = trips::parse_proposal(ctx.cat, &env.payload)?;
+            let trip = load_trip(store, &input.trip_id).await?;
+            let (plan, trip, proposal) = trips::record_proposal(ctx, trip.as_ref(), input)?;
+            let mut planned = Planned::trip(plan, None);
+            planned.docs.push((trips::proposal_key(&trip.trip_id, trip.proposal_revision), proposal));
+            planned.docs.push((trips::key(&trip.trip_id), trip.to_json()));
+            Ok(planned)
+        }
         ("board.publish", _) => {
             let input = board::publish_input(&env.payload)?;
             let existing = indexed_board(store, current.board_for(&input.scope, &input.local_date)).await?;
@@ -1213,6 +1332,11 @@ async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envel
                 "feedback.record" => {
                     let existing = load_note(store, feedback::undo_target_note(&data).unwrap_or_default()).await?;
                     Planned::note(feedback::undo_record(next, existing.as_ref(), &summary, target)?)
+                }
+                "trip.create" => {
+                    let trip = load_trip(store, trips::undo_target_trip(&data).unwrap_or_default()).await?;
+                    let (plan, trip) = trips::undo_create(ctx, next, trip.as_ref(), &summary, target)?;
+                    Planned::trip(plan, Some(trip))
                 }
                 kind @ ("board.select" | "board.swap_slot") => {
                     let b = load_board(store, data["boardId"].as_str().unwrap_or_default()).await?;
@@ -1258,6 +1382,34 @@ async fn replay_existing<S: Store>(store: &mut S, env: &Envelope) -> Result<Opti
             let mut receipt = current_receipt(&record.value);
             receipt["replayed"] = json!(true);
             Ok(Some(receipt))
+        }
+        _ => {
+            let mut e = unknown_outcome();
+            e.details["commandId"] = json!(command_id);
+            Err(e)
+        }
+    }
+}
+
+/// The receipt and payload of the command an idempotency key already recorded, if one did. A route
+/// that computes its payload (a packing proposal) asks first, so a retransmission answers from what
+/// was recorded instead of recomputing a payload that no longer matches. A marker or record that
+/// cannot be read is an unknown outcome, as in [`replay_existing`].
+pub(crate) async fn recorded_request<S: Store>(store: &mut S, key: &str) -> Result<Option<(Value, Value)>, CmdError> {
+    let Some(bytes) = store.get(&idempotency_key(key)).await.map_err(|_| unknown_outcome())? else {
+        return Ok(None);
+    };
+    let parsed = serde_json::from_slice::<Value>(&bytes).ok().and_then(|m| {
+        let id = m.get("commandId")?.as_str()?.to_string();
+        let hash = m.get("requestHash")?.as_str()?.to_string();
+        (id.starts_with("cmd_") && id.len() <= 64 && is_hash(&hash)).then_some((id, hash))
+    });
+    let Some((command_id, hash)) = parsed else { return Err(unknown_outcome()) };
+    match load_command(store, &command_id).await.ok().flatten() {
+        Some(record) if record.request_hash == hash => {
+            let mut receipt = current_receipt(&record.value);
+            receipt["replayed"] = json!(true);
+            Ok(Some((receipt, record.value["payload"].clone())))
         }
         _ => {
             let mut e = unknown_outcome();

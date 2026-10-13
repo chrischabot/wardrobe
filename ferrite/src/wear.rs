@@ -98,7 +98,7 @@ pub fn parse(payload: &Value) -> Result<WearInput, CmdError> {
     }
     match payload.get("tripId") {
         None | Some(Value::Null) => {}
-        _ => return Err(invalid(T, "tripId: trips are not ported to this server yet; record the wear without it")),
+        _ => return Err(invalid(T, "tripId: wear on a trip (from packed stock) is not ported to this server yet; record the wear without it")),
     }
     // A further unit is of a garment worn that day: it must be reported as worn too, so the day's
     // record and history account for every unit the report uses.

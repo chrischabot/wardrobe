@@ -77,19 +77,21 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `GET /health` (public) | service status |
 | `GET /v1/wardrobe[?category=]` | the inventory: every imported garment with its balances (clean, dirty, at the laundry service) and version. A subset of `listInventory`: no availability estimate, aliases, colours or wear counts yet |
 | `POST /v1/commands` | the command envelope of `packages/contracts` (`type`, `payload`, `idempotencyKey`, `authorization`, `source.channel`, optional `occurredAt`, `expectedVersions`) |
-| `GET /v1/today[?date=YYYY-MM-DD][&scope=home]` | `TodayResponse` as `readToday`: the home board for the day, or none, with the garments recorded worn that day. Without a date it is the owner's day now in his timezone (Europe/London, the default setting, with British Summer Time). `status` is `ready` or `none`; the source freshness list gives the board and wardrobe revisions, style, and then weather as `unavailable` and Calendar as `not_connected`; `runId` is null (nothing composes in the background) and `wardrobeRevision` is the current revision. A `trip:` scope is refused, since trips are not ported |
+| `GET /v1/today[?date=YYYY-MM-DD][&scope=home]` | `TodayResponse` as `readToday`: the home board for the day, or none, with the garments recorded worn that day. Without a date it is the owner's day now in his timezone (Europe/London, the default setting, with British Summer Time). `status` is `ready` or `none`; the source freshness list gives the board and wardrobe revisions, style, and then weather as `unavailable` and Calendar as `not_connected`; `runId` is null (nothing composes in the background) and `wardrobeRevision` is the current revision. A `trip:` scope is refused, since trip-day boards are not ported |
 | `GET /v1/weather[?date=YYYY-MM-DD]` | `WeatherSnapshot`, for the owner's day now when no date is named: what the TypeScript service answers for an owner with no home city (no settings command is ported, so `homeLocation` is null). There is no forecast: `freshness` is `unavailable`, every window and condition value is null (never zero, dry or calm), the line is "Weather unavailable" and the limitation is "No home city is set, so no forecast was requested." The snapshot is answered and not recorded (`weather.record_snapshot` is not ported) |
 | `GET /v1/days/{date}` (owner only) | the day's recorded wear (`DailyRecord`, as `getDailyRecord`): counted garments and every report with its status. Choosing an outfit never changes it |
 | `GET /v1/commands[?limit=]`, `GET /v1/commands/{id}` | receipts, newest first; an undo already used is no longer offered |
 | `GET /v1/connections`, `POST /v1/connections/{grantId}/disconnect` (owner only) | Settings › Connected assistants: the OAuth grants, and disconnecting one, effective on its next request |
 | `POST /mcp` (OAuth) | the MCP server of `apps/worker/src/mcp`, see below |
 | `GET /v1/meta` | `MetaResponse`: API and contract versions, mounted modules (media is reported as not mounted), server time, the MCP endpoint and its protocol versions. Without a valid `WARDROBE_PUBLIC_ORIGIN` it is refused by that secret's name |
-| `GET /v1/command-types` | `CommandTypeList`, as `describeCommandTypes`: the eleven command types this port executes, each with the class, required scope and payload JSON Schema the TypeScript registry gives it (`src/seed/command-types.json`, written by `scripts/build-command-types.mjs`), narrowed to this port: only the payload fields its handler accepts, with `additionalProperties: false` (so `board.publish` has no `requestFingerprint`), only the `owner_tap` and `owner_statement` authorizations (a publication by schedule is not ported), and `consequential` from the port's own connected-assistant rule, under which none of the eleven waits for the owner. A field whose other values the port always refuses is published as the value it accepts: `wear.record` `tripId` null only; `board.publish` `scope` `"home"`, `brief` the default day brief, `weatherSnapshotId` and `calendarSnapshotId` null only; `board.swap_slot` `weatherSnapshotId` is left out (no value is accepted). Size bounds (list and text lengths) are not restated; the command names them when it refuses |
+| `GET /v1/command-types` | `CommandTypeList`, as `describeCommandTypes`: the fifteen command types this port executes, each with the class, required scope and payload JSON Schema the TypeScript registry gives it (`src/seed/command-types.json`, written by `scripts/build-command-types.mjs`), narrowed to this port: only the payload fields its handler accepts, with `additionalProperties: false` (so `board.publish` has no `requestFingerprint`), only the `owner_tap` and `owner_statement` authorizations (a publication by schedule is not ported), and `consequential` from the port's own connected-assistant rule, under which none of the fifteen waits for the owner. A field whose other values the port always refuses is published as the value it accepts: `wear.record` `tripId` null only; `board.publish` `scope` `"home"`, `brief` the default day brief, `weatherSnapshotId` and `calendarSnapshotId` null only; `board.swap_slot` `weatherSnapshotId` is left out (no value is accepted). Size bounds (list and text lengths) are not restated; the command names them when it refuses |
 | `POST /v1/commands/batch` | the phone's offline replay (`CommandBatchResponse`): 1 to 50 envelopes in order, each run as `POST /v1/commands` runs it, independent of the others, with `retryable` from the error code as `isRetryable` decides it |
 | `POST /v1/recommendations` | `RecommendResponse`. `preview` (default): the recommender's validated options, nothing published. `board`: those options published as the day's home board through `board.publish` under the key `board-compose:{clientRequestId}`, answered with the board. A retransmission answers from the saved run and the publication's receipt. `date` is required (no owner timezone); `lockedGarmentIds` and `occasionOnly: true` are refused as not ported |
 | `POST /v1/boards/{id}/swap` | `SwapSlotResponse`: `board.swap_slot` under the key `board-swap:{clientRequestId}`, `expectedRevision` sent as the board's expected version, answered with the receipt and the board as it now stands. No fresher forecast is fetched first (weather is not ported) |
 | `GET /v1/laundry` | `LaundryStateResponse` as `getLaundryState`: the hamper by care channel (service, hand wash), sorted by name, and the newest 12 laundry bags not withdrawn, newest first. `returnBasis` is null; `exceptions` and `cycles` are empty (laundry exceptions and weekly cycles are not ported) |
 | `GET /v1/feedback[?garmentId=]` | `FeedbackList` as `listComfortFeedback`: the comfort notes still active, newest first, or those naming one garment, see "Comfort feedback" |
+| `GET /v1/trips`, `GET /v1/trips/{id}` | `TripList` and `Trip` as `listTrips` and `getTrip`: every trip by departure date then ID, each with its latest packing proposal (or null) and `packed` always empty, see "Trips" |
+| `POST /v1/trips/{id}/packing-proposal` | `PackingProposal` as `proposePacking`: a proposal for a planned trip from the stock at home, recorded through `trip.record_packing_proposal` under the key `packing:{clientRequestId}`. Nothing is packed, see "Trips" |
 | `GET /v1/studio[?mode=for_today\|explore][&date=]` | `StudioResponse`: Studio's selectors and opening outfit for the day (the owner's day now when none is named), see "Studio". `combinations` and `dayPlans` are always empty (the Studio commands are not ported) |
 | `POST /v1/studio/validate` | `StudioValidation` for a `StudioOutfitRequest`: the daily validator's verdict on the outfit for the day, with Studio's shopping-candidate rule, see "Studio" |
 | `POST /v1/studio/compose` | `Composition`: the deterministic layout of the outfit's garments (`buildManifest`) and its hash, with every garment a labelled text tile (no media) and the preview `none` |
@@ -102,14 +104,18 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` | the authorization server of the MCP endpoint and of the owner's app, see below |
 
 Commands: `care.mark_dirty`, `care.washed`, `board.publish`, `board.select`,
-`board.swap_slot`, `feedback.record`, `feedback.retract`, `laundry.collect`, `laundry.return`, `wear.record` and `command.undo`. Each applies at once and
+`board.swap_slot`, `feedback.record`, `feedback.retract`, `laundry.collect`, `laundry.return`,
+`trip.create`, `trip.update`, `trip.cancel`, `trip.record_packing_proposal`, `wear.record` and `command.undo`. Each applies at once and
 answers with the receipt of `CommandReceipt` (contract 1.1.0): summary built
 from the ledger, affected entity versions, repairs, result, undo
 availability, wardrobe revision, actor and channel. The same idempotency key
 and body returns the stored receipt (`replayed: true`); the same key with
 another body is `idempotency_key_reuse`. Errors use the API's codes and HTTP
 statuses. Numbers in a command must be whole numbers from 0 to 2^53 - 1
-(every number this slice takes is a count or a version), which keeps the
+(every number this slice takes is a count or a version), except a trip
+destination's `latitude` and `longitude`, which may be negative or
+fractional and are hashed as JavaScript writes them (any number from
+0.000001 to 10^21 in size, or 0); this keeps the
 request hash equal to the TypeScript service's.
 
 When the server cannot settle whether a request was written (a commit whose
@@ -391,6 +397,49 @@ first, or those naming one garment (`?garmentId=`). `tests/feedback.rs` covers
 the owner's and an assistant's notes, the repeat, the undo, the withdrawal,
 the bounds and a tampered record.
 
+## Trips
+
+As `packages/daily/src/trips.ts`. `trip.create` records a trip as planned
+(name, dates, destinations with their timezones and optional coordinates,
+occasions, luggage and its piece limit, laundry opportunities, and where it
+came from) and applies at once with a receipt and an undo, from the app or
+relayed by a connected assistant: "Trip “Lisbon” recorded: 2026-10-20 to
+2026-10-23, Lisbon. Nothing is packed until you say so". Undo cancels the trip.
+A trip with no `tripId` gets `trp_<command>`, or the next free
+`trp_<command>_<n>`; a trip ID already used is refused. `trip.update` changes
+the named fields of a planned trip and `trip.cancel` cancels it; neither has an
+undo (the owner edits again, or creates the trip again), as in TypeScript, and
+a second cancellation is a noop. Both check `expectedVersions` `trip:<id>`.
+Occasions default to register `none` and segment `day`.
+
+`POST /v1/trips/{id}/packing-proposal` plans the trip from the stock at home
+and records the plan as the trip's next proposal revision. It is only a
+proposal: what is packed is what the owner's `stock.pack` observations say,
+and those are not ported, so `packed` is always empty and the proposal changes
+no garment. The planner composes each day, and each evening with an evening
+occasion, with the port's recommender under the trip's repeat exception (no
+repeat horizon). It proposes the option that keeps most of what is already in
+the bag, keeps the trousers (for two days), jacket, shoes and belt when the
+outfit still validates with them, keeps the day's trousers and socks for its
+evening, and never plans a pair of socks on more days than there are clean
+pairs at home (a day it cannot cover is planned without socks, and the notes
+say so). One unit of each piece worn on the departure day is not counted
+against the luggage limit. Over a limit, the optional neckwear and accessories
+are left out and the shortfall is stated. Days left without an outfit, or
+without socks, are each stated in one note (the first eight named, then how
+many more).
+
+A request already recorded under its `clientRequestId` answers with the
+proposal it recorded, without planning again, even after the stock or the
+trip changed or the trip was cancelled; the same ID sent for another trip is
+`idempotency_key_reuse`. A new plan is recorded with the ledger revision and
+the trip version it was planned from as `expectedVersions`, so a plan read
+before another request's write is never recorded: it is planned again, at
+most three times, then refused as a `conflict`. `tests/trips.rs` covers the
+commands, the reads, the proposal, its replay, a concurrent write during
+planning, a 31-day trip with an evening every day, days without socks, an
+assistant's relay and the refusals.
+
 ## Wear records
 
 As `wear.record` in `handlers/wear-care.ts`. "I wore it yesterday" applies at
@@ -438,7 +487,7 @@ successive days may be the same unit, so days are not added together.
 
 Refused, writing nothing: a future wearing date (later than the latest date
 anywhere on Earth, since no owner timezone is ported), a stated `occurredAt`
-more than a day before the wearing date began, `tripId` (trips are not
+more than a day before the wearing date began, `tripId` (trip packing is not
 ported), unknown garments and malformed payloads. Without `occurredAt`, a
 wear on a date that is still today somewhere on Earth is ordered now, and a
 past date's wear at noon UTC of that date.
@@ -450,7 +499,7 @@ every report with its status and channel) through `GET /v1/days/{date}` (the
 owner) and `garderobe_inventory` view
 `history` with a `date`; `from` and `to` (at most 366 days) list the counted
 wears, optionally of one garment. A day without a record is unknown, not
-unworn. Not ported: `wear.amend`, trips, the laundry exceptions a wear
+unworn. Not ported: `wear.amend`, wear on a trip, the laundry exceptions a wear
 settles, and the board option sets a wear resolves (the board keeps none
 yet). Wear reports are kept for the life of the ledger, like stock events.
 
@@ -758,7 +807,7 @@ sorts keys exactly as JavaScript does.
 
 Differences from the TypeScript backend, to close in later milestones: one
 owner per deployment; laundry exceptions and the weekly reset are not ported
-(see "Service laundry"); wear amendments and trips are not ported (see "Wear
+(see "Service laundry"); wear amendments and trip packing are not ported (see "Wear
 records"); no effects or
 outbox; `expectedVersions` is checked for every command except the owner's
 observations (the wash report, the laundry pickup and return, and the wear
@@ -846,7 +895,7 @@ milestone, and outside the lines of the milestone in hand:
     database); another timezone needs the settings command.
   - The weather snapshot is never a forecast (no home city, no provider
     egress) and is not recorded, so its `snapshotId` names nothing kept.
-  - Pause and trips are not ported, so Today is never `paused` or
+  - Pause and trip-day boards are not ported, so Today is never `paused` or
     `preparing`, and a trip scope is refused.
 - **Identity and sign-in.**
   - There is no identity provider, so claiming, linking identities, recovery
@@ -906,6 +955,25 @@ milestone, and outside the lines of the milestone in hand:
     store's record size.
   - A withdrawn note's record stays, marked `retracted`; forgetting
     (`conversation.forget_source`) is not ported.
+- **Trips.**
+  - Packing (`stock.pack`, `stock.unpack`), trip-day boards (a `trip:` scope)
+    and wear on a trip (`wear.record` `tripId`) are not ported, so nothing is
+    ever packed and a trip's `packed` list is always empty.
+  - The planner is simpler than `proposePacking`: no destination forecast
+    (every day says "Weather unavailable" and is proposed without one), no
+    occasion register, no further reuse levels to fit a luggage limit
+    (trousers on more days, a shirt worn twice), and no taste model. Its
+    over-limit note is the port's own wording.
+  - A destination's timezone is checked for the form of an IANA name only;
+    there is no timezone database to look it up.
+  - The port keeps at most 60 trips (cancelled ones included), a trip of at
+    most 31 days and 48 KiB of JSON, and a proposal of at most 48 KiB; the
+    contract sets none of these.
+  - A recorded proposal must name garments the owner has (`not_found`
+    otherwise); TypeScript does not check them.
+  - Earlier proposal revisions are kept but only the latest is readable.
+  - A coordinate smaller than 0.000001 in size (other than 0), or 10^21 or
+    larger, is refused, since JavaScript writes those in exponent form.
 
 ## Ferrite limits and what they mean for Wardrobe
 

@@ -3,11 +3,16 @@
 //! order a client happened to send.
 //!
 //! Numbers: the command service accepts only whole numbers from 0 to
-//! 2^53 - 1 anywhere in a command ([`numbers_are_whole`]). JavaScript writes
-//! every such number as its plain integer digits, however the client wrote it
+//! 2^53 - 1 anywhere in a command ([`numbers_are_whole`]), except a trip
+//! destination's coordinates ([`numbers_are_accepted`]). JavaScript writes
+//! every such whole number as its plain integer digits, however the client wrote it
 //! (`1`, `1.0`, `1e0`), and so does [`canonical`]; that is what makes the
-//! request hash agree with the TypeScript service's. Other numbers are
-//! refused before they are ever hashed.
+//! request hash agree with the TypeScript service's. A coordinate is written
+//! as JavaScript writes it ([`js_number`]): the shortest decimal that reads
+//! back as the same double, in plain notation, which is also what Rust's
+//! `Display` writes for a double from 1e-6 to 1e21; a number outside that range
+//! (where JavaScript switches to exponent notation) is refused. Other numbers
+//! are refused before they are ever hashed.
 //!
 //! Keys: the command service accepts only plain keys ([`keys_are_plain`]):
 //! printable ASCII, not all digits. For those, JavaScript's `sort()` (UTF-16
@@ -38,6 +43,45 @@ pub fn numbers_are_whole(v: &Value) -> bool {
         Value::Object(map) => map.values().all(numbers_are_whole),
         _ => true,
     }
+}
+
+/// A number as JavaScript's `JSON.stringify` writes it, for the doubles whose text Rust writes the
+/// same way: zero, and every finite value from 1e-6 to 1e21 in magnitude (both write the shortest
+/// decimal that reads back as the same double, in plain notation). `None` for anything else.
+pub fn js_number(f: f64) -> Option<String> {
+    if !f.is_finite() {
+        return None;
+    }
+    if f == 0.0 {
+        // `-0` is written `0` by JavaScript.
+        return Some("0".into());
+    }
+    let a = f.abs();
+    (1e-6..1e21).contains(&a).then(|| format!("{f}"))
+}
+
+/// Whether every number in a command envelope is one the service accepts: [`whole`] everywhere,
+/// except a trip destination's `latitude` and `longitude` (`trip.create`'s `payload.destinations`,
+/// `trip.update`'s `payload.changes.destinations`), which may be any number [`js_number`] writes.
+pub fn numbers_are_accepted(envelope: &Value) -> bool {
+    let pointer = match envelope.get("type").and_then(Value::as_str) {
+        Some("trip.create") => "/payload/destinations",
+        Some("trip.update") => "/payload/changes/destinations",
+        _ => return numbers_are_whole(envelope),
+    };
+    let mut rest = envelope.clone();
+    if let Some(Value::Array(destinations)) = rest.pointer_mut(pointer) {
+        for d in destinations.iter_mut() {
+            if let Some(o) = d.as_object_mut() {
+                for k in ["latitude", "longitude"] {
+                    if o.get(k).and_then(Value::as_f64).map_or(false, |f| js_number(f).is_some()) {
+                        o.remove(k);
+                    }
+                }
+            }
+        }
+    }
+    numbers_are_whole(&rest)
 }
 
 /// Whether every object key anywhere in `v` is printable ASCII (space to
@@ -85,11 +129,12 @@ fn write(value: &Value, out: &mut String) {
             }
             out.push(']');
         }
-        // Whole numbers as JavaScript writes them; anything else is refused by
-        // the command service before hashing, and written as serde does here.
-        Value::Number(_) => match whole(value) {
-            Some(n) => out.push_str(&n.to_string()),
-            None => out.push_str(&serde_json::to_string(value).unwrap_or_default()),
+        // Whole numbers and coordinates as JavaScript writes them; anything else is refused by the
+        // command service before hashing, and written as serde does here.
+        Value::Number(_) => match (whole(value), value.as_f64().and_then(js_number)) {
+            (Some(n), _) => out.push_str(&n.to_string()),
+            (None, Some(text)) => out.push_str(&text),
+            (None, None) => out.push_str(&serde_json::to_string(value).unwrap_or_default()),
         },
         other => out.push_str(&serde_json::to_string(other).unwrap_or_default()),
     }
@@ -127,6 +172,36 @@ mod tests {
         assert!(numbers_are_whole(&parse(r#"{"a":[1,2.0,{"b":null}],"c":"x"}"#)));
         assert!(!numbers_are_whole(&parse(r#"{"a":[1,{"b":1424953923781206.25}]}"#)));
         assert!(!numbers_are_whole(&parse(r#"{"a":-2}"#)));
+    }
+
+    #[test]
+    fn coordinates_are_written_as_javascript_writes_them() {
+        // Each expected text is what node prints for JSON.stringify(JSON.parse(input)).
+        for (input, want) in [
+            ("51.5074", "51.5074"), ("-0.1278", "-0.1278"), ("-3", "-3"), ("0.000001", "0.000001"), ("1e-6", "0.000001"),
+            ("-0.0000025", "-0.0000025"), ("123.456789012345", "123.456789012345"), ("-179.99999999999997", "-179.99999999999997"),
+            ("45.0", "45"), ("-12.5e1", "-125"), ("0.30000000000000004", "0.30000000000000004"), ("-0.0", "0"),
+        ] {
+            assert_eq!(canonical(&parse(input)), want, "{input}");
+        }
+        assert_eq!((js_number(1e-7), js_number(1e21), js_number(f64::NAN)), (None, None, None));
+    }
+
+    #[test]
+    fn only_a_trip_destinations_coordinates_may_be_fractional_or_negative() {
+        let create = parse(r#"{"type":"trip.create","payload":{"destinations":[{"latitude":51.5074,"longitude":-0.1278}]}}"#);
+        assert!(numbers_are_accepted(&create));
+        let update = parse(r#"{"type":"trip.update","payload":{"changes":{"destinations":[{"latitude":-33.9,"longitude":18.4}]}}}"#);
+        assert!(numbers_are_accepted(&update));
+        for refused in [
+            r#"{"type":"trip.create","payload":{"destinations":[{"latitude":1e-9}]}}"#,
+            r#"{"type":"trip.create","payload":{"destinations":[{"label":-1}]}}"#,
+            r#"{"type":"trip.create","payload":{"luggage":{"maxPieces":2.5}}}"#,
+            r#"{"type":"trip.update","payload":{"destinations":[{"latitude":51.5}]}}"#,
+            r#"{"type":"wear.record","payload":{"destinations":[{"latitude":51.5}]}}"#,
+        ] {
+            assert!(!numbers_are_accepted(&parse(refused)), "{refused}");
+        }
     }
 
     #[test]

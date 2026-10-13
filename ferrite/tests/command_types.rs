@@ -82,7 +82,7 @@ async fn the_list_names_exactly_the_ported_commands_as_the_typescript_registry_d
     for kind in ["care.mark_dirty", "care.washed", "feedback.record", "feedback.retract", "laundry.collect", "laundry.return", "wear.record"] {
         assert_eq!(type_of(&list, kind)["class"], "observation", "{kind}");
     }
-    for kind in ["board.select", "board.swap_slot", "command.undo"] {
+    for kind in ["board.select", "board.swap_slot", "command.undo", "trip.cancel", "trip.create", "trip.update"] {
         assert_eq!(type_of(&list, kind)["class"], "edit", "{kind}");
     }
     let wear = type_of(&list, "wear.record");
@@ -97,6 +97,12 @@ async fn the_list_names_exactly_the_ported_commands_as_the_typescript_registry_d
     assert_eq!(publish["authorizations"], json!(["owner_tap", "owner_statement"]));
     assert!(publish["payloadSchema"]["properties"].get("requestFingerprint").is_none(), "{publish}");
     assert_eq!(publish["payloadSchema"]["required"], json!(["localDate", "options", "requestedCount"]));
+    // A packing proposal is a system command too; this port records one only on the owner's request
+    // or an assistant's relay of it.
+    let proposal = type_of(&list, "trip.record_packing_proposal");
+    assert_eq!(proposal["class"], "system");
+    assert_eq!(proposal["authorizations"], json!(["owner_tap", "owner_statement"]));
+    assert_eq!(type_of(&list, "trip.create")["payloadSchema"]["required"], json!(["name", "departsOn", "returnsOn", "destinations", "source"]));
     assert_eq!(type_of(&list, "board.select")["payloadSchema"]["required"], json!(["boardId", "optionId"]));
     // What the port categorically refuses is narrowed: no trips, only the home board and the default
     // brief, no weather or Calendar snapshot.
@@ -294,7 +300,7 @@ async fn payloads_the_published_schemas_accept_run_and_the_values_they_refuse_ar
     run.accepted("command.undo", undo).await;
 
     let wear = json!({"wearingDate": "2026-09-09", "garmentIds": [OXFORD_PINK], "timezone": "Europe/London", "segment": "day", "additionalUnits": [], "tripId": null, "note": "Worn to the office"});
-    run.refused("wear.record", with(&wear, "tripId", json!("trp_1")), "trips are not ported").await;
+    run.refused("wear.record", with(&wear, "tripId", json!("trp_1")), "wear on a trip (from packed stock) is not ported").await;
     run.accepted("wear.record", wear).await;
 
     let dirty = json!({"items": [{"garmentId": GREY_CHINO, "quantity": 1}]});
@@ -323,6 +329,32 @@ async fn payloads_the_published_schemas_accept_run_and_the_values_they_refuse_ar
     let retract = json!({"feedbackId": "cfb_command_types", "reason": "It was the heating"});
     run.refused("feedback.retract", with(&retract, "notPublished", json!(true)), "notPublished: not a field of this command").await;
     run.accepted("feedback.retract", retract).await;
+
+    let trip = json!({
+        "tripId": "trp_command_types", "name": "Lisbon", "departsOn": "2026-10-20", "returnsOn": "2026-10-22",
+        "destinations": [{"label": "Lisbon", "latitude": 38.7223, "longitude": -9.1393, "timezone": "Europe/Lisbon", "from": "2026-10-20", "to": "2026-10-22"}],
+        "occasions": [{"localDate": "2026-10-21", "label": "Dinner", "register": "smart", "segment": "evening"}],
+        "luggage": {"label": "the carry-on", "maxPieces": 20}, "laundry": [{"localDate": "2026-10-21", "note": "hotel laundry"}],
+        "source": {"kind": "owner_statement", "ref": "msg_1", "observedAt": "2026-09-09T08:00:00Z", "note": "said on the phone"},
+    });
+    run.refused("trip.create", with(&trip, "source", json!({"kind": "rumour"})), "source.kind: expected one of").await;
+    run.refused("trip.create", with(&trip, "luggage", json!({"label": "bag", "maxPieces": 0})), "luggage.maxPieces").await;
+    run.accepted("trip.create", trip).await;
+    let update = json!({"tripId": "trp_command_types", "changes": {"name": "Lisbon and Porto"}});
+    run.refused("trip.update", with(&update, "notPublished", json!(true)), "notPublished: not a field of this command").await;
+    run.accepted("trip.update", update).await;
+    let proposal = json!({
+        "tripId": "trp_command_types",
+        "items": [{"garmentId": OXFORD_BLUE, "name": "Blue oxford", "role": "top", "quantity": 1}],
+        "days": [{"localDate": "2026-10-20", "segment": "day", "occasion": null, "slots": [{"role": "top", "garmentId": OXFORD_BLUE}], "reason": ""}],
+        "weather": [{"localDate": "2026-10-20", "label": "Lisbon", "freshness": "unavailable", "line": "Weather unavailable"}],
+        "notes": ["Proposed by the command-types test"],
+    });
+    run.refused("trip.record_packing_proposal", with(&proposal, "notPublished", json!(true)), "notPublished: not a field of this command").await;
+    run.accepted("trip.record_packing_proposal", proposal).await;
+    let cancel = json!({"tripId": "trp_command_types"});
+    run.refused("trip.cancel", with(&cancel, "notPublished", json!(true)), "notPublished: not a field of this command").await;
+    run.accepted("trip.cancel", cancel).await;
 
     // Together the accepted payloads used every published field of every type.
     for t in run.list["types"].as_array().unwrap() {
