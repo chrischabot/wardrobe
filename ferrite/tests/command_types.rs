@@ -82,7 +82,7 @@ async fn the_list_names_exactly_the_ported_commands_as_the_typescript_registry_d
     for kind in ["care.mark_dirty", "care.washed", "feedback.record", "feedback.retract", "laundry.collect", "laundry.return", "wear.record"] {
         assert_eq!(type_of(&list, kind)["class"], "observation", "{kind}");
     }
-    for kind in ["board.select", "board.swap_slot", "command.undo", "trip.cancel", "trip.create", "trip.update"] {
+    for kind in ["board.select", "board.swap_slot", "command.undo", "return.open_case", "return.update_case", "trip.cancel", "trip.create", "trip.update"] {
         assert_eq!(type_of(&list, kind)["class"], "edit", "{kind}");
     }
     let wear = type_of(&list, "wear.record");
@@ -110,6 +110,12 @@ async fn the_list_names_exactly_the_ported_commands_as_the_typescript_registry_d
     assert_eq!(publish["payloadSchema"]["properties"]["scope"]["const"], "home");
     assert_eq!(publish["payloadSchema"]["properties"]["weatherSnapshotId"]["type"], "null");
     assert!(type_of(&list, "board.swap_slot")["payloadSchema"]["properties"].get("weatherSnapshotId").is_none());
+    // No orders: a return names a garment; a deadline is computed in London time or UTC only.
+    let open = &type_of(&list, "return.open_case")["payloadSchema"]["properties"];
+    assert_eq!(open["orderId"], json!({"type": "null", "default": null}));
+    assert_eq!(open["garmentId"]["type"], "string");
+    assert_eq!(open["timezone"], json!({"type": "string", "enum": ["Europe/London", "UTC"]}));
+    assert_eq!(type_of(&list, "return.update_case")["payloadSchema"]["properties"]["refundReceivedMinor"]["minimum"], json!(-9007199254740991i64));
 }
 
 #[tokio::test]
@@ -355,6 +361,26 @@ async fn payloads_the_published_schemas_accept_run_and_the_values_they_refuse_ar
     let cancel = json!({"tripId": "trp_command_types"});
     run.refused("trip.cancel", with(&cancel, "notPublished", json!(true)), "notPublished: not a field of this command").await;
     run.accepted("trip.cancel", cancel).await;
+
+    let terms = json!({"windowDays": 30, "concerns": "post", "triggerEvent": "delivery", "sourceRef": "https://shop.example/returns", "checkedOn": "2026-09-08", "text": "30 days from delivery"});
+    let open = json!({
+        "caseId": "ret_command_types", "kind": "return", "orderId": null, "lineId": null, "garmentId": NB_OLIVE, "quantity": 1,
+        "terms": terms, "triggerDate": "2026-09-05", "timezone": "Europe/London", "nextAction": "Print the label", "collectionPreference": "drop-off",
+        "refundExpectedMinor": 12000, "currency": "GBP", "reason": "Too narrow",
+    });
+    run.refused("return.open_case", with(&open, "orderId", json!("ord_1")), "orders are not ported to this server yet").await;
+    run.refused("return.open_case", with(&open, "timezone", json!("America/New_York")), "timezone: this server computes deadlines only in").await;
+    run.refused("return.open_case", with(&open, "garmentId", Value::Null), "a return needs the garment").await;
+    run.accepted("return.open_case", open).await;
+    let update = json!({
+        "caseId": "ret_command_types", "state": "posted", "terms": terms, "triggerDate": "2026-09-06", "nextAction": null, "labelRef": "label-1",
+        "collectionPreference": null, "shipmentRef": "RM123456789GB", "retailerReceivedOn": "2026-09-08", "refundExpectedMinor": 12000,
+        "refundReceivedMinor": 12500, "refundSourceRef": "email from the shop", "currency": "GBP", "note": "Posted at the counter",
+    });
+    run.refused("return.update_case", with(&update, "state", json!("lost")), "state: expected one of").await;
+    run.accepted("return.update_case", update).await;
+    // A correction to the refund received may be negative.
+    run.accepted("return.update_case", json!({"caseId": "ret_command_types", "refundReceivedMinor": -500})).await;
 
     // Together the accepted payloads used every published field of every type.
     for t in run.list["types"].as_array().unwrap() {

@@ -9,6 +9,7 @@
 //!   `fb/<id>`    a comfort note (`crate::feedback::Note`), written with the ledger;
 //!   `trip/<id>`  a trip (`crate::trips::Trip`), written with the ledger;
 //!   `tp/<id>/<n>` revision n of a trip's packing proposal, written with the ledger;
+//!   `ret/<id>`   a return or exchange case (`crate::returns::Case`), written with the ledger;
 //!   `i/<sha256>` an idempotency key → command ID and request hash.
 //! Every command rewrites `ledger`, and the receipt and marker are committed
 //! in the same guarded write, so two requests that read the same ledger can
@@ -24,6 +25,7 @@ use ferrite_app::IngressRequest;
 use crate::board::{self, Board};
 use crate::feedback::{self, Note};
 use crate::trips::{self, Trip};
+use crate::returns::{self, Case};
 use crate::laundry;
 use crate::wear;
 use crate::canonical::{canonical, keys_are_plain, numbers_are_accepted, whole, MAX_SAFE};
@@ -329,6 +331,9 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
         ("GET", "/v1/laundry") => crate::app_routes::laundry(store, now_ms).await,
         ("GET", "/v1/feedback") => read_feedback(store, query.iter().find(|(k, _)| k == "garmentId").map(|(_, v)| v.as_str())).await,
         ("GET", "/v1/trips") => read_trips(store).await,
+        ("GET", "/v1/returns") => read_returns(store).await,
+        // Orders come from purchase import (`purchase.import_order`), which is not ported: there are none.
+        ("GET", "/v1/orders") => Ok(json!({"orders": []})),
         ("GET", p) if trip_target(p).is_some() => read_trip(store, trip_target(p).unwrap_or_default()).await,
         ("POST", p) if crate::app_routes::packing_target(p).is_some() => {
             let id = crate::app_routes::packing_target(p).unwrap_or_default();
@@ -535,6 +540,36 @@ pub async fn read_trip<S: Store>(store: &mut S, id: &str) -> Result<Value, CmdEr
     }
 }
 
+/// Read one return case. Absent is `Ok(None)`; a record that is not a case this code wrote is an error.
+pub(crate) async fn load_case<S: Store>(store: &mut S, id: &str) -> Result<Option<Case>, CmdError> {
+    if id.is_empty() || id.chars().count() > 128 {
+        return Ok(None);
+    }
+    let bytes = store.get(&returns::key(id)).await.map_err(|_| internal("the return could not be read just now; try again"))?;
+    match bytes {
+        None => Ok(None),
+        Some(b) => serde_json::from_slice::<Value>(&b)
+            .ok()
+            .and_then(|v| Case::from_json(&v, id))
+            .map(Some)
+            .ok_or_else(|| CmdError::with("internal", "the stored return is unreadable; nothing was changed", json!({"retryable": false, "caseId": id}))),
+    }
+}
+
+/// `GET /v1/returns` (`ReturnList`): every case, cancelled and finished ones included.
+pub async fn read_returns<S: Store>(store: &mut S) -> Result<Value, CmdError> {
+    let (_, l) = read_ledger(store).await?;
+    let mut out = Vec::with_capacity(l.returns.len());
+    for id in l.returns.keys() {
+        match load_case(store, id).await? {
+            Some(c) if Some(&c.version) == l.returns.get(id) => out.push(c),
+            Some(_) => return Err(CmdError::with("internal", "a return's record does not match the ledger", json!({"retryable": false, "caseId": id}))),
+            None => return Err(CmdError::with("internal", "a return is listed but its record is missing", json!({"retryable": false, "caseId": id}))),
+        }
+    }
+    Ok(returns::listing(out))
+}
+
 fn idempotency_key(key: &str) -> Vec<u8> {
     format!("i/{}", hex_digest(key.as_bytes())).into_bytes()
 }
@@ -729,6 +764,25 @@ pub fn validate_record(bytes: &[u8], command_id: &str) -> Option<Record> {
                 return None;
             }
         }
+        (Value::Null, k @ ("return.open_case" | "return.update_case")) => {
+            let id = result.get("caseId").and_then(Value::as_str).map_or(false, |s| !s.is_empty());
+            let deadline = result.get("deadline").map_or(false, |d| d.as_object().map_or(false, |o| o.len() == 6) && matches!(d["status"].as_str(), Some("established" | "unresolved")));
+            let ok = match (k, rc["outcome"].as_str()) {
+                // Reminders are not ported, so an opened case lists none.
+                ("return.open_case", Some("committed")) => result.len() == 3 && id && deadline && result.get("reminders").and_then(Value::as_array).map_or(false, Vec::is_empty),
+                ("return.update_case", Some("committed")) => {
+                    result.len() == 4
+                        && id
+                        && deadline
+                        && result.get("state").and_then(Value::as_str).map_or(false, |s| returns::STATES.contains(&s))
+                        && result.get("refund").and_then(Value::as_object).map_or(false, |r| r.len() == 3 && r.get("receivedMinor").map_or(false, Value::is_i64))
+                }
+                _ => false,
+            };
+            if !ok {
+                return None;
+            }
+        }
         _ => return None,
     }
     // Exactly one of: undo data (offered by the receipt), or the reason the
@@ -754,6 +808,8 @@ pub fn validate_record(bytes: &[u8], command_id: &str) -> Option<Record> {
         // A trip's creation is undone by cancelling it; its edits, its cancellation and a proposal are not undone.
         ("trip.create", Ok(_)) if rc["outcome"] == "committed" => {}
         ("trip.update" | "trip.cancel" | "trip.record_packing_proposal", Err(_)) => {}
+        // Opening a return is undone by cancelling it, and an update by putting the case back.
+        ("return.open_case" | "return.update_case", Ok(_)) if rc["outcome"] == "committed" => {}
         _ => return None,
     }
     if rc["outcome"] == "noop" && !kind.starts_with("laundry.") && !kind.starts_with("feedback.") && kind != "care.washed" && kind != "trip.cancel" {
@@ -839,6 +895,8 @@ fn undo_data_ok(kind: &str, data: &Value) -> bool {
         "care.mark_dirty" | "care.washed" => keys(&["stockEventIds"]) && event_ids(d),
         "feedback.record" => keys(&["feedbackId"]) && id("feedbackId"),
         "trip.create" => keys(&["tripId"]) && id("tripId"),
+        "return.open_case" => keys(&["caseId", "version"]) && id("caseId") && d["version"] == 1,
+        "return.update_case" => keys(&["caseId", "version", "previous"]) && id("caseId") && d["version"].as_u64().map_or(false, |v| v >= 2) && d["previous"].is_object(),
         "wear.record" => {
             // Each list names each ID once: undo matches them against the journal as sets.
             let list = |k: &str, nonempty: bool| {
@@ -1079,10 +1137,12 @@ fn parse_envelope(v: &Value) -> Result<Envelope, CmdError> {
     if let Some(k) = obj.keys().find(|k| !ENVELOPE_KEYS.contains(&k.as_str())) {
         return Err(envelope_error(format!("{k}: not a field of the command envelope")));
     }
-    // Every number a command of this slice carries is a count or a version, or a trip destination's
-    // coordinate. Refusing anything else keeps the request hash exactly JavaScript's.
+    // Every number a command of this slice carries is a count or a version, a trip destination's
+    // coordinate, or a return's refund amount. Refusing anything else keeps the request hash exactly JavaScript's.
     if !numbers_are_accepted(v) {
-        return Err(envelope_error(format!("numbers in a command must be whole numbers from 0 to {MAX_SAFE} (a trip destination's latitude and longitude may be any coordinate)")));
+        return Err(envelope_error(format!(
+            "numbers in a command must be whole numbers from 0 to {MAX_SAFE} (a trip destination's latitude and longitude may be any coordinate, and a return's refund amounts may be negative)"
+        )));
     }
     // Likewise every field name is plain ASCII, so key order hashes as in JavaScript.
     if !keys_are_plain(v) {
@@ -1199,6 +1259,7 @@ fn check_expected_versions(env: &Envelope, l: &Ledger, boards: &[(String, u64)])
                 "board" => boards.iter().find(|(b, _)| b == id).map(|(_, r)| *r),
                 "laundry_batch" => l.batch(id).map(|b| b.version),
                 "trip" => l.trips.get(id).copied(),
+                "return_case" => l.returns.get(id).copied(),
                 _ => return Err(CmdError::with("invalid_command", format!("unknown expected-version kind '{kind}'"), json!({"key": key}))),
             };
             if have.is_none() || have != whole(want) {
@@ -1232,6 +1293,9 @@ impl Planned {
     fn trip(plan: Plan, trip: Option<Trip>) -> Planned {
         let docs = trip.map(|t| vec![(trips::key(&t.trip_id), t.to_json())]).unwrap_or_default();
         Planned { plan, board: None, original: None, docs }
+    }
+    fn case((plan, case): (Plan, Case)) -> Planned {
+        Planned { plan, board: None, original: None, docs: vec![(returns::key(&case.case_id), case.to_json())] }
     }
 }
 
@@ -1297,6 +1361,15 @@ async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envel
             planned.docs.push((trips::key(&trip.trip_id), trip.to_json()));
             Ok(planned)
         }
+        ("return.open_case", _) => {
+            let input = returns::parse_open(&env.payload)?;
+            Ok(Planned::case(returns::open(ctx, next, input)?))
+        }
+        ("return.update_case", _) => {
+            let input = returns::parse_update(&env.payload)?;
+            let case = load_case(store, &input.case_id).await?;
+            Ok(Planned::case(returns::update(ctx, next, case.as_ref(), input)?))
+        }
         ("board.publish", _) => {
             let input = board::publish_input(&env.payload)?;
             let existing = indexed_board(store, current.board_for(&input.scope, &input.local_date)).await?;
@@ -1337,6 +1410,14 @@ async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envel
                     let trip = load_trip(store, trips::undo_target_trip(&data).unwrap_or_default()).await?;
                     let (plan, trip) = trips::undo_create(ctx, next, trip.as_ref(), &summary, target)?;
                     Planned::trip(plan, Some(trip))
+                }
+                kind @ ("return.open_case" | "return.update_case") => {
+                    let case = load_case(store, returns::undo_target_case(&data).unwrap_or_default()).await?;
+                    Planned::case(if kind == "return.open_case" {
+                        returns::undo_open(ctx, next, case.as_ref(), &data, &summary, target)?
+                    } else {
+                        returns::undo_update(ctx, next, case.as_ref(), &data, &summary, target)?
+                    })
                 }
                 kind @ ("board.select" | "board.swap_slot") => {
                     let b = load_board(store, data["boardId"].as_str().unwrap_or_default()).await?;

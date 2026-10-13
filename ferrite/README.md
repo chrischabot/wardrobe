@@ -84,7 +84,7 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `GET /v1/connections`, `POST /v1/connections/{grantId}/disconnect` (owner only) | Settings › Connected assistants: the OAuth grants, and disconnecting one, effective on its next request |
 | `POST /mcp` (OAuth) | the MCP server of `apps/worker/src/mcp`, see below |
 | `GET /v1/meta` | `MetaResponse`: API and contract versions, mounted modules (media is reported as not mounted), server time, the MCP endpoint and its protocol versions. Without a valid `WARDROBE_PUBLIC_ORIGIN` it is refused by that secret's name |
-| `GET /v1/command-types` | `CommandTypeList`, as `describeCommandTypes`: the fifteen command types this port executes, each with the class, required scope and payload JSON Schema the TypeScript registry gives it (`src/seed/command-types.json`, written by `scripts/build-command-types.mjs`), narrowed to this port: only the payload fields its handler accepts, with `additionalProperties: false` (so `board.publish` has no `requestFingerprint`), only the `owner_tap` and `owner_statement` authorizations (a publication by schedule is not ported), and `consequential` from the port's own connected-assistant rule, under which none of the fifteen waits for the owner. A field whose other values the port always refuses is published as the value it accepts: `wear.record` `tripId` null only; `board.publish` `scope` `"home"`, `brief` the default day brief, `weatherSnapshotId` and `calendarSnapshotId` null only; `board.swap_slot` `weatherSnapshotId` is left out (no value is accepted). Size bounds (list and text lengths) are not restated; the command names them when it refuses |
+| `GET /v1/command-types` | `CommandTypeList`, as `describeCommandTypes`: the seventeen command types this port executes, each with the class, required scope and payload JSON Schema the TypeScript registry gives it (`src/seed/command-types.json`, written by `scripts/build-command-types.mjs`), narrowed to this port: only the payload fields its handler accepts, with `additionalProperties: false` (so `board.publish` has no `requestFingerprint`), only the `owner_tap` and `owner_statement` authorizations (a publication by schedule is not ported), and `consequential` from the port's own connected-assistant rule, under which none of the seventeen waits for the owner. A field whose other values the port always refuses is published as the value it accepts: `wear.record` `tripId` null only; `board.publish` `scope` `"home"`, `brief` the default day brief, `weatherSnapshotId` and `calendarSnapshotId` null only; `board.swap_slot` `weatherSnapshotId` is left out (no value is accepted); `return.open_case` `orderId` and `lineId` null only, `garmentId` a garment ID (never null) and `timezone` `Europe/London` or `UTC`. Size bounds (list and text lengths) are not restated; the command names them when it refuses |
 | `POST /v1/commands/batch` | the phone's offline replay (`CommandBatchResponse`): 1 to 50 envelopes in order, each run as `POST /v1/commands` runs it, independent of the others, with `retryable` from the error code as `isRetryable` decides it |
 | `POST /v1/recommendations` | `RecommendResponse`. `preview` (default): the recommender's validated options, nothing published. `board`: those options published as the day's home board through `board.publish` under the key `board-compose:{clientRequestId}`, answered with the board. A retransmission answers from the saved run and the publication's receipt. `date` is required (no owner timezone); `lockedGarmentIds` and `occasionOnly: true` are refused as not ported |
 | `POST /v1/boards/{id}/swap` | `SwapSlotResponse`: `board.swap_slot` under the key `board-swap:{clientRequestId}`, `expectedRevision` sent as the board's expected version, answered with the receipt and the board as it now stands. No fresher forecast is fetched first (weather is not ported) |
@@ -92,6 +92,8 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `GET /v1/feedback[?garmentId=]` | `FeedbackList` as `listComfortFeedback`: the comfort notes still active, newest first, or those naming one garment, see "Comfort feedback" |
 | `GET /v1/trips`, `GET /v1/trips/{id}` | `TripList` and `Trip` as `listTrips` and `getTrip`: every trip by departure date then ID, each with its latest packing proposal (or null) and `packed` always empty, see "Trips" |
 | `POST /v1/trips/{id}/packing-proposal` | `PackingProposal` as `proposePacking`: a proposal for a planned trip from the stock at home, recorded through `trip.record_packing_proposal` under the key `packing:{clientRequestId}`. Nothing is packed, see "Trips" |
+| `GET /v1/returns` | `ReturnList` as `listReturnCases`: every return and exchange case, cancelled and finished ones included, the soonest established deadline first, then the newest; see "Returns" |
+| `GET /v1/orders` | `OrderList`, always empty: orders come from purchase import (`purchase.import_order`), which is not ported |
 | `GET /v1/studio[?mode=for_today\|explore][&date=]` | `StudioResponse`: Studio's selectors and opening outfit for the day (the owner's day now when none is named), see "Studio". `combinations` and `dayPlans` are always empty (the Studio commands are not ported) |
 | `POST /v1/studio/validate` | `StudioValidation` for a `StudioOutfitRequest`: the daily validator's verdict on the outfit for the day, with Studio's shopping-candidate rule, see "Studio" |
 | `POST /v1/studio/compose` | `Composition`: the deterministic layout of the outfit's garments (`buildManifest`) and its hash, with every garment a labelled text tile (no media) and the preview `none` |
@@ -105,7 +107,7 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 
 Commands: `care.mark_dirty`, `care.washed`, `board.publish`, `board.select`,
 `board.swap_slot`, `feedback.record`, `feedback.retract`, `laundry.collect`, `laundry.return`,
-`trip.create`, `trip.update`, `trip.cancel`, `trip.record_packing_proposal`, `wear.record` and `command.undo`. Each applies at once and
+`trip.create`, `trip.update`, `trip.cancel`, `trip.record_packing_proposal`, `return.open_case`, `return.update_case`, `wear.record` and `command.undo`. Each applies at once and
 answers with the receipt of `CommandReceipt` (contract 1.1.0): summary built
 from the ledger, affected entity versions, repairs, result, undo
 availability, wardrobe revision, actor and channel. The same idempotency key
@@ -115,7 +117,9 @@ statuses. Numbers in a command must be whole numbers from 0 to 2^53 - 1
 (every number this slice takes is a count or a version), except a trip
 destination's `latitude` and `longitude`, which may be negative or
 fractional and are hashed as JavaScript writes them (any number from
-0.000001 to 10^21 in size, or 0); this keeps the
+0.000001 to 10^21 in size, or 0), and a return's `refundExpectedMinor` and
+`refundReceivedMinor`, which may be any whole number from -(2^53 - 1) to
+2^53 - 1 (a correction may be negative); this keeps the
 request hash equal to the TypeScript service's.
 
 When the server cannot settle whether a request was written (a commit whose
@@ -438,6 +442,37 @@ before another request's write is never recorded: it is planned again, at
 most three times, then refused as a `conflict`. `tests/trips.rs` covers the
 commands, the reads, the proposal, its replay, a concurrent write during
 planning, a 31-day trip with an evening every day, days without socks, an
+assistant's relay and the refusals.
+
+## Returns
+
+As `packages/assistant/src/commands/returns.ts`. `return.open_case` records a
+return or exchange for a garment as `considering` and applies at once with a
+receipt and an undo, from the app or relayed by a connected assistant: "Return
+opened for “NB 990v4 — grey”. Deadline to post: 2026-10-31 (Europe/London). It
+stays in your wardrobe until it physically leaves". Nothing leaves the
+wardrobe: a piece leaves only when its departure is recorded (`garment.retire`,
+not ported), so `stockDeparted` is always false. A case with no `caseId` gets
+`ret_<command>`, or the next free `ret_<command>_<n>`; a case ID already used
+is refused. Undo cancels the case, only while it is still as it was opened;
+afterwards an update corrects it.
+
+A deadline is established only from sourced terms (`terms.sourceRef`) and the
+real trigger date, as `computeDeadline`: the end of the local day `windowDays`
+after the trigger date, in the case's timezone (Europe/London, with British
+Summer Time, or UTC). Anything else is unresolved, with the reason, never a
+guessed countdown.
+
+`return.update_case` changes the named fields (state, terms, trigger date,
+next action, label, collection preference, shipment, the retailer's receipt
+date, expected refund, currency, a note) and checks `expectedVersions`
+`return_case:<id>`, as the iOS client sends it. A refund received adds to the
+total so far, with its source in the case's notes; a correction may be
+negative, but the total never goes below zero (`precondition_failed`). A refund
+in full completes a return when no state is named. Undo puts the case back as
+it was before that update, only while no later update has been made.
+`tests/returns.rs` covers opening with and without terms, the listing, undo of
+an opening and of an update, version conflicts, refunds and corrections, an
 assistant's relay and the refusals.
 
 ## Wear records
@@ -974,6 +1009,24 @@ milestone, and outside the lines of the milestone in hand:
   - Earlier proposal revisions are kept but only the latest is readable.
   - A coordinate smaller than 0.000001 in size (other than 0), or 10^21 or
     larger, is refused, since JavaScript writes those in exponent form.
+- **Returns.**
+  - Orders are not ported (`purchase.import_order` and the order lines a
+    case can name), so a case is opened for a garment only, `GET /v1/orders`
+    is empty, and `return.link_exchange` (an exchange's incoming line) is not
+    ported, so `exchangeIncoming` is always null.
+  - A deadline is computed only in Europe/London or UTC (no timezone
+    database); any other timezone is refused. The iOS client sends the
+    device's timezone, so a phone set to another zone cannot open a case
+    until it is in one of these.
+  - Return reminders are effects, which this port does not have: a case's
+    receipt lists none and none is sent.
+  - Recording the physical departure (`garment.retire`) is not ported, so
+    `stockDeparted` is always false.
+  - The port keeps at most 100 cases (cancelled and finished ones included),
+    50 notes a case and 24 KiB of JSON a case; free-text fields at most 500
+    characters, the terms' text at most 2000, `windowDays` at most 3650 and a
+    quantity at most 999; the contract sets none of these. A case ID may use
+    only letters, digits, `-` and `_`, at most 64 (the contract allows any ID).
 
 ## Ferrite limits and what they mean for Wardrobe
 

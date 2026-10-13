@@ -4,7 +4,8 @@
 //!
 //! Numbers: the command service accepts only whole numbers from 0 to
 //! 2^53 - 1 anywhere in a command ([`numbers_are_whole`]), except a trip
-//! destination's coordinates ([`numbers_are_accepted`]). JavaScript writes
+//! destination's coordinates and a return's refund amounts, which may be
+//! negative ([`numbers_are_accepted`]). JavaScript writes
 //! every such whole number as its plain integer digits, however the client wrote it
 //! (`1`, `1.0`, `1e0`), and so does [`canonical`]; that is what makes the
 //! request hash agree with the TypeScript service's. A coordinate is written
@@ -62,11 +63,27 @@ pub fn js_number(f: f64) -> Option<String> {
 
 /// Whether every number in a command envelope is one the service accepts: [`whole`] everywhere,
 /// except a trip destination's `latitude` and `longitude` (`trip.create`'s `payload.destinations`,
-/// `trip.update`'s `payload.changes.destinations`), which may be any number [`js_number`] writes.
+/// `trip.update`'s `payload.changes.destinations`), which may be any number [`js_number`] writes, and a
+/// return's `refundExpectedMinor` and `refundReceivedMinor` (`return.open_case`, `return.update_case`),
+/// which may be any whole number from -(2^53 - 1) to 2^53 - 1 (`MinorAmount`: a correction may be
+/// negative). JavaScript writes a negative whole number as its plain digits too, and so does
+/// [`canonical`] (through [`js_number`]).
 pub fn numbers_are_accepted(envelope: &Value) -> bool {
     let pointer = match envelope.get("type").and_then(Value::as_str) {
         Some("trip.create") => "/payload/destinations",
         Some("trip.update") => "/payload/changes/destinations",
+        Some("return.open_case" | "return.update_case") => {
+            let mut rest = envelope.clone();
+            if let Some(Value::Object(payload)) = rest.get_mut("payload") {
+                for k in ["refundExpectedMinor", "refundReceivedMinor"] {
+                    let signed_whole = payload.get(k).and_then(Value::as_f64).map_or(false, |f| f.is_finite() && f.fract() == 0.0 && f.abs() <= MAX_SAFE as f64);
+                    if signed_whole {
+                        payload.remove(k);
+                    }
+                }
+            }
+            return numbers_are_whole(&rest);
+        }
         _ => return numbers_are_whole(envelope),
     };
     let mut rest = envelope.clone();
@@ -199,6 +216,26 @@ mod tests {
             r#"{"type":"trip.create","payload":{"luggage":{"maxPieces":2.5}}}"#,
             r#"{"type":"trip.update","payload":{"destinations":[{"latitude":51.5}]}}"#,
             r#"{"type":"wear.record","payload":{"destinations":[{"latitude":51.5}]}}"#,
+        ] {
+            assert!(!numbers_are_accepted(&parse(refused)), "{refused}");
+        }
+    }
+
+    #[test]
+    fn only_a_returns_refund_amounts_may_be_negative() {
+        let open = parse(r#"{"type":"return.open_case","payload":{"refundExpectedMinor":-500,"quantity":1}}"#);
+        assert!(numbers_are_accepted(&open));
+        assert_eq!(canonical(&open["payload"]), r#"{"quantity":1,"refundExpectedMinor":-500}"#);
+        let update = parse(r#"{"type":"return.update_case","payload":{"refundReceivedMinor":-2.0e2}}"#);
+        assert!(numbers_are_accepted(&update));
+        assert_eq!(canonical(&update["payload"]), r#"{"refundReceivedMinor":-200}"#);
+        assert_eq!(canonical(&parse("-9007199254740991")), "-9007199254740991");
+        for refused in [
+            r#"{"type":"return.update_case","payload":{"refundReceivedMinor":-2.5}}"#,
+            r#"{"type":"return.update_case","payload":{"refundReceivedMinor":-9007199254740992}}"#,
+            r#"{"type":"return.open_case","payload":{"quantity":-1}}"#,
+            r#"{"type":"return.open_case","payload":{"terms":{"refundExpectedMinor":-1}}}"#,
+            r#"{"type":"wear.record","payload":{"refundReceivedMinor":-1}}"#,
         ] {
             assert!(!numbers_are_accepted(&parse(refused)), "{refused}");
         }

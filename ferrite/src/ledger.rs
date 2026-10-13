@@ -31,7 +31,7 @@ pub const MAX_QUANTITY: u64 = 999;
 pub const RECENT_LIMIT: usize = 200;
 
 /// The command types this port executes. Anything else is `unknown_command`.
-pub const COMMAND_TYPES: &[&str] = &["care.mark_dirty", "care.washed", "command.undo", "board.publish", "board.select", "board.swap_slot", "feedback.record", "feedback.retract", "laundry.collect", "laundry.return", "trip.cancel", "trip.create", "trip.record_packing_proposal", "trip.update", "wear.record"];
+pub const COMMAND_TYPES: &[&str] = &["care.mark_dirty", "care.washed", "command.undo", "board.publish", "board.select", "board.swap_slot", "feedback.record", "feedback.retract", "laundry.collect", "laundry.return", "return.open_case", "return.update_case", "trip.cancel", "trip.create", "trip.record_packing_proposal", "trip.update", "wear.record"];
 /// Laundry batches kept in the ledger; the oldest closed ones make room.
 pub const MAX_BATCHES: usize = 60;
 
@@ -164,6 +164,8 @@ pub struct Ledger {
     pub feedback: Vec<String>,
     /// Every trip's version (`crate::trips`), cancelled trips included; each is stored under `trip/<id>`.
     pub trips: BTreeMap<String, u64>,
+    /// Every return case's version (`crate::returns`), cancelled ones included; each is stored under `ret/<id>`.
+    pub returns: BTreeMap<String, u64>,
 }
 
 /// Where a day's board is stored: one entry per (scope, day).
@@ -209,6 +211,7 @@ impl Ledger {
             })).collect::<Vec<_>>(),
             "feedback": self.feedback,
             "trips": self.trips,
+            "returns": self.returns,
         })
     }
 
@@ -368,7 +371,17 @@ impl Ledger {
                 trips.insert(id.clone(), version.as_u64().filter(|n| *n >= 1)?);
             }
         }
-        Some(Ledger { revision: u(v, "revision")?, next_seq: u(v, "nextSeq")?, events, versions, recent, boards, batches, wears, observations, feedback, trips })
+        // Ledgers written before returns were ported have none.
+        let mut returns = BTreeMap::new();
+        if let Some(map) = v.get("returns") {
+            for (id, version) in map.as_object()? {
+                if id.is_empty() {
+                    return None;
+                }
+                returns.insert(id.clone(), version.as_u64().filter(|n| *n >= 1)?);
+            }
+        }
+        Some(Ledger { revision: u(v, "revision")?, next_seq: u(v, "nextSeq")?, events, versions, recent, boards, batches, wears, observations, feedback, trips, returns })
     }
 
     /// The counted wear of a garment on a date, if there is one (active or retracted).

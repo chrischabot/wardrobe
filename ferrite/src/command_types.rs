@@ -19,7 +19,7 @@ use ferrite_app::serde_json::{self, json, Map, Value};
 
 use crate::api::{self, CONTRACT_VERSION};
 use crate::ledger::{self, CmdError};
-use crate::{board, feedback, laundry, trips, wear};
+use crate::{board, feedback, laundry, returns, trips, wear};
 
 const GENERATED: &str = include_str!("seed/command-types.json");
 
@@ -36,6 +36,8 @@ pub fn accepted_fields(kind: &str) -> Option<&'static [&'static str]> {
         "feedback.retract" => feedback::RETRACT_FIELDS,
         "laundry.collect" => laundry::COLLECT_FIELDS,
         "laundry.return" => laundry::RETURN_FIELDS,
+        "return.open_case" => returns::OPEN_FIELDS,
+        "return.update_case" => returns::UPDATE_FIELDS,
         "trip.create" => trips::CREATE_FIELDS,
         "trip.update" => trips::UPDATE_FIELDS,
         "trip.cancel" => trips::CANCEL_FIELDS,
@@ -67,6 +69,11 @@ fn narrowed_field(kind: &str, field: &str) -> Option<Option<Value>> {
         ("board.publish", "weatherSnapshotId" | "calendarSnapshotId") => Some(null_only()),
         // board.rs `swap`: a weather snapshot ID is never found, and nothing else is accepted for it.
         ("board.swap_slot", "weatherSnapshotId") => Some(None),
+        // returns.rs `parse_open`: orders are not ported, so a case names a garment and no order line;
+        // a deadline is computed only in the owner's timezone or UTC (no timezone database).
+        ("return.open_case", "orderId" | "lineId") => Some(null_only()),
+        ("return.open_case", "garmentId") => Some(Some(json!({"type": "string", "minLength": 1, "maxLength": 64}))),
+        ("return.open_case", "timezone") => Some(Some(json!({"type": "string", "enum": returns::TIMEZONES}))),
         _ => None,
     }
 }
