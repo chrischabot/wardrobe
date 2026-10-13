@@ -345,7 +345,20 @@ async fn the_codex_flow_reads_writes_with_a_receipt_and_undoes() {
     let last = call(&mut store, &access, "garderobe_inventory", json!({"view": "items", "limit": 100, "cursor": "100"})).await;
     assert_eq!(last["structuredContent"]["data"]["items"].as_array().unwrap().len(), 27);
     assert_eq!((last["structuredContent"]["complete"].clone(), last["structuredContent"]["nextCursor"].clone()), (json!(false), Value::Null));
-    let unported = call(&mut store, &access, "garderobe_inventory", json!({"view": "availability"})).await;
+    let avail = call(&mut store, &access, "garderobe_inventory", json!({"view": "availability", "date": "2026-10-13"})).await;
+    let a = &avail["structuredContent"];
+    assert_eq!((a["total"].clone(), a["data"]["forDate"].clone(), a["data"]["modelVersion"].clone()), (json!(127), json!("2026-10-13"), json!("availability-estimator/1.0.0")));
+    assert!(avail["content"][0]["text"].as_str().unwrap().contains("parameters are hypotheses"));
+    let resolved = call(&mut store, &access, "garderobe_inventory", json!({"view": "resolve", "phrase": "PCF4339"})).await;
+    assert_eq!(resolved["structuredContent"]["data"]["matches"][0]["garmentId"], "gmt_3894b6a6295908d5e687af4f");
+    assert!(resolved["content"][0]["text"].as_str().unwrap().starts_with("\"PCF4339\" is Lightweight oxford — blue"));
+    let ambiguous = call(&mut store, &access, "garderobe_inventory", json!({"view": "resolve", "phrase": "lightweight oxford"})).await;
+    assert!(ambiguous["content"][0]["text"].as_str().unwrap().contains("ask which one"));
+    let socks = call(&mut store, &access, "garderobe_inventory", json!({"view": "selection", "selector": {"category": "socks"}})).await;
+    assert_eq!((socks["structuredContent"]["total"].clone(), socks["structuredContent"]["data"]["count"].clone()), (json!(15), json!(15)));
+    let stray = call(&mut store, &access, "garderobe_inventory", json!({"view": "items", "phrase": "blue"})).await;
+    assert_eq!(error_of(&stray)["code"], "invalid_command");
+    let unported = call(&mut store, &access, "garderobe_inventory", json!({"view": "item"})).await;
     assert_eq!(error_of(&unported)["code"], "invalid_command");
 
     // A restriction lift is refused before anything is looked up, and nothing is written.

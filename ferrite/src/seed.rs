@@ -38,8 +38,8 @@ pub struct Garment {
     pub size: Option<String>,
     pub planning_reason: Option<String>,
     pub condition: Option<String>,
-    /// The aliases `garment.create` records (`{aliasId, phrase, kind}`), the owner's name first.
-    pub aliases: Vec<Value>,
+    /// The aliases `garment.create` records, the owner's name first (see [`Alias`]).
+    pub aliases: Vec<Alias>,
     /// The facts the importer records (`{factId, attribute, value, source, scope}`), in import order.
     pub facts: Vec<Value>,
 }
@@ -53,6 +53,17 @@ impl Garment {
     pub fn attr_true(&self, key: &str) -> bool {
         self.attributes.get(key) == Some(&Value::Bool(true))
     }
+}
+
+/// One phrase that names a garment (`garment_aliases`), with the form the importer's `normalizePhrase`
+/// gives it. The ID is this port's own (derived from the importer's idempotency key).
+#[derive(Debug, Clone)]
+pub struct Alias {
+    pub alias_id: String,
+    pub phrase: String,
+    pub normalized: String,
+    /// `owner_name`, `import`, `code` or `maker_name`.
+    pub kind: String,
 }
 
 /// One of the owner's profile rules as the importer records it
@@ -145,7 +156,13 @@ fn parse(seed: &str) -> Catalogue {
                 size: opt_text(g, "size"),
                 planning_reason: opt_text(g, "planningReason"),
                 condition: opt_text(g, "condition"),
-                aliases: list(g, "aliases"),
+                aliases: g
+                    .get("aliases")
+                    .and_then(Value::as_array)
+                    .expect("every seeded garment has its aliases")
+                    .iter()
+                    .map(|a| Alias { alias_id: text(a, "aliasId"), phrase: text(a, "phrase"), normalized: text(a, "normalized"), kind: text(a, "kind") })
+                    .collect(),
                 facts: list(g, "facts"),
             }
         })

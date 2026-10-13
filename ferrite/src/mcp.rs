@@ -49,7 +49,7 @@ pub const PROTOCOL_VERSIONS: [&str; 2] = ["2025-11-25", "2025-06-18"];
 
 /// The `garderobe_inventory` views this server answers. The TypeScript server's `item`,
 /// `availability`, `resolve` and `selection` wait on reads that are not ported.
-pub const VIEWS: [&str; 10] = ["items", "snapshot", "receipts", "history", "laundry", "style", "command_types", "trips", "returns", "orders"];
+pub const VIEWS: [&str; 13] = ["items", "snapshot", "availability", "resolve", "selection", "receipts", "history", "laundry", "style", "command_types", "trips", "returns", "orders"];
 
 const GUIDE: &str = "Garderobe: the connected owner's private wardrobe. The owner is fixed by this connection; no tool takes an owner or user. \
 garderobe_today reads the day's outfit board for a named date (YYYY-MM-DD): its options, their pieces and the owner's choice. \
@@ -245,7 +245,7 @@ pub fn tools(caller: &Caller) -> Vec<Value> {
         json!({
         "name": "garderobe_inventory",
         "title": "Read the wardrobe",
-        "description": "Read the owner's garments with their clean and dirty balances (view items, paged; or snapshot, complete), the newest command receipts (view receipts), recorded wear (view history: what was worn on a date, or the counted wears from..to, optionally of one garmentId; a day without a record is unknown, not unworn), the laundry (view laundry: what awaits the service and hand-wash, and the recent bags), the style profile with its rules, measurements and size experiences (view style, optionally for a date), the command types and their payload schemas (view command_types), the owner's trips with what is packed for each (view trips), return and exchange cases (view returns) or orders (view orders). `complete` and `nextCursor` say whether the data is the whole result.",
+        "description": "Read the owner's garments with their clean and dirty balances (view items, paged; or snapshot, complete), every garment's availability for a fresh wear on a date, estimated from the outfits offered and not reported since (view availability, optional date; the parameters are hypotheses, not measurements), the garments an owner phrase names (view resolve, with phrase; more than one match is ambiguous: ask which one, never pick), the garments a selector covers (view selection, with selector), the newest command receipts (view receipts), recorded wear (view history: what was worn on a date, or the counted wears from..to, optionally of one garmentId; a day without a record is unknown, not unworn), the laundry (view laundry: what awaits the service and hand-wash, and the recent bags), the style profile with its rules, measurements and size experiences (view style, optionally for a date), the command types and their payload schemas (view command_types), the owner's trips with what is packed for each (view trips), return and exchange cases (view returns) or orders (view orders). `complete` and `nextCursor` say whether the data is the whole result.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": false,
@@ -254,10 +254,26 @@ pub fn tools(caller: &Caller) -> Vec<Value> {
                 "category": {"type": "string", "description": "items, snapshot: only this category"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 500, "description": "items: page size (default 50); receipts: how many (default 50, at most 200)"},
                 "cursor": {"type": "string", "description": "items: the nextCursor of the previous page"},
-                "date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "history: the wearing date to read; style: the day the context is for"},
+                "date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "history: the wearing date to read; availability: the day (default the owner's today); style: the day the context is for"},
                 "from": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "history: first date of a range (with to, at most 366 days)"},
                 "to": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "history: last date of a range"},
-                "garmentId": {"type": "string", "description": "history with a range: only this garment"}
+                "garmentId": {"type": "string", "description": "history with a range: only this garment"},
+                "phrase": {"type": "string", "minLength": 1, "maxLength": 200, "description": "resolve: an owner phrase to resolve to garments"},
+                "selector": {
+                    "type": "object",
+                    "description": "selection: which garments a bulk edit would cover; every criterion given must match, at least one",
+                    "properties": {
+                        "garmentIds": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1, "maxLength": 64}},
+                        "category": {"type": "string", "enum": crate::selection::CATEGORIES},
+                        "search": {"type": "string", "minLength": 1, "description": "all words in the name, maker, product, colour, fabric or an alias"},
+                        "maker": {"type": "string", "minLength": 1},
+                        "colour": {"type": "string", "minLength": 1},
+                        "fabric": {"type": "string", "minLength": 1},
+                        "careChannel": {"type": "string", "enum": ["service", "handwash", "none"]},
+                        "planningPolicy": {"type": "string", "enum": ["normal", "occasional", "excluded"]},
+                        "acquisition": {"type": "string", "enum": ["incoming", "owned"]}
+                    }
+                }
             }
         },
         "annotations": {"title": "Read the wardrobe", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
@@ -416,18 +432,27 @@ async fn inventory<S: Store>(store: &mut S, now_ms: u64, args: &Map<String, Valu
 }
 
 async fn inventory_inner<S: Store>(store: &mut S, now_ms: u64, args: &Map<String, Value>) -> Result<Value, CmdError> {
-    only_keys(args, &["view", "category", "limit", "cursor", "date", "from", "to", "garmentId"])?;
+    only_keys(args, &["view", "category", "limit", "cursor", "date", "from", "to", "garmentId", "phrase", "selector"])?;
     let view = match args.get("view") {
         None => "items",
         Some(Value::String(v)) if VIEWS.contains(&v.as_str()) => v.as_str(),
         Some(Value::String(v)) => return Err(invalid(format!("view '{v}' is not available on this server yet; the views are {}", VIEWS.join(", ")))),
         Some(_) => return Err(invalid("view must be a string")),
     };
+    if view != "resolve" && args.contains_key("phrase") {
+        return Err(invalid("phrase belongs to view 'resolve'"));
+    }
+    if view != "selection" && args.contains_key("selector") {
+        return Err(invalid("selector belongs to view 'selection'"));
+    }
     if matches!(view, "laundry" | "style" | "command_types" | "trips" | "returns" | "orders") {
         return other_view(store, now_ms, view, args).await;
     }
-    if view != "history" && ["date", "from", "to", "garmentId"].iter().any(|k| args.contains_key(*k)) {
-        return Err(invalid("date, from, to and garmentId belong to view 'history'"));
+    if view != "history" && ["from", "to", "garmentId"].iter().any(|k| args.contains_key(*k)) {
+        return Err(invalid("from, to and garmentId belong to view 'history'"));
+    }
+    if view != "history" && view != "availability" && args.contains_key("date") {
+        return Err(invalid("date belongs to views 'history', 'availability' and 'style'"));
     }
     let category = match args.get("category") {
         None => None,
@@ -445,6 +470,54 @@ async fn inventory_inner<S: Store>(store: &mut S, now_ms: u64, args: &Map<String
         json!({"view": view, "complete": complete, "total": total, "nextCursor": next, "wardrobeRevision": revision, "readAt": instant(now_ms), "data": data})
     };
     match view {
+        "availability" | "resolve" | "selection" => {
+            if category.is_some() || limit.is_some() || args.contains_key("cursor") {
+                return Err(invalid(format!("view '{view}' takes no category, limit or cursor")));
+            }
+            match view {
+                "availability" => {
+                    let date = match args.get("date") {
+                        None => None,
+                        Some(Value::String(d)) if parse_local_date(d).is_some() => Some(d.as_str()),
+                        Some(_) => return Err(invalid("date must be a date, YYYY-MM-DD")),
+                    };
+                    let snapshot = api::read_availability(store, now_ms, date).await?;
+                    let n = snapshot["garments"].as_array().map_or(0, Vec::len);
+                    let summary = format!("Availability estimates for {} ({n} garments; parameters are hypotheses, not measurements).", snapshot["forDate"].as_str().unwrap_or_default());
+                    let revision = snapshot["wardrobeRevision"].clone();
+                    Ok(tool_ok(envelope(snapshot, true, Some(n), None, &revision), summary))
+                }
+                "resolve" => {
+                    let phrase = match args.get("phrase") {
+                        Some(Value::String(p)) if !p.is_empty() && p.encode_utf16().count() <= crate::selection::MAX_PHRASE => p.as_str(),
+                        Some(Value::String(p)) if !p.is_empty() => return Err(invalid("phrase: at most 200 characters")),
+                        _ => return Err(invalid("view 'resolve' needs 'phrase'")),
+                    };
+                    let (_, l) = api::read_ledger(store).await?;
+                    let r = crate::selection::resolve(crate::seed::catalogue(), phrase);
+                    let matches = r["matches"].as_array().cloned().unwrap_or_default();
+                    let summary = if matches.is_empty() {
+                        format!("Nothing in the wardrobe matches \"{phrase}\". Do not create an item to make it match.")
+                    } else if matches.len() > 1 {
+                        let list: Vec<String> = matches.iter().map(|m| format!("{} ({})", m["name"].as_str().unwrap_or_default(), m["distinguishing"].as_str().unwrap_or_default())).collect();
+                        format!("\"{phrase}\" matches {} garments; ask which one: {}", matches.len(), list.join("; "))
+                    } else {
+                        format!("\"{phrase}\" is {} ({}).", matches[0]["name"].as_str().unwrap_or_default(), matches[0]["garmentId"].as_str().unwrap_or_default())
+                    };
+                    Ok(tool_ok(envelope(r, true, Some(matches.len()), None, &json!(l.revision)), summary))
+                }
+                _ => {
+                    let Some(selector) = args.get("selector") else {
+                        return Err(invalid("view 'selection' needs 'selector'"));
+                    };
+                    let (_, l) = api::read_ledger(store).await?;
+                    let selection = crate::selection::preview(crate::seed::catalogue(), &l, selector)?;
+                    let n = selection["count"].as_u64().unwrap_or(0) as usize;
+                    let summary = format!("{n} garment(s) match. A bulk correction must state expectedCount {n} and is refused if the selection has changed; no bulk correction is ported to this server yet.");
+                    Ok(tool_ok(envelope(selection, true, Some(n), None, &json!(l.revision)), summary))
+                }
+            }
+        }
         "history" => {
             if category.is_some() || limit.is_some() || args.contains_key("cursor") {
                 return Err(invalid("view 'history' takes date, or from and to (and garmentId)"));

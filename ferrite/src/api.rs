@@ -380,6 +380,9 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
             crate::temperature::parse_temperature(raw).map(|t| crate::temperature::preview(catalogue(), t))
         }
         ("GET", p) if crate::item::target(p).is_some() => crate::item::read(store, now_ms, crate::item::target(p).unwrap_or_default()).await,
+        ("GET", "/v1/wardrobe/resolve") => crate::selection::resolve_phrase(req.path.split_once('?').map_or("", |(_, q)| q)).map(|phrase| crate::selection::resolve(catalogue(), &phrase)),
+        ("POST", "/v1/wardrobe/selection") => read_selection(store, &req.body).await,
+        ("GET", "/v1/availability") => read_availability(store, now_ms, query.iter().find(|(k, _)| k == "date").map(|(_, v)| v.as_str())).await,
         ("GET", "/v1/style") => crate::style::context(query.iter().find(|(k, _)| k == "date").map(|(_, v)| v.as_str())),
         ("GET", "/v1/style/conflicts") => {
             let q = |name: &str| query.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
@@ -1206,6 +1209,53 @@ pub async fn read_today_scoped<S: Store>(store: &mut S, now_ms: u64, date: Optio
         return Ok(board::today(&day, date, board.as_ref(), wear::day_record(cat, &l, date), l.revision, now_ms));
     }
     Err(CmdError::with("conflict", "the wardrobe kept changing while the board was read; try again", json!({"retryable": true})))
+}
+
+/// `POST /v1/wardrobe/selection` (`GarmentSelection`): the garments a bulk edit with this selector
+/// would touch. Writes nothing.
+pub async fn read_selection<S: Store>(store: &mut S, body: &[u8]) -> Result<Value, CmdError> {
+    let selector: Value = serde_json::from_slice(body).map_err(|_| CmdError::with("invalid_command", "that selection is not valid", json!({"issues": ["body: expected a JSON object"]})))?;
+    crate::selection::parse_selector(&selector)?;
+    let (_, l) = read_ledger(store).await?;
+    crate::selection::preview(catalogue(), &l, &selector)
+}
+
+/// `GET /v1/availability[?date=]` (`AvailabilitySnapshot`): every garment's availability for a fresh
+/// wear on the day (the owner's day now without one), with the open option sets derived from the
+/// boards the ledger indexes for the days that still count (`availability::board_exposures`).
+pub async fn read_availability<S: Store>(store: &mut S, now_ms: u64, date: Option<&str>) -> Result<Value, CmdError> {
+    let for_date = match date {
+        None => crate::time::local_date(crate::time::owner_day(now_ms)),
+        Some(d) if parse_local_date(d).is_some() => d.to_string(),
+        Some(_) => return Err(CmdError::with("invalid_command", "date: expected the day as YYYY-MM-DD", json!({"issues": ["date: expected YYYY-MM-DD"]}))),
+    };
+    let (l, exposures) = exposures_for(store, &for_date).await?;
+    let input = crate::availability::Input::new(catalogue(), &l, &for_date, exposures);
+    Ok(crate::availability::snapshot(&input, &for_date, now_ms))
+}
+
+/// The ledger and the open option sets for a fresh wear on `for_date`: the boards the ledger indexes for
+/// the days that still count, read between two reads of the ledger so the sets and the stock they are
+/// weighed against belong to the same commit (the boards and the ledger are separate records committed
+/// together).
+pub(crate) async fn exposures_for<S: Store>(store: &mut S, for_date: &str) -> Result<(Ledger, Vec<crate::availability::ExposureSet>), CmdError> {
+    let from = crate::availability::horizon(for_date);
+    for _ in 0..3 {
+        let (before, l) = read_ledger(store).await?;
+        let mut boards = Vec::new();
+        for r in l.boards.iter().filter(|b| crate::availability::day_scope(&b.scope) && b.local_date.as_str() >= from.as_str() && b.local_date.as_str() < for_date) {
+            if let Some(b) = indexed_board(store, Some(r)).await? {
+                boards.push(b);
+            }
+        }
+        let (after, _) = read_ledger(store).await?;
+        if before != after {
+            continue;
+        }
+        let exposures = crate::availability::board_exposures(&l, &boards, &from, for_date);
+        return Ok((l, exposures));
+    }
+    Err(CmdError::with("conflict", "the wardrobe kept changing while availability was read; try again", json!({"retryable": true})))
 }
 
 /// `GET /v1/weather[?date=]` (`WeatherSnapshot`), for the owner's day now when no date is named.

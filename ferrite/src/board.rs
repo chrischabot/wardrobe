@@ -113,6 +113,10 @@ pub struct Revision {
     pub undo_of_swap: Option<(u64, u64)>,
     pub dropped: Vec<Value>,
     pub swap_weather_basis: Option<String>,
+    /// `writeExposure` of `planRevisionWrite`: whether this revision's offered options became an option
+    /// set (a day scope with no counted wear of that day active when it was written). `None` for a
+    /// revision stored before the port recorded it.
+    pub write_exposure: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -224,6 +228,7 @@ impl Board {
                 "undoOfSwap": r.undo_of_swap.map(|(a, b)| json!({"revision": a, "restoredRevision": b})),
                 "dropped": r.dropped,
                 "swapWeatherBasis": r.swap_weather_basis,
+                "writeExposure": r.write_exposure,
             })).collect::<Vec<_>>(),
         })
     }
@@ -261,6 +266,11 @@ impl Board {
                 undo_of_swap,
                 dropped: r.get("dropped")?.as_array()?.clone(),
                 swap_weather_basis: ns(r, "swapWeatherBasis")?,
+                write_exposure: match r.get("writeExposure") {
+                    None | Some(Value::Null) => None,
+                    Some(Value::Bool(b)) => Some(*b),
+                    Some(_) => return None,
+                },
             });
         }
         let selected_at_ms = match v.get("selectedAtMs")? {
@@ -1133,7 +1143,11 @@ struct Draft {
 }
 
 /// `planRevisionWrite`: the next revision, with the choice kept while its option is still offered.
-fn write_revision(ctx: &Ctx<'_>, existing: Option<&Board>, scope: &str, day: &str, reason: String, mut d: Draft) -> Board {
+/// `day` is the ledger the revision is written against: its active counted wears decide `writeExposure`.
+fn write_revision(ctx: &Ctx<'_>, day: &Day<'_>, existing: Option<&Board>, scope: &str, local_date: &str, reason: String, mut d: Draft) -> Board {
+    let worn_that_day = parse_local_date(local_date).map_or(false, |date| day.worn.values().any(|dates| dates.contains(&date)));
+    let write_exposure = crate::availability::day_scope(scope) && !worn_that_day;
+    let day = local_date;
     let mut board = existing.cloned().unwrap_or_else(|| Board {
         board_id: new_id(ctx, "brd", 0),
         scope: scope.to_string(),
@@ -1182,6 +1196,7 @@ fn write_revision(ctx: &Ctx<'_>, existing: Option<&Board>, scope: &str, day: &st
         undo_of_swap: d.undo_of_swap,
         dropped: d.dropped,
         swap_weather_basis: d.swap_weather_basis,
+        write_exposure: Some(write_exposure),
     });
     if board.revisions.len() > REVISIONS_KEPT {
         board.revisions.remove(0);
@@ -1287,7 +1302,7 @@ pub fn publish(ctx: &Ctx<'_>, day: &Day<'_>, existing: Option<&Board>, p: Publis
         dropped: dropped.clone(),
         swap_weather_basis: None,
     };
-    let board = write_revision(ctx, existing, &p.scope, &p.local_date, p.reason.clone(), draft);
+    let board = write_revision(ctx, day, existing, &p.scope, &p.local_date, p.reason.clone(), draft);
     let revision = board.current_revision;
     let option_ids: Vec<String> = board.current().map(|r| r.offered.iter().map(|o| o.option_id.clone()).collect()).unwrap_or_default();
     let summary = format!(
@@ -1567,7 +1582,7 @@ pub fn swap(ctx: &Ctx<'_>, day: &Day<'_>, board: Option<&Board>, p: &Value) -> R
         dropped: vec![],
         swap_weather_basis: Some(basis.into()),
     };
-    let next = write_revision(ctx, Some(board), &board.scope, &board.local_date, "swap".into(), draft);
+    let next = write_revision(ctx, day, Some(board), &board.scope, &board.local_date, "swap".into(), draft);
     let new_id = slot_of(&slots, &role).unwrap_or_default().to_string();
     let n = offered.iter().position(|o| o.option_id == option_id).map_or(0, |i| i + 1);
     let summary = match &previous_id {
@@ -1637,7 +1652,7 @@ pub fn undo_swap(ctx: &Ctx<'_>, day: &Day<'_>, board: Option<&Board>, data: &Val
         dropped: vec![],
         swap_weather_basis: Some(basis.into()),
     };
-    let next = write_revision(ctx, Some(board), &board.scope, &board.local_date, "swap".into(), draft);
+    let next = write_revision(ctx, day, Some(board), &board.scope, &board.local_date, "swap".into(), draft);
     let text = format!(
         "Option {n} for {}: swap undone; the outfits of revision {before_n} are back{}",
         board.local_date,

@@ -34,6 +34,8 @@ const {
 const csvPath = path.join(repo, "requirements/wardrobe_inventory_clean.csv");
 const csvText = readFileSync(csvPath, "utf8");
 const plan = await buildInventoryImportPlan(csvText);
+// The sheet rows each merged unit came from ("... (pair 2)"), by line.
+const mergedRows = new Map(plan.rows.filter((r) => r.disposition === "merged").map((r) => [r.sourceRow, r]));
 
 // Alias and fact IDs derive from the importer's idempotency key of the garment's creation
 // (`import:<sha16>:garment:<id>`, packages/domain/src/import/apply.ts); the TypeScript service draws them
@@ -41,15 +43,25 @@ const plan = await buildInventoryImportPlan(csvText);
 const c16 = plan.sourceSha256.slice(0, 16);
 const garmentRecordId = (prefix, garmentId, key) => `${prefix}_${createHash("sha256").update(`import:${c16}:garment:${garmentId}:${key}`, "utf8").digest("hex").slice(0, 24)}`;
 // The aliases `garment.create` records (packages/domain/src/handlers/garments.ts): the name as the
-// owner's own, then the importer's, skipping any whose normalized phrase is already recorded.
-const aliasesOf = (garmentId, p) => {
+// owner's own, then the importer's, skipping any whose normalized phrase is empty or already recorded.
+// `normalized` is the importer's own `normalizePhrase`, so the port never re-derives a stored form.
+// A deliberate addition to the TypeScript import: each later row merged into the garment ("(pair 2)")
+// keeps its own sheet name as an import alias too, where TypeScript records only the first row's, so
+// every source row's name resolves to the garment it became.
+const aliasesOf = (g) => {
+  const p = g.payload;
+  const merged = g.sourceRows.slice(1).map((line) => {
+    const item = mergedRows.get(line)?.raw?.Item?.trim();
+    if (!item) throw new Error(`no merged sheet row ${line} for ${g.garmentId}`);
+    return { phrase: item, kind: "import" };
+  });
   const seen = new Set();
   const out = [];
-  for (const a of [{ phrase: p.name, kind: "owner_name" }, ...(p.aliases ?? [])]) {
-    const n = normalizePhrase(a.phrase);
-    if (!n || seen.has(n)) continue;
-    seen.add(n);
-    out.push({ aliasId: garmentRecordId("als", garmentId, `alias:${out.length}`), phrase: a.phrase, kind: a.kind });
+  for (const a of [{ phrase: p.name, kind: "owner_name" }, ...(p.aliases ?? []), ...merged]) {
+    const normalized = normalizePhrase(a.phrase);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push({ aliasId: garmentRecordId("als", g.garmentId, `alias:${out.length}`), phrase: a.phrase, normalized, kind: a.kind });
   }
   return out;
 };
@@ -81,7 +93,7 @@ const garments = plan.garments.map((g) => {
     size: p.size ?? null,
     planningReason: p.planningReason ?? null,
     condition: p.condition ?? null,
-    aliases: aliasesOf(g.garmentId, p),
+    aliases: aliasesOf(g),
     facts: (p.facts ?? []).map((f, i) => ({ factId: garmentRecordId("fct", g.garmentId, `fact:${i}`), attribute: f.attribute, value: f.value ?? null, source: f.source, scope: f.scope ?? null })),
   };
 });

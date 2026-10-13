@@ -5,11 +5,8 @@
 //! and its availability. Nothing is written.
 //!
 //! What this port answers differently (README.md, "Item page"):
-//! - availability is exact only where the TypeScript estimator needs no exposure model: a hard-excluded
-//!   garment (probability 0) and a never-laundered one (probability 1). For a laundered garment that is
-//!   not excluded the estimator (unreported wears on offered days, the import's cleanliness prior) is
-//!   not ported, so `availability` is `null` and `availabilityEstimate` says so explicitly, with Studio's
-//!   status and reasons; no probability is guessed;
+//! - availability is the estimator's (`availability::estimate`, as `getAvailability` gives it) for the
+//!   owner's day now, weighed against the outfits offered and not reported (see "Availability");
 //! - there is no media module, so `media` is `null` with `mediaAvailable: false`, and no combinations
 //!   are stored, so `knownCombinations` is empty;
 //! - the import's records carry the profile's date (`seed::imported_at`), and `updatedAt` stays that
@@ -18,8 +15,7 @@
 
 use ferrite_app::serde_json::{json, Value};
 
-use crate::api::{read_ledger, Store};
-use crate::board::Day;
+use crate::api::Store;
 use crate::ledger::{CmdError, Ledger, Replay};
 use crate::seed::{catalogue, healing_restriction, imported_at, Garment};
 use crate::time::{instant, local_date, owner_day};
@@ -38,14 +34,14 @@ pub fn target(path: &str) -> Option<&str> {
 pub async fn read<S: Store>(store: &mut S, now_ms: u64, garment_id: &str) -> Result<Value, CmdError> {
     let cat = catalogue();
     let g = cat.get(garment_id).ok_or_else(|| CmdError::new("not_found", format!("no garment '{garment_id}' in this wardrobe")))?;
-    let (_, ledger) = read_ledger(store).await?;
-    let day = Day::of(cat, &ledger, &local_date(owner_day(now_ms)));
-    let balances = balances(&day.stock, g);
-    let (availability, estimate) = availability(&day, &ledger, g, &balances);
+    let for_date = local_date(owner_day(now_ms));
+    let (ledger, exposures) = crate::api::exposures_for(store, &for_date).await?;
+    let input = crate::availability::Input::new(cat, &ledger, &for_date, exposures);
+    let balances = balances(&input.stock, g);
+    let availability = crate::availability::estimate(&input, g).1;
     Ok(json!({
-        "detail": detail(&ledger, &day.stock, g, balances),
+        "detail": detail(&ledger, &input.stock, g, balances),
         "availability": availability,
-        "availabilityEstimate": estimate,
         "media": null,
         "mediaAvailable": false,
         "knownCombinations": [],
@@ -142,7 +138,7 @@ fn detail(ledger: &Ledger, stock: &Replay, g: &Garment, rows: Vec<(&'static str,
         "createdAt": imported,
         "updatedAt": imported,
     });
-    let aliases: Vec<Value> = g.aliases.iter().map(|a| json!({"aliasId": a["aliasId"], "garmentId": g.id, "phrase": a["phrase"], "kind": a["kind"]})).collect();
+    let aliases: Vec<Value> = g.aliases.iter().map(|a| json!({"aliasId": a.alias_id, "garmentId": g.id, "phrase": a.phrase, "kind": a.kind})).collect();
     let facts: Vec<Value> = g
         .facts
         .iter()
@@ -212,52 +208,3 @@ fn detail(ledger: &Ledger, stock: &Replay, g: &Garment, rows: Vec<(&'static str,
     })
 }
 
-/// The garment's availability for the owner's day now: the contract's `GarmentAvailability` where its
-/// probability is exact without the estimator, and always an explicit `availabilityEstimate`.
-fn availability(day: &Day<'_>, ledger: &Ledger, g: &Garment, rows: &[(&'static str, String, u32)]) -> (Value, Value) {
-    let a = crate::studio::availability(day, ledger, g);
-    let clean = day.stock.of(&g.id).clean;
-    let restriction_ids: Vec<Value> = if a.reasons.contains(&"restricted") { vec![healing_restriction()["restrictionId"].clone()] } else { Vec::new() };
-    // `estimateGarment`: a hard exclusion is probability 0; a never-laundered garment is not tracked by
-    // the exposure model and has no import prior, so present means wearable (probability 1).
-    let exact = if a.hard_excluded {
-        Some((0.0, vec![format!("excluded: {}", a.reasons.join(", "))]))
-    } else if g.care_channel == "none" {
-        Some((1.0, vec![format!("{clean} clean unit{} at home (observed ledger balance)", if clean == 1 { "" } else { "s" })]))
-    } else {
-        None
-    };
-    match exact {
-        Some((p, basis)) => (
-            json!({
-                "garmentId": g.id,
-                "status": a.status,
-                "hardExcluded": a.hard_excluded,
-                "pAvailable": p,
-                "inferredWear": [],
-                "reasons": a.reasons,
-                "restrictionIds": restriction_ids,
-                "acquisition": g.acquisition,
-                "planningPolicy": g.planning_policy,
-                "balances": balances_json(rows),
-                "cleanObserved": clean,
-                "basis": basis,
-            }),
-            json!({"state": "exact", "status": a.status, "hardExcluded": a.hard_excluded, "reasons": a.reasons, "detail": null}),
-        ),
-        None => (
-            Value::Null,
-            json!({
-                "state": "not_estimated",
-                "status": a.status,
-                "hardExcluded": false,
-                "reasons": a.reasons,
-                "detail": format!(
-                    "Not estimated: this server does not compute the chance that a clean unit is at home (unreported wears on offered days and the import's cleanliness are not modelled). The ledger shows {clean} clean unit{} at home; Studio treats it as {}.",
-                    if clean == 1 { "" } else { "s" },
-                    a.status
-                ),
-            }),
-        ),
-    }
-}

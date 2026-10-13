@@ -77,6 +77,9 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `GET /health` (public) | service status |
 | `GET /v1/wardrobe[?category=]` | the inventory: every imported garment with its balances (clean, dirty, at the laundry service, packed for trips) and version. A subset of `listInventory`: no availability estimate, aliases, colours or wear counts yet |
 | `GET /v1/items/{garmentId}` | `ItemResponse` as `readItem`: the item page, see "Item page". An unknown garment is `not_found` ("no garment '<id>' in this wardrobe"); nothing is written |
+| `GET /v1/wardrobe/resolve?phrase=` | `PhraseResolution` as `resolveAlias`: the garments a phrase names, exact alias matches first, otherwise every garment holding all of the phrase's words, each with the alias it matched on and what distinguishes it; more than one is `ambiguous`, never picked. Aliases are the import's (the garment's name first, then the importer's), normalized as `normalizePhrase` does. The phrase is 1 to 200 characters, `+` read as a space; nothing is written |
+| `POST /v1/wardrobe/selection` | `GarmentSelection` for a `GarmentSelector` (`garmentIds`, `category`, `search`, `maker`, `colour`, `fabric`, `careChannel`, `planningPolicy`, `acquisition`; at least one, every one set must match, unknown keys ignored): the garments a bulk correction would touch, by category, name and ID, with their versions and the wardrobe revision. An unknown garment ID is `not_found` naming it. Writes nothing; the bulk correction itself is not ported |
+| `GET /v1/availability[?date=]` | `AvailabilitySnapshot` as `getAvailability` (estimator `availability-estimator/1.0.0`): every garment's probability of a clean unit for a fresh wear on the day (the owner's day now without one), its status, reasons, balances and inferred unreported wear, see "Availability" |
 | `POST /v1/commands` | the command envelope of `packages/contracts` (`type`, `payload`, `idempotencyKey`, `authorization`, `source.channel`, optional `occurredAt`, `expectedVersions`) |
 | `GET /v1/today[?date=YYYY-MM-DD][&scope=home\|trip:<tripId>]` | `TodayResponse` as `readToday`: the board of the scope (the home board, or a trip's day board, see "Trip-day boards") for the day, or none, with the garments recorded worn that day. Without a date it is the owner's day now in his timezone (Europe/London, the default setting, with British Summer Time), whatever the scope. `status` is `ready` or `none`; the source freshness list gives the board and wardrobe revisions, style, and then weather as `unavailable` and Calendar as `not_connected`; `runId` is null (nothing composes in the background) and `wardrobeRevision` is the current revision. An evening scope (`home:evening`, `trip:<tripId>:evening`) is refused, since evening boards are not ported |
 | `GET /v1/weather[?date=YYYY-MM-DD]` | `WeatherSnapshot`, for the owner's day now when no date is named: what the TypeScript service answers for an owner with no home city (no settings command is ported, so `homeLocation` is null). There is no forecast: `freshness` is `unavailable`, every window and condition value is null (never zero, dry or calm), the line is "Weather unavailable" and the limitation is "No home city is set, so no forecast was requested." The snapshot is answered and not recorded (`weather.record_snapshot` is not ported) |
@@ -253,8 +256,9 @@ What differs from the TypeScript build, and why:
 - no forecast or Calendar: every piece has the same season fit, there is no
   scarf day, a jacket goes only over a lightweight oxford, and no option suits
   an event;
-- the probabilistic availability estimator is not ported: a piece with a clean
-  unit at home counts as available, and one without is not offered;
+- the probabilistic availability estimator is ported for `GET /v1/availability`
+  and the MCP view, but the composer and the board do not use it: a piece with
+  a clean unit at home counts as available, and one without is not offered;
 - comfort feedback, the coming week's selections and recently shown
   combinations do not rank pieces;
 - the seeded tie-break names this app's single owner (`owner`) where
@@ -274,10 +278,12 @@ board's `validateCandidate`).
   reasons they cannot be worn. Availability follows the estimator's reasons on
   this port's stock: `restricted` (the sneakers-only restriction),
   `planning_excluded`, `no_units_at_home` with `observed_dirty`,
-  `in_service_batch` or `laundry_exception`; `conditional` for occasional and
+  `in_service_batch`, `laundry_exception` or `on_trip`; `conditional` for occasional and
   indoor-only pieces; and `estimated` with `import_cleanliness_unverified` for
   a laundered garment no wash or return has been reported for since the
-  import, as the estimator's import prior makes it. Garments are listed by
+  import, as the estimator's import prior makes it. These are the hard
+  reasons `GET /v1/availability` uses, but the selectors do not weigh
+  outfits offered and not reported. Garments are listed by
   category, name and ID, as `listInventory` lists them; `image` is null.
 - **Opening outfit.** Studio's first suggestion for the day with nothing
   locked (see "Suggestions" below), so its top, bottom, footwear and socks,
@@ -613,9 +619,42 @@ every report with its status and channel) through `GET /v1/days/{date}` (the
 owner) and `garderobe_inventory` view
 `history` with a `date`; `from` and `to` (at most 366 days) list the counted
 wears, optionally of one garment. A day without a record is unknown, not
-unworn. Not ported: `wear.amend`, wear on a trip, the laundry exceptions a wear
-settles, and the board option sets a wear resolves (the board keeps none
-yet). Wear reports are kept for the life of the ledger, like stock events.
+unworn. Not ported: `wear.amend`, wear on a trip and the laundry exceptions a
+wear settles. A counted wear closes the offered option sets that hold one of
+its garments, as the availability estimator reads them (see "Availability").
+Wear reports are kept for the life of the ledger, like stock events.
+
+## Availability
+
+`GET /v1/availability` ports `packages/domain/src/availability/estimator.ts`
+with its parameters (`pUseBoard` 0.85, `pFollowSelection` 0.9, the
+hypothesis status) over this port's stock. A garment that is restricted,
+excluded from planning, retired or without a unit at home has its hard
+reasons and probability 0; an occasional or indoor-only piece is
+`conditional`; otherwise the probability that a clean unit is left is the
+exact joint distribution over the outfits offered and not reported in the
+last 14 days. Those option sets come from the stored boards: each board
+revision's offered options (neckwear left out, a shoe with alternatives as an
+alternative group), weighted by the owner's choice when he made one, none for
+a revision written while a counted wear of that day was active, and a set
+closed by a counted wear of one of its garments (undoing the wear reopens
+it). A laundered garment no wash or return has been reported for since the
+import carries the import prior (`import_cleanliness_unverified`). The board
+and stock are read from one ledger revision. Checked against the TypeScript
+estimator on the real import: all 127 garments for a fresh day, and the same
+option sets over two days of boards, are equal value for value.
+
+One deliberate departure: when the owner reports a wash, or a laundry return
+brings back, every unit of a garment, outfits offered before the owner's day
+of that report no longer count against that garment (TypeScript moves the
+cutoff only at the weekly service-laundry baseline, which is not ported, so a
+shirt offered yesterday and washed today would otherwise still read as about
+58% available). An offer on the day of the report still counts, since the
+wear may have come after it; a report of some units only (one of two pairs)
+moves nothing, and undoing the report restores the earlier cutoff. Packed
+units are at the trip, not at home: a garment with every unit packed is
+`on_trip`, and its balances list each trip (`<trip>` for clean units,
+`<trip>#dirty` for worn ones).
 
 ## The MCP endpoint and its OAuth
 
@@ -635,14 +674,19 @@ Tools, with the TypeScript server's names, arguments and results:
 
 - `garderobe_today`: the board for `{date}`, as `/v1/today`; without a date, the owner's day now in Europe/London.
 - `garderobe_inventory`: views `items` (paged, `limit` and `nextCursor`),
-  `snapshot` (complete), `receipts` and `history` (recorded wear, see "Wear
+  `snapshot` (complete), `availability` (optional `date`, as
+  `/v1/availability`), `resolve` (`phrase`, as `/v1/wardrobe/resolve`, with
+  the TypeScript server's summary: ask which one when it is ambiguous, never
+  create an item to make a phrase match), `selection` (`selector`, as
+  `/v1/wardrobe/selection`), `receipts` and `history` (recorded wear, see "Wear
   records"), and `laundry`, `style` (optional `date`), `command_types`,
   `trips`, `returns` and `orders`, whose data is exactly what `/v1/laundry`,
   `/v1/style`, `/v1/command-types`, `/v1/trips`, `/v1/returns` and
-  `/v1/orders` serve, with the TypeScript server's summaries. The response
-  says whether it is the whole result (`complete`, `total`). The TypeScript
-  server's other views (`item`, `availability`, `resolve`, `selection`)
-  answer `invalid_command` until the data behind them is ported.
+  `/v1/orders` serve, with the TypeScript server's summaries. `phrase` and
+  `selector` belong to their views only, and `date` to `history`,
+  `availability` and `style`. The response says whether it is the whole
+  result (`complete`, `total`). The TypeScript server's `item` view answers
+  `invalid_command` (the item page is served at `/v1/items/{id}`).
 - `garderobe_recommend`: validated outfit options for `{date, count?,
   brief?, clientRequestId}` (see "Recommendations"). It is a read, so a
   read-only grant is offered it.
@@ -1002,13 +1046,8 @@ as TypeScript's `staleVersions: "conflict"` does.
   an undone report's moves are gone, as they are from the balances.
 - `recordedWearCount`, `lastRecordedWear` and `recentWears` (newest first, at most 60) are the counted
   wears, an undone one listed as `retracted`, with the caveat that zero means not logged.
-- `availability` is the contract's `GarmentAvailability` only where its probability is exact without
-  the estimator: a hard-excluded garment (`pAvailable` 0) and a never-laundered one (1), as
-  `estimateGarment` computes them, with Studio's status and reasons. For a laundered garment that is
-  not excluded the estimator is not ported, so `availability` is `null` rather than a guessed
-  probability (the iOS item page shows `pAvailable` as a percentage), and the extra field
-  `availabilityEstimate` always says which: `state` `exact` or `not_estimated`, with Studio's status
-  and reasons and, when not estimated, a sentence saying so.
+- `availability` is the estimator's `GarmentAvailability` for the owner's day now, exactly what
+  `GET /v1/availability` gives the garment (see "Availability").
 - `media` is `null` with `mediaAvailable: false` and `knownCombinations` is empty (no media module, no
   stored combinations); `measurements` is empty (none are ported).
 
@@ -1080,10 +1119,8 @@ the lines of the milestone it was found in.
     to act on.
 
 - Item page (`src/item.rs`):
-  - A laundered garment that is not excluded has no availability probability
-    (`availability: null`, `availabilityEstimate.state: "not_estimated"`): the
-    estimator's unreported-wear model and the import's cleanliness prior are
-    not ported (milestone 2, parked).
+  - Aliases include, for a garment merged from several sheet rows ("(pair 2)"),
+    each later row's own name, where TypeScript records only the first row's.
   - The import's records (`createdAt`, `updatedAt`, facts' `recordedAt`, the
     opening `receive` movement) carry the profile's date, 2026-09-14, since the
     port has no import time; `updatedAt` stays that date after a report
@@ -1095,12 +1132,43 @@ the lines of the milestone it was found in.
     (`wash`) is the owner's report too. Weekly resets (basis `inferred`) are
     not ported.
 
+- Resolve, selection and availability (`src/selection.rs`, `src/availability.rs`):
+  - Phrase normalization folds each non-ASCII code point with
+    `src/fold_table.rs`, generated by `scripts/build-fold-table.mjs` from
+    Node's own NFKD and lowercasing (`--check` reports a stale table). It
+    follows the Unicode version of the Node that generated it; the TypeScript
+    service follows its runtime's, so a character new in one version could
+    fold differently. A test checks the port against `normalizePhrase` on
+    every code point of the table and on 1500 seeded random phrases, and every
+    seed alias normalizes as the importer recorded it.
+  - Resolve lists matches in garment-ID order, each on its first alias, which
+    is the order SQLite's alias index gives the TypeScript service; a
+    different query plan there could order them differently.
+  - The `selection` view and route only preview: no bulk correction is ported.
+  - Option sets are derived from boards: each revision records, when it is
+    written, whether a counted wear of its day was active (TypeScript's
+    `writeExposure`). A revision stored before the port recorded that falls
+    back to whether a report of that day, still standing, was recorded before
+    its publication. Trip-day boards are day boards, so their options count
+    too.
+  - Each later sheet row merged into a garment ("(pair 2)") keeps its own name
+    as an import alias, where TypeScript records only the first row's, so a
+    phrase naming the second pair resolves here and not there.
+  - No weekly service-laundry baseline (`lastBaseline` is null, nothing is
+    clean only by inference), and no storage or tailor buckets.
+  - A wash report of a garment the ledger already has clean writes nothing
+    (`care.washed` is a `noop` then), so it cannot end the estimate from
+    earlier offers; a report that the garment went in the wash first does.
+  - Studio, the board and the recommender do not weigh unreported offers.
+
 Milestone C's first half, the Wardrobe tab in the contract shape (`GET /v1/wardrobe` as
 `InventoryPage`), is parked unlanded; the item page landed on its own ("Item page").
 Its open findings:
 
 - `availability` would be `null`, with availability filters refused, instead
-  of the probabilistic availability estimate.
+  of the probabilistic availability estimate. The estimator has since been
+  ported for `GET /v1/availability`; milestone C stays parked and does not
+  use it.
 - The batch's initial ledger read aborts before the existing-receipt
   recovery path, so a retried batch whose first read fails is not recovered
   from its receipts.
@@ -1110,26 +1178,10 @@ cursor sent without a limit, and decomposed accents in search; later reviews
 raised the two findings above. The last prepared commit, 81ce6e91, is kept
 unlanded, and `/v1/wardrobe` keeps the subset shape above.
 
-Milestone 2, phrase resolution, the bulk-edit selection preview and the
-probabilistic availability estimator (`GET /v1/wardrobe/resolve`,
-`POST /v1/wardrobe/selection`, `GET /v1/availability` and the matching
-`garderobe_inventory` views), is parked unlanded and removed from the tree.
-Its open finding: the estimator counts outfits offered in the last 14 days
-against a garment even when they predate a wash or clean return observed for
-that garment. A single-unit piece offered yesterday and washed today can still
-read as only 15% available. The TypeScript estimator behaves the same way:
-its exposure cutoff comes only from the weekly service-laundry baseline or the
-horizon (`packages/domain/src/queries.ts`, `cutoffDateByChannel`), never from
-a per-garment wash.
-
-What was tried: four exact-patch review rounds. They fixed option sets that
-read a wear's current retraction state instead of its state when the board was
-written, the missing aliases of merged "(pair 2)" sheet rows, incomplete
-Unicode folding (now a generated NFKD table checked against `normalizePhrase`),
-and README selector fields that do not exist. The fourth review raised the
-finding above. The last prepared commit, 4e55facc, is kept unlanded, and its
-full patch is in the project library as "Parked Ferrite milestone 2 patch:
-resolve, selection, availability".
+Milestone 2 (resolve, selection and the availability estimator) was parked
+after four review rounds and has since landed from its library patch, brought
+up to date with trips and the item page, with its last finding (offers before
+a reported wash still counted) fixed as described in "Availability".
 
 Found by the automatic reviews of the whole port, or recorded with a later
 milestone, and outside the lines of the milestone in hand:
@@ -1416,8 +1468,8 @@ small change of its own, and passes `ferrite check`, `ferrite test` and
    command at a time. Done: the owner's own wash (`care.washed`). Next:
    garments (create, correct, aliases, merge, move,
    retire), wear amendments, the
-   weekly laundry reset, restrictions, owner settings, the availability
-   estimator, and multi-owner storage with a compacted, sharded journal.
+   weekly laundry reset, restrictions, owner settings (the availability
+   estimator is done for its read), and multi-owner storage with a compacted, sharded journal.
    Sign-in with `packages/auth`, portable export and import in parts. Done:
    the recovery kit and recovery sign-in.
 3. **Queues and schedules.** Effects and outbox on Ferrite queues;

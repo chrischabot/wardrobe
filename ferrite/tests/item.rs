@@ -1,9 +1,8 @@
 //! The item page, `GET /v1/items/{garmentId}` (`ItemResponse`), through `api::handle` as the iOS client
 //! sends it, on the owner's real inventory rows: the record as the importer planned it, the healing
 //! restriction where it covers the garment, balances and movements as the ledger replays them after
-//! wash, laundry and wear reports, counted wears, and availability that is either exact (excluded:
-//! probability 0; never laundered: probability 1, as `estimateGarment` computes them) or explicitly not
-//! estimated, never guessed.
+//! wash, laundry and wear reports, counted wears, and the estimator's availability for the owner's day
+//! (`estimateGarment`, as `GET /v1/availability` gives it).
 //!
 //! The store is an in-memory test double of the APE binding (the same guarded-commit semantics); the
 //! garments are the real seed.
@@ -93,7 +92,7 @@ async fn every_imported_garment_reads_as_the_importer_recorded_it() {
         assert_eq!((garment["version"].clone(), garment["isSynthetic"].clone(), garment["createdAt"].clone()), (json!(1), json!(false), json!("2026-09-14T00:00:00Z")));
         // The owner's name is the first alias; every fact the importer recorded is listed, each with its
         // provenance, and the import status quotes the sheet's line.
-        assert_eq!(d["aliases"][0], json!({"aliasId": g.aliases[0]["aliasId"], "garmentId": g.id, "phrase": g.name, "kind": "owner_name"}));
+        assert_eq!(d["aliases"][0], json!({"aliasId": g.aliases[0].alias_id, "garmentId": g.id, "phrase": g.name, "kind": "owner_name"}));
         assert_eq!(d["facts"].as_array().unwrap().len(), g.facts.len());
         let status = d["facts"].as_array().unwrap().iter().find(|f| f["attribute"] == "import_status").unwrap_or_else(|| panic!("{}: no import status", g.name));
         assert_eq!(status["source"]["kind"], "import");
@@ -109,21 +108,19 @@ async fn every_imported_garment_reads_as_the_importer_recorded_it() {
         let restricted = g.roles.iter().any(|r| r == "footwear") && board::sneakers_only_excludes(cat, g).is_some();
         assert_eq!(!d["restrictions"].as_array().unwrap().is_empty(), restricted, "{}", g.name);
         assert_eq!((body["media"].clone(), body["mediaAvailable"].clone(), body["knownCombinations"].clone()), (Value::Null, json!(false), json!([])));
-        // Availability is exact or explicitly not estimated: never a guessed probability.
-        let estimate = &body["availabilityEstimate"];
-        match estimate["state"].as_str() {
-            Some("exact") => {
-                let p = body["availability"]["pAvailable"].as_f64().unwrap();
-                assert!(p == 0.0 || p == 1.0, "{}: {p}", g.name);
-                assert_eq!(p == 0.0, body["availability"]["hardExcluded"] == json!(true));
-            }
-            Some("not_estimated") => {
-                assert_eq!(body["availability"], Value::Null);
-                assert_ne!(g.care_channel, "none", "{}", g.name);
-                assert!(estimate["detail"].as_str().unwrap().starts_with("Not estimated"));
-            }
-            other => panic!("{}: {other:?}", g.name),
+        // Availability is the estimator's: excluded is 0; never laundered is 1; laundered stock no wash or
+        // return has been reported for since the import carries the import prior (0.8) with no boards.
+        let a = &body["availability"];
+        let p = a["pAvailable"].as_f64().unwrap();
+        if a["hardExcluded"] == json!(true) {
+            assert_eq!((p, a["status"].as_str()), (0.0, Some("unavailable")), "{}", g.name);
+        } else if g.care_channel == "none" {
+            assert_eq!(p, 1.0, "{}", g.name);
+        } else {
+            assert_eq!(p, 0.8, "{}", g.name);
+            assert!(a["reasons"].as_array().unwrap().contains(&json!("import_cleanliness_unverified")), "{a}");
         }
+        assert_eq!(a["balances"], d["balances"]);
     }
 }
 
@@ -146,7 +143,6 @@ async fn a_restricted_shoe_and_a_sneaker_read_their_exact_availability() {
     assert_eq!(nb["detail"]["restrictions"], json!([]));
     assert_eq!((a["status"].clone(), a["hardExcluded"].clone(), a["pAvailable"].as_f64(), a["reasons"].clone(), a["inferredWear"].clone()), (json!("available"), json!(false), Some(1.0), json!([]), json!([])));
     assert_eq!(a["basis"], json!(["1 clean unit at home (observed ledger balance)"]));
-    assert_eq!(nb["availabilityEstimate"]["state"], "exact");
 
     // The assistant reads the same page; a request without a sign-in does not.
     let (status, by_assistant) = get(&mut store, now, Some(ASSISTANT_TOKEN), &format!("/v1/items/{NB_GREY}")).await;
@@ -160,9 +156,8 @@ async fn a_shirt_follows_its_wash_and_laundry_reports() {
     let mut store = MemStore::default();
     let now = T0 + 10 * HOUR;
     let fresh = item(&mut store, now, OXFORD_BLUE).await;
-    assert_eq!(fresh["availability"], Value::Null);
-    assert_eq!(fresh["availabilityEstimate"]["state"], "not_estimated");
-    assert_eq!((fresh["availabilityEstimate"]["status"].clone(), fresh["availabilityEstimate"]["reasons"].clone()), (json!("estimated"), json!(["import_cleanliness_unverified"])));
+    let a = &fresh["availability"];
+    assert_eq!((a["status"].clone(), a["pAvailable"].as_f64(), a["reasons"].clone()), (json!("estimated"), Some(0.8), json!(["import_cleanliness_unverified"])));
 
     let dirty = run(&mut store, OWNER, now, "care.mark_dirty", json!({"items": [{"garmentId": OXFORD_BLUE}]}), "item-dirty-1").await;
     let page = item(&mut store, now + 1, OXFORD_BLUE).await;
@@ -197,9 +192,9 @@ async fn a_shirt_follows_its_wash_and_laundry_reports() {
             ("return".to_string(), json!("service"), json!("clean"), 1),
         ]
     );
-    // Back clean from a reported return: offerable, and still not given a guessed probability.
-    assert_eq!(back["availability"], Value::Null);
-    assert_eq!((back["availabilityEstimate"]["state"].clone(), back["availabilityEstimate"]["status"].clone(), back["availabilityEstimate"]["reasons"].clone()), (json!("not_estimated"), json!("available"), json!([])));
+    // Back clean from a reported return: available, with no import prior left.
+    let a = &back["availability"];
+    assert_eq!((a["status"].clone(), a["pAvailable"].as_f64(), a["reasons"].clone()), (json!("available"), Some(1.0), json!([])));
 }
 
 #[tokio::test]

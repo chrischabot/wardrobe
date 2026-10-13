@@ -213,10 +213,11 @@ pub fn validation(day: &Day<'_>, resolved: &Resolved, mode: Mode, for_date: &str
     })
 }
 
-/// One garment's availability as the selectors report it (`GarmentAvailability`, from
-/// `estimateGarment`, with this port's binary stock: a garment is available when a clean unit is at
-/// home). A laundered garment no wash or return has been reported for since the import is
-/// `estimated` (`import_cleanliness_unverified`), as the estimator's import prior makes it.
+/// One garment's availability as the selectors report it (`GarmentAvailability`): the estimator's
+/// hard reasons (`availability::hard_reasons`) with this port's binary stock, so a garment is available
+/// when a clean unit is at home. A laundered garment no wash or return has been reported for since the
+/// import is `estimated` (`import_cleanliness_unverified`), as the estimator's import prior makes it.
+/// The unreported wear of offered outfits is not weighed here; `GET /v1/availability` weighs it.
 pub struct Availability {
     pub status: &'static str,
     pub hard_excluded: bool,
@@ -224,38 +225,11 @@ pub struct Availability {
 }
 
 pub fn availability(day: &Day<'_>, ledger: &Ledger, g: &Garment) -> Availability {
-    let mut reasons: Vec<&'static str> = Vec::new();
-    if g.acquisition == "incoming" {
-        reasons.push("not_owned_yet");
-    }
-    if g.acquisition == "disposed" {
-        reasons.push("disposed");
-    }
-    // The profile's healing restriction covers the footwear it does not allow; nothing in this port can lift it.
-    if g.roles.iter().any(|r| r == "footwear") && board::sneakers_only_excludes(day.cat, g).is_some() {
-        reasons.push("restricted");
-    }
-    if g.planning_policy == "excluded" {
-        reasons.push("planning_excluded");
-    }
-    let stock = day.stock.of(&g.id);
-    if g.acquisition == "owned" && stock.clean == 0 {
-        reasons.push("no_units_at_home");
-        if stock.dirty > 0 {
-            reasons.push("observed_dirty");
-        }
-        if let Some(batches) = day.stock.service.get(&g.id).filter(|m| m.values().any(|h| h.quantity > 0)) {
-            reasons.push(if batches.values().any(|h| h.quantity > 0 && h.held) { "laundry_exception" } else { "in_service_batch" });
-        }
-        if day.stock.on_trips(&g.id) > 0 {
-            reasons.push("on_trip");
-        }
-    }
+    let (mut reasons, _) = crate::availability::hard_reasons(day.cat, &day.stock, g);
     if !reasons.is_empty() {
         return Availability { status: "unavailable", hard_excluded: true, reasons };
     }
-    let verified = ledger.events.iter().any(|e| e.voided_by.is_none() && e.garment_id == g.id && matches!(e.kind.as_str(), "wash" | "washed" | "return"));
-    let unverified = g.care_channel != "none" && !verified;
+    let unverified = crate::availability::import_unverified(ledger, g);
     if unverified {
         reasons.push("import_cleanliness_unverified");
     }
