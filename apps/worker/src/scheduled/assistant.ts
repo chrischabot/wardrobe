@@ -280,7 +280,8 @@ export async function reminderEventId(userId: string, reminderId: string): Promi
 
 function calendarWriter(app: App) {
   const { env, db } = app;
-  const base = env.GOOGLE_API_BASE_URL ? `${env.GOOGLE_API_BASE_URL.replace(/\/+$/, "")}/calendar/v3` : undefined;
+  // As for `googleFetch`: the fixture address is honoured in local runs and tests only; a deployment always reaches Google.
+  const base = env.GOOGLE_API_BASE_URL && LOCAL_ENVIRONMENTS.has(env.ENVIRONMENT) ? `${env.GOOGLE_API_BASE_URL.replace(/\/+$/, "")}/calendar/v3` : undefined;
   return createGoogleCalendar({ fetch: ((input: string, init?: RequestInit) => fetch(input, init)) as never, getAccessToken: (userId) => googleAccessToken(env, db, userId, "calendar.write_outfit_calendar", app.now()), ...(base ? { baseUrl: base } : {}) });
 }
 

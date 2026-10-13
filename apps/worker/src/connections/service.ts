@@ -5,9 +5,9 @@ import type { z } from "zod";
 import type { App } from "../app.ts";
 import { auditStatement, type OwnerSession } from "../auth/session.ts";
 import { codeHash, randomBytes, randomToken, seal, sha256Hex, toBase64Url, unseal } from "../crypto.ts";
-import type { Env } from "../env.ts";
+import { LOCAL_ENVIRONMENTS, type Env } from "../env.ts";
 import { ApiException } from "../errors.ts";
-import { assertRemoteUrl, guardedFetch, redactText, redactUrl } from "./endpoints.ts";
+import { assertRemoteUrl, assertResolvesPublic, checkRemoteUrl, guardedFetch, redactText, redactUrl } from "./endpoints.ts";
 import { describeTools, discoverRemoteTools, forgetTools, GROUP_LABELS, protocolLabel } from "./outbound.ts";
 import { ConnectionError, research } from "@garderobe/assistant";
 
@@ -35,9 +35,9 @@ const GOOGLE: Record<GoogleCapability, { label: string; effect: "read" | "write"
 const GOOGLE_SERVICE_ENDPOINT = { gmail: "https://gmail.googleapis.com/", calendar: "https://www.googleapis.com/calendar/v3/", drive: "https://www.googleapis.com/drive/v3/", sheets: "https://sheets.googleapis.com/" } as const;
 const FIXED_ENDPOINTS: Record<string, string> = { exa: "https://mcp.exa.ai/mcp", tavily: "https://mcp.tavily.com/mcp" };
 
-const googleAuthorizeUrl = (env: Env) => env.GOOGLE_OAUTH_AUTHORIZE_URL ?? "https://accounts.google.com/o/oauth2/v2/auth";
-const googleTokenUrl = (env: Env) => env.GOOGLE_OAUTH_TOKEN_URL ?? "https://oauth2.googleapis.com/token";
-const googleRevokeUrl = (env: Env) => env.GOOGLE_OAUTH_REVOKE_URL ?? "https://oauth2.googleapis.com/revoke";
+export const googleAuthorizeUrl = (env: Pick<Env, "GOOGLE_OAUTH_AUTHORIZE_URL" | "ENVIRONMENT">) => (env.GOOGLE_OAUTH_AUTHORIZE_URL && LOCAL_ENVIRONMENTS.has(env.ENVIRONMENT) ? env.GOOGLE_OAUTH_AUTHORIZE_URL : "https://accounts.google.com/o/oauth2/v2/auth");
+export const googleTokenUrl = (env: Pick<Env, "GOOGLE_OAUTH_TOKEN_URL" | "ENVIRONMENT">) => (env.GOOGLE_OAUTH_TOKEN_URL && LOCAL_ENVIRONMENTS.has(env.ENVIRONMENT) ? env.GOOGLE_OAUTH_TOKEN_URL : "https://oauth2.googleapis.com/token");
+export const googleRevokeUrl = (env: Pick<Env, "GOOGLE_OAUTH_REVOKE_URL" | "ENVIRONMENT">) => (env.GOOGLE_OAUTH_REVOKE_URL && LOCAL_ENVIRONMENTS.has(env.ENVIRONMENT) ? env.GOOGLE_OAUTH_REVOKE_URL : "https://oauth2.googleapis.com/revoke");
 const callbackUrl = (app: App) => `${app.config.appOrigin}/connections/callback`;
 
 /* ------------------------------------------------------------------ */
@@ -332,7 +332,11 @@ export async function registerConnection(app: App, session: OwnerSession, input:
   } else {
     const raw = input.kind === "mcp" ? input.endpoint : (FIXED_ENDPOINTS[input.kind] ?? input.endpoint);
     if (!raw) throw new ApiException("invalid_command", "an endpoint is required for this connection");
-    endpoint = assertRemoteUrl(raw).toString();
+    const remote = assertRemoteUrl(raw);
+    // Public in form is not enough: a name that points at a private or local address is refused before
+    // anything is stored or sent (the same check runs again before every later request to it).
+    await assertResolvesPublic(remote);
+    endpoint = remote.toString();
     capabilities = [];
     if (input.auth.type === "secret") {
       credentialStatements.push(await credentialUpsert(app.env, userId, connectionId, input.kind, "secret", { type: "secret", secret: input.auth.secret }, now));
@@ -673,13 +677,27 @@ export async function disconnectConnection(app: App, session: OwnerSession, conn
   return { connection: toConnection(await loadProfile(db, userId, connectionId)), futureCallsStopped: true as const, credentialsRemoved: true, remoteRevocation, receiptId: audit.auditId };
 }
 
+function normalizeAuthServerUrl(raw: string): string | null {
+  try {
+    const url = new URL(raw);
+    return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return null;
+  }
+}
+
 async function revokeMcpToken(endpoint: string, credential: McpOAuthCredential): Promise<"revoked" | "unsupported" | "failed"> {
   const token = credential.refreshToken ?? credential.accessToken;
   if (!token) return "unsupported";
   const fetchFn = guardedFetch();
   const info = await discoverOAuthServerInfo(endpoint, { fetchFn });
+  // A token is only ever sent back to the authorization server that issued it.
+  const discoveredServer = normalizeAuthServerUrl(String(info.authorizationServerUrl ?? ""));
+  const expectedServer = normalizeAuthServerUrl(credential.authorizationServerUrl);
+  if (!discoveredServer || !expectedServer || discoveredServer !== expectedServer) return "failed";
   const revocation = (info.authorizationServerMetadata as { revocation_endpoint?: string } | undefined)?.revocation_endpoint;
   if (!revocation) return "unsupported";
+  if (!checkRemoteUrl(revocation, { allowQuery: true }).ok) return "failed";
   const clientId = String((credential.clientInformation as { client_id?: string }).client_id ?? "");
   const response = await fetchFn(revocation, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ token, client_id: clientId }) });
   return response.ok ? "revoked" : "failed";
@@ -689,7 +707,8 @@ async function revokeMcpToken(endpoint: string, credential: McpOAuthCredential):
 /* Calendars of the Google connection (first use: choose the outfit calendar) */
 /* ------------------------------------------------------------------ */
 
-const googleApiBase = (env: Env) => (env.GOOGLE_API_BASE_URL ?? "https://www.googleapis.com").replace(/\/+$/, "");
+// The fixture address is honoured in local runs and tests only; a deployment always reaches Google's own host.
+export const googleApiBase = (env: Pick<Env, "GOOGLE_API_BASE_URL" | "ENVIRONMENT">) => (env.GOOGLE_API_BASE_URL && LOCAL_ENVIRONMENTS.has(env.ENVIRONMENT) ? env.GOOGLE_API_BASE_URL : "https://www.googleapis.com").replace(/\/+$/, "");
 
 interface DailyCalendarSettings {
   outfitCalendarId: string | null;

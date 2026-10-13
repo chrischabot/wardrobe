@@ -24,6 +24,7 @@ import {
 import { createCompositionModel, createGatewayModelService, listComfortFeedback } from "@garderobe/assistant";
 import { addDays, all, createPrincipal, first, getSettings, localDateOf, prepare, stmt, toInstant, type Principal } from "@garderobe/domain";
 import { googleAccessToken } from "../connections/service.ts";
+import { LOCAL_ENVIRONMENTS, type Env } from "../env.ts";
 import { ApiException } from "../errors.ts";
 import type { DailyPort } from "../ports.ts";
 import type { LaneContext } from "./index.ts";
@@ -63,10 +64,16 @@ export function resumeTargetDay(resumedAtMs: number, timezone: string): string {
   return hour < 12 ? day : addDays(day, 1);
 }
 
+/** Where the Calendar adapter sends its requests when not to Google: only a local run or a test may name another address. */
+export function calendarBaseUrl(env: Pick<Env, "GOOGLE_API_BASE_URL" | "ENVIRONMENT">): string | undefined {
+  return env.GOOGLE_API_BASE_URL && LOCAL_ENVIRONMENTS.has(env.ENVIRONMENT) ? `${env.GOOGLE_API_BASE_URL.replace(/\/+$/, "")}/calendar/v3` : undefined;
+}
+
 export function createDailyPort(ctx: LaneContext, options: DailyPortOptions = {}): DailyPort {
   const { env, db } = ctx;
   const outbound = ((input: string, init?: RequestInit) => fetch(input, init)) as never;
-  const calendarBase = env.GOOGLE_API_BASE_URL ? `${env.GOOGLE_API_BASE_URL.replace(/\/+$/, "")}/calendar/v3` : undefined;
+  // The fixture address is honoured in local runs and tests only; a deployment always reaches Google's own host.
+  const calendarBase = calendarBaseUrl(env);
   const reader = createGoogleCalendar({ fetch: outbound, getAccessToken: (userId) => googleAccessToken(env, db, userId, "calendar.read", ctx.now()), ...(calendarBase ? { baseUrl: calendarBase } : {}) });
   const writer = createGoogleCalendar({ fetch: outbound, getAccessToken: (userId) => googleAccessToken(env, db, userId, "calendar.write_outfit_calendar", ctx.now()), ...(calendarBase ? { baseUrl: calendarBase } : {}) });
   const gatewayModelFor = (principal: Principal): CompositionModel | null => {

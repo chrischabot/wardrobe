@@ -21,7 +21,8 @@ import { runScheduledBackups } from "./backup/service.ts";
 import { deliverNotifications } from "./notifications/service.ts";
 import { projectReminderEvents, runAssistantJobs, runConnectionHealth } from "./scheduled/assistant.ts";
 import { GarderobeAssistant as AssistantActor } from "@garderobe/assistant";
-import { bindEnv } from "./lanes/index.ts";
+import { CommandService } from "@garderobe/domain";
+import { bindEnv, composedRegistry } from "./lanes/index.ts";
 
 /**
  * The conversation actor (Think Durable Object, binding `ASSISTANT`). It is the assistant
@@ -29,9 +30,17 @@ import { bindEnv } from "./lanes/index.ts";
  * actor executes commands on the same registry as every other surface.
  */
 export class GarderobeAssistant extends AssistantActor {
+  private ownCommands: CommandService | null = null;
+  private readonly bindings: Env;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx as never, env as never);
+    this.bindings = env;
     bindEnv(env);
+  }
+  /** The actor's commands run on the registry composed for its own bindings, never another environment's. */
+  protected override commands(): CommandService {
+    this.ownCommands ??= new CommandService({ db: this.db, registry: composedRegistry(this.bindings), clock: () => this.now() });
+    return this.ownCommands;
   }
 }
 

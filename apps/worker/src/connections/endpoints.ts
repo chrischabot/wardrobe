@@ -1,10 +1,15 @@
+import { createDohResolver, isPrivateAddress, type HostResolver } from "@garderobe/media";
 import { ApiException } from "../errors.ts";
 
 /**
  * Validation of owner-supplied remote endpoints and provider redirects (specification sections 13
  * and 15): HTTPS only, no embedded credentials, and no loopback, private, link-local or metadata
- * destinations. The Worker also runs with `global_fetch_strictly_public`, so the platform refuses
- * private-network fetches even for a hostname that resolves somewhere it should not.
+ * destinations. A name that is public in form is also resolved (DNS over HTTPS, the visual wardrobe's
+ * resolver and address rules, so both outbound paths judge an address alike) before anything is sent to
+ * it, and refused when any of its addresses is private or local or when it cannot be resolved. The
+ * Worker also runs with `global_fetch_strictly_public`; that platform setting is a second line, not
+ * the check. The connection made afterwards resolves the name again by itself, so a name that changes
+ * its answer between the check and the request (DNS rebinding) is not ruled out here.
  */
 const SECRET_PARAM = /(api[_-]?key|access[_-]?key|^key$|[_-]key$|token|secret|passw|pwd|credential|signature|^sig$|^auth|[_-]auth)/i;
 const BLOCKED_SUFFIXES = [".localhost", ".local", ".internal", ".intranet", ".lan", ".home", ".corp", ".test", ".invalid", ".example", ".onion"];
@@ -74,6 +79,17 @@ export function assertRemoteUrl(input: string | URL, what = "endpoint"): URL {
   return typeof input === "string" ? new URL(input) : input;
 }
 
+/**
+ * Refuse an endpoint whose name resolves to a private or local address, before it is stored or
+ * contacted. A lookup that fails is not a refusal here: the endpoint is kept, nothing is sent to it
+ * while its name cannot be resolved (`guardedFetch` checks again before every request), and the
+ * connection reports that the service could not be reached.
+ */
+export async function assertResolvesPublic(url: URL, what = "endpoint", resolver?: HostResolver): Promise<void> {
+  const where = await checkResolvedHost(url.hostname, resolver);
+  if (!where.ok && where.reason === "resolves_private") throw new ApiException("invalid_command", RESOLVED_MESSAGES.resolves_private, { what, reason: where.reason });
+}
+
 /** A URL safe to store, show and log: no userinfo and no secret-looking query parameters. */
 export function redactUrl(input: string): string {
   try {
@@ -96,15 +112,47 @@ export function redactText(text: string): string {
     .replace(/\b(ya29\.|1\/\/|sk-|tvly-)[A-Za-z0-9._-]{8,}/g, "REDACTED");
 }
 
+export type ResolvedCheck = { ok: true } | { ok: false; reason: "resolves_private" | "unresolved" };
+
 /**
- * `fetch` for provider discovery and token endpoints: every request URL is validated and redirects
- * are not followed, so a provider cannot bounce the Worker to an internal address.
+ * Where a host name actually points. Fails closed: a name with no address, a lookup that fails and a
+ * name with even one private, loopback, link-local or otherwise non-public address are all refused.
  */
-export function guardedFetch(inner: typeof fetch = fetch): typeof fetch {
+export async function checkResolvedHost(hostname: string, resolver: HostResolver = createDohResolver()): Promise<ResolvedCheck> {
+  let addresses: string[];
+  try {
+    addresses = await resolver(hostname.toLowerCase().replace(/\.$/, ""));
+  } catch {
+    return { ok: false, reason: "unresolved" };
+  }
+  if (addresses.length === 0) return { ok: false, reason: "unresolved" };
+  return addresses.some(isPrivateAddress) ? { ok: false, reason: "resolves_private" } : { ok: true };
+}
+
+const RESOLVED_MESSAGES = {
+  resolves_private: "the endpoint's host name resolves to a private or local address",
+  unresolved: "the endpoint's host name could not be resolved",
+} as const;
+
+/**
+ * `fetch` for every request to an owner's connected service (tool listing and calls, OAuth discovery,
+ * registration, token and revocation endpoints): the request URL is validated, its host is resolved
+ * before each request and refused unless every address is public, and redirects are not followed, so
+ * neither a provider nor a DNS answer can bounce the Worker, or a connection's key, to an internal
+ * address.
+ */
+export function guardedFetch(inner: typeof fetch = fetch, resolver?: HostResolver): typeof fetch {
+  const resolve = resolver ?? createDohResolver({ fetchImpl: inner });
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     const check = checkRemoteUrl(url, { allowQuery: true });
     if (!check.ok) throw new ApiException("invalid_command", MESSAGES[check.reason!] ?? "that address is not allowed", { reason: check.reason });
+    const host = new URL(url).hostname.toLowerCase().replace(/\.$/, "");
+    const where = await checkResolvedHost(host, resolve);
+    if (!where.ok) {
+      if (where.reason === "resolves_private") throw new ApiException("invalid_command", RESOLVED_MESSAGES.resolves_private, { reason: where.reason });
+      throw new Error(RESOLVED_MESSAGES.unresolved);
+    }
     // The Workers runtime accepts only "follow" and "manual"; a redirect is refused here instead of followed.
     const response = await inner(input as RequestInfo, { ...init, redirect: "manual" });
     if (response.status >= 300 && response.status < 400) throw new Error("the service answered with a redirect, which is not followed");

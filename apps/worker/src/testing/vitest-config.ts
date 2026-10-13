@@ -253,8 +253,48 @@ function calendarEventFixture(request: Request, calendarId: string, eventId: str
   return jsonResponse({ error: { code: 405 } }, 405);
 }
 
+/**
+ * `https://cloudflare-dns.com/dns-query` is a LABELLED STAND-IN for the DNS-over-HTTPS resolver the
+ * product asks before an outbound request (it is not a resolver and proves nothing about real DNS). It
+ * answers by name: the fixture services above and Exa's fixed endpoint have one public address; a name
+ * under `private-dns.example.org` has the private address 10.0.0.5; a name under `mixed-dns.example.org`
+ * has a public and a private address; every other name gets the 503 that all unscripted outbound
+ * requests get (a resolver outage), so the image search's behaviour in tests is unchanged. A request that
+ * reaches a host under those two test names is answered like a tool service and logged (read it with
+ * `/__calls?origin=<that origin>`), so a test can prove that no request was made.
+ */
+export const DNS_FIXTURE_URL = "https://cloudflare-dns.com/dns-query";
+const DNS_FIXTURE_PUBLIC = new Set(["mcp.tavily.com", "mcp.exa.ai", "oauth-tools.example.org"]);
+const resolvesPrivately = (host: string): boolean => host.endsWith(".private-dns.example.org") || host.endsWith(".mixed-dns.example.org");
+
+function dnsFixture(url: URL): Response | null {
+  const name = (url.searchParams.get("name") ?? "").toLowerCase();
+  const a = url.searchParams.get("type") === "A";
+  const answer = (addresses: string[]) => new Response(JSON.stringify({ Status: 0, Answer: a ? addresses.map((data) => ({ name, type: 1, data })) : [] }), { headers: { "Content-Type": "application/dns-json" } });
+  if (DNS_FIXTURE_PUBLIC.has(name)) return answer(["93.184.216.34"]);
+  if (name.endsWith(".private-dns.example.org")) return answer(["10.0.0.5"]);
+  if (name.endsWith(".mixed-dns.example.org")) return answer(["93.184.216.34", "192.168.0.10"]);
+  return null;
+}
+
 export async function fixtureOutbound(request: Request): Promise<Response> {
   const url = new URL(request.url);
+  if (url.origin + url.pathname === DNS_FIXTURE_URL) {
+    const answered = dnsFixture(url);
+    if (answered) return answered;
+  }
+  if (resolvesPrivately(url.hostname)) {
+    // Reaching this host at all is the defect a test looks for: log it, and answer as a tool service would.
+    const text = request.method === "GET" ? "" : await request.text();
+    let id: unknown = null;
+    try {
+      id = (JSON.parse(text) as { id?: unknown }).id ?? null;
+    } catch {
+      // not JSON-RPC: logged all the same
+    }
+    calls.push({ method: "REACHED", url: url.toString(), body: JSON.stringify({ httpMethod: request.method, carriedAuthorization: request.headers.has("Authorization") }) });
+    return jsonResponse({ jsonrpc: "2.0", id, result: { tools: MCP_FIXTURE_TOOLS } });
+  }
   if (url.origin === APNS_FIXTURE_ORIGIN && url.pathname.startsWith("/3/device/")) return apnsFixture(request, url);
   if (url.origin === OAUTH_MCP_FIXTURE_ORIGIN) return oauthMcpFixture(request, url);
   if (url.origin + url.pathname === MCP_FIXTURE_URL && request.method === "POST") return mcpFixture(request);
@@ -267,7 +307,7 @@ export async function fixtureOutbound(request: Request): Promise<Response> {
     const origin = url.searchParams.get("origin");
     const kind = url.searchParams.get("kind");
     const contains = url.searchParams.get("contains");
-    const special = new Set(["APNS", "MCP", "OAUTH"]);
+    const special = new Set(["APNS", "MCP", "OAUTH", "REACHED"]);
     const wanted = (c: { method: string; url: string; body: string; kind?: string }) =>
       kind ? c.kind === kind && (!contains || c.url.includes(contains) || c.body.includes(contains)) : c.kind ? false : origin ? new URL(c.url).origin === origin : method ? c.method === method : !special.has(c.method) && new URL(c.url).origin === GOOGLE_FIXTURE_ORIGIN;
     const taken = calls.filter(wanted);

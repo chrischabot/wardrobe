@@ -28,7 +28,7 @@ export function appFor(env: Env): App {
   if (cached) return cached;
   const config = configOf(env);
   bindEnv(env);
-  const registry = composedRegistry();
+  const registry = composedRegistry(env);
   const now = () => Date.now();
   const service = new CommandService({ db: env.DB, registry, clock: now });
   const lanes = mountLanes({ env, db: env.DB, registry, service, now });

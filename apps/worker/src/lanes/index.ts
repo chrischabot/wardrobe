@@ -3,6 +3,7 @@ import { registerDaily, validateOutfit } from "@garderobe/daily";
 import { CommandError, createFoundationRegistry, first, stmt, type CommandRegistry, type CommandService, type Db, type Principal } from "@garderobe/domain";
 import { depsFromBindings, registerMedia, type MediaDeps } from "@garderobe/media";
 import type { Env } from "../env.ts";
+import { checkRemoteUrl } from "../connections/endpoints.ts";
 import { connectionAuthorization } from "../connections/service.ts";
 import { listConnectionTools, outboundPorts, type OutboundDeps } from "../connections/outbound.ts";
 import type { AssistantPort, DailyPort, MediaPort } from "../ports.ts";
@@ -148,25 +149,53 @@ function guardRelayedText(r: CommandRegistry): void {
   }
 }
 
-let registry: CommandRegistry | null = null;
+/**
+ * The address the Calendar event links to (`extensions.daily.calendar.boardBaseUrl` in the settings) is
+ * written into the owner's calendar, where a calendar client makes it a link. It is therefore held to
+ * the rules of any address this backend hands out: https, a named public host, no credentials, no
+ * unusual port. Anything else (`javascript:`, `http:`, a file, an address literal, plain text) is
+ * refused when the setting is saved, on every surface, and nothing is written. `null` or an empty
+ * value clears it, and the deployment's own address is used.
+ */
+function guardBoardAddress(r: CommandRegistry): void {
+  if (!r.has("settings.update")) return;
+  const update = r.get("settings.update");
+  const plan = update.plan;
+  update.plan = async (ctx, payload) => {
+    const calendar = (payload as { patch?: { extensions?: { daily?: { calendar?: unknown } } } }).patch?.extensions?.daily?.calendar;
+    const address = calendar !== null && typeof calendar === "object" ? (calendar as { boardBaseUrl?: unknown }).boardBaseUrl : undefined;
+    if (address !== undefined && address !== null && address !== "") {
+      const check = typeof address === "string" ? checkRemoteUrl(address) : { ok: false, reason: "not_a_url" };
+      const plain = check.ok && typeof address === "string" && new URL(address).search === "" && new URL(address).hash === "";
+      if (!plain) throw new CommandError("invalid_command", "the address the Calendar event links to must be a plain https address of a public site", { field: "extensions.daily.calendar.boardBaseUrl", reason: check.ok ? "query_or_fragment" : (check.reason ?? "not_allowed") });
+    }
+    return plan.call(update, ctx, payload);
+  };
+}
+
+const registries = new WeakMap<object, CommandRegistry>();
 
 /**
  * The ONE command registry: foundation, then the daily service (boards, pause, trips and the
  * in-commit board repair hook), the assistant (purchases, returns, lifecycle, feedback, memory,
  * connections registry) and the visual wardrobe (uploads, assets, Studio).
  */
-export function composedRegistry(): CommandRegistry {
+export function composedRegistry(env?: Env): CommandRegistry {
+  // One registry per set of bindings: its media commands resolve that set's bucket, signing key and
+  // database, never another environment's mounted later in the same isolate. Callers that cannot name their
+  // bindings (the assistant package's default configuration) get the registry of the bindings bound last.
+  const target = env ?? bound;
+  if (!target) throw new CommandError("internal", "the Worker bindings are not available yet");
+  let registry = registries.get(target);
   if (!registry) {
     const r = createFoundationRegistry();
     registerDaily(r);
     // The routine actions the owner allowed from a typed command are known to the assistant's ledger guard too.
     registerAssistant(r, { typedDirect: TYPED_DIRECT_BY_OWNER_DECISION });
-    registerMedia(r, () => {
-      if (!bound) throw new CommandError("internal", "the Worker bindings are not available yet");
-      return mediaDepsFor(bound);
-    });
+    registerMedia(r, () => mediaDepsFor(target));
     guardRestrictionLifts(r);
     guardRelayedText(r);
+    guardBoardAddress(r);
     // Forgetting a message also removes the requests kept from its turn: they hold the same text. Done in
     // the forgetting command's own transaction. (The owner's recorded decision holds no text and stays.)
     r.addCommitHook("api.forget_submitted_proposals", async (ctx) => {
@@ -176,6 +205,7 @@ export function composedRegistry(): CommandRegistry {
       return { statements: [stmt("DELETE FROM submitted_proposals WHERE user_id = ? AND turn_id IN (SELECT turn_id FROM assistant_turns WHERE user_id = ? AND user_message_id IN (SELECT value FROM json_each(?)))", ctx.userId, ctx.userId, JSON.stringify(p.sourceIds))] };
     });
     registry = r;
+    registries.set(target, r);
   }
   return registry;
 }
@@ -213,7 +243,7 @@ export function assistantPortsFor(env: Env, userId: string) {
 }
 
 configureAssistant({
-  registry: composedRegistry,
+  registry: () => composedRegistry(),
   ports: (env, userId) => assistantPortsFor(env as unknown as Env, userId),
 });
 

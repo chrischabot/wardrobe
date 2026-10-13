@@ -6,9 +6,10 @@
 import "./clock.ts"; // first: installs the shifted clock when a whole-suite run asks for one
 import { testClockOffsetMs } from "./clock.ts";
 import { TestAssistant } from "@garderobe/assistant/testing";
+import { CommandService } from "@garderobe/domain";
 import type { Env } from "../env.ts";
 import worker from "../index.ts";
-import { bindEnv } from "../lanes/index.ts";
+import { bindEnv, composedRegistry } from "../lanes/index.ts";
 
 /**
  * Durable Object alarms are kept by the runtime on the real clock. Under a shifted test clock (clock.ts)
@@ -29,10 +30,18 @@ function alignAlarms(ctx: DurableObjectState): void {
 }
 
 export class GarderobeAssistant extends TestAssistant {
+  private ownCommands: CommandService | null = null;
+  private readonly bindings: Env;
   constructor(ctx: DurableObjectState, env: Env) {
     alignAlarms(ctx);
     super(ctx, env);
+    this.bindings = env;
     bindEnv(env);
+  }
+  /** As in the real entry: the registry composed for this actor's own bindings. */
+  protected override commands(): CommandService {
+    this.ownCommands ??= new CommandService({ db: this.db, registry: composedRegistry(this.bindings), clock: () => this.now() });
+    return this.ownCommands;
   }
 }
 
