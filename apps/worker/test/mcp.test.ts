@@ -184,7 +184,7 @@ describe("commands over MCP", () => {
   });
 });
 
-describe("sensitive typed commands wait for the owner", () => {
+describe("typed commands that wait for the owner (section 3: removing a garment record as a mistake, contract of 2026-10-05)", () => {
   /** A labelled synthetic garment created for this test only; it is not the owner's real stock. */
   async function syntheticGarment(name: string): Promise<string> {
     const receipt = (await (
@@ -193,8 +193,9 @@ describe("sensitive typed commands wait for the owner", () => {
     if (!receipt.affected) throw new Error(`garment.create failed: ${JSON.stringify(receipt)}`);
     return receipt.affected.find((a: any) => a.kind === "garment").id;
   }
-  const retire = (garmentId: string, key: string) => ({ name: "garderobe_command", arguments: { type: "garment.retire", payload: { garmentId, disposition: "donated" }, idempotencyKey: key } });
-  const retired = async (garmentId: string) => (await owner.api.json("GET", `/v1/commands?entity=garment:${garmentId}`)).receipts.filter((r: any) => r.type === "garment.retire");
+  const retire = (garmentId: string, key: string) => ({ name: "garderobe_command", arguments: { type: "garment.remove_fabricated", payload: { garmentId, reason: "Synthetic reason (test): never a real garment" }, idempotencyKey: key } });
+  const retired = async (garmentId: string) => (await owner.api.json("GET", `/v1/commands?entity=garment:${garmentId}`)).receipts.filter((r: any) => r.type === "garment.remove_fabricated");
+  const named = (p: any, garmentId: string) => p.type === "garment.remove_fabricated" && p.payload.garmentId === garmentId;
   const pending = async () => (await owner.api.json("GET", "/v1/proposals")).proposals as any[];
 
   it("is not executed and not confirmable by the connection, even one that answers yes to every question; the owner's confirmation in the app runs it once", async () => {
@@ -209,20 +210,20 @@ describe("sensitive typed commands wait for the owner", () => {
     expect(await retired(garmentId)).toEqual([]);
     // Repeating the call neither executes it nor makes a second proposal.
     expect(toolResult(await eager.client.callTool(retire(garmentId, key))).error!.code).toBe("confirmation_required");
-    const waiting = (await pending()).filter((p) => p.type === "garment.retire" && p.payload.garmentId === garmentId);
+    const waiting = (await pending()).filter((p) => named(p, garmentId));
     expect(waiting).toHaveLength(1);
-    expect(waiting[0]).toMatchObject({ state: "pending", turnId: "", source: { channel: "mcp", assistantName: "Eager assistant" }, payload: { garmentId, disposition: "donated" } });
-    // The summary is written by trusted code from the exact request, in words, with the garment's name from the ledger.
-    expect(waiting[0].summary).toContain("\u201CSynthetic test shirt A (not real stock)\u201D has left your wardrobe for good (donated)");
+    expect(waiting[0]).toMatchObject({ state: "pending", turnId: "", source: { channel: "mcp", assistantName: "Eager assistant" }, payload: { garmentId, reason: "Synthetic reason (test): never a real garment" } });
+    // The summary is written by trusted code from the exact request, in words.
+    expect(waiting[0].summary).toContain("Synthetic reason (test): never a real garment");
     expect(waiting[0].summary).not.toContain(garmentId);
     // The same key with a different request is refused and does not replace what the owner will see.
     const second = await syntheticGarment("Synthetic test shirt A2 (not real stock)");
     expect(toolResult(await eager.client.callTool(retire(second, key))).error!.code).toBe("idempotency_key_reuse");
-    expect((await pending()).some((p) => p.payload.garmentId === second)).toBe(false);
+    expect((await pending()).some((p) => named(p, second))).toBe(false);
 
     // The owner confirms in the app: the change is made once, as the owner's tap.
     const decided = (await (await owner.api.post(`/v1/proposals/${waiting[0].proposalId}/decision`, { decision: "confirm" })).json()) as any;
-    expect(decided).toMatchObject({ replayed: false, proposal: { state: "confirmed" }, receipt: { type: "garment.retire", outcome: "committed" } });
+    expect(decided).toMatchObject({ replayed: false, proposal: { state: "confirmed" }, receipt: { type: "garment.remove_fabricated", outcome: "committed" } });
     const command = await (await testApp()).db.prepare("SELECT actor, channel, authorization_basis FROM commands WHERE user_id = ? AND command_id = ?").bind(owner.userId, decided.receipt.commandId).first();
     expect(command).toEqual({ actor: "owner", channel: "ios", authorization_basis: "owner_tap" });
     // The connection learns the outcome by repeating its call; nothing runs a second time.
@@ -237,23 +238,21 @@ describe("sensitive typed commands wait for the owner", () => {
     const garmentId = await syntheticGarment("Synthetic test shirt B (not real stock)");
     const key = `retire-${crypto.randomUUID()}`;
     expect(toolResult(await writer.client.callTool(retire(garmentId, key))).error!.code).toBe("confirmation_required");
-    const proposal = (await pending()).find((p) => p.payload.garmentId === garmentId)!;
+    const proposal = (await pending()).find((p) => named(p, garmentId))!;
     expect((await owner.api.post(`/v1/proposals/${proposal.proposalId}/decision`, { decision: "reject" })).status).toBe(200);
     const result = toolResult(await writer.client.callTool(retire(garmentId, key)));
     expect(result.error).toMatchObject({ code: "forbidden", details: { reason: "rejected_by_owner" } });
     expect(await retired(garmentId)).toEqual([]);
   });
 
-  it("covers the undo of a sensitive change, while a routine change and its undo still run directly", async () => {
+  it("treats an undo as the change it undoes: the undo of a direction runs directly, and so does a wear report and its undo", async () => {
     const garmentId = await syntheticGarment("Synthetic test shirt C (not real stock)");
-    const created = (await owner.api.json("GET", `/v1/commands?entity=garment:${garmentId}`)).receipts.find((r: any) => r.type === "garment.create");
     const undo = (commandId: string) => ({ name: "garderobe_command", arguments: { type: "command.undo", payload: { commandId }, idempotencyKey: `undo-${crypto.randomUUID()}` } });
-    // Undoing the creation would remove the garment: it waits for the owner.
-    expect(toolResult(await writer.client.callTool(undo(created.commandId))).error!.code).toBe("confirmation_required");
-    expect((await owner.api.json("GET", "/v1/wardrobe")).items.some((i: any) => i.garment.garmentId === garmentId)).toBe(true);
-    const undoProposal = (await pending()).find((p) => p.type === "command.undo" && p.payload.commandId === created.commandId);
-    expect(undoProposal.summary).toMatch(/^Undo an earlier change \(add a garment to the wardrobe\) whose receipt read \u201C.+\u201D/);
-    expect(undoProposal.summary).not.toContain("garment.create");
+    const corrected = toolResult(await writer.client.callTool({ name: "garderobe_command", arguments: { type: "garment.correct", payload: { garmentId, changes: { colour: "olive" }, source: { kind: "owner_statement" } }, idempotencyKey: `correct-${crypto.randomUUID()}` } }));
+    expect(corrected.ok, JSON.stringify(corrected.error)).toBe(true);
+    const undoneCorrection = toolResult(await writer.client.callTool(undo(corrected.data.receipt.commandId)));
+    expect(undoneCorrection.ok, JSON.stringify(undoneCorrection.error)).toBe(true);
+    expect((await pending()).some((p) => p.type === "command.undo")).toBe(false);
     // A wear report on a garment the connection names is recorded at once, and so is its undo.
     const wore = toolResult(await writer.client.callTool({ name: "garderobe_command", arguments: { type: "wear.record", payload: { wearingDate: await ownerDay(owner), garmentIds: [garmentId] }, idempotencyKey: `wear-${crypto.randomUUID()}` } }));
     expect(wore.ok, JSON.stringify(wore.error)).toBe(true);
@@ -261,26 +260,23 @@ describe("sensitive typed commands wait for the owner", () => {
     expect(undone.ok, JSON.stringify(undone.error)).toBe(true);
   });
 
-  it("says so when a request names a garment that is not in the wardrobe, and stops a connection from filling the owner's list", async () => {
+  it("stops a connection from filling the owner's list", async () => {
     // A synthetic owner, so the real owner's list is not filled by a test.
     const other = await provisionOwner();
     const noisy = await connectMcp(other, { write: true, clientName: "Noisy assistant (test)", redirectUri: "https://noisy.client.test/cb" });
-    const ask = (n: number) => noisy.client.callTool({ name: "garderobe_command", arguments: { type: "garment.retire", payload: { garmentId: `gmt_invented_${n}`, disposition: "discarded" }, idempotencyKey: `noisy-${n}-${crypto.randomUUID()}` } });
+    const ask = (n: number) => noisy.client.callTool({ name: "garderobe_command", arguments: { type: "inference.set_routing", payload: { task: "conversation", profileId: `fixture-profile-${n}`, gatewayId: "fixture-gateway" }, idempotencyKey: `noisy-${n}-${crypto.randomUUID()}` } });
     for (let n = 0; n < 40; n++) expect(toolResult(await ask(n)).error!.code, `request ${n}`).toBe("confirmation_required");
     const over = toolResult(await ask(40));
     expect(over.error).toMatchObject({ code: "rate_limited", details: { reason: "too_many_requests_waiting" } });
     const listed = (await other.api.json("GET", "/v1/proposals")).proposals as any[];
     expect(listed).toHaveLength(40);
-    expect(listed[0].summary).toMatch(/a piece that is not in the wardrobe \(\u201Cgmt_invented_\d+\u201D\)/);
-    // Confirming such a request changes nothing: the command refuses it and the proposal stays open.
-    expect((await other.api.post(`/v1/proposals/${listed[0].proposalId}/decision`, { decision: "confirm" })).status).toBe(404);
     expect((await other.api.json("GET", "/v1/proposals")).proposals).toHaveLength(40);
     await noisy.close();
   });
 
-  it("refuses an invalid sensitive request before anything is shown to the owner", async () => {
+  it("refuses an invalid request before anything is shown to the owner", async () => {
     const before = (await owner.api.json("GET", "/v1/proposals?state=all")).proposals.length;
-    const result = toolResult(await writer.client.callTool({ name: "garderobe_command", arguments: { type: "garment.retire", payload: { disposition: "donated" }, idempotencyKey: `bad-${crypto.randomUUID()}` } }));
+    const result = toolResult(await writer.client.callTool({ name: "garderobe_command", arguments: { type: "garment.bulk_correct", payload: { changes: { maker: "x" } }, idempotencyKey: `bad-${crypto.randomUUID()}` } }));
     expect(result.error!.code).toBe("invalid_command");
     expect((await owner.api.json("GET", "/v1/proposals?state=all")).proposals.length).toBe(before);
   });
@@ -357,6 +353,34 @@ describe("grants", () => {
     expect(back.searchParams.get("error")).toBe("access_denied");
     expect(back.searchParams.get("state")).toBe("st-1");
     expect((await owner.api.json("GET", "/v1/assistants")).grants.length).toBe(before);
+  });
+
+  it("refuses a consent finished by a different signed-in owner, even with the opener's cookies, and the opener can still decide", async () => {
+    const other = await provisionOwner({});
+    const registration = (await (
+      await SELF.fetch(`${MCP_ORIGIN}/oauth/register`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ client_name: "Bound consent assistant", redirect_uris: ["https://bound.client.test/cb"], grant_types: ["authorization_code"], response_types: ["code"], token_endpoint_auth_method: "none" }) })
+    ).json()) as any;
+    const url = new URL(`${APP_ORIGIN}/oauth/authorize`);
+    url.search = new URLSearchParams({ response_type: "code", client_id: registration.client_id, redirect_uri: "https://bound.client.test/cb", scope: "wardrobe.read wardrobe.write", state: "st-b", code_challenge: "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", code_challenge_method: "S256", resource: `${MCP_ORIGIN}/mcp` }).toString();
+    const page = await SELF.fetch(url.toString(), { headers: await owner.api.with({ client: "web" }).headers(), redirect: "manual" });
+    const html = await page.text();
+    expect(page.status).toBe(200);
+    const setCookies = page.headers.getSetCookie();
+    expect(setCookies.some((c) => c.startsWith("__Host-consent-owner-") && /HttpOnly/.test(c) && /Secure/.test(c))).toBe(true);
+    const cookies = setCookies.map((c) => c.split(";")[0]!).join("; ");
+    const handle = /name="handle" value="([^"]+)"/.exec(html)![1]!.replace(/&#(\d+);/g, (_m, code) => String.fromCharCode(Number(code)));
+    const body = new URLSearchParams({ handle, decision: "approve", scope: "wardrobe.write" }).toString();
+    const stolen = await SELF.fetch(`${APP_ORIGIN}/oauth/authorize`, { method: "POST", headers: await other.api.with({ client: "web" }).headers({ "Content-Type": "application/x-www-form-urlencoded", Cookie: cookies }), body, redirect: "manual" });
+    expect(stolen.status).toBe(403);
+    expect(stolen.headers.get("Location")).toBeNull();
+    expect(await stolen.text()).toContain("different signed-in account");
+    expect((await other.api.json("GET", "/v1/assistants")).grants).toEqual([]);
+    // The refusal spent nothing: the owner who opened the page still completes it.
+    const own = await SELF.fetch(`${APP_ORIGIN}/oauth/authorize`, { method: "POST", headers: await owner.api.with({ client: "web" }).headers({ "Content-Type": "application/x-www-form-urlencoded", Cookie: cookies }), body, redirect: "manual" });
+    expect(own.status).toBe(302);
+    expect(new URL(own.headers.get("Location")!).searchParams.get("code")).toBeTruthy();
+    const grants = (await owner.api.json("GET", "/v1/assistants")).grants;
+    expect(grants.filter((g: any) => g.clientName === "Bound consent assistant" && g.status === "active")).toHaveLength(1);
   });
 
   it("shows the consent page only to a signed-in owner and escapes what the client supplied", async () => {

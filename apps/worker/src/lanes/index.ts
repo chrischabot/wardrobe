@@ -8,8 +8,7 @@ import { connectionAuthorization } from "../connections/service.ts";
 import { listConnectionTools, outboundPorts, type OutboundDeps } from "../connections/outbound.ts";
 import type { AssistantPort, DailyPort, MediaPort } from "../ports.ts";
 import { recordSubmittedProposal } from "../proposals/store.ts";
-import { TYPED_DIRECT_BY_OWNER_DECISION } from "../mcp/policy.ts";
-import { wearsRestrictedGarment } from "../restrictions.ts";
+import { BOUND_MESSAGE, CONNECTED_BULK_LIMIT, connectedDisposition, connectedDispositionOfType } from "../mcp/policy.ts";
 import { createAssistantPort } from "./assistant.ts";
 import { createDailyPort } from "./daily.ts";
 import { createMediaPort } from "./media.ts";
@@ -100,25 +99,20 @@ function guardRestrictionLifts(r: CommandRegistry): void {
 }
 
 /*
- * A change asked for by a connected assistant is carried out only after the signed-in owner confirms it
- * in the app (owner decision of 2026-10-01); wear and wash reports and the records of a piece of
- * research are the exceptions. A connected assistant can ask for a change as a typed `garderobe_command`
- * (see mcp/policy.ts) or through `garderobe_ask`; either way the request waits as a proposal and the
- * assistant cannot confirm it.
+ * The owner's contract of 2026-10-05, "Changes apply at once with undo on every surface": a change a
+ * connected assistant asks for, as a typed `garderobe_command` (mcp/policy.ts) or through `garderobe_ask`,
+ * is applied at once with a receipt and an undo, except the contract's section 3 list, which waits for the
+ * signed-in owner. A connected assistant can never lift a restriction or undo the record of one.
  */
 
 /**
- * What Garderobe's own assistant may still commit when the text it acts on was relayed by a connected
- * assistant (`garderobe_ask`, `garderobe_research`). In the app the assistant acts on the owner's own
- * typed or spoken words; on the MCP channel the "owner's words" are whatever the connected model sent,
- * which cannot be verified as the owner's and may come from a page or a document that model read. So
- * the list is short and explicit: the records of a piece of research, and plain wear and wash reports.
- * Everything else that is not internal bookkeeping (corrections, restrictions, aliases, orders, returns,
- * reminders, briefs, settings, memory, undo, and every sensitive change above) is kept as a proposal for
- * the owner and refused. A wear report naming a garment that an active restriction excludes is treated
- * the same way: it would contradict the restriction on words nobody verified.
+ * What Garderobe's own assistant may commit when the text it acts on was relayed by a connected assistant
+ * (`garderobe_ask`, `garderobe_research`): the same as the typed path, decided by the same function
+ * (`connectedDispositionOfType`), so the two surfaces cannot differ. Section 3 and jobs that read the owner's
+ * mailbox or files are kept as a proposal for the owner and refused with `relayed_text_not_owner_statement`;
+ * a change to an unbounded set is refused with `change_exceeds_bound`. Everything else goes on to the
+ * assistant's own ledger hook, which applies its per-turn cap.
  */
-export const RELAYED_TEXT_ALLOWED: readonly string[] = ["job.create", "job.update", "research.save_note", "product.record", "product.record_observation", "product.record_fit_assessment", "wear.record", "care.washed", "care.mark_dirty"];
 
 type GuardContext = { db: Db; userId: string; nowMs: number; principal: Principal; envelope: { idempotencyKey: string; expectedVersions: Record<string, number>; occurredAt?: string; source: { channel?: string; parentKind?: string | null; parentId?: string | null } } };
 
@@ -126,17 +120,18 @@ const relayedTurn = (ctx: { principal: Principal; envelope: { source: { channel?
   ctx.principal.actor === "assistant" && (ctx.principal.channel === "mcp" || ctx.envelope.source.channel === "mcp") && ctx.envelope.source.parentKind === "turn";
 
 function guardRelayedText(r: CommandRegistry): void {
-  const allowed = new Set(RELAYED_TEXT_ALLOWED);
   for (const type of r.types()) {
     const definition = r.get(type);
     // Internal bookkeeping (inference accounting, erasure confirmation, job progress) is not a change the text asked for.
     if (definition.class === "system") continue;
-    if (allowed.has(type) && type !== "wear.record") continue;
     const plan = definition.plan;
     definition.plan = async (context, payload) => {
       const ctx = context as unknown as GuardContext;
       if (!relayedTurn(ctx)) return plan.call(definition, context, payload);
-      if (type === "wear.record" && !(await wearsRestrictedGarment(ctx.db, ctx.userId, payload))) return plan.call(definition, context, payload);
+      // Lifts are refused by guardRestrictionLifts with their own reason; undo is judged by the command it undoes.
+      const disposition = type === "command.undo" ? await connectedDisposition(r, ctx.db, ctx.userId, type, payload as Record<string, unknown>) : connectedDispositionOfType(r, type, payload as Record<string, unknown>);
+      if (disposition === "bounded") throw new CommandError("invalid_command", BOUND_MESSAGE, { reason: "change_exceeds_bound", limit: CONNECTED_BULK_LIMIT });
+      if (disposition !== "owner") return plan.call(definition, context, payload);
       // Kept for the owner, exactly as it would run; the owner sees it in the app and decides.
       const turnId = String(ctx.envelope.source.parentId ?? "");
       let kept = false;
@@ -190,8 +185,7 @@ export function composedRegistry(env?: Env): CommandRegistry {
   if (!registry) {
     const r = createFoundationRegistry();
     registerDaily(r);
-    // The routine actions the owner allowed from a typed command are known to the assistant's ledger guard too.
-    registerAssistant(r, { typedDirect: TYPED_DIRECT_BY_OWNER_DECISION });
+    registerAssistant(r);
     registerMedia(r, () => mediaDepsFor(target));
     guardRestrictionLifts(r);
     guardRelayedText(r);

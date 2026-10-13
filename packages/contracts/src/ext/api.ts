@@ -1185,36 +1185,26 @@ export const MCP_RESOURCES = [
 ] as const;
 
 /**
- * Sensitive command types: what the owner owns, the owner's profile, rules and measurements, forgetting,
- * deleting an image, and authorizations towards other parties.
- *
- * This list is a floor, not the rule. Since 2026-10-03 a connected assistant's typed command
- * (`garderobe_command`) follows an allow-list: only wear and wash reports, research records and the undo
- * of one of those run directly, and EVERY other owner-facing type, on this list or not (corrections,
- * aliases, locations, restrictions, outfit choices, trips, laundry batches, settings, pausing), is kept
- * as a proposal (see `Proposal`) that only the signed-in owner confirms in the app. The connection's own
- * answer to a confirmation question is not accepted, so none is asked. What a given deployment does per
- * type is published as `consequential` in `CommandTypeInfo`; a Worker test checks that every type named
- * here waits for the owner.
+ * The command types that wait for the signed-in owner's confirmation in the app: exactly section 3 of the
+ * owner's decision of 2026-10-05 ("changes apply at once with undo on every surface"). Irreversible erasure
+ * or rewrite (`conversation.forget_source`, `media.delete_asset`, `garment.merge`,
+ * `garment.remove_fabricated`), an authorization towards another party (`lifecycle.authorize_action`),
+ * what a model or an outside connection may reach (`connection.register`, `connection.set_tool_groups`,
+ * `connection.set_status`, `inference.set_routing`) and rewriting the profile document
+ * (`style.save_document`). Every other owner-facing type is applied at once with a receipt and undo, on
+ * every surface; a connected assistant's restriction lift and its undo of a recorded restriction are
+ * refused outright. The assistant workstream's `SECTION3_CONFIRM_TYPES` (packages/assistant) is the same
+ * list. What a deployment does per type is published as `consequential` in `CommandTypeInfo`.
  */
 export const CONSEQUENTIAL_COMMAND_TYPES = [
-  "garment.create",
-  "garment.receive",
-  "garment.retire",
-  "garment.merge",
-  "garment.remove_fabricated",
-  "garment.bulk_correct",
-  "stock.reconcile",
-  "style.add_amendment",
-  "style.set_amendment_status",
-  "style.save_document",
-  "style.import_document",
-  "style.upsert_rule",
-  "style.add_direction",
-  "style.retire_direction",
-  "style.resolve_fact_conflict",
-  "measurement.record",
   "conversation.forget_source",
   "media.delete_asset",
+  "garment.merge",
+  "garment.remove_fabricated",
   "lifecycle.authorize_action",
+  "connection.register",
+  "connection.set_tool_groups",
+  "connection.set_status",
+  "inference.set_routing",
+  "style.save_document",
 ] as const;

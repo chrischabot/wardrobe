@@ -127,26 +127,25 @@ describe("adversarial corpus through the real routes", () => {
 });
 
 describe("a genuine statement, the proposal, and the owner's decision", () => {
-  it("each genuine healing statement yields only a pending proposal with the system's exact summary; rejected, the restriction stays", async () => {
+  it("each genuine healing statement in the owner's own app conversation lifts the restriction at once with a receipt and a working undo (contract of 2026-10-05); undone, the restriction is back", async () => {
     const app = await testApp();
     const active = async () => (await listRestrictions(app.db, owner.systemPrincipal, { status: "active" })).some((r) => r.restrictionId === HEALING_RESTRICTION_ID);
     for (const sentence of GENUINE_HEALING_SENTENCES) {
       const run = await say(owner, sentence, [{ toolName: "resolve_restriction", input: { restrictionId: HEALING_RESTRICTION_ID } }]);
-      expect(run.receipts, sentence).toEqual([]);
-      expect(run.proposals.map((p) => p.type), sentence).toEqual(["assistant.lift_restriction"]);
+      expect(run.proposals, sentence).toEqual([]);
+      const receipts = run.receipts as unknown as { type: string; outcome: string; commandId: string; summary: string; undoAvailable?: boolean }[];
+      expect(receipts.map((r) => [r.type, r.outcome]), sentence).toEqual([["assistant.lift_restriction", "committed"]]);
+      const lift = receipts[0]!;
+      expect(lift.undoAvailable, sentence).toBe(true);
+      expect(lift.summary, sentence).toMatch(/^Restriction resolved \(healing\)/);
+      expect(await active(), sentence).toBe(false);
+      // The real owner's restriction is restored by the owner's own undo in the app before the next sentence.
+      const undone = await owner.api.command("command.undo", { commandId: lift.commandId });
+      expect(undone.status, await undone.clone().text()).toBe(200);
       expect(await active(), sentence).toBe(true);
     }
-    const list = await pending(owner);
-    expect(list).toHaveLength(GENUINE_HEALING_SENTENCES.length);
-    for (const p of list) {
-      expect(p).toMatchObject({ type: "assistant.lift_restriction", state: "pending", source: { channel: "ios" }, payload: { restrictionId: HEALING_RESTRICTION_ID } });
-      expect(p.summary).toMatch(/^LIFT the restriction \(healing\) whose reason is \u201C/);
-    }
-    await rejectAll(owner);
-    expect(await active()).toBe(true); // the real owner's restriction is not lifted by this test
-    // A rejected proposal is not confirmed later.
-    expect((await decide(owner, list[0]!.proposalId, "confirm")).status).toBe(409);
-    expect(await active()).toBe(true);
+    expect(await pending(owner)).toEqual([]);
+    expect(await active()).toBe(true); // the real owner's restriction is in force after this test
   });
 
   it("confirmed by the owner in the app, the exact proposal takes effect once; modified, expired or already decided, it is refused; a connected assistant can neither list nor confirm it", async () => {
@@ -218,18 +217,13 @@ describe("a genuine statement, the proposal, and the owner's decision", () => {
     await rejectAll(owner);
   });
 
-  it("a request to retire, move or receive a piece is refused as stale when the piece changed before the owner confirmed, and nothing is written", async () => {
+  it("a request to retire a piece is refused as stale when the piece changed before the owner confirmed, and nothing is written", async () => {
     const app = await testApp();
-    // SYNTHETIC incoming piece for the arrival case (the real inventory has nothing on order), added as the owner in the app.
-    const created = await owner.api.command("garment.create", { name: "Grey lambswool scarf (synthetic test piece)", category: "accessory", roles: ["accessory"], careChannel: "none", acquisition: "incoming", quantity: 1, source: { kind: "owner_statement" } });
-    expect(created.status).toBe(200);
-    const scarf = await ctx.garment("Grey lambswool scarf (synthetic test piece)");
     const plaid = await ctx.garment("California plaid");
-    const boots = await ctx.garment("Paraboot Michael");
+    // A move or an arrival the owner states in the app now applies at once (contract of 2026-10-05; the
+    // assistant's policy/intent.ts), so only the retirement case still waits here.
     const cases: { type: string; garmentId: string; text: string; call: FakeToolCall }[] = [
       { type: "garment.retire", garmentId: plaid.garmentId, text: "I gave the California plaid away.", call: { toolName: "retire_garment", input: { garmentId: plaid.garmentId, disposition: "donated" } } },
-      { type: "garment.move", garmentId: boots.garmentId, text: "The Paraboot Michael went into storage.", call: { toolName: "move_garment", input: { garmentId: boots.garmentId, to: "storage" } } },
-      { type: "assistant.report_arrival", garmentId: scarf.garmentId, text: "The grey lambswool scarf arrived.", call: { toolName: "report_arrival", input: { garmentId: scarf.garmentId } } },
     ];
     const stateOf = async (garmentId: string) => ({
       record: await app.db.prepare("SELECT acquisition, condition, version FROM garments WHERE user_id = ? AND garment_id = ?").bind(owner.userId, garmentId).first(),

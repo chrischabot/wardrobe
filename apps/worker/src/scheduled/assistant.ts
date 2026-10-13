@@ -68,11 +68,26 @@ const googleService = (registryId: string, profileId: string, service: string): 
 
 export const JOB_EFFECT_KIND = "assistant.run_job";
 
+type JobModelFactory = ConstructorParameters<typeof ModelService>[0]["createLanguageModel"];
+
+/**
+ * TEST SEAM: the language model background jobs use in the local test build. Set only by the test Worker
+ * entry (src/testing/worker-entry.ts) to the assistant workstream's labelled FAKE MODEL, exactly as the
+ * conversation actor's model is replaced there; never set in a deployment, where jobs use AI Gateway (or
+ * fail with the assistant's own error when the AI binding is missing).
+ */
+let testJobModels: { gatewayId: string; createLanguageModel: JobModelFactory } | null = null;
+export function setJobModelsForTests(models: { gatewayId: string; createLanguageModel: JobModelFactory } | null): void {
+  testJobModels = models;
+}
+
 function jobDeps(app: App, nowMs: number): AssistantJobDeps {
   const { env, db } = app;
   // Without the AI binding a model call fails inside the job with the assistant's own error and the job
   // settles as failed with that reason; it never runs against an unbudgeted or invented model.
-  const models = env.AI
+  const models = testJobModels && (env.ENVIRONMENT === "local" || env.ENVIRONMENT === "test")
+    ? new ModelService({ db, service: app.service, gatewayId: testJobModels.gatewayId, clock: app.now, createLanguageModel: testJobModels.createLanguageModel })
+    : env.AI
     ? createGatewayModelService({ DB: env.DB, AI: env.AI as never, ...(env.AI_GATEWAY_ID ? { AI_GATEWAY_ID: env.AI_GATEWAY_ID } : {}), ENVIRONMENT: env.ENVIRONMENT }, app.service, app.now)
     : new ModelService({
         db,

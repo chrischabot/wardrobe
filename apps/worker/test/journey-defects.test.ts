@@ -205,32 +205,41 @@ describe("D14-1, D07-1: the request the owner confirms is in words", () => {
     const created = (await (await owner.api.command("trip.create", { name: "Synthetic trip to Paris (test fixture)", departsOn: departs, returnsOn: returns, destinations: [{ label: "Paris", timezone: "Europe/Paris", from: departs, to: returns }], source: { kind: "owner_statement" } })).json()) as any;
     const tripId = String(created.result.tripId ?? created.affected.find((a: any) => a.kind === "trip")?.id);
     const settings = (await owner.api.json("GET", "/v1/settings")).settings;
+    // One labelled synthetic shirt, so the removal confirmed below has something to apply to.
+    const shirt = await owner.api.command("garment.create", { name: "Synthetic shirt (journey-defects fixture)", category: "shirt", roles: ["top"], careChannel: "service", acquisition: "owned", quantity: 1, isSynthetic: true, source: { kind: "system", note: "synthetic test garment" } });
+    expect(shirt.status, await shirt.clone().text()).toBe(200);
+    const shirtId = ((await shirt.json()) as any).affected.find((a: any) => a.kind === "garment").id as string;
     const mcp = await connectMcp(owner, { write: true, clientName: "Planning assistant (test)" });
     const ask = async (type: string, payload: Record<string, unknown>) => toolResult(await mcp.client.callTool({ name: "garderobe_command", arguments: { type, payload, idempotencyKey: `words-${crypto.randomUUID()}` } }));
-    expect((await ask("trip.update", { tripId, changes: { name: "Synthetic trip to Lyon (test fixture)" } })).error!.code).toBe("confirmation_required");
-    expect((await ask("settings.update", { patch: { delivery: { ...settings.delivery, morningLocalTime: "06:45" } } })).error!.code).toBe("confirmation_required");
-    expect((await ask("trip.cancel", { tripId })).error!.code).toBe("confirmation_required");
+    // Under the contract of 2026-10-05 trip and settings changes apply at once; the requests that still wait are
+    // section 3, so those are the ones whose words are checked here. A change to an unbounded set is refused.
+    expect((await ask("garment.remove_fabricated", { garmentId: shirtId, reason: "Synthetic reason (test fixture)" })).error!.code).toBe("confirmation_required");
+    expect((await ask("inference.set_routing", { task: "conversation", profileId: "fixture-profile", gatewayId: "fixture-gateway" })).error!.code).toBe("confirmation_required");
+    expect((await ask("care.washed", { allOfChannel: "service" })).error).toMatchObject({ code: "invalid_command", details: { reason: "change_exceeds_bound" } });
+    // A trip change from the connection applies at once with its receipt.
+    expect((await ask("trip.update", { tripId, changes: { name: "Synthetic trip to Lyon (test fixture)" } })).ok).toBe(true);
+    void settings;
 
     const shown = (await owner.api.json("GET", "/v1/proposals")).proposals as { type: string; summary: string }[];
-    expect(shown.map((p) => p.type).sort()).toEqual(["settings.update", "trip.cancel", "trip.update"]);
+    expect(shown.map((p) => p.type).sort()).toEqual(["garment.remove_fabricated", "inference.set_routing"]);
     for (const p of shown) {
       expect(p.summary, p.type).not.toContain(tripId);
+      expect(p.summary, p.type).not.toContain(shirtId);
       expect(p.summary, p.type).not.toMatch(/\b[a-z]{2,4}_[0-9a-f]{12,}\b/); // no record identifier
       expect(p.summary, p.type).not.toMatch(/\b(?:tripId|boardId|optionId|garmentId)\b/); // no field names as written in code
       expect(p.summary, p.type).not.toMatch(/[{}]|":/); // no raw payload
       expect(p.summary, p.type).not.toContain(p.type); // no command name
     }
     const summaryOf = (type: string) => shown.find((p) => p.type === type)!.summary;
-    expect(summaryOf("trip.update")).toMatch(/^Change a trip\. /);
-    expect(summaryOf("trip.update")).toContain(`the trip \u201CSynthetic trip to Paris (test fixture)\u201D (${departs} to ${returns})`);
-    expect(summaryOf("trip.update")).toContain("\u201CSynthetic trip to Lyon (test fixture)\u201D");
-    expect(summaryOf("trip.cancel")).toMatch(/^Cancel a trip\. /);
-    expect(summaryOf("settings.update")).toMatch(/^Change your settings\./);
-    expect(summaryOf("settings.update")).toContain("\u201C06:45\u201D");
+    expect(summaryOf("garment.remove_fabricated")).toContain("\u201CSynthetic reason (test fixture)\u201D");
+    expect(summaryOf("garment.remove_fabricated")).toContain("Synthetic shirt (journey-defects fixture)");
+    expect(summaryOf("inference.set_routing").length).toBeGreaterThan(0);
     // What is confirmed is still exactly what was asked: the payload is unchanged and runs as the owner's tap.
-    const update = ((await owner.api.json("GET", "/v1/proposals")).proposals as any[]).find((p) => p.type === "trip.update");
-    const decided = (await (await owner.api.post(`/v1/proposals/${update.proposalId}/decision`, { decision: "confirm" })).json()) as any;
-    expect(decided.receipt).toMatchObject({ type: "trip.update", outcome: "committed" });
+    const removal = ((await owner.api.json("GET", "/v1/proposals")).proposals as any[]).find((p) => p.type === "garment.remove_fabricated");
+    expect(removal.payload).toEqual({ garmentId: shirtId, reason: "Synthetic reason (test fixture)" });
+    const decided = (await (await owner.api.post(`/v1/proposals/${removal.proposalId}/decision`, { decision: "confirm" })).json()) as any;
+    expect(decided.receipt, JSON.stringify(decided)).toMatchObject({ type: "garment.remove_fabricated", outcome: "committed" });
+    expect((await owner.api.json("GET", `/v1/items/${shirtId}`)).detail.garment.acquisition).toBe("disposed");
     expect((await owner.api.json("GET", `/v1/trips/${tripId}`)).name).toBe("Synthetic trip to Lyon (test fixture)");
     await mcp.close();
   });

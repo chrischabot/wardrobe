@@ -5,11 +5,15 @@
  */
 import "./clock.ts"; // first: installs the shifted clock when a whole-suite run asks for one
 import { testClockOffsetMs } from "./clock.ts";
-import { TestAssistant } from "@garderobe/assistant/testing";
+import { TEST_GATEWAY_ID, TestAssistant, fakeModelFor } from "@garderobe/assistant/testing";
 import { CommandService } from "@garderobe/domain";
 import type { Env } from "../env.ts";
 import worker from "../index.ts";
 import { bindEnv, composedRegistry } from "../lanes/index.ts";
+import { setJobModelsForTests } from "../scheduled/assistant.ts";
+
+// Background jobs (mailbox investigations, sheet imports) use the same labelled FAKE MODEL as the conversation actor.
+setJobModelsForTests({ gatewayId: TEST_GATEWAY_ID, createLanguageModel: ((spec: { profileId: string }) => fakeModelFor(spec.profileId)) as never });
 
 /**
  * Durable Object alarms are kept by the runtime on the real clock. Under a shifted test clock (clock.ts)

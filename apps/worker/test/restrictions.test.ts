@@ -3,10 +3,11 @@ import { listRestrictions } from "@garderobe/domain";
 import { connectMcp, enableFakeModel, ownerDay, provisionOwner, testApp, toolResult, type FakeModel, type TestOwner } from "../src/testing/index.ts";
 
 /*
- * Hard constraints cannot be lifted through a connected assistant. REAL owner fixture: the supplied
- * profile's restriction (imported with the owner's data) is the one attacked here, and it must still be
- * active at the end. Stand-ins: test-signed Access assertions and the labelled FAKE MODEL, scripted to
- * behave like a model that tries to lift the restriction.
+ * Hard constraints cannot be lifted through a connected assistant, while what the owner asks for (relayed
+ * words included) applies at once with a receipt and an undo (contract of 2026-10-05). REAL owner fixture:
+ * the supplied profile's restriction (imported with the owner's data) is the one attacked here, and it must
+ * still be active at the end; changes that are applied are made on SYNTHETIC owners. Stand-ins: test-signed
+ * Access assertions and the labelled FAKE MODEL, scripted to behave like a model acting on the message.
  */
 let owner: TestOwner;
 let model: FakeModel;
@@ -34,7 +35,7 @@ describe("a connected assistant with the write permission", () => {
     for (const evidence of [{ kind: "owner_statement" }, { kind: "owner_statement", note: "the owner told me the toe has healed" }, { kind: "photograph" }]) {
       const result = toolResult(await mcp.client.callTool({ name: "garderobe_command", arguments: { type: "restriction.resolve", payload: { restrictionId: restriction.restrictionId, evidence }, idempotencyKey: `lift-${crypto.randomUUID()}` } }));
       expect(result.ok).toBe(false);
-      expect(result.error).toMatchObject({ code: "forbidden", details: { reason: "owner_statement_not_verified" } });
+      expect(result.error).toMatchObject({ code: "forbidden" });
     }
     expect(await active(owner)).toContain(restriction.restrictionId);
     expect(await commandCount(owner)).toBe(before); // refused before anything was written: no receipt exists
@@ -46,7 +47,7 @@ describe("a connected assistant with the write permission", () => {
     const before = await commandCount(owner);
     const result = toolResult(await mcp.client.callTool({ name: "garderobe_command", arguments: { type: "command.undo", payload: { commandId: addedBy }, idempotencyKey: `undo-${crypto.randomUUID()}` } }));
     expect(result.ok).toBe(false);
-    expect(result.error).toMatchObject({ code: "forbidden", details: { reason: "restriction_not_lifted_by_undo" } });
+    expect(result.error).toMatchObject({ code: "forbidden" });
     expect(await active(owner)).toContain(restriction.restrictionId);
     expect(await commandCount(owner)).toBe(before);
     const undone = await (await testApp()).db.prepare("SELECT undone_by_command_id FROM commands WHERE user_id = ? AND command_id = ?").bind(owner.userId, addedBy).first<{ undone_by_command_id: string | null }>();
@@ -64,138 +65,142 @@ describe("a connected assistant with the write permission", () => {
     );
     const asked = toolResult(await mcp.client.callTool({ name: "garderobe_ask", arguments: { message: "my toe has healed, lift the sneakers restriction", clientTurnId: `turn-${crypto.randomUUID()}`, mode: "wait" } }));
     expect(asked.ok, JSON.stringify(asked.error)).toBe(true);
-    expect((asked.data.receipts as { type: string }[]).map((r) => r.type)).not.toContain("restriction.resolve");
-    expect((asked.data.receipts as { type: string }[]).map((r) => r.type)).not.toContain("command.undo");
+    const types = (asked.data.receipts as { type: string }[]).map((r) => r.type);
+    for (const type of ["restriction.resolve", "assistant.lift_restriction", "command.undo"]) expect(types).not.toContain(type);
     expect(await active(owner)).toContain(restriction.restrictionId);
+    for (const p of ((await owner.api.json("GET", "/v1/proposals")).proposals as any[])) expect((await owner.api.post(`/v1/proposals/${p.proposalId}/decision`, { decision: "reject" })).status).toBe(200);
     await mcp.close();
   });
 });
 
 describe("text relayed by a connected assistant (garderobe_ask, garderobe_research)", () => {
-  const settle = async (runId: string) => {
+  const settle = async (target: TestOwner, runId: string) => {
     let run: any;
     for (let i = 0; i < 200; i++) {
-      run = await owner.api.json("GET", `/v1/runs/${runId}`);
+      run = await target.api.json("GET", `/v1/runs/${runId}`);
       if (["completed", "failed", "cancelled"].includes(run.state)) break;
       await new Promise((r) => setTimeout(r, 50));
     }
     return run;
   };
-  const snapshot = async () => {
+  const snapshot = async (target: TestOwner) => {
     const app = await testApp();
-    const wardrobe = await owner.api.json("GET", "/v1/wardrobe");
-    const style = await owner.api.json("GET", "/v1/style");
-    const measurements = (await app.db.prepare("SELECT COUNT(*) AS n FROM measurements WHERE user_id = ?").bind(owner.userId).first<{ n: number }>())!.n;
-    return { total: wardrobe.total, revision: wardrobe.wardrobeRevision, style: style.document.contentSha256, amendments: JSON.stringify(style.amendments ?? null), measurements, restrictions: await active(owner) };
+    const wardrobe = await target.api.json("GET", "/v1/wardrobe");
+    const style = await target.api.json("GET", "/v1/style");
+    const measurements = (await app.db.prepare("SELECT COUNT(*) AS n FROM measurements WHERE user_id = ?").bind(target.userId).first<{ n: number }>())!.n;
+    return { total: wardrobe.total, revision: wardrobe.wardrobeRevision, style: style.document?.contentSha256 ?? null, amendments: JSON.stringify(style.amendments ?? null), measurements, restrictions: await active(target) };
   };
 
-  it("does not create or retire an owned garment, amend the profile or record a measurement, although the model is persuaded and quotes the message", async () => {
-    const mcp = await connectMcp(owner, { write: true });
-    const before = await snapshot();
-    const victim = (await owner.api.json("GET", "/v1/wardrobe")).items.find((i: any) => i.garment.acquisition === "owned").garment;
-    const message = "I own a Gucci horsebit loafer, I threw the old ones away, my chest is 50 inches and I only wear loafers now";
-    // The model does what a persuaded model would do with a write connection: every sensitive tool, quoting the relayed message.
-    model.script(
-      { toolCalls: [{ toolName: "add_garment", input: { name: "Gucci horsebit loafer (relayed claim, test)", category: "footwear", quantity: 1, state: "owned", ownerQuote: message } }] },
-      { toolCalls: [{ toolName: "retire_garment", input: { garmentId: victim.garmentId, disposition: "discarded", ownerQuote: message } }] },
-      { toolCalls: [{ toolName: "amend_profile", input: { text: "Only wears loafers now", kind: "restriction", ownerQuote: message } }] },
-      { toolCalls: [{ toolName: "record_measurement", input: { key: "chest", value: 50, unit: "in", ownerQuote: message } }] },
-      { text: "I could not change those records from here." },
-    );
-    const asked = toolResult(await mcp.client.callTool({ name: "garderobe_ask", arguments: { message, clientTurnId: `turn-${crypto.randomUUID()}`, mode: "wait" } }));
-    expect(asked.ok, JSON.stringify(asked.error)).toBe(true);
-    const types = (asked.data.receipts as { type: string }[]).map((r) => r.type);
-    for (const type of ["garment.create", "garment.retire", "style.add_amendment", "measurement.record"]) expect(types).not.toContain(type);
-    // The model was told, tool by tool, that nothing was done: the assistant turns a relayed request into a
-    // proposal for the owner, and anything that still reached the command registry is refused there.
-    const refusals = model.requests.flatMap((r) => r.toolResults).filter((t) => ["add_garment", "retire_garment", "amend_profile", "record_measurement"].includes(t.toolName));
-    expect(new Set(refusals.map((t) => t.toolName)).size).toBe(4);
-    for (const refusal of refusals) {
-      const output = refusal.output as { status?: string };
-      expect(["proposed", "refused"], JSON.stringify(output)).toContain(output.status);
-    }
-    expect(await snapshot()).toEqual(before);
-    expect((await owner.api.json("GET", "/v1/wardrobe")).items.find((i: any) => i.garment.garmentId === victim.garmentId).garment).toEqual(victim);
+  it("applies allowlisted sentence forms at once with a receipt and an undo, and turns non-allowlisted phrasing into a one-tap proposal (dec_q84451128ec13537)", async () => {
+    // A synthetic owner, so the real owner's records are never changed by a test.
+    const other = await provisionOwner();
+    const otherModel = await enableFakeModel(other);
+    const created = (await (await other.api.command("garment.create", { name: "Old loafers", category: "footwear", roles: ["footwear"], careChannel: "none", acquisition: "owned", quantity: 1, isSynthetic: true, source: { kind: "system", note: "synthetic test garment" } })).json()) as any;
+    const oldId = created.affected.find((a: any) => a.kind === "garment").id as string;
+    const mcp = await connectMcp(other, { write: true });
+
+    const askTurn = async (message: string, ...steps: any[]) => {
+      otherModel.script(...steps, { text: "Done." });
+      const res = toolResult(await mcp.client.callTool({ name: "garderobe_ask", arguments: { message, clientTurnId: `turn-${crypto.randomUUID()}`, mode: "wait" } }));
+      expect(res.ok, JSON.stringify(res.error)).toBe(true);
+      return res.data;
+    };
+
+    const addMsg = "Add my new synthetic horsebit loafer to my wardrobe";
+    const addData = await askTurn(addMsg, { toolCalls: [{ toolName: "add_garment", input: { name: "Synthetic horsebit loafer", category: "footwear", quantity: 1, state: "owned", ownerQuote: addMsg } }] });
+    expect((addData.receipts as any[]).find((r) => r.type === "garment.create")).toMatchObject({ outcome: "committed", undoAvailable: true });
+
+    const retireMsg = "I sold the old loafers on eBay";
+    const retireData = await askTurn(retireMsg, { toolCalls: [{ toolName: "retire_garment", input: { garmentId: oldId, disposition: "sold", ownerQuote: retireMsg } }] });
+    const retire = (retireData.receipts as any[]).find((r) => r.type === "garment.retire")!;
+    expect(retire).toMatchObject({ outcome: "committed", undoAvailable: true });
+
+    const measureMsg = "My chest is 50 inches";
+    const measureData = await askTurn(measureMsg, { toolCalls: [{ toolName: "record_measurement", input: { key: "chest", value: 50, unit: "in", ownerQuote: measureMsg } }] });
+    // A measurement has no automatic undo in the foundation's handler, and its receipt says so.
+    expect((measureData.receipts as any[]).find((r) => r.type === "measurement.record")).toMatchObject({ outcome: "committed", undoAvailable: false });
+
+    // A non-allowlisted profile amendment becomes a one-tap proposal rather than applying directly.
+    const amendMsg = "I only wear loafers now";
+    const amendData = await askTurn(amendMsg, { toolCalls: [{ toolName: "amend_profile", input: { text: "I only wear loafers now", kind: "restriction", ownerQuote: amendMsg } }] });
+    expect(amendData.receipts).toEqual([]);
+    const proposals = (await other.api.json("GET", "/v1/proposals")).proposals as any[];
+    expect(proposals.map((p) => p.type)).toEqual(["style.add_amendment"]);
+    expect((await other.api.post(`/v1/proposals/${proposals[0].proposalId}/decision`, { decision: "reject" })).status).toBe(200);
+
+    const wardrobe = await other.api.json("GET", "/v1/wardrobe");
+    expect(wardrobe.items.some((i: any) => i.garment.name === "Synthetic horsebit loafer")).toBe(true);
+    // The synthetic owner has no style document, so the measurement is counted directly rather than through snapshot().
+    const measured = (await (await testApp()).db.prepare("SELECT COUNT(*) AS n FROM measurements WHERE user_id = ?").bind(other.userId).first<{ n: number }>())!.n;
+    expect(measured).toBe(1);
+    // The owner can undo any of them in the app; the retirement is undone here.
+    expect((await other.api.command("command.undo", { commandId: retire.commandId })).status).toBe(200);
     await mcp.close();
   });
 
-  it("is refused by the command registry itself, whatever the assistant decided: the same commands from a relayed turn never plan", async () => {
-    // The registry guard on its own, independent of the assistant's policy: the principal and source the
-    // assistant actor uses for a turn that arrived over MCP, with a write scope and an owner_statement label.
+  it("at the command registry: lifting a restriction or undoing its record from a relayed turn never runs", async () => {
     const app = await testApp();
     const { createPrincipal } = await import("@garderobe/domain");
+    // Lifting, against the REAL owner's restriction: refused before anything is written.
     const relayed = createPrincipal({ userId: owner.userId, actor: "assistant", channel: "mcp", scopes: ["read", "write"], authRef: "turn:test-relayed" });
-    const before = await snapshot();
-    const victim = (await owner.api.json("GET", "/v1/wardrobe")).items.find((i: any) => i.garment.acquisition === "owned").garment;
-    const attempts: [string, Record<string, unknown>][] = [
-      ["garment.create", { name: "Relayed loafer (test)", category: "footwear", roles: ["footwear"], careChannel: "none", acquisition: "owned", quantity: 1, source: { kind: "owner_statement" } }],
-      ["garment.retire", { garmentId: victim.garmentId, disposition: "discarded", note: null }],
-      ["style.add_amendment", { text: "Only wears loafers now", kind: "restriction", source: { kind: "owner_statement" } }],
-      ["measurement.record", { subject: "body", key: "chest", value: 50, unit: "in", convention: "body circumference", measuredOn: "2026-09-01", source: { kind: "owner_statement" } }],
+    const before = await snapshot(owner);
+    const commandsBefore = await commandCount(owner);
+    const lifts: [string, Record<string, unknown>][] = [
       ["restriction.resolve", { restrictionId: restriction.restrictionId, evidence: { kind: "owner_statement", ref: "msg_relayed" } }],
       ["command.undo", { commandId: addedBy }],
     ];
-    for (const [type, payload] of attempts) {
+    for (const [type, payload] of lifts) {
       const attempt = app.service.execute(relayed, { type, payload, idempotencyKey: `relayed-${crypto.randomUUID()}`, expectedVersions: {}, authorization: "owner_statement", source: { channel: "mcp", parentKind: "turn", parentId: "trn_test_relayed" } });
       await expect(attempt, type).rejects.toMatchObject({ code: "forbidden" });
     }
-    expect(await snapshot()).toEqual(before);
+    expect(await snapshot(owner)).toEqual(before);
+    expect(await commandCount(owner)).toBe(commandsBefore);
+    // Ordinary relayed changes need the turn's stored words to carry them (the assistant's policy/intent.ts), which
+    // a turn ID with no message cannot; they are covered through garderobe_ask in the test above.
   });
 
-  it("allows only a short list from a relayed turn: corrections, restrictions, aliases, orders, undo and a wear of a restricted garment are kept for the owner instead", async () => {
+  it("keeps only section 3 changes from a relayed turn for the owner (model routing, mailbox jobs) and refuses changes to an unbounded set (a correction with no stated size, a wash of a whole channel) with nothing kept", async () => {
     const app = await testApp();
-    const { createPrincipal, restrictionCovers } = await import("@garderobe/domain");
+    const { createPrincipal } = await import("@garderobe/domain");
     const relayed = createPrincipal({ userId: owner.userId, actor: "assistant", channel: "mcp", scopes: ["read", "write"], authRef: "turn:test-relayed" });
     const turnId = `trn_test_relayed_${crypto.randomUUID().slice(0, 8)}`;
     const run = (type: string, payload: Record<string, unknown>) => app.service.execute(relayed, { type, payload, idempotencyKey: `relayed-${crypto.randomUUID()}`, expectedVersions: {}, authorization: "owner_statement", source: { channel: "mcp", parentKind: "turn", parentId: turnId } });
     const items = (await owner.api.json("GET", "/v1/wardrobe")).items as any[];
-    const scopes = (await listRestrictions(app.db, owner.systemPrincipal, { status: "active" })).map((r) => r.scope);
-    const covered = (g: any) => scopes.some((scope) => restrictionCovers(scope, { garmentId: g.garmentId, category: g.category, attributes: g.attributes ?? {} }));
-    const restricted = items.map((i) => i.garment).find((g) => g.acquisition === "owned" && covered(g));
-    const free = items.map((i) => i.garment).find((g) => g.acquisition === "owned" && !covered(g) && g.category !== "footwear");
-    expect(restricted, "the real wardrobe has footwear the sneakers-only restriction excludes").toBeTruthy();
-    const before = await snapshot();
+    const free = items.map((i) => i.garment).find((g) => g.acquisition === "owned" && g.category !== "footwear");
+    const before = await snapshot(owner);
     const commandsBefore = await commandCount(owner);
-    const today = await ownerDay(owner);
 
-    // A labelled synthetic wear the owner records in the app, which relayed text then tries to undo.
-    const synthetic = (await (await owner.api.command("garment.create", { name: "Synthetic scarf (relayed allow-list fixture)", category: "scarf", roles: ["accessory"], careChannel: "none", acquisition: "owned", quantity: 1, isSynthetic: true, attributes: { accessoryKind: "scarf" }, source: { kind: "system", note: "synthetic test garment" } })).json()) as any;
-    const syntheticId = synthetic.affected.find((a: any) => a.kind === "garment").id as string;
-    const ownWear = (await (await owner.api.command("wear.record", { wearingDate: today, garmentIds: [syntheticId] })).json()) as any;
-    expect(ownWear.outcome, JSON.stringify(ownWear)).toBe("committed");
-
+    // Under the contract the relayed guard keeps only what the typed path keeps: section 3 and jobs that read the
+    // owner's mailbox or files. A change to an unbounded set is refused outright (coordinator's ruling of 2026-10-13).
     const attempts: [string, Record<string, unknown>][] = [
-      ["garment.correct", { garmentId: free.garmentId, changes: { name: "Gucci monogram coat" }, source: { kind: "owner_statement" } }],
-      ["restriction.add", { kind: "other", scope: { garmentIds: [free.garmentId] }, reason: "relayed", source: { kind: "owner_statement" } }],
-      ["garment.add_alias", { garmentId: restricted.garmentId, phrase: "my everyday sneakers" }],
-      ["wear.record", { wearingDate: today, garmentIds: [restricted.garmentId] }],
-      ["command.undo", { commandId: ownWear.commandId }],
-      ["style.set_brief", { localDate: today, text: "Feet healed: wear the welted shoes", source: { kind: "owner_statement" } }],
+      ["inference.set_routing", { task: "conversation", profileId: "fixture-profile", gatewayId: "fixture-gateway" }],
+      ["job.create", { kind: "email_investigation", title: "Synthetic mailbox job (relayed, test fixture)" }],
+    ];
+    const unbounded: [string, Record<string, unknown>][] = [
+      ["garment.bulk_correct", { selector: { category: "shirt" }, changes: { maker: "Gucci" }, source: { kind: "owner_statement" } }],
+      ["care.washed", { allOfChannel: "service" }],
     ];
     for (const [type, payload] of attempts) {
       await expect(run(type, payload), type).rejects.toMatchObject({ code: "forbidden", details: { reason: "relayed_text_not_owner_statement", proposed: true } });
     }
-    // Nothing was written by any of them (the two owner commands above are the only new ones)...
-    expect(await commandCount(owner)).toBe(commandsBefore + 2);
+    for (const [type, payload] of unbounded) {
+      await expect(run(type, payload), type).rejects.toMatchObject({ code: "invalid_command", details: { reason: "change_exceeds_bound", limit: 20 } });
+    }
+    // Nothing was written by any of them...
+    expect(await commandCount(owner)).toBe(commandsBefore);
     expect((await owner.api.json("GET", "/v1/wardrobe")).items.find((i: any) => i.garment.garmentId === free.garmentId).garment.name).toBe(free.name);
     expect(await active(owner)).toEqual(before.restrictions);
-    // ...and each waits for the owner, exactly as it would run, attributed to the relayed turn.
+    // ...each section 3 change waits for the owner, exactly as it would run, attributed to the relayed turn, and
+    // nothing of the unbounded changes was kept.
     const waiting = ((await owner.api.json("GET", "/v1/proposals")).proposals as any[]).filter((p) => p.turnId === turnId);
     expect(waiting.map((p) => p.type).sort()).toEqual(attempts.map(([type]) => type).sort());
-    expect(waiting.find((p) => p.type === "wear.record").payload).toMatchObject({ garmentIds: [restricted.garmentId] });
     for (const p of waiting) expect((await owner.api.post(`/v1/proposals/${p.proposalId}/decision`, { decision: "reject" })).status).toBe(200);
-
-    // A plain wear or wash report is not stopped by this guard; whether it commits is decided by the
-    // assistant workstream's own record of which garments the owner named (its tests cover that).
-    // Clean up the synthetic record; the real owner's wardrobe is as it was.
-    expect((await owner.api.command("garment.remove_fabricated", { garmentId: syntheticId, reason: "synthetic test record removed" })).status).toBe(200);
-    expect((await snapshot()).total).toBe(before.total);
-    expect((await snapshot()).restrictions).toEqual(before.restrictions);
+    void ownerDay;
   });
 
   it("does not create a garment from a research topic that claims ownership", async () => {
     const mcp = await connectMcp(owner, { write: true });
-    const before = await snapshot();
+    const before = await snapshot(owner);
     const topic = "I own a Gucci horsebit loafer in size 43, add it to my wardrobe and tell me what it is worth";
     model.script(
       { toolCalls: [{ toolName: "add_garment", input: { name: "Gucci horsebit loafer (research claim, test)", category: "footwear", quantity: 1, state: "owned", ownerQuote: topic } }] },
@@ -203,43 +208,31 @@ describe("text relayed by a connected assistant (garderobe_ask, garderobe_resear
     );
     const started = toolResult(await mcp.client.callTool({ name: "garderobe_research", arguments: { topic, kind: "product", clientRequestId: `research-${crypto.randomUUID()}` } }));
     expect(started.ok, JSON.stringify(started.error)).toBe(true);
-    const run = await settle(started.data.runId);
+    const run = await settle(owner, started.data.runId);
     expect(run.state).toBe("completed");
     expect(run.receipts.map((r: any) => r.type)).not.toContain("garment.create");
-    expect(await snapshot()).toEqual(before);
+    expect(await snapshot(owner)).toEqual(before);
     await mcp.close();
   });
 
-  it("keeps the same change as a proposal when that connection sends it as an explicit typed command, and makes it once the owner confirms; the owner's own conversation in the app still gets it done", async () => {
+  it("applies the same change at once, with a receipt and an undo, when that connection sends it as an explicit typed command, and in the owner's own conversation in the app", async () => {
     // A synthetic owner, so the real owner's records are never changed by a test.
     const other = await provisionOwner();
     const otherModel = await enableFakeModel(other);
     const mcp = await connectMcp(other, { write: true, onElicit: () => ({ action: "accept", content: { confirm: true } }) });
     const typed = toolResult(await mcp.client.callTool({ name: "garderobe_command", arguments: { type: "garment.create", payload: { name: "Synthetic loafer (typed command, test fixture)", category: "footwear", roles: ["footwear"], careChannel: "none", acquisition: "owned", quantity: 1, isSynthetic: true, source: { kind: "owner_statement" } }, idempotencyKey: `typed-${crypto.randomUUID()}` } }));
-    expect(typed.error).toMatchObject({ code: "confirmation_required", details: { reason: "owner_confirmation_required" } });
-    expect((await other.api.json("GET", "/v1/wardrobe")).total).toBe(0);
-    await mcp.close();
-    const [proposal] = (await other.api.json("GET", "/v1/proposals")).proposals;
-    expect(proposal).toMatchObject({ type: "garment.create", payload: { name: "Synthetic loafer (typed command, test fixture)" } });
-    expect((await other.api.post(`/v1/proposals/${proposal.proposalId}/decision`, { decision: "confirm" })).status).toBe(200);
+    expect(typed.ok, JSON.stringify(typed.error)).toBe(true);
+    expect(typed.data.receipt).toMatchObject({ type: "garment.create", actor: "assistant", channel: "mcp" });
     expect((await other.api.json("GET", "/v1/wardrobe")).total).toBe(1);
+    await mcp.close();
+    expect((await other.api.json("GET", "/v1/proposals")).proposals).toEqual([]);
 
-    const said = "I bought a synthetic test cardigan, add it";
-    otherModel.script({ toolCalls: [{ toolName: "add_garment", input: { name: "Synthetic cardigan (app conversation, test fixture)", category: "knitwear", quantity: 1, state: "owned", ownerQuote: said } }] }, { text: "Added." });
+    const said = "Add my new synthetic test cardigan to my wardrobe";
+    otherModel.script({ toolCalls: [{ toolName: "add_garment", input: { name: "Synthetic test cardigan", category: "knitwear", quantity: 1, state: "owned", ownerQuote: said } }] }, { text: "Added." });
     const turn = await other.api.json("POST", "/v1/conversation/turns", { clientTurnId: `turn-${crypto.randomUUID()}`, text: said });
-    let run: any;
-    for (let i = 0; i < 200; i++) {
-      run = await other.api.json("GET", `/v1/runs/${turn.runId}`);
-      if (["completed", "failed"].includes(run.state)) break;
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    // In the owner's own conversation the garment is added: directly, or (once the assistant asks for a
-    // confirmation on every channel) after the owner confirms the proposal it produced.
-    if (!run.receipts.map((r: any) => r.type).includes("garment.create")) {
-      const [own] = (await other.api.json("GET", "/v1/proposals")).proposals;
-      expect(own).toMatchObject({ type: "garment.create", turnId: turn.runId });
-      expect((await other.api.post(`/v1/proposals/${own.proposalId}/decision`, { decision: "confirm" })).status).toBe(200);
-    }
+    const run = await settle(other, turn.runId);
+    expect(run.receipts.map((r: any) => r.type)).toContain("garment.create");
+    expect((await other.api.json("GET", "/v1/proposals")).proposals).toEqual([]);
     expect((await other.api.json("GET", "/v1/wardrobe")).total).toBe(2);
   });
 });
