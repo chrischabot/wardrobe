@@ -32,7 +32,7 @@ import { all, canonicalJson, first, json as parseJson, prepare, stmt, toInstant,
 import type { App } from "../app.ts";
 import { sha256Hex } from "../crypto.ts";
 import { ApiException } from "../errors.ts";
-import { findSubmittedProposal, grantOfAuthRef, listSubmittedProposals, listWaitingSubmittedProposals, notShownSummary, PROPOSAL_LIFETIME_MS, submittedExpectedVersions, submittedPayload, summaryForOwner, type SubmittedProposalRow } from "./store.ts";
+import { findSubmittedProposal, grantOfAuthRef, listSubmittedProposals, listWaitingSubmittedProposals, notShownSummary, PROPOSAL_LIFETIME_MS, submittedExpectedVersions, submittedPayload, submittedProposalIdOf, summaryForOwner, type SubmittedProposalRow } from "./store.ts";
 
 export { PROPOSAL_LIFETIME_MS };
 
@@ -163,10 +163,21 @@ async function build(app: App, userId: string, turns: TurnRow[], submitted: Subm
       grantId = grantOfTurn.get(row.turn_id) ?? grantOfAuthRef(authRef);
     }
     // In words, by the same trusted code that describes a request made in conversation. A stored request that
-    // cannot be described in full stays on the list with a plain statement, to be rejected; it is never
-    // shown as raw fields and never confirmable.
-    const { summary, showable } = await summaryForOwner(app.db, userId, row.command_type, payloads[i]!);
-    add({ proposalId: row.proposal_id, turnId: row.turn_id ?? "", decisionRef: row.turn_id ?? row.source_ref, type: row.command_type, summary, showable, payload: payloads[i]!, proposedAt: row.created_at, channel: "mcp", assistantName: grantId ? (grants.get(grantId) ?? null) : null, expectedVersions: submittedExpectedVersions(row), occurredAt: row.occurred_at });
+    // cannot be described in full, or whose stored columns no longer match the proposal identifier the owner was
+    // shown, stays on the list with a plain statement to be rejected; it is never confirmable.
+    const expectedVersions = submittedExpectedVersions(row);
+    const expectedId = await submittedProposalIdOf({
+      origin: row.origin,
+      sourceRef: row.source_ref,
+      idempotencyKey: row.idempotency_key,
+      type: row.command_type,
+      payload: payloads[i]!,
+      expectedVersions,
+      occurredAt: row.occurred_at,
+    });
+    const intact = expectedId === row.proposal_id;
+    const { summary, showable } = intact ? await summaryForOwner(app.db, userId, row.command_type, payloads[i]!) : { summary: notShownSummary(row.command_type), showable: false };
+    add({ proposalId: row.proposal_id, turnId: row.turn_id ?? "", decisionRef: row.turn_id ?? row.source_ref, type: row.command_type, summary, showable, payload: payloads[i]!, proposedAt: row.created_at, channel: "mcp", assistantName: grantId ? (grants.get(grantId) ?? null) : null, expectedVersions, occurredAt: row.occurred_at });
   }
   return out.sort((a, b) => Date.parse(b.proposal.proposedAt) - Date.parse(a.proposal.proposedAt) || (a.proposal.proposalId < b.proposal.proposalId ? -1 : 1));
 }

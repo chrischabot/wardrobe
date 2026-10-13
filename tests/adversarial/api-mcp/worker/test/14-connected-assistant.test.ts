@@ -1751,7 +1751,7 @@ describe("B. the owner's decision route", () => {
     for (const p of [merge, remove]) expect(await ownerRejects(other, p.proposalId)).toBe(200);
   });
 
-  defect("M14-3", "refuses with 409 conflict a typed request that names no versions once the owner has changed the garment after it was made: the system recorded the version the request was made against", async () => {
+  it("[fixed M14-3] refuses with 409 conflict a typed request that names no versions once the owner has changed the garment after it was made: the system recorded the version the request was made against", async () => {
     const garmentId = await syntheticGarment(other, "SYNTHETIC shirt changed since an unversioned request (test fixture, not real stock)", { colour: "SYNTHETIC grey" });
     // The connection sends no expectedVersions; the request is kept and shown to the owner as it is.
     const remove = await propose(otherWriter, "garment.remove_fabricated", { garmentId, reason: "SYNTHETIC: removed by a stale request (test fixture)" });
@@ -1770,7 +1770,7 @@ describe("B. the owner's decision route", () => {
     }
   });
 
-  defect("M14-4", "a stored request whose payload was changed after the owner was shown it is carried out under the identifier the owner saw", async () => {
+  it("[fixed M14-4] a stored request whose payload was changed after the owner was shown it is carried out under the identifier the owner saw", async () => {
     const garmentId = await syntheticGarment(other, "SYNTHETIC shirt in a modified request (test fixture, not real stock)");
     const p = await propose(otherWriter, "garment.remove_fabricated", { garmentId, reason: "SYNTHETIC reason the owner was shown" });
     const shown = (await pendingProposals(other)).find((x) => x.proposalId === p.proposalId)!;

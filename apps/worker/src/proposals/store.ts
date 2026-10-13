@@ -5,7 +5,7 @@
  * `service.ts`. It has no dependency on the composed application, so the command registry guards can
  * use it.
  */
-import { describeChange, MAX_SHOWN_VALUE, MAX_SUMMARY } from "@garderobe/assistant";
+import { describeChange, expectedVersionsFor, MAX_SHOWN_VALUE, MAX_SUMMARY } from "@garderobe/assistant";
 import { CommandError, all, canonicalJson, first, isCommandError, json as parseJson, prepare, stmt, toInstant, type Db } from "@garderobe/domain";
 import { sha256Hex } from "../crypto.ts";
 
@@ -46,6 +46,12 @@ const COLUMNS = "proposal_id, origin, source_ref, grant_id, turn_id, idempotency
 /** Everything that defines the change. A request that differs in any of it is a different proposal. */
 export const requestHashOf = (input: Pick<SubmittedProposalInput, "type" | "payload" | "expectedVersions" | "occurredAt">): Promise<string> =>
   sha256Hex(canonicalJson({ type: input.type, payload: input.payload, expectedVersions: input.expectedVersions, occurredAt: input.occurredAt }));
+
+/** The deterministic proposal identifier covering origin, source, idempotency key, and the effective request digest. */
+export const submittedProposalIdOf = async (input: Pick<SubmittedProposalInput, "origin" | "sourceRef" | "idempotencyKey" | "type" | "payload" | "expectedVersions" | "occurredAt">): Promise<string> => {
+  const effectiveHash = await requestHashOf(input);
+  return `prp_${(await sha256Hex(`submitted\u0000${input.origin}\u0000${input.sourceRef}\u0000${input.idempotencyKey}\u0000${effectiveHash}`)).slice(0, 32)}`;
+};
 
 /** A proposal nobody decided is offered for this long; after that it can no longer be confirmed and no longer counts as waiting. */
 export const PROPOSAL_LIFETIME_MS = 14 * 86_400_000;
@@ -133,11 +139,15 @@ export function hasRoomToWait(waiting: WaitingRequests, grantId: string | null):
  */
 export async function recordSubmittedProposal(db: Db, input: SubmittedProposalInput): Promise<{ row: SubmittedProposalRow; created: boolean } | { conflict: true } | { limited: true } | { unshowable: true }> {
   const requestHash = await requestHashOf(input);
-  const proposalId = `prp_${(await sha256Hex(`submitted\u0000${input.origin}\u0000${input.sourceRef}\u0000${input.idempotencyKey}\u0000${requestHash}`)).slice(0, 32)}`;
   const find = () => first<SubmittedProposalRow>(db, `SELECT ${COLUMNS} FROM submitted_proposals WHERE user_id = ? AND origin = ? AND source_ref = ? AND idempotency_key = ?`, input.userId, input.origin, input.sourceRef, input.idempotencyKey);
   const existing = await find();
   if (existing) return existing.request_hash === requestHash ? { row: existing, created: false } : { conflict: true };
   if (!(await canBeShownInFull(db, input.userId, input.type, input.payload))) return { unshowable: true };
+  // Capture the current versions of records the request would rewrite when the caller did not specify them,
+  // so a request whose target changed before the owner confirms is refused as stale (409 conflict).
+  const capturedVersions = await expectedVersionsFor(db, input.userId, input.type, input.payload);
+  const effectiveVersions = { ...capturedVersions, ...input.expectedVersions };
+  const proposalId = await submittedProposalIdOf({ ...input, expectedVersions: effectiveVersions });
   // The connection a relayed turn belongs to is read from the turn; a typed command names its grant.
   const grantId = input.grantId ?? (input.turnId ? grantOfAuthRef((await first<{ auth_ref: string }>(db, "SELECT auth_ref FROM assistant_turns WHERE user_id = ? AND turn_id = ?", input.userId, input.turnId))?.auth_ref) : null);
   const waiting = await waitingRequests(db, input.userId, input.nowMs);
@@ -147,7 +157,7 @@ export async function recordSubmittedProposal(db: Db, input: SubmittedProposalIn
     db,
     stmt(
       "INSERT INTO submitted_proposals (user_id, proposal_id, origin, source_ref, grant_id, turn_id, idempotency_key, request_hash, command_type, payload_json, expected_versions_json, occurred_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
-      input.userId, proposalId, input.origin, input.sourceRef, input.grantId, input.turnId, input.idempotencyKey, requestHash, input.type, JSON.stringify(input.payload), JSON.stringify(input.expectedVersions), input.occurredAt, toInstant(input.nowMs),
+      input.userId, proposalId, input.origin, input.sourceRef, input.grantId, input.turnId, input.idempotencyKey, requestHash, input.type, JSON.stringify(input.payload), JSON.stringify(effectiveVersions), input.occurredAt, toInstant(input.nowMs),
     ),
   ).run();
   const row = await find();
