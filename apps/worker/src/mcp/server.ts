@@ -364,6 +364,9 @@ export function buildMcpServer(app: App, caller: McpCaller): McpServer {
           throw new ApiException("rate_limited", "nothing was sent to Garderobe's assistant: connected assistants already have many requests waiting for the owner's decision. Ask the owner to decide those in the Garderobe app first; reading (garderobe_today, garderobe_inventory, garderobe_recommend) still works.", { reason: "too_many_requests_waiting" });
         }
         try {
+          if (!(await admission.ensureActive())) {
+            throw new ApiException("rate_limited", "nothing was sent to Garderobe's assistant: connected assistants already have many requests waiting for the owner's decision. Ask the owner to decide those in the Garderobe app first; reading (garderobe_today, garderobe_inventory, garderobe_recommend) still works.", { reason: "too_many_requests_waiting" });
+          }
           if (args.mode === "start") {
             const accepted = await submitTurn(app, principal, submission);
             const run = await getRun(app, principal, accepted.runId);
@@ -373,6 +376,11 @@ export function buildMcpServer(app: App, caller: McpCaller): McpServer {
           await registerAssistantRun(app.db, principal, { runId: run.runId, kind: "conversation_turn", state: run.state, clientRequestId: submission.submissionId }, app.now());
           const out = askOutput({ ...run, kind: "conversation_turn" });
           return ok(out, out.answer ?? (out.pendingInput ? `Garderobe needs an answer: ${out.pendingInput.question} (use garderobe_run with action respond)` : `Run ${out.runId} is ${out.state}.`));
+        } catch (err) {
+          if (String((err as Error)?.message ?? err).includes("relayed_turn_admission_expired")) {
+            throw new ApiException("rate_limited", "nothing was sent to Garderobe's assistant: connected assistants already have many requests waiting for the owner's decision. Ask the owner to decide those in the Garderobe app first; reading (garderobe_today, garderobe_inventory, garderobe_recommend) still works.", { reason: "too_many_requests_waiting" });
+          }
+          throw err;
         } finally {
           await admission.release();
         }

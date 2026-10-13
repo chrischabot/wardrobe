@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { MAX_SUMMARY_CHARS, MAX_VALUE_CHARS, WAITING_LIMITS } from "../src/proposals/store.ts";
+import { ADMISSION_LEASE_MS, beginRelayedTurn, MAX_SUMMARY_CHARS, MAX_VALUE_CHARS, WAITING_LIMITS } from "../src/proposals/store.ts";
 import { connectMcp, enableFakeModel, ownerDay, provisionOwner, testApp, toolResult, type FakeModel, type McpConnection, type TestOwner } from "../src/testing/index.ts";
 
 /*
@@ -107,16 +107,32 @@ describe("the limit on requests waiting for the owner (finding D)", () => {
     expect((await decide(o, waitingNow[0].proposalId, "reject")).status).toBe(200);
     expect((await relayed(mcp, 8, "one-free")).error).toMatchObject({ code: "rate_limited", details: { reason: "too_many_requests_waiting" } });
     for (const p of waitingNow.slice(1, WAITING_LIMITS.perRelayedTurn)) expect((await decide(o, p.proposalId, "reject")).status).toBe(200);
-    // With exactly one turn's room free (32 waiting of 40), two concurrent garderobe_ask turns cannot both pass:
-    // only one is admitted and the other is rate-limited.
+    // With one turn's room free (32 waiting of 40), holding an active turn admission deterministically
+    // blocks a concurrent garderobe_ask turn until that active admission is released, whereas an orphaned
+    // admission past ADMISSION_LEASE_MS is reconciled and does not strand capacity.
+    const app = await testApp();
+    const grantRow = await app.db.prepare("SELECT grant_id FROM mcp_grants WHERE user_id = ? LIMIT 1").bind(o.userId).first<{ grant_id: string }>();
+    const orphanedSub = `mcp:${grantRow!.grant_id}:orphaned`;
+    await app.db
+      .prepare("INSERT INTO relayed_turn_admissions (user_id, submission_id, admission_id, grant_id, created_at) VALUES (?, ?, ?, ?, ?)")
+      .bind(o.userId, orphanedSub, "adm_orphaned", grantRow!.grant_id, new Date(Date.now() - ADMISSION_LEASE_MS - 5000).toISOString())
+      .run();
+    // An expired admission cannot persist a turn in assistant_turns (enforced by trigger 0310).
+    await expect(
+      app.db
+        .prepare("INSERT INTO assistant_turns (user_id, turn_id, submission_id, request_hash, kind, channel, scopes_json, auth_ref, status, user_message_id, created_at, updated_at) VALUES (?, 'trn_expired', ?, 'h', 'conversation', 'mcp', '[\"read\",\"write\"]', ?, 'accepted', 'msg_expired', ?, ?)")
+        .bind(o.userId, orphanedSub, `mcp:${grantRow!.grant_id}`, new Date().toISOString(), new Date().toISOString())
+        .run(),
+    ).rejects.toThrow(/relayed_turn_admission_expired/);
+    const held = await beginRelayedTurn(app.db, o.userId, `mcp:${grantRow!.grant_id}:held-${crypto.randomUUID()}`, grantRow!.grant_id, Date.now());
+    expect(held.ok).toBe(true);
+    try {
+      expect((await relayed(mcp, 8, "while-held")).error).toMatchObject({ code: "rate_limited", details: { reason: "too_many_requests_waiting" } });
+    } finally {
+      await held.release();
+    }
     model.script({ text: "Nothing to do." });
-    model.script({ text: "Nothing to do." });
-    const concurrent = await Promise.all([
-      mcp.client.callTool({ name: "garderobe_ask", arguments: { message: "what is clean?", clientTurnId: `turn-${crypto.randomUUID()}`, mode: "wait" } }).then(toolResult),
-      mcp.client.callTool({ name: "garderobe_ask", arguments: { message: "what is dirty?", clientTurnId: `turn-${crypto.randomUUID()}`, mode: "wait" } }).then(toolResult),
-    ]);
-    expect(concurrent.filter((r) => r.ok)).toHaveLength(1);
-    expect(concurrent.filter((r) => !r.ok && r.error?.code === "rate_limited")).toHaveLength(1);
+    expect(toolResult(await mcp.client.callTool({ name: "garderobe_ask", arguments: { message: "what is clean?", clientTurnId: `turn-${crypto.randomUUID()}`, mode: "wait" } })).ok).toBe(true);
     // What the owner asked for in the app himself is never limited by what connections left, and an added
     // garment applies at once with a receipt (contract of 2026-10-05).
     const own = await say(o, { text: "Add my synthetic test cardigan." }, [{ toolName: "add_garment", input: { name: "Synthetic test cardigan", category: "knitwear", quantity: 1, state: "owned" } }]);

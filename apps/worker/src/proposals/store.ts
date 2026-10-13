@@ -57,6 +57,14 @@ export const submittedProposalIdOf = async (input: Pick<SubmittedProposalInput, 
 export const PROPOSAL_LIFETIME_MS = 14 * 86_400_000;
 
 /**
+ * Lease duration for an unpersisted relayed-turn admission (before `assistant_turns` records the turn).
+ * Active callers renew their row while in flight; an orphaned row from a terminated worker expires after
+ * this window and is reconciled on subsequent reads/admissions instead of stranding quota for 14 days.
+ */
+export const ADMISSION_LEASE_MS = 60_000;
+const ADMISSION_LEASE_OFFSET_SECONDS = Math.floor((PROPOSAL_LIFETIME_MS - ADMISSION_LEASE_MS) / 1000);
+
+/**
  * How many requests connected assistants may have waiting for the owner at once. A request counts from
  * the moment it is kept until the owner decides it or it expires, wherever it is kept: a typed command, a
  * command refused on a relayed turn (both in `submitted_proposals`), and what the assistant recorded on a
@@ -114,7 +122,7 @@ turn_usage AS (
 unpersisted_admissions AS (
   SELECT a.grant_id AS grant_id, a.submission_id AS submission_id
     FROM relayed_turn_admissions a
-   WHERE a.user_id = ?1 AND unixepoch(a.created_at) > ?2
+   WHERE a.user_id = ?1 AND unixepoch(a.created_at) > (?2 + ${ADMISSION_LEASE_OFFSET_SECONDS})
      AND NOT EXISTS (SELECT 1 FROM assistant_turns t WHERE t.user_id = a.user_id AND t.submission_id = a.submission_id)
    GROUP BY a.grant_id, a.submission_id
 ),
@@ -133,8 +141,25 @@ totals AS (
     FROM all_entries
 )`;
 
+/** Reconcile expired or already-persisted relayed-turn admissions so orphaned rows from terminated workers do not linger in D1. */
+export async function reconcileRelayedTurnAdmissions(db: Db, userId: string, nowMs: number): Promise<void> {
+  const leaseSinceSeconds = Math.floor((nowMs - ADMISSION_LEASE_MS) / 1000);
+  await prepare(
+    db,
+    stmt(
+      `DELETE FROM relayed_turn_admissions
+        WHERE user_id = ?
+          AND (unixepoch(created_at) <= ?
+               OR EXISTS (SELECT 1 FROM assistant_turns t WHERE t.user_id = relayed_turn_admissions.user_id AND t.submission_id = relayed_turn_admissions.submission_id))`,
+      userId,
+      leaseSinceSeconds,
+    ),
+  ).run();
+}
+
 /** What connected assistants have waiting for the owner's decision right now, per connection (grant) and in all. */
 export async function waitingRequests(db: Db, userId: string, nowMs: number): Promise<WaitingRequests> {
+  await reconcileRelayedTurnAdmissions(db, userId, nowMs);
   const sinceSeconds = Math.floor((nowMs - PROPOSAL_LIFETIME_MS) / 1000);
   const out: WaitingRequests = { total: 0, byGrant: new Map(), byTurn: new Map(), reservedByTurn: new Map() };
   // Read grants, undecided submitted proposals, assistant turns, and unpersisted turn admissions in a single
@@ -185,7 +210,7 @@ export async function waitingRequests(db: Db, userId: string, nowMs: number): Pr
             0 AS n,
             1 AS reserved
        FROM relayed_turn_admissions a
-      WHERE a.user_id = ?1 AND unixepoch(a.created_at) > ?2
+      WHERE a.user_id = ?1 AND unixepoch(a.created_at) > (?2 + ${ADMISSION_LEASE_OFFSET_SECONDS})
         AND NOT EXISTS (SELECT 1 FROM assistant_turns t WHERE t.user_id = a.user_id AND t.submission_id = a.submission_id)
       GROUP BY a.grant_id, a.submission_id`,
     userId,
@@ -235,10 +260,20 @@ export async function waitingRequests(db: Db, userId: string, nowMs: number): Pr
   return out;
 }
 
+export interface RelayedTurnAdmission {
+  ok: boolean;
+  isActive: () => boolean;
+  /** Renew and verify the admission lease right before dispatching to the assistant. */
+  ensureActive: () => Promise<boolean>;
+  release: () => Promise<void>;
+}
+
 /**
  * Atomically check and reserve per-turn proposal capacity (`WAITING_LIMITS.perRelayedTurn`) in D1 for a
  * relayed `garderobe_ask` turn before dispatching to the assistant. Each call inserts its own `admission_id`
- * row in a single statement conditional on the owner and connection limits, and removes that row in `finally`.
+ * row under a 60-second lease (`ADMISSION_LEASE_MS`) renewed while in flight; a `BEFORE INSERT` trigger on
+ * `assistant_turns` (`0310_api_relayed_turn_admission_lease.sql`) refuses to persist a new relayed MCP
+ * conversation turn if its admission lease has expired or been reconciled away.
  */
 export async function beginRelayedTurn(
   db: Db,
@@ -246,8 +281,21 @@ export async function beginRelayedTurn(
   submissionId: string,
   grantId: string,
   nowMs: number,
-): Promise<{ ok: boolean; release: () => Promise<void> }> {
-  const sinceSeconds = Math.floor((nowMs - PROPOSAL_LIFETIME_MS) / 1000);
+): Promise<RelayedTurnAdmission> {
+  const startWallMs = Date.now();
+  const clockMs = () => nowMs + Math.max(0, Date.now() - startWallMs);
+  await reconcileRelayedTurnAdmissions(db, userId, clockMs());
+  const existingTurn = await first<{ x: number }>(db, "SELECT 1 AS x FROM assistant_turns WHERE user_id = ? AND submission_id = ?", userId, submissionId);
+  if (existingTurn) {
+    return {
+      ok: true,
+      isActive: () => true,
+      ensureActive: async () => true,
+      release: async () => {},
+    };
+  }
+  const insertNowMs = clockMs();
+  const sinceSeconds = Math.floor((insertNowMs - PROPOSAL_LIFETIME_MS) / 1000);
   const admissionId = crypto.randomUUID();
   const res = await prepare(
     db,
@@ -257,7 +305,7 @@ export async function beginRelayedTurn(
        SELECT ?1, ?5, ?6, ?3, ?7
          FROM totals
         WHERE EXISTS (SELECT 1 FROM assistant_turns t WHERE t.user_id = ?1 AND t.submission_id = ?5)
-           OR EXISTS (SELECT 1 FROM relayed_turn_admissions a WHERE a.user_id = ?1 AND a.submission_id = ?5 AND unixepoch(a.created_at) > ?2)
+           OR EXISTS (SELECT 1 FROM relayed_turn_admissions a WHERE a.user_id = ?1 AND a.submission_id = ?5 AND unixepoch(a.created_at) > (?2 + ${ADMISSION_LEASE_OFFSET_SECONDS}))
            OR (totals.owner_total + ?4 <= ?8 AND (?3 IS NULL OR totals.grant_total + ?4 <= ?9))`,
       userId,
       sinceSeconds,
@@ -265,23 +313,98 @@ export async function beginRelayedTurn(
       WAITING_LIMITS.perRelayedTurn,
       submissionId,
       admissionId,
-      toInstant(nowMs),
+      toInstant(insertNowMs),
       WAITING_LIMITS.perOwner,
       WAITING_LIMITS.perConnection,
     ),
   ).run();
   if ((res.meta?.changes ?? 0) === 0) {
-    return { ok: false, release: async () => {} };
+    return {
+      ok: false,
+      isActive: () => false,
+      ensureActive: async () => false,
+      release: async () => {},
+    };
   }
+  let stopped = false;
+  let leaseLost = false;
+  let renewInFlight: Promise<void> | null = null;
+  const markLost = () => {
+    if (leaseLost) return;
+    leaseLost = true;
+    stopped = true;
+    clearInterval(heartbeat);
+  };
+  const renewOnce = async (): Promise<boolean> => {
+    if (leaseLost) return false;
+    const t = clockMs();
+    try {
+      const updateRes = await prepare(
+        db,
+        stmt(
+          "UPDATE relayed_turn_admissions SET created_at = CASE WHEN unixepoch(?) >= unixepoch('now') THEN ? ELSE strftime('%Y-%m-%dT%H:%M:%SZ', 'now') END WHERE user_id = ? AND submission_id = ? AND admission_id = ? AND unixepoch(created_at) > ? AND unixepoch(created_at) + 60 > unixepoch('now')",
+          toInstant(t),
+          toInstant(t),
+          userId,
+          submissionId,
+          admissionId,
+          Math.floor((t - ADMISSION_LEASE_MS) / 1000),
+        ),
+      ).run();
+      if ((updateRes.meta?.changes ?? 0) === 1) return true;
+      const persisted = await first<{ x: number }>(db, "SELECT 1 AS x FROM assistant_turns WHERE user_id = ? AND submission_id = ?", userId, submissionId);
+      if (persisted) {
+        stopped = true;
+        clearInterval(heartbeat);
+        return true;
+      }
+      markLost();
+      return false;
+    } catch (err) {
+      console.warn("relayed turn admission lease renewal failed", String((err as Error)?.message ?? err));
+      markLost();
+      return false;
+    }
+  };
+  const heartbeat = setInterval(() => {
+    if (stopped || leaseLost || renewInFlight) return;
+    renewInFlight = renewOnce()
+      .then(() => {})
+      .finally(() => {
+        renewInFlight = null;
+      });
+  }, Math.floor(ADMISSION_LEASE_MS / 3));
   return {
     ok: true,
+    isActive: () => !leaseLost,
+    ensureActive: async () => {
+      if (renewInFlight) await renewInFlight;
+      return renewOnce();
+    },
     release: async () => {
-      await prepare(
-        db,
-        stmt("DELETE FROM relayed_turn_admissions WHERE user_id = ? AND submission_id = ? AND admission_id = ?", userId, submissionId, admissionId),
-      )
-        .run()
-        .catch(() => {});
+      stopped = true;
+      clearInterval(heartbeat);
+      if (renewInFlight) await renewInFlight;
+      const deleteStmt = stmt(
+        `DELETE FROM relayed_turn_admissions
+          WHERE user_id = ?
+            AND ((submission_id = ? AND admission_id = ?)
+                 OR unixepoch(created_at) <= ?
+                 OR EXISTS (SELECT 1 FROM assistant_turns t WHERE t.user_id = relayed_turn_admissions.user_id AND t.submission_id = relayed_turn_admissions.submission_id))`,
+        userId,
+        submissionId,
+        admissionId,
+        Math.floor((clockMs() - ADMISSION_LEASE_MS) / 1000),
+      );
+      try {
+        await prepare(db, deleteStmt).run();
+      } catch {
+        try {
+          await prepare(db, deleteStmt).run();
+        } catch (retryError) {
+          console.warn("relayed turn admission cleanup failed after retry", String((retryError as Error)?.message ?? retryError));
+        }
+      }
     },
   };
 }
@@ -322,6 +445,7 @@ export async function recordSubmittedProposal(db: Db, input: SubmittedProposalIn
   const proposalId = await submittedProposalIdOf({ ...input, expectedVersions: effectiveVersions });
   // The connection a relayed turn belongs to is read from the turn; a typed command names its grant.
   const grantId = input.grantId ?? (input.turnId ? grantOfAuthRef((await first<{ auth_ref: string }>(db, "SELECT auth_ref FROM assistant_turns WHERE user_id = ? AND turn_id = ?", input.userId, input.turnId))?.auth_ref) : null);
+  await reconcileRelayedTurnAdmissions(db, input.userId, input.nowMs);
   const sinceSeconds = Math.floor((input.nowMs - PROPOSAL_LIFETIME_MS) / 1000);
   const res = await prepare(
     db,
