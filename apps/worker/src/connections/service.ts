@@ -258,18 +258,38 @@ async function googleAuthorization(app: App, userId: string, connectionId: strin
 /** Discover an MCP server's authorization server, register this backend as a client and build the authorization URL. */
 async function mcpAuthorization(app: App, userId: string, connectionId: string, endpoint: string, returnTo: string, nowMs: number): Promise<{ url: string; statements: Stmt[]; issuer: string }> {
   const fetchFn = guardedFetch();
-  const info = await discoverOAuthServerInfo(endpoint, { fetchFn });
+  let info: Awaited<ReturnType<typeof discoverOAuthServerInfo>>;
+  try {
+    info = await discoverOAuthServerInfo(endpoint, { fetchFn });
+  } catch (error) {
+    if (error instanceof ApiException) throw error;
+    throw new ApiException("invalid_command", `that service's OAuth metadata is not valid: ${redactText(String((error as Error)?.message ?? error))}`, { reason: "invalid_oauth_metadata" });
+  }
   assertRemoteUrl(info.authorizationServerUrl, "authorization server");
   const metadata = info.authorizationServerMetadata;
   if (!metadata) throw new ApiException("precondition_failed", "that service does not publish OAuth authorization metadata", { reason: "no_authorization_metadata" });
-  const clientInformation = await registerClient(info.authorizationServerUrl, {
-    metadata,
-    clientMetadata: { client_name: "Garderobe", redirect_uris: [callbackUrl(app)], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" },
-    fetchFn,
-  });
+  for (const [label, candidate] of [
+    ["authorization endpoint", metadata.authorization_endpoint],
+    ["token endpoint", metadata.token_endpoint],
+    ["registration endpoint", metadata.registration_endpoint],
+  ] as const) {
+    if (candidate !== undefined && candidate !== null) assertRemoteUrl(String(candidate), label);
+  }
+  let clientInformation: Awaited<ReturnType<typeof registerClient>>;
+  let started: Awaited<ReturnType<typeof startAuthorization>>;
   const stateToken = randomToken(32);
   const resource = info.resourceMetadata?.resource ? new URL(info.resourceMetadata.resource) : new URL(endpoint);
-  const started = await startAuthorization(info.authorizationServerUrl, { metadata, clientInformation, redirectUrl: callbackUrl(app), state: stateToken, resource });
+  try {
+    clientInformation = await registerClient(info.authorizationServerUrl, {
+      metadata,
+      clientMetadata: { client_name: "Garderobe", redirect_uris: [callbackUrl(app)], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" },
+      fetchFn,
+    });
+    started = await startAuthorization(info.authorizationServerUrl, { metadata, clientInformation, redirectUrl: callbackUrl(app), state: stateToken, resource });
+  } catch (error) {
+    if (error instanceof ApiException) throw error;
+    throw new ApiException("invalid_command", `that service's OAuth configuration was not accepted: ${redactText(String((error as Error)?.message ?? error))}`, { reason: "invalid_oauth_metadata" });
+  }
   assertRemoteUrl(new URL(started.authorizationUrl.toString().split("?")[0]!), "authorization endpoint");
   const stateHash = await codeHash(app.env.STATE_SIGNING_KEY, "connection-oauth-state", stateToken);
   const sealed = await seal(app.env.CREDENTIAL_KEY, { verifier: started.codeVerifier }, `oauth-state\u0000${stateHash}`);

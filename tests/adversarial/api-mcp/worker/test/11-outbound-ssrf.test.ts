@@ -727,8 +727,7 @@ describe("owner-added tool services and connections", () => {
       const fetched = discoveryRequests(await outboundLog({ after: before, host }), origin);
       expect(fetched.resource, `${name}: the planted protected-resource metadata was requested`).toBeGreaterThan(0);
       if (!name.startsWith("as-")) expect(fetched.authorizationServer, `${name}: the planted authorization-server metadata was requested`).toBeGreaterThan(0);
-      // How the refusal is answered (the javascript: variant is answered with a server error: open defect D11-3 below).
-      if (name !== "authorize-javascript") expectOAuthRefused(name, response, body);
+      expectOAuthRefused(name, response, body);
       const url: string | null = body.authorizationUrl ?? null;
       if (url !== null) {
         // Whatever the owner is sent to sign in at is a public https address by name.
@@ -742,7 +741,7 @@ describe("owner-added tool services and connections", () => {
     expect(log.filter((e) => forbiddenDestination(e.url) !== null).map(describeEntry)).toEqual([]);
   });
 
-  defect("D11-3", "OAuth metadata that names a javascript: sign-in address is answered with a server error (500 internal) instead of a refusal", async () => {
+  it("[fixed D11-3] OAuth metadata that names a javascript: sign-in address is answered with a server error (500 internal) instead of a refusal", async () => {
     const { host, origin } = await plantOAuth("authorize-javascript-status", {}, { authorization_endpoint: "javascript:alert(document.domain)" });
     const before = await outboundSeq();
     const response = await register(owner, { kind: "mcp", name: "SYNTHETIC oauth javascript sign-in address", endpoint: `${origin}/mcp`, auth: { type: "oauth" } });
