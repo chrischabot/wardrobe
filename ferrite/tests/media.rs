@@ -1,7 +1,8 @@
 //! Photographs, the media core, as the app's capture and wardrobe screens use it: authorize an
 //! upload, send its bytes in pieces within Ferrite's 256 KiB body cap, finalize it through the
-//! command service (a receipt like every other change), then read the garment's photograph, which
-//! never carries location.
+//! command service (a receipt like every other change), then read the garment's photograph, the
+//! rendition, the asset and a signed link, none of which carries location unless the owner asks for
+//! the original as supplied.
 //!
 //! Test doubles: the store is an in-memory double of the APE binding (the same guarded-commit
 //! semantics), and the image files are synthetic, built byte by byte with the structure of a JPEG
@@ -231,13 +232,53 @@ async fn a_garment_photo_arrives_in_pieces_gets_a_receipt_and_is_never_served_wi
     assert_eq!(bad_width.status, 400);
     let unsigned = send(&mut store, now + 4_000, "GET", &format!("/v1/items/{OXFORD_BLUE}/image"), None, &[], Vec::new()).await;
     assert_eq!(unsigned.status, 401, "the garment's photograph needs the sign-in");
-    // Nothing else serves a photograph yet: renditions, signed links and assets are not routed.
+
+    // The rendition and the asset's display view are that copy; only the owner's request for the
+    // original with its location is the file as supplied. There is no cutout.
     let rendition_id = asset["renditions"][0]["renditionId"].as_str().unwrap().to_string();
     let asset_id = asset["assetId"].as_str().unwrap().to_string();
-    for path in [format!("/v1/media/renditions/{rendition_id}"), format!("/v1/media/assets/{asset_id}?variant=original&withLocation=true")] {
-        let r = owner(&mut store, now + 5_000, "GET", &path, Value::Null).await;
-        assert_eq!(r.status, 404, "{path}: {}", r.json);
+    let r = owner(&mut store, now + 5_000, "GET", &format!("/v1/media/renditions/{rendition_id}"), Value::Null).await;
+    assert_eq!((r.status, &r.bytes), (200, &image.bytes));
+    for query in ["", "?variant=display", "?variant=original", "?variant=display&withLocation=true"] {
+        let r = owner(&mut store, now + 5_000, "GET", &format!("/v1/media/assets/{asset_id}{query}"), Value::Null).await;
+        assert_eq!((r.status, &r.bytes), (200, &image.bytes), "{query}");
     }
+    let original = owner(&mut store, now + 5_000, "GET", &format!("/v1/media/assets/{asset_id}?variant=original&withLocation=true"), Value::Null).await;
+    assert_eq!((original.status, &original.bytes), (200, &file));
+    let cutout = owner(&mut store, now + 5_000, "GET", &format!("/v1/media/assets/{asset_id}?variant=cutout"), Value::Null).await;
+    assert_eq!(cutout.status, 404);
+    for path in [format!("/v1/media/renditions/{rendition_id}"), format!("/v1/media/assets/{asset_id}?variant=original&withLocation=true")] {
+        let theirs = send(&mut store, now + 5_000, "GET", &path, Some(ASSISTANT), &[], Vec::new()).await;
+        assert_eq!(theirs.status, 403, "{path}");
+    }
+
+    // A signed link opens without a sign-in, never with location, and refuses to be asked for it.
+    let sign = format!("/v1/media/renditions/{rendition_id}/sign");
+    let r = owner(&mut store, now + 6_000, "POST", &sign, json!({"withLocation": true})).await;
+    assert_eq!((r.status, r.json["error"]["details"]["reason"].as_str()), (400, Some("signed_link_without_location")), "{}", r.json);
+    let link = owner(&mut store, now + 6_000, "POST", &sign, json!({"ttlSeconds": 3600})).await;
+    assert_eq!(link.status, 200, "{}", link.json);
+    assert_eq!(link.json["expiresAt"], wardrobe::time::instant(now + 6_000 + 900_000), "clamped to 15 minutes");
+    let link_url = link.json["url"].as_str().unwrap().to_string();
+    let opened = send(&mut store, now + 7_000, "GET", &link_url, None, &[], Vec::new()).await;
+    assert_eq!((opened.status, &opened.bytes), (200, &image.bytes));
+    assert!(!has_location(&opened.bytes));
+    let expired = send(&mut store, now + 6_000 + 900_000, "GET", &link_url, None, &[], Vec::new()).await;
+    let mut tampered = link_url.clone();
+    let last = tampered.pop().unwrap();
+    tampered.push(if last == '0' { '1' } else { '0' });
+    let tampered = send(&mut store, now + 7_000, "GET", &tampered, None, &[], Vec::new()).await;
+    let longer = link_url.replacen(&format!("{}.0.", rendition_id), &format!("{}.0.9", rendition_id), 1);
+    let longer = send(&mut store, now + 7_000, "GET", &longer, None, &[], Vec::new()).await;
+    // The same numbers spelt differently are not the signed text.
+    let wider = send(&mut store, now + 7_000, "GET", &link_url.replacen(&format!("{}.0.", rendition_id), &format!("{}.00.", rendition_id), 1), None, &[], Vec::new()).await;
+    let padded = send(&mut store, now + 7_000, "GET", &link_url.replacen(&format!("{}.0.", rendition_id), &format!("{}.0.0", rendition_id), 1), None, &[], Vec::new()).await;
+    let plus = send(&mut store, now + 7_000, "GET", &link_url.replacen(&format!("{}.0.", rendition_id), &format!("{}.+0.", rendition_id), 1), None, &[], Vec::new()).await;
+    for refused in [&expired, &tampered, &longer, &wider, &padded, &plus] {
+        assert_eq!((refused.status, refused.bytes.as_slice()), (404, &b"Not found"[..]), "every refusal looks the same");
+    }
+    let unsigned = send(&mut store, now + 7_000, "GET", &format!("/v1/media/renditions/{rendition_id}"), None, &[], Vec::new()).await;
+    assert_eq!(unsigned.status, 401, "a rendition itself needs the sign-in");
 }
 
 #[tokio::test]

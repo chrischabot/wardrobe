@@ -331,7 +331,7 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
             return crate::exports::download(store, now_ms, id, ticket).await.unwrap_or_else(error_reply);
         }
     }
-    // A photograph's upload target is authorized by its URL alone.
+    // A photograph's upload target and a signed photograph link are authorized by their URL alone.
     if let Some(reply) = crate::media::public_route(store, tokens, now_ms, req, path, &query).await {
         return reply;
     }

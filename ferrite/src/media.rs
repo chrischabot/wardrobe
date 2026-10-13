@@ -1,8 +1,10 @@
 //! Photographs, the media core: `POST /v1/uploads`, the token-authenticated
 //! `PUT /v1/uploads/{id}/content`, `GET /v1/uploads/{id}`, `POST /v1/uploads/{id}/complete` (the
 //! `media.finalize_upload` command, through the command service, so it has a receipt like every other
-//! change) and `GET /v1/items/{id}/image`, as apps/worker/src/routes/media.ts and packages/media
-//! define them. Every route but the self-authenticated content target is the owner's alone.
+//! change), `GET /v1/items/{id}/image`, `GET /v1/media/renditions/{id}`,
+//! `POST /v1/media/renditions/{id}/sign` with the session-less `GET /v1/media/signed/{token}`, and
+//! `GET /v1/media/assets/{id}`, as apps/worker/src/routes/media.ts and packages/media define them.
+//! Every route but the two self-authenticated ones is the owner's alone.
 //!
 //! Bytes are stored in the app's own storage, never anywhere public. A request body is capped at
 //! 256 KiB by Ferrite's ingress, so the content route takes a photograph in pieces of at most
@@ -15,9 +17,10 @@
 //! accepted dimensions, as a committed rejection with its reason. Nothing is re-encoded, resized or
 //! cut out: there is no background removal and no model. Each asset has one rendition, the original,
 //! and every read of it is a copy without metadata (`image::strip`: no GPS, no Exif but the
-//! orientation, no XMP). The file as supplied, location included, is kept but not served by any
-//! route here (owner decision of 2026-10-13: location leaves only through the owner's signed-in
-//! export with `includeLocation` or the owner's own view of the original).
+//! orientation, no XMP), except one: the owner's own request for the original with
+//! `withLocation=true`. A signed link, which is opened without a sign-in, never carries location
+//! (owner decision of 2026-10-13: location leaves only through the owner's signed-in export with
+//! `includeLocation` or the owner's own view of the original).
 //!
 //! Storage (APE `state`):
 //!   `mu/<uploadId>`      an upload, its own commit guard for its pieces;
@@ -25,8 +28,9 @@
 //!   `ma/<assetId>`       an asset, written with the ledger by `media.finalize_upload`;
 //!   `media-index`        every asset (at most [`MAX_ASSETS`]), written with the ledger.
 //! The upload ID is derived from the client's `clientUploadId`, so a retried authorization finds its
-//! upload. The content URL's token is HMAC-SHA-256 keyed with the owner token, so nothing secret is
-//! stored and replacing the owner token ends every outstanding upload URL.
+//! upload. The content URL's token and a signed link's signature are HMAC-SHA-256 keyed with the
+//! owner token, so nothing secret is stored and replacing the owner token ends every outstanding
+//! upload URL and link.
 
 use ferrite_app::crypto::hmac_sha256;
 use ferrite_app::serde_json::{self, json, Map, Value};
@@ -56,6 +60,9 @@ pub const MAX_ASSETS: usize = 500;
 /// The delivery widths a request may name (`MEDIA_THUMBNAIL_WIDTHS`). No thumbnail is generated:
 /// the stored rendition is served at every width.
 pub const WIDTHS: [u64; 4] = [160, 320, 640, 1280];
+/// Signed link lifetimes in seconds (TypeScript: 300 by default, at most 900 for the app).
+pub const DEFAULT_LINK_TTL_S: u64 = 300;
+pub const MAX_LINK_TTL_S: u64 = 900;
 /// Accepted dimensions (`DEFAULT_MEDIA_LIMITS`).
 pub const MIN_DIMENSION: u32 = 64;
 pub const MAX_DIMENSION: u32 = 8192;
@@ -234,6 +241,10 @@ fn upload_token(secret: &str, upload_id: &str) -> String {
     hex(&hmac_sha256(secret.as_bytes(), format!("wardrobe/upload-url/v1\n{upload_id}").as_bytes()))
 }
 
+fn link_mac(secret: &str, rendition_id: &str, width: u64, expires_at_ms: u64) -> String {
+    hex(&hmac_sha256(secret.as_bytes(), format!("wardrobe/signed-media/v1\n{rendition_id}\n{width}\n{expires_at_ms}").as_bytes()))
+}
+
 async fn read_upload<S: Store>(store: &mut S, id: &str) -> Result<(Option<Vec<u8>>, Option<Upload>), CmdError> {
     let bytes = store.get(&upload_key(id)).await.map_err(|_| internal("the upload could not be read just now; try again"))?;
     let upload = match &bytes {
@@ -304,9 +315,13 @@ async fn original_bytes<S: Store>(store: &mut S, a: &Stored) -> Result<Vec<u8>, 
     Ok(bytes)
 }
 
-/// The bytes served for an asset: always a copy without metadata.
-async fn served_bytes<S: Store>(store: &mut S, a: &Stored) -> Result<Vec<u8>, CmdError> {
+/// The bytes served for an asset: a copy without metadata, unless `with_location` (the owner's own
+/// signed-in request for the original as supplied).
+async fn served_bytes<S: Store>(store: &mut S, a: &Stored, with_location: bool) -> Result<Vec<u8>, CmdError> {
     let original = original_bytes(store, a).await?;
+    if with_location {
+        return Ok(original);
+    }
     image::strip(&original).ok_or_else(|| damaged("the stored photograph cannot be read"))
 }
 
@@ -752,6 +767,53 @@ fn width_of(raw: Option<&str>) -> Result<Option<u64>, CmdError> {
     }
 }
 
+/// The asset whose rendition is `rendition_id`.
+async fn asset_of_rendition<S: Store>(store: &mut S, rendition_id: &str) -> Result<Option<Stored>, CmdError> {
+    if !id_ok(rendition_id, "rnd_") {
+        return Ok(None);
+    }
+    let index = load_index(store).await?;
+    let Some(asset_id) = index.iter().find(|e| e["renditionId"] == rendition_id).and_then(|e| e["assetId"].as_str()).map(str::to_string) else {
+        return Ok(None);
+    };
+    load_asset(store, &asset_id).await
+}
+
+fn photo_not_found() -> CmdError {
+    CmdError::new("not_found", "that photograph was not found")
+}
+
+/// `GET /v1/media/renditions/{id}[?width=]`: the rendition without metadata.
+async fn rendition<S: Store>(store: &mut S, rendition_id: &str, query: &[(String, String)], if_none_match: Option<&str>) -> Result<Reply, CmdError> {
+    width_of(query_value(query, "width"))?;
+    let a = asset_of_rendition(store, rendition_id).await?.ok_or_else(photo_not_found)?;
+    let bytes = served_bytes(store, &a, false).await?;
+    Ok(image_reply(&content_type_of(&a), bytes, if_none_match))
+}
+
+/// `GET /v1/media/assets/{id}[?variant=][&width=][&withLocation=true]`: the photograph without
+/// metadata; the original as supplied only for `variant=original&withLocation=true`. There is no
+/// cutout or catalogue view (no background removal on this server).
+async fn asset<S: Store>(store: &mut S, asset_id: &str, query: &[(String, String)], if_none_match: Option<&str>) -> Result<Reply, CmdError> {
+    let variant = match query_value(query, "variant") {
+        None => "display",
+        Some(v @ ("display" | "original" | "cutout" | "catalogue")) => v,
+        Some(_) => return Err(invalid("variant: expected display, original, cutout or catalogue")),
+    };
+    width_of(query_value(query, "width"))?;
+    let with_location = match query_value(query, "withLocation") {
+        None => false,
+        Some("true") => true,
+        Some(_) => return Err(invalid("withLocation: expected true")),
+    };
+    let a = load_asset(store, asset_id).await?.ok_or_else(photo_not_found)?;
+    if matches!(variant, "cutout" | "catalogue") {
+        return Err(CmdError::with("not_found", "this server removes no backgrounds, so a photograph has no cutout or catalogue view; ask for the display view", json!({"variant": variant})));
+    }
+    let bytes = served_bytes(store, &a, with_location && variant == "original").await?;
+    Ok(image_reply(&content_type_of(&a), bytes, if_none_match))
+}
+
 /// `GET /v1/items/{id}/image[?width=]`: the garment's newest photograph, without metadata, or 404
 /// with the honest note; a placeholder is never served.
 async fn item_image<S: Store>(store: &mut S, garment_id: &str, query: &[(String, String)], if_none_match: Option<&str>) -> Result<Reply, CmdError> {
@@ -762,8 +824,90 @@ async fn item_image<S: Store>(store: &mut S, garment_id: &str, query: &[(String,
         return Err(CmdError::with("not_found", NO_PHOTO, json!({"missingImageNote": NO_PHOTO})));
     };
     let a = load_asset(store, &asset_id).await?.ok_or_else(|| damaged("the garment's photograph record is missing"))?;
-    let bytes = served_bytes(store, &a).await?;
+    let bytes = served_bytes(store, &a, false).await?;
     Ok(image_reply(&content_type_of(&a), bytes, if_none_match))
+}
+
+/// `POST /v1/media/renditions/{id}/sign` (`SignRenditionRequest` → `SignedMediaUrl`): a short-lived
+/// link to the rendition without metadata. A request naming `withLocation` is refused: a link is
+/// opened without a sign-in, so it never carries location.
+async fn sign<S: Store>(store: &mut S, tokens: &Tokens, now_ms: u64, rendition_id: &str, body: &[u8]) -> Result<Value, CmdError> {
+    let secret = owner_secret(tokens)?;
+    let m: Map<String, Value> = if body.iter().all(u8::is_ascii_whitespace) {
+        Map::new()
+    } else {
+        match serde_json::from_slice::<Value>(body) {
+            Ok(Value::Object(m)) => m,
+            Ok(_) => return Err(invalid("the request body must be a JSON object")),
+            Err(_) => return Err(invalid("the request body is not valid JSON")),
+        }
+    };
+    if m.contains_key("withLocation") {
+        return Err(CmdError::with(
+            "invalid_command",
+            "a signed link never carries location data; open the original in the app to see it as supplied",
+            json!({"reason": "signed_link_without_location"}),
+        ));
+    }
+    if let Some(k) = m.keys().find(|k| *k != "width" && *k != "ttlSeconds") {
+        return Err(invalid(format!("'{k}' is not a field of a signing request")));
+    }
+    let width = match m.get("width") {
+        None | Some(Value::Null) => None,
+        Some(v) => match v.as_u64() {
+            Some(w) if WIDTHS.contains(&w) => Some(w),
+            _ => return Err(invalid("width must be one of 160, 320, 640, 1280")),
+        },
+    };
+    let ttl = match m.get("ttlSeconds") {
+        None | Some(Value::Null) => DEFAULT_LINK_TTL_S,
+        Some(v) => match v.as_u64() {
+            Some(t) if (30..=3600).contains(&t) => t.min(MAX_LINK_TTL_S),
+            _ => return Err(invalid("ttlSeconds: expected a whole number from 30 to 3600")),
+        },
+    };
+    let a = asset_of_rendition(store, rendition_id).await?.ok_or_else(photo_not_found)?;
+    if a.view["status"] != "active" {
+        return Err(photo_not_found());
+    }
+    let expires_at_ms = now_ms + ttl * 1000;
+    let w = width.unwrap_or(0);
+    let token = format!("{rendition_id}.{w}.{expires_at_ms}.{}", link_mac(secret, rendition_id, w, expires_at_ms));
+    Ok(json!({"url": format!("/v1/media/signed/{token}"), "renditionId": rendition_id, "width": width, "expiresAt": instant(expires_at_ms)}))
+}
+
+/// Every refusal of a signed link: the same 404 with no detail, so a link reveals nothing about what exists.
+fn denied() -> Reply {
+    Reply {
+        status: 404,
+        body: Value::Null,
+        headers: vec![("x-content-type-options".into(), "nosniff".into()), ("content-security-policy".into(), "default-src 'none'; sandbox".into())],
+        raw: Some(("text/plain; charset=utf-8".into(), b"Not found".to_vec())),
+    }
+}
+
+/// `GET /v1/media/signed/{token}`: the rendition without metadata, for a valid, unexpired link.
+async fn serve_signed<S: Store>(store: &mut S, tokens: &Tokens, now_ms: u64, token: &str, if_none_match: Option<&str>) -> Reply {
+    let Ok(secret) = owner_secret(tokens) else { return denied() };
+    let fields: Vec<&str> = token.split('.').collect();
+    let [rendition_id, w_text, exp_text, mac] = fields[..] else { return denied() };
+    let (Ok(w), Ok(exp)) = (w_text.parse::<u64>(), exp_text.parse::<u64>()) else { return denied() };
+    // Only the spelling the server signs (no sign, no leading zero) is accepted, so the signed text
+    // is exactly the text presented.
+    if w.to_string() != w_text || exp.to_string() != exp_text {
+        return denied();
+    }
+    if !id_ok(rendition_id, "rnd_") || (w != 0 && !WIDTHS.contains(&w)) || !constant_time_eq(mac.as_bytes(), link_mac(secret, rendition_id, w, exp).as_bytes()) || exp <= now_ms {
+        return denied();
+    }
+    let a = match asset_of_rendition(store, rendition_id).await {
+        Ok(Some(a)) if a.view["status"] == "active" => a,
+        _ => return denied(),
+    };
+    match served_bytes(store, &a, false).await {
+        Ok(bytes) => image_reply(&content_type_of(&a), bytes, if_none_match),
+        Err(_) => denied(),
+    }
 }
 
 // ─────────────────────────────── routing ───────────────────────────────
@@ -778,17 +922,23 @@ fn if_none_match(req: &IngressRequest) -> Option<&str> {
     req.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("if-none-match")).map(|(_, v)| v.as_str())
 }
 
-/// The route authorized by its URL alone (a sign-in is neither required nor read): the upload
-/// content target. `None` for any other request.
+/// The two routes authorized by their URL alone (a sign-in is neither required nor read): the
+/// upload content target and a signed link. `None` for any other request.
 pub async fn public_route<S: Store>(store: &mut S, tokens: &Tokens, now_ms: u64, req: &IngressRequest, path: &str, query: &[(String, String)]) -> Option<Reply> {
-    if req.method != "PUT" {
-        return None;
+    match req.method.as_str() {
+        "PUT" => {
+            let id = target(path, "/v1/uploads/", "/content")?;
+            Some(match receive(store, tokens, now_ms, id, query, &req.body).await {
+                Ok(body) => Reply::json(200, body),
+                Err(e) => api::error_reply(e),
+            })
+        }
+        "GET" => {
+            let token = target(path, "/v1/media/signed/", "")?;
+            Some(serve_signed(store, tokens, now_ms, token, if_none_match(req)).await)
+        }
+        _ => None,
     }
-    let id = target(path, "/v1/uploads/", "/content")?;
-    Some(match receive(store, tokens, now_ms, id, query, &req.body).await {
-        Ok(body) => Reply::json(200, body),
-        Err(e) => api::error_reply(e),
-    })
 }
 
 /// The owner's media routes, after sign-in. `None` for any other request.
@@ -803,12 +953,18 @@ pub async fn route<S: Store>(store: &mut S, tokens: &Tokens, principal: Principa
         Authorize,
         Status(&'p str),
         Complete(&'p str),
+        Rendition(&'p str),
+        Sign(&'p str),
+        Asset(&'p str),
         ItemImage(&'p str),
     }
     let route = match req.method.as_str() {
         "POST" if path == "/v1/uploads" => Route::Authorize,
         "POST" if target(path, "/v1/uploads/", "/complete").is_some() => Route::Complete(target(path, "/v1/uploads/", "/complete")?),
+        "POST" if target(path, "/v1/media/renditions/", "/sign").is_some() => Route::Sign(target(path, "/v1/media/renditions/", "/sign")?),
         "GET" if target(path, "/v1/uploads/", "").is_some() => Route::Status(target(path, "/v1/uploads/", "")?),
+        "GET" if target(path, "/v1/media/renditions/", "").is_some() => Route::Rendition(target(path, "/v1/media/renditions/", "")?),
+        "GET" if target(path, "/v1/media/assets/", "").is_some() => Route::Asset(target(path, "/v1/media/assets/", "")?),
         "GET" if target(path, "/v1/items/", "/image").is_some() => Route::ItemImage(target(path, "/v1/items/", "/image")?),
         _ => return None,
     };
@@ -819,6 +975,9 @@ pub async fn route<S: Store>(store: &mut S, tokens: &Tokens, principal: Principa
         Route::Authorize => json_reply(authorize(store, tokens, now_ms, &req.body).await),
         Route::Status(id) => json_reply(status(store, now_ms, id).await),
         Route::Complete(id) => json_reply(complete(store, principal, now_ms, id).await),
+        Route::Sign(id) => json_reply(sign(store, tokens, now_ms, id, &req.body).await),
+        Route::Rendition(id) => raw_reply(rendition(store, id, query, inm).await),
+        Route::Asset(id) => raw_reply(asset(store, id, query, inm).await),
         Route::ItemImage(id) => raw_reply(item_image(store, id, query, inm).await),
     })
 }
