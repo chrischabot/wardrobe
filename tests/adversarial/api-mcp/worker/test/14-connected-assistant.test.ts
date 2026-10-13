@@ -1750,7 +1750,7 @@ describe("B. the owner's decision route", () => {
     for (const p of [merge, remove]) expect(await ownerRejects(other, p.proposalId)).toBe(200);
   });
 
-  it("[contract] refuses with 409 conflict a typed request that names no versions once the owner has changed the garment after it was made: the system recorded the version the request was made against", async () => {
+  defect("M14-3", "refuses with 409 conflict a typed request that names no versions once the owner has changed the garment after it was made: the system recorded the version the request was made against", async () => {
     const garmentId = await syntheticGarment(other, "SYNTHETIC shirt changed since an unversioned request (test fixture, not real stock)", { colour: "SYNTHETIC grey" });
     // The connection sends no expectedVersions; the request is kept and shown to the owner as it is.
     const remove = await propose(otherWriter, "garment.remove_fabricated", { garmentId, reason: "SYNTHETIC: removed by a stale request (test fixture)" });

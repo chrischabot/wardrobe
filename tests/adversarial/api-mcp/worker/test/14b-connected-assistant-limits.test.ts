@@ -20,7 +20,7 @@
  * for the hours of the owner's time that several hundred decisions would take.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { connectMcp, createWorld, enableFakeModel, fingerprint, provisionOwner, rowCounts, sql, type FakeModel, type McpConnection, type TestOwner, type World } from "../src/harness.ts";
+import { connectMcp, createWorld, defect, enableFakeModel, fingerprint, provisionOwner, rowCounts, sql, type FakeModel, type McpConnection, type TestOwner, type World } from "../src/harness.ts";
 import { allProposals, command, commandRows, decide, mcpCall, newDecisionHour, newKey, ownerRejects, pendingProposals } from "../src/connected-helpers.ts";
 
 const LIMIT = 40;
@@ -46,7 +46,7 @@ afterAll(async () => {
 });
 
 describe("B. the cap on undecided requests, under load", () => {
-  it("[fixed M14-8] " + "a burst of concurrent requests on one connection leaves more than 40 undecided requests", async () => {
+  defect("M14-8", "a burst of concurrent requests on one connection leaves more than 40 undecided requests", async () => {
     const owner = world.synthetic;
     const connection = await connectMcp(owner, { write: true, clientName: "SYNTHETIC assistant sending a burst" });
     expect(await pendingProposals(owner)).toEqual([]);

@@ -6,12 +6,14 @@ registered with `defect(...)` when it was found; while it is open the test asser
 expected failure, and it is reported as "expected to fail" once the defect is fixed. Current status is in
 `../DEFECTS.md`. Line numbers refer to `adv-base-5db4fd8/`.
 
-**Status after the rewrite to the 2026-10-05 contract (2026-10-13, shared tree):** M14-1 and M14-8 are fixed and
-re-verified (`[fixed …]`, bodies unchanged). M14-3, M14-5 and M14-9 are now `[contract]` tests of the behaviour the
-contract requires and pass. M14-2 stays open under the coordinator's ruling of 2026-10-12. M14-4, M14-6 and M14-7 stay
-open, with their vehicles moved to the requests that still wait under the contract (section-3 types): M14-4 uses
-`garment.remove_fabricated`, M14-6 uses `media.delete_asset`, and M14-7 uses eight relayed `forget` calls. M14-10 is new.
-The reproductions below are kept as found; the tests hold the current vehicles.
+**Status after the rewrite to the 2026-10-05 contract (2026-10-13, `garderobe-rebuild` tip `97ed5ffc`):** M14-1 is fixed
+and re-verified (`[fixed …]`, body unchanged). M14-5 and M14-9 are now `[contract]` tests of the behaviour the contract
+requires and pass. M14-2 stays open under the coordinator's ruling of 2026-10-12. M14-3, M14-4, M14-6, M14-7 and M14-8
+stay open, with their vehicles moved to the requests that still wait under the contract (section-3 types): M14-3 and
+M14-4 use `garment.remove_fabricated`, M14-6 and M14-8 use `media.delete_asset`, and M14-7 uses eight relayed `forget`
+calls (fixes for M14-3, M14-4, M14-7 and M14-8 are in the API/MCP workstream's parked patch
+`.fabric-parked/api-batch-4b-proposals.patch`, not yet on `garderobe-rebuild`). M14-10 is open. The reproductions below
+are kept as found; the tests hold the current vehicles.
 
 ### M14-1: a wash report that names one garment and also carries `allOfChannel` washes the whole hamper with no owner action
 - Severity: high

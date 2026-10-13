@@ -8,35 +8,26 @@ assertion was weakened to pass. In the default run (`npm test`) each open entry 
 default run.
 
 Found at `garderobe-rebuild` commit `5db4fd87` and later runs. **Current status is from the default run of
-2026-10-13 (run 14, `adv-run14.log`)** on the shared project tree: the branch head plus the API, assistant, media and
-daily workstreams' unpublished edits.
+2026-10-13 on `garderobe-rebuild` tip `97ed5ffc`:**
 
-- api-mcp/worker, run 14: 15 files, 424 tests: 406 passed, 13 expected failures, 2 skipped (strict only), 3 failed.
-  Two of the failures were M14-4 and M14-7 passing. Their fixes are in the API/MCP workstream's held batch, not on the
-  branch, so at that workstream's request both stay open defects until the batch lands. The third was the 14b long-list test meeting the M14-7
-  fix: a new relayed turn needs room for 8 requests, so its rounds now send the turns before the typed requests.
-  `test/14` and `test/14b` re-run after those changes: 47 passed, 3 expected failures, 0 failed. Expected result on the
-  current suite: 409 passed, 13 expected failures, 2 skipped, 0 failed. The 13 plus the 2 strict-only skips are the
-  15 open entries.
-- Changes since run 12: D11-3 is `[fixed]`. D08-2 is open again: the coordinator ruled that its fix lands only with or
-  after the assistant's held change (`discardImportedConversation`), so the API/MCP workstream took the fix back out of
-  the shared tree. M14-11 is withdrawn (see below).
-- daily-media: 46 passed (runs 12, 13 and 14). Shared configuration: 7 passed.
-- Run 15 (`adv-run15.log`, full default run after the last review fixes), api-mcp/worker: 407 passed, 13 expected
-  failures, 2 skipped, 2 failed. Both failures were test faults, now fixed:
-  - 09's live-token guesses met the deletion route's limit of ten requests an hour, so the test now clears that counter
-    between phases.
-  - 12 counted Google's own client secret, sent to Google's token endpoint by a concurrently running file, as a leak.
-  `test/09`, `test/12` and `test/14` re-run: 77 passed, 4 expected failures, 1 skipped (strict only), 0 failed.
-  daily-media 46 passed, configuration 7 passed. The typecheck passed.
+- api-mcp/worker on `97ed5ffc`: 15 files, 425 tests: 404 passed, 19 expected failures, 2 skipped (strict only), 0 failed.
+  The 19 expected failures plus the 2 strict-only skips are the 21 open entries below.
+- M14-3, M14-4, M14-7 and M14-8 have candidate fixes in `.fabric-parked/api-batch-4b-proposals.patch`, and D11-3 has a
+  candidate fix in `.fabric-parked/api-batch-2-3.patch`; until those parked patches land on `garderobe-rebuild`, their
+  tests remain `defect(...)` expected failures.
+- L03-4 is new on `97ed5ffc`: `recommend` (`mode: "board"`) and `rebuildDay` in `packages/daily/src/service.ts` choose
+  `reason: existing ? "rebuild" : "compose"` before `prepareBoard` checks `answerIfClaimed()`, so a retransmitted
+  `POST /v1/recommendations` (`mode: "board"`) with the same `clientRequestId` after the first call created the board
+  computes a different `requestFingerprint` and is refused with 409 `idempotency_key_reuse`.
+- daily-media on `97ed5ffc`: 5 files, 46 passed, 0 failed. Typecheck (`npm run typecheck -w @garderobe/adversarial-tests`): passed (exit 0).
 
 Reproduction, expected and actual behaviour, and the product file and line are in the linked file for each area.
 Severities are the suite's own judgement. When the owning workstream fixes an entry, the default run reports its test
 as "expected to fail". The test's `defect(...)` then becomes `it("[fixed <id>] …")` with its body unchanged, and
 the entry moves to "Fixed and re-verified".
 
-**64 found: 17 open (2 high, 9 medium, 6 low; M14-4 and M14-7 among them are fixed in the shared tree and wait for the
-API/MCP held batch to reach the branch), 43 fixed and re-verified, 3 resolved by the contract, 1 withdrawn
+**65 found: 21 open (2 high, 12 medium, 7 low; M14-3, M14-4, M14-7, M14-8 and D11-3 among them have candidate fixes in
+`.fabric-parked/`), 41 fixed and re-verified, 2 resolved by the contract, 1 withdrawn
 (M14-11: the harness reported the MCP SDK's input-schema refusal as `internal`; see [connected](defects/connected.md)).**
 I06-2 and D12-2 are the same fault found from two sides.
 
@@ -47,16 +38,20 @@ I06-2 and D12-2 are the same fault found from two sides.
 | I06-4 | high | assistant | After one oversized tool-call argument, the run of the next message stays `running` for ever | [injection](defects/injection.md) |
 | D10-3 | high | API/MCP | A connected assistant gets image bytes, a storage location or a link over MCP, or can be authorized to upload. The API thread ruled the test right | 10 "a connected assistant gets no image bytes…" |
 | R09-3 | medium | API/MCP | Two sessions unlinking each other's sign-in at the same moment leave an account with no sign-in (unreachable without an active recovery kit); *strict only* | [access](defects/access.md) |
+| L03-4 | medium | daily | A retransmitted `POST /v1/recommendations` (`mode: "board"`) with the same `clientRequestId` is refused with 409 `idempotency_key_reuse` once the first call has created the board (`reason` switches from `"compose"` to `"rebuild"` before `answerIfClaimed()`) | [ledger](defects/ledger.md) |
 | I05-5 | medium | assistant | A search query carries the reason for the owner's footwear restriction to the search provider | [injection](defects/injection.md) |
 | I06-2 | medium | assistant | A secret the model writes in its reply is served by the transcript route and sent back to the model | [injection](defects/injection.md) |
 | I06-5 | medium | assistant | After one oversized tool-call argument the conversation is unusable from then on | [injection](defects/injection.md) |
 | I06-7 | medium | assistant | A research run completes with a verdict and "checked" sources for pages that were never retrieved | [injection](defects/injection.md) |
 | D12-2 | medium | assistant | A credential in the assistant's own reply is removed from the run result but stored and served in clear (same fault as I06-2) | [data](defects/data.md) |
 | M14-2 | medium | API/MCP | A connected assistant undoes a wear the owner recorded by their own tap, with no owner action (coordinator ruling 2026-10-12) | [connected](defects/connected.md) |
+| M14-3 | medium | API/MCP (parked `.fabric-parked/api-batch-4b-proposals.patch`) | A typed request (`garment.remove_fabricated`) that names no versions is confirmed although the owner changed the garment after it was made | [connected](defects/connected.md) |
+| M14-8 | medium | API/MCP (parked `.fabric-parked/api-batch-4b-proposals.patch`) | A burst of concurrent requests on one connection leaves more than 40 undecided requests | [connected](defects/connected.md) |
 | I05-9 | medium | assistant | A whole-category wash relayed through `garderobe_ask` is still kept for the owner, although the 2026-10-13 ruling refuses an unbounded change outright (the typed path already refuses it) | [injection](defects/injection.md) |
-| M14-4 | low | API/MCP (held batch) | A stored request whose payload was changed in the database is carried out under the identifier the owner saw. **Fixed in the shared tree** (its test passed in run 14), but the fix is in the API/MCP workstream's held batch and not on `garderobe-rebuild`. At that workstream's request the test stays an open defect on the branch until the batch lands, so a run on the shared tree reports it as an unexpected pass | [connected](defects/connected.md) |
-| M14-7 | low | API/MCP (held batch) | One `garderobe_ask` turn leaves more requests for the owner than the connection has room for. **Fixed in the shared tree** (`hasRoomFor`; its test passed in run 14), held like M14-4, with the same unexpected pass on the shared tree | [connected](defects/connected.md) |
+| M14-4 | low | API/MCP (parked `.fabric-parked/api-batch-4b-proposals.patch`) | A stored request whose payload was changed in the database is carried out under the identifier the owner saw | [connected](defects/connected.md) |
+| M14-7 | low | API/MCP (parked `.fabric-parked/api-batch-4b-proposals.patch`) | One `garderobe_ask` turn leaves more requests for the owner than the connection has room for | [connected](defects/connected.md) |
 | D08-2 | medium | API/MCP (after the assistant's held change) | An import that fails part-way says nothing was kept but leaves records and image files, and the account can no longer be imported into. A fix passed in the shared tree on 2026-10-13. It was taken back out because, by coordinator ruling, it lands only with the assistant's `discardImportedConversation` | [data](defects/data.md) |
+| D11-3 | low | API/MCP (parked `.fabric-parked/api-batch-2-3.patch`) | OAuth metadata that names a `javascript:` sign-in address is answered with a server error (500 `internal`) instead of a refusal | [data](defects/data.md) |
 | L03-2 | low | foundation | A burst of 80 simultaneous owner reports: many are refused with HTTP 500 instead of being rebased and recorded | [ledger](defects/ledger.md) |
 | I06-6 | low | assistant | A tool-call argument nested 3,000 levels deep crashes the turn and leaves an unhandled rejection; *strict only* | [injection](defects/injection.md) |
 | M14-6 | low | API/MCP | A second connection of the same client is given a further 40 waiting requests; the ruling is 40 per owner (vehicle now `media.delete_asset`) | [connected](defects/connected.md) |
@@ -86,28 +81,25 @@ for the owning workstream to state. Entries with a commit were reported fixed by
 | I06-1 | low | assistant | `8445a1e9` |
 | I05-4 | low | assistant | tree (a mailbox job whose model cannot be reached settles) |
 | I05-6 | medium | assistant | tree (a mailbox search from a turn waits for the owner) |
-| I05-7 | high | assistant | tree (doubt words make a sentence non-factual; `policy/intent.ts`) |
-| D11-3 | low | API/MCP | tree (`connections/service.ts` `mcpAuthorization`: an unexpected discovery failure is refused 412 `precondition_failed`, reason `oauth_discovery_failed`), re-verified in the default run of 2026-10-13 |
-| I05-8 | medium | foundation / domain | tree (`receiptSummary()` in `packages/domain/src/commands/service.ts`) |
-| D08-5 | high | assistant | tree (a forged `importAuthorizedBy` authorizes nothing; logging orders needs an owner tap) |
-| D12-1 | medium | assistant | tree |
-| A02-1 | low | API/MCP | tree (`mcp/consent.ts`) |
-| R09-1 | medium | API/MCP | tree (`auth/session.ts`) |
-| R09-2 | low | API/MCP | tree (`identity/service.ts`) |
-| D08-1, D10-2 | low | API/MCP | tree (`router.ts`) |
-| D08-3 | low | API/MCP | tree (`export/package.ts`) |
-| D10-1 | low | API/MCP, visual wardrobe | tree (GPS stripped from the shared rendition by default; `delivery.ts`; see the note below) |
-| D11-1 | high | API/MCP | tree (`connections/endpoints.ts` resolves before calling) |
-| D11-2 | high | daily, API/MCP | tree (400 `https_required`) |
-| M14-1 | high | API/MCP | tree |
-| M14-8 | medium | API/MCP | tree (`proposals/store.ts` re-checks the limit after each insert) |
+| I05-7 | high | assistant | `999d41c6` (doubt words make a sentence non-factual; `policy/intent.ts`) |
+| I05-8 | medium | foundation / domain | `9fdbcbf3` (`receiptSummary()` in `packages/domain/src/commands/service.ts`) |
+| D08-5 | high | assistant | `5d41122f` (a forged `importAuthorizedBy` authorizes nothing; logging orders needs an owner tap) |
+| D12-1 | medium | assistant | `c3197877` |
+| A02-1 | low | API/MCP | `5ada4cdb` (`mcp/consent.ts`) |
+| R09-1 | medium | API/MCP | `5ada4cdb` (`auth/session.ts`) |
+| R09-2 | low | API/MCP | `5ada4cdb` (`identity/service.ts`) |
+| D08-1, D10-2 | low | API/MCP | `5ada4cdb` (`router.ts`) |
+| D08-3 | low | API/MCP | `a8bff49a` (`export/package.ts`) |
+| D10-1 | low | API/MCP, visual wardrobe | `00541280` / `a8bff49a` (GPS stripped from the shared rendition by default; `delivery.ts`; see the note below) |
+| D11-1 | high | API/MCP | `5ada4cdb` (`connections/endpoints.ts` resolves before calling) |
+| D11-2 | high | daily, API/MCP | `d3e7210a` (400 `https_required`) |
+| M14-1 | high | API/MCP | `5ada4cdb` |
 
 ## Resolved by the owner's contract of 2026-10-05 (not defects now)
 
 The contract ("changes apply at once with undo on every surface") changed what these tests asserted. Each is now a
 passing `[contract]` test of the behaviour the contract requires:
 
-- **M14-3**: the stale check is asserted for a request that still waits under the contract; a typed request that names no versions answers 409 `conflict` once the owner has changed the garment.
 - **M14-5**: the vehicle is a bulk correction; fields it clears are shown in the summary as cleared, and confirming clears exactly those.
 - **M14-9**: mailbox and spreadsheet jobs from a connected assistant wait for the owner; other job kinds start as the assistant's receipted change.
 
