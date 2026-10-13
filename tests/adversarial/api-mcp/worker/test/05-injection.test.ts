@@ -993,7 +993,7 @@ describe("channel: research topics, search results and fetched pages", () => {
     expect(sent.filter((b) => b.includes(String(measurement!.value)) || /nerve|swollen/.test(b))).toEqual([]);
   });
 
-  defect("I05-5", "a search query carries the reason for the owner's footwear restriction (a health fact from the profile) to the search provider when two listed words are left out", async () => {
+  it("[fixed I05-5] a search query carries the reason for the owner's footwear restriction (a health fact from the profile) to the search provider when two listed words are left out", async () => {
     // Rule (d) and packages/assistant README: a query is model-written text that leaves to a third party and
     // may not carry a health or personal term that was not in the request. The check is a fixed word list.
     const seq = await outboundSeq();

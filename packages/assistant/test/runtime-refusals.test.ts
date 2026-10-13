@@ -49,4 +49,12 @@ describe("retrieval and search refusals", () => {
     expect(await searchQueryRefusal(rt("a lightweight raincoat"), "raincoat weight loss")).not.toBeNull();
     expect(await searchQueryRefusal(rt("shoes for nerve pain"), "shoes for nerve pain")).toBeNull();
   });
+
+  it("refuses a query that copies a stored restriction reason even when 'nerve' and 'damage' are omitted (I05-5)", async () => {
+    const w = await createWorld({ real: true });
+    const rt = (requestText: string) => ({ db: w.h.db, principal: w.owner.principal(), requestText });
+    expect(await searchQueryRefusal(rt("Find me some new trousers."), "Sneakers only until the owner says his feet have healed from previously too-small shoes")).not.toBeNull();
+    expect(await searchQueryRefusal(rt("Find me some new trousers."), "Sneakers only until the owner says previously too-small shoes")).not.toBeNull();
+    expect(await searchQueryRefusal(rt("Find me some new trousers."), "high rise wool flannel trousers")).toBeNull();
+  });
 });

@@ -704,13 +704,16 @@ export function retrievalRefusal(rt: Pick<TurnRuntime, "allowedUrls">, url: stri
 }
 
 /** Words about the owner's body and health: they leave in a search query only when the request itself used them. */
-const PRIVATE_TERMS = /\b(nerve|neuropath\w*|injur\w*|surgery|operation|diagnos\w*|chemo\w*|cancer|diabet\w*|arthrit\w*|medical|medication|disab\w*|podiatr\w*|physio\w*|rash|eczema|psoriasis|swelling|swollen|pain|weight|kg|kilos?|stone|lbs?|pounds heavy|bmi|password|address|postcode|phone|salary|income)\b/gi;
+const PRIVATE_TERMS = /\b(nerve|neuropath\w*|injur\w*|damage\w*|heal\w*|recover\w*|feet|foot|toes?|ankles?|blister\w*|sprain\w*|fractur\w*|wound\w*|sore\w*|ache\w*|aching|limp\w*|orthotic\w*|insole\w*|plantar|fasciitis|tendon\w*|bunion\w*|gout|edema|oedema|ulcer\w*|infect\w*|numb\w*|tingl\w*|surgery|operation|diagnos\w*|chemo\w*|cancer|diabet\w*|arthrit\w*|medical|medication|disab\w*|podiatr\w*|physio\w*|doctor\w*|surgeon\w*|clinic\w*|hospital\w*|patient\w*|therap\w*|chronic|symptom\w*|allerg\w*|irritat\w*|itch\w*|chaf\w*|restriction\w*|rash|eczema|psoriasis|swelling|swollen|pain|weight|kg|kilos?|stone|lbs?|pounds heavy|bmi|password|address|postcode|phone|salary|income)\b/gi;
+
+const REASON_STOP = new Set(["the", "and", "for", "with", "from", "that", "this", "are", "was", "were", "his", "her", "their", "our", "out", "into", "not", "all", "any", "can", "may", "new", "some"]);
 
 /**
  * Why a web search query may not be sent, or null when it may. A query is model-written text that leaves
  * to a third party, so it must not be a vehicle for the owner's private facts: every number in it (a
- * measurement, a size, a date of birth) and every word about the owner's body or health must already be
- * in what was asked in this turn, or be part of a wardrobe or product record's own name (a model number).
+ * measurement, a size, a date of birth), every word about the owner's body or health, and any stored
+ * restriction reason or comfort note must already be in what was asked in this turn, or be part of a
+ * wardrobe or product record's own name (a model number).
  * This bounds what a search can carry; it does not make search results trustworthy.
  */
 export async function searchQueryRefusal(rt: Pick<TurnRuntime, "db" | "principal" | "requestText">, query: string): Promise<string | null> {
@@ -730,5 +733,16 @@ export async function searchQueryRefusal(rt: Pick<TurnRuntime, "db" | "principal
   const askedTerms = new Set((asked.match(PRIVATE_TERMS) ?? []).map((t) => t.toLowerCase()));
   const terms = [...new Set((q.match(PRIVATE_TERMS) ?? []).map((t) => t.toLowerCase()).filter((t) => !askedTerms.has(t)))];
   if (terms.length > 0) return `the query mentions ${terms.join(", ")}, which was not in what was asked; the owner's health and personal details are not sent to a search provider`;
+  // Stored restriction reasons and comfort notes may not be copied into an outbound query even when listed medical words are omitted.
+  const wordsOf = (text: string) => (text.toLowerCase().match(/[a-z]{3,}/g) ?? []).filter((w) => !REASON_STOP.has(w));
+  const askedWords = new Set(wordsOf(asked));
+  const queryWords = new Set(wordsOf(q));
+  const notes = await all<{ reason: string }>(rt.db, "SELECT reason FROM restrictions WHERE user_id = ? UNION ALL SELECT text AS reason FROM comfort_feedback WHERE user_id = ?", rt.principal.userId, rt.principal.userId);
+  for (const row of notes) {
+    const leaked = [...new Set(wordsOf(row.reason))].filter((w) => queryWords.has(w) && !askedWords.has(w));
+    if (leaked.length >= 2) {
+      return `the query carries words from a stored restriction or comfort note (${leaked.slice(0, 4).join(", ")}) that were not in what was asked; restriction reasons and health details are not sent to a search provider`;
+    }
+  }
   return null;
 }
