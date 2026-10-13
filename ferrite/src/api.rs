@@ -291,8 +291,9 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
         ("GET", "/v1/today") => {
             let date = query.iter().find(|(k, _)| k == "date").map(|(_, v)| v.as_str());
             match query.iter().find(|(k, _)| k == "scope").map(|(_, v)| v.as_str()) {
-                None | Some("home") => read_today(store, now_ms, date).await,
-                Some(s) if s.starts_with("trip:") => Err(CmdError::new("invalid_command", "scope: trip-day boards are not ported to this server yet; read the home board (scope home)")),
+                None => read_today(store, now_ms, date).await,
+                Some(s) if board::scope_ok(s) => read_today_scoped(store, now_ms, date, s).await,
+                Some(s) if s.ends_with(":evening") => Err(CmdError::new("invalid_command", "scope: evening boards are not ported to this server yet; read the day's board")),
                 Some(_) => Err(CmdError::new("invalid_command", "scope: expected home or trip:<tripId>")),
             }
         }
@@ -542,6 +543,31 @@ pub async fn read_trips<S: Store>(store: &mut S) -> Result<Value, CmdError> {
         }
     }
     Ok(trips::listing(out))
+}
+
+/// The trip the owner is away on that day (`packedTripOn` in packages/daily/src/trip-day.ts): a planned
+/// trip whose dates cover the day and for which something is packed, the latest departure first, then
+/// by trip ID. Until he says something is packed, a trip is only a plan and the day is answered from
+/// home.
+pub(crate) async fn packed_trip_on<S: Store>(store: &mut S, l: &Ledger, date: &str) -> Result<Option<Trip>, CmdError> {
+    let stock = ledger::replay(catalogue(), &l.events);
+    let mut best: Option<Trip> = None;
+    // The ledger lists trips in ID order, so a later trip replaces the best only by departing later.
+    for id in l.trips.keys() {
+        if stock.packed_for(id) == 0 {
+            continue;
+        }
+        let Some(t) = load_trip(store, id).await? else {
+            return Err(CmdError::with("internal", "a trip is listed but its record is missing", json!({"retryable": false, "tripId": id})));
+        };
+        if t.status != "planned" || date < t.departs_on.as_str() || date > t.returns_on.as_str() {
+            continue;
+        }
+        if best.as_ref().map_or(true, |b| t.departs_on > b.departs_on) {
+            best = Some(t);
+        }
+    }
+    Ok(best)
 }
 
 /// `GET /v1/trips/{id}` (`Trip`).
@@ -893,7 +919,7 @@ fn board_result_ok(kind: &str, r: &ferrite_app::serde_json::Map<String, Value>) 
         "board.publish" => {
             keys(&["boardId", "revision", "localDate", "scope", "offered", "reserves", "requestedCount", "dropped", "optionIds", "exposureId"])
                 && date
-                && r["scope"] == "home"
+                && r["scope"].as_str().map_or(false, board::scope_ok)
                 && n("offered")
                 && n("reserves")
                 && n("requestedCount")
@@ -1050,9 +1076,15 @@ pub async fn read_day<S: Store>(store: &mut S, date: &str) -> Result<Value, CmdE
     Ok(wear::daily_record(catalogue(), &l, date))
 }
 
-/// `GET /v1/today[?date=]` (`TodayResponse`): the day's home board, read without inference. Without
-/// a date it is the owner's day now, in the owner's timezone (`time::OWNER_TIMEZONE`).
+/// `GET /v1/today[?date=]` for the home board; see `read_today_scoped`.
 pub async fn read_today<S: Store>(store: &mut S, now_ms: u64, date: Option<&str>) -> Result<Value, CmdError> {
+    read_today_scoped(store, now_ms, date, "home").await
+}
+
+/// `GET /v1/today[?date=][&scope=]` (`TodayResponse`, `getToday`): the day's board of `scope` (the
+/// home board, or a trip's day board), read without inference. Without a date it is the owner's day
+/// now, in the owner's timezone (`time::OWNER_TIMEZONE`), whatever the scope, as in TypeScript.
+pub async fn read_today_scoped<S: Store>(store: &mut S, now_ms: u64, date: Option<&str>, scope: &str) -> Result<Value, CmdError> {
     let owner_today = crate::time::local_date(crate::time::owner_day(now_ms));
     let date = match date {
         None => owner_today.as_str(),
@@ -1063,13 +1095,13 @@ pub async fn read_today<S: Store>(store: &mut S, now_ms: u64, date: Option<&str>
     // the board, so the board and the stock it is checked against belong to the same commit.
     for _ in 0..3 {
         let (before, l) = read_ledger(store).await?;
-        let board = indexed_board(store, l.board_for("home", date)).await?;
+        let board = indexed_board(store, l.board_for(scope, date)).await?;
         let (after, _) = read_ledger(store).await?;
         if before != after {
             continue;
         }
         let cat = catalogue();
-        let day = board::Day::of(cat, &l, date);
+        let day = board::Day::for_board(cat, &l, scope, date);
         return Ok(board::today(&day, date, board.as_ref(), wear::day_record(cat, &l, date), l.revision, now_ms));
     }
     Err(CmdError::with("conflict", "the wardrobe kept changing while the board was read; try again", json!({"retryable": true})))
@@ -1097,7 +1129,7 @@ pub(crate) async fn board_view<S: Store>(store: &mut S, board_id: &str) -> Resul
         if before != after {
             continue;
         }
-        let day = board::Day::of(catalogue(), &l, &board.local_date);
+        let day = board::Day::for_board(catalogue(), &l, &board.scope, &board.local_date);
         return Ok(board::document(&day, &board, l.revision));
     }
     Err(CmdError::with("conflict", "the wardrobe kept changing while the board was read; try again", json!({"retryable": true})))
@@ -1344,9 +1376,9 @@ async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envel
         expected_boards(store, env).await?
     };
     check_expected_versions(env, current, &boards)?;
-    // A board is validated for its own date: the repeat horizon looks back from that day.
-    let day = |date: &str| board::Day::of(ctx.cat, current, date);
-    let date_of = |b: Option<&board::Board>| b.map_or(String::new(), |b| b.local_date.clone());
+    // A board is validated for its own scope and date: a trip's day board against what is packed for
+    // the trip, the home board against home stock with the repeat horizon looking back from its day.
+    let board_day = |b: Option<&board::Board>| b.map_or_else(|| board::Day::of(ctx.cat, current, ""), |b| board::Day::for_board(ctx.cat, current, &b.scope, &b.local_date));
     match (env.kind.as_str(), undo_target) {
         ("care.mark_dirty", _) => Ok(Planned::stock(ledger::mark_dirty(ctx, next, &env.payload)?)),
         ("care.washed", _) => Ok(Planned::stock(ledger::washed(ctx, next, &env.payload)?)),
@@ -1416,18 +1448,30 @@ async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envel
         }
         ("board.publish", _) => {
             let input = board::publish_input(&env.payload)?;
+            // A trip's day board is for a day of a trip still planned (`prepareTripDayBoard`).
+            if let Some(trip_id) = board::scope_trip(&input.scope) {
+                match load_trip(store, trip_id).await? {
+                    Some(t) if t.status == "planned" => {
+                        if input.local_date < t.departs_on || input.local_date > t.returns_on {
+                            return Err(CmdError::with("invalid_command", "that date is outside the trip", json!({"tripId": trip_id, "localDate": input.local_date, "departsOn": t.departs_on, "returnsOn": t.returns_on})));
+                        }
+                    }
+                    _ => return Err(CmdError::with("not_found", format!("no active trip '{trip_id}'"), json!({"tripId": trip_id}))),
+                }
+            }
             let existing = indexed_board(store, current.board_for(&input.scope, &input.local_date)).await?;
-            Ok(Planned::board(board::publish(ctx, &day(&input.local_date), existing.as_ref(), input)?))
+            let day = board::Day::for_board(ctx.cat, current, &input.scope, &input.local_date);
+            Ok(Planned::board(board::publish(ctx, &day, existing.as_ref(), input)?))
         }
         ("board.select", _) => {
             let id = board::named_board(&env.kind, &env.payload)?;
             let b = load_board(store, &id).await?;
-            Ok(Planned::board(board::select(ctx, &day(&date_of(b.as_ref())), b.as_ref(), &env.payload)?))
+            Ok(Planned::board(board::select(ctx, &board_day(b.as_ref()), b.as_ref(), &env.payload)?))
         }
         ("board.swap_slot", _) => {
             let id = board::named_board(&env.kind, &env.payload)?;
             let b = load_board(store, &id).await?;
-            Ok(Planned::board(board::swap(ctx, &day(&date_of(b.as_ref())), b.as_ref(), &env.payload)?))
+            Ok(Planned::board(board::swap(ctx, &board_day(b.as_ref()), b.as_ref(), &env.payload)?))
         }
         ("command.undo", Some(target)) => {
             let record = load_command(store, target).await?;
@@ -1470,7 +1514,7 @@ async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envel
                     Planned::board(if kind == "board.select" {
                         board::undo_select(ctx, b.as_ref(), &data, &summary, target)?
                     } else {
-                        board::undo_swap(ctx, &day(&date_of(b.as_ref())), b.as_ref(), &data, &summary, target)?
+                        board::undo_swap(ctx, &board_day(b.as_ref()), b.as_ref(), &data, &summary, target)?
                     })
                 }
                 other => return Err(CmdError::with("not_undoable", "this action has no automatic undo", json!({"commandId": target, "type": other}))),

@@ -69,10 +69,13 @@ async fn today_without_a_date_is_the_owners_day_in_london() {
         assert_eq!(today["emptyReason"], "No board has been published for this day yet.");
         assert_eq!(today["readAt"], now);
     }
-    // A named day is read as named; `scope` may be home, and a trip is refused rather than answered with the home board.
+    // A named day is read as named; `scope` may be home or a trip (an unknown trip has no board), and
+    // an evening board is refused rather than answered with the day's board.
     let (status, named) = send(&mut store, at("2026-09-10T23:30:00Z"), OWNER, "GET", "/v1/today?date=2026-12-25&scope=home", Value::Null).await;
     assert_eq!((status, named["localDate"].clone()), (200, json!("2026-12-25")));
-    for (path, words) in [("/v1/today?scope=trip:trp_1", "trip-day boards are not ported"), ("/v1/today?scope=office", "expected home or trip"), ("/v1/today?date=2026-02-29", "YYYY-MM-DD")] {
+    let (status, trip) = send(&mut store, at("2026-09-10T23:30:00Z"), OWNER, "GET", "/v1/today?scope=trip:trp_1", Value::Null).await;
+    assert_eq!((status, trip["status"].clone(), trip["board"].clone()), (200, json!("none"), Value::Null), "{trip}");
+    for (path, words) in [("/v1/today?scope=trip:trp_1:evening", "evening boards are not ported"), ("/v1/today?scope=office", "expected home or trip"), ("/v1/today?date=2026-02-29", "YYYY-MM-DD")] {
         let (status, e) = send(&mut store, at("2026-09-10T23:30:00Z"), OWNER, "GET", path, Value::Null).await;
         assert_eq!((status, e["error"]["code"].clone()), (400, json!("invalid_command")), "{path}: {e}");
         assert!(e["error"]["message"].as_str().unwrap().contains(words), "{path}: {e}");

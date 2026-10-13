@@ -7,6 +7,10 @@
 //! connection and its client request ID, so a retransmission returns the recorded result and a
 //! different request under the same ID is refused.
 //!
+//! A day inside a planned trip the owner has packed for is answered from that trip (`recommend` in
+//! packages/daily/src/service.ts, `packedTripOn`): only what is packed for it, with no repeat horizon;
+//! the run records the scope (`trip:<tripId>`) so a board-mode retransmission publishes the same board.
+//!
 //! What this port leaves out, and why (README.md, "Recommendations"):
 //! - no composition model is connected, so the deterministic composer (the specification's tested
 //!   fallback) composes every option and a brief's words are not read; the note says so;
@@ -514,7 +518,12 @@ pub(crate) fn stored_answer_ok(r: &Value) -> bool {
     let Some(m) = r.as_object() else { return false };
     let has = |k: &str| m.contains_key(k);
     const RESULT_FIELDS: [&str; 7] = ["localDate", "options", "board", "insufficient", "note", "wardrobeRevision", "readAt"];
-    if m.len() != RESULT_FIELDS.len() || !RESULT_FIELDS.iter().all(|k| has(k)) {
+    // A run recorded before trip-day boards has no scope: it was the home board's.
+    let scope_ok = match m.get("scope") {
+        None => m.len() == RESULT_FIELDS.len(),
+        Some(s) => m.len() == RESULT_FIELDS.len() + 1 && s.as_str().map_or(false, board::scope_ok),
+    };
+    if !scope_ok || !RESULT_FIELDS.iter().all(|k| has(k)) {
         return false;
     }
     // A line is exactly what `board::line` writes for its role and garment (the catalogue is static).
@@ -554,10 +563,16 @@ pub(crate) fn stored_answer_ok(r: &Value) -> bool {
 /// with the `wardrobeRevision` and `readAt` the options were composed from, never the current
 /// ledger's, so an earlier recommendation does not present itself as reflecting later reports.
 pub async fn recommend<S: Store>(store: &mut S, connection: &str, now_ms: u64, input: &RecommendInput) -> Result<Value, CmdError> {
+    Ok(recommend_scoped(store, connection, now_ms, input).await?.0)
+}
+
+/// [`recommend`], with the board scope the options were composed for: `home`, or `trip:<tripId>` for a
+/// day inside a packed trip.
+pub async fn recommend_scoped<S: Store>(store: &mut S, connection: &str, now_ms: u64, input: &RecommendInput) -> Result<(Value, String), CmdError> {
     let run_id = run_id_for("recommendation", connection, &input.client_request_id);
     let key = run_key(&run_id);
     let hash = request_hash(input);
-    let respond = |run: &Value, run_id: Option<&str>| -> Result<Value, CmdError> {
+    let respond = |run: &Value, run_id: Option<&str>| -> Result<(Value, String), CmdError> {
         let ok = run["kind"] == "recommendation" && run["connection"] == connection && run["clientRequestId"] == input.client_request_id.as_str();
         if !ok {
             return Err(CmdError::with("internal", "the stored recommendation run is not this request's; nothing was read", json!({"retryable": false})));
@@ -569,10 +584,14 @@ pub async fn recommend<S: Store>(store: &mut S, connection: &str, now_ms: u64, i
         if run["state"] != "completed" || !stored_answer_ok(r) {
             return Err(CmdError::with("internal", "the stored recommendation run is incomplete; ask again with a new request ID", json!({"retryable": false})));
         }
-        Ok(json!({
-            "state": "completed", "runId": run_id, "localDate": r["localDate"], "options": r["options"], "board": null,
-            "insufficient": r["insufficient"], "note": r["note"], "wardrobeRevision": r["wardrobeRevision"], "readAt": r["readAt"],
-        }))
+        let scope = r["scope"].as_str().unwrap_or("home").to_string();
+        Ok((
+            json!({
+                "state": "completed", "runId": run_id, "localDate": r["localDate"], "options": r["options"], "board": null,
+                "insufficient": r["insufficient"], "note": r["note"], "wardrobeRevision": r["wardrobeRevision"], "readAt": r["readAt"],
+            }),
+            scope,
+        ))
     };
     let stored = store.get(&key).await.map_err(|_| CmdError::with("internal", "the recommendation run could not be read just now; try again", json!({"retryable": true})))?;
     if let Some(bytes) = stored {
@@ -582,7 +601,12 @@ pub async fn recommend<S: Store>(store: &mut S, connection: &str, now_ms: u64, i
     // Only a new composition needs the wardrobe as it stands.
     let (_, ledger) = read_ledger(store).await?;
     let cat = catalogue();
-    let day = Day::of(cat, &ledger, &input.date);
+    // A day away on a packed trip is answered from the suitcase, never from home stock.
+    let scope = match crate::api::packed_trip_on(store, &ledger, &input.date).await? {
+        Some(trip) => format!("trip:{}", trip.trip_id),
+        None => "home".to_string(),
+    };
+    let day = Day::for_board(cat, &ledger, &scope, &input.date);
     let requested = input.count.unwrap_or_else(|| default_count(cat)) as usize;
     // Preview mode keeps no reserves (service.ts).
     let composed = compose(&day, &input.date, requested, 0);
@@ -595,7 +619,7 @@ pub async fn recommend<S: Store>(store: &mut S, connection: &str, now_ms: u64, i
     let at = instant(now_ms);
     let result = json!({
         "localDate": input.date, "options": options, "board": null, "insufficient": composed.options.len() < requested, "note": note,
-        "wardrobeRevision": ledger.revision, "readAt": at,
+        "wardrobeRevision": ledger.revision, "readAt": at, "scope": scope,
     });
     let run = json!({
         "v": 1, "runId": run_id, "kind": "recommendation", "state": "completed", "createdAt": at, "updatedAt": at,

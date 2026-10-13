@@ -14,10 +14,12 @@
 //!   anything but a lightweight oxford is offered only when it was named;
 //! - recorded wears are checked against the seven-day repeat horizon of
 //!   `variety.repeat_horizon` for the board's own date; no repeat exception
-//!   exists yet (only the default brief is ported, and a trip's deliberate
-//!   reuse comes with trips);
-//! - the home board only (no trip boards), the default day brief only, no
-//!   pause, suppression, exposure sets, Calendar projection or repair;
+//!   exists yet on the home board (only the default brief is ported); a trip
+//!   board checks no horizon (validate.ts: the trip is its own exception);
+//! - the home board and trip-day boards (`trip:<tripId>`, drawn only from
+//!   what is packed for that trip), the default day brief only (no evening
+//!   boards), no pause, suppression, exposure sets, Calendar projection or
+//!   repair;
 //! - the sneaker and welted pair is dormant while the healing restriction
 //!   holds, and nothing in this port can lift that restriction;
 //! - the "same neutral three times" advisory and the composer's ranking are
@@ -379,23 +381,61 @@ pub struct Day<'a> {
     pub local_date: Option<i64>,
     /// The wearing dates of every counted wear, by garment.
     pub worn: BTreeMap<String, Vec<i64>>,
+    /// The trip a trip-day board is drawn for: `stock` is then what is packed for it.
+    pub trip: Option<String>,
+}
+
+/// The trip a board scope names (`trip:<tripId>`, `parseScope` in model.ts), or `None` for the home
+/// board and anything that is not a trip scope.
+pub fn scope_trip(scope: &str) -> Option<&str> {
+    scope.strip_prefix("trip:").filter(|id| !id.is_empty() && !id.contains(':') && id.chars().count() <= crate::packing::MAX_TRIP_ID)
+}
+
+/// Whether this port publishes boards of `scope`: the home board and a trip's day board (evening
+/// boards are not ported).
+pub fn scope_ok(scope: &str) -> bool {
+    scope == "home" || scope_trip(scope).is_some()
+}
+
+fn counted_wears(ledger: &Ledger) -> BTreeMap<String, Vec<i64>> {
+    let mut worn: BTreeMap<String, Vec<i64>> = BTreeMap::new();
+    for w in ledger.wears.iter().filter(|w| w.active) {
+        if let Some(d) = parse_local_date(&w.wearing_date) {
+            worn.entry(w.garment_id.clone()).or_default().push(d);
+        }
+    }
+    worn
 }
 
 impl<'a> Day<'a> {
     /// The day `local_date` against the ledger: its replayed stock and its active counted wears.
     pub fn of(cat: &'a Catalogue, ledger: &Ledger, local_date: &str) -> Day<'a> {
-        let mut worn: BTreeMap<String, Vec<i64>> = BTreeMap::new();
-        for w in ledger.wears.iter().filter(|w| w.active) {
-            if let Some(d) = parse_local_date(&w.wearing_date) {
-                worn.entry(w.garment_id.clone()).or_default().push(d);
-            }
+        Day { cat, stock: replay(cat, &ledger.events), local_date: parse_local_date(local_date), worn: counted_wears(ledger), trip: None }
+    }
+
+    /// A trip-day board's day (`assembleContext` with a trip scope): only what is packed for the trip
+    /// is stock, a unit already worn on the trip counts as awaiting care, home stock and the laundry
+    /// cannot leak in, and no repeat horizon is checked (validate.ts: a trip's reuse is its exception).
+    pub fn for_trip(cat: &'a Catalogue, ledger: &Ledger, trip_id: &str) -> Day<'a> {
+        let all = replay(cat, &ledger.events);
+        let mut stock = Replay::default();
+        for g in &cat.garments {
+            stock.stock.insert(g.id.clone(), all.in_trip(&g.id, trip_id));
         }
-        Day { cat, stock: replay(cat, &ledger.events), local_date: parse_local_date(local_date), worn }
+        Day { cat, stock, local_date: None, worn: counted_wears(ledger), trip: Some(trip_id.to_string()) }
+    }
+
+    /// The day a board of `scope` for `local_date` is validated against.
+    pub fn for_board(cat: &'a Catalogue, ledger: &Ledger, scope: &str, local_date: &str) -> Day<'a> {
+        match scope_trip(scope) {
+            Some(trip) => Day::for_trip(cat, ledger, trip),
+            None => Day::of(cat, ledger, local_date),
+        }
     }
 
     /// Stock alone, with no date and no wear history (no repeat horizon is checked).
     pub fn undated(cat: &'a Catalogue, stock: Replay) -> Day<'a> {
-        Day { cat, stock, local_date: None, worn: BTreeMap::new() }
+        Day { cat, stock, local_date: None, worn: BTreeMap::new(), trip: None }
     }
 
     /// The latest counted wearing date of a garment in `[from, before)`.
@@ -420,7 +460,13 @@ fn availability(day: &Day<'_>, g: &Garment) -> Availability {
     }
     let st = day.stock.of(&g.id);
     if st.clean == 0 {
-        reasons.push(if st.dirty > 0 {
+        reasons.push(if day.trip.is_some() {
+            if st.dirty > 0 {
+                "already worn on this trip"
+            } else {
+                "not packed for this trip"
+            }
+        } else if st.dirty > 0 {
             "awaiting care"
         } else if day.stock.at_service(&g.id) > 0 {
             "at the laundry"
@@ -874,8 +920,9 @@ pub fn publish_input(p: &Value) -> Result<PublishInput, CmdError> {
     };
     let scope = match p.get("scope") {
         None => "home".to_string(),
-        Some(Value::String(x)) if x == "home" => x.clone(),
-        Some(_) => return Err(invalid(T, "scope: only the home board is ported; trip boards are not yet")),
+        Some(Value::String(x)) if scope_ok(x) => x.clone(),
+        Some(Value::String(x)) if x.ends_with(":evening") => return Err(invalid(T, "scope: evening boards are not ported yet; publish the day's board")),
+        Some(_) => return Err(invalid(T, "scope: expected home or trip:<tripId>")),
     };
     let list = |key: &str, required: bool| -> Result<Vec<Opt>, CmdError> {
         match p.get(key) {

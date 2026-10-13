@@ -198,7 +198,7 @@ pub async fn recommendations<S: Store>(store: &mut S, principal: Principal, now_
     let (input, board_mode) = recommend_request(body)?;
     // A request ID belongs to its caller and its mode, so a preview never answers for a board.
     let connection = format!("{}:{}", if board_mode { "api-board" } else { "api" }, principal.actor);
-    let mut answer = recommend::recommend(store, &connection, now_ms, &input).await?;
+    let (mut answer, scope) = recommend::recommend_scoped(store, &connection, now_ms, &input).await?;
     if !board_mode {
         return Ok(answer);
     }
@@ -208,9 +208,14 @@ pub async fn recommendations<S: Store>(store: &mut S, principal: Principal, now_
         return Ok(answer);
     }
     let requested = input.count.unwrap_or_else(|| recommend::default_count(crate::seed::catalogue()));
+    // A day inside a packed trip is published as that trip's day board (the scope the run recorded).
+    let mut payload = json!({"localDate": input.date, "requestedCount": requested, "options": options.iter().map(publish_option).collect::<Vec<_>>()});
+    if scope != "home" {
+        payload["scope"] = json!(scope);
+    }
     let envelope = json!({
         "type": "board.publish",
-        "payload": {"localDate": input.date, "requestedCount": requested, "options": options.iter().map(publish_option).collect::<Vec<_>>()},
+        "payload": payload,
         // The request ID belongs to its caller, as the saved run does: the owner and a connected
         // assistant sending the same ID never meet on one publication.
         "idempotencyKey": format!("board-compose:{}:{}", principal.actor, input.client_request_id),

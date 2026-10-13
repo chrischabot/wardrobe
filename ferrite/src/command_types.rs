@@ -55,9 +55,12 @@ pub fn accepted_fields(kind: &str) -> Option<&'static [&'static str]> {
 fn narrowed_field(kind: &str, field: &str) -> Option<Option<Value>> {
     let null_only = || Some(json!({"type": "null", "default": null}));
     match (kind, field) {
-        // board.rs `publish_input`: only the home board, the default day brief, and no snapshot (weather
-        // and Calendar are not read, so a named snapshot is never found).
-        ("board.publish", "scope") => Some(Some(json!({"const": "home", "default": "home"}))),
+        // board.rs `publish_input`: the home board or a trip's day board (no evening boards), the default
+        // day brief, and no snapshot (weather and Calendar are not read, so a named snapshot is never found).
+        ("board.publish", "scope") => Some(Some(json!({
+            "type": "string", "default": "home",
+            "anyOf": [{"const": "home"}, {"pattern": "^trip:[^:]+$", "maxLength": 5 + crate::packing::MAX_TRIP_ID}],
+        }))),
         ("board.publish", "brief") => Some(Some(json!({
             "type": "object",
             "properties": {

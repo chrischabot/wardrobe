@@ -783,7 +783,7 @@ pub fn propose(cat: &Catalogue, ledger: &Ledger, trip: &Trip) -> Value {
     // The trip's repeat exception: no repeat horizon is checked (`allowRepeat`); recorded wears still
     // shape rotation through `worn`.
     let base = Day::of(cat, ledger, &trip.departs_on);
-    let day = Day { cat, stock: base.stock, local_date: None, worn: base.worn };
+    let day = Day { cat, stock: base.stock, local_date: None, worn: base.worn, trip: None };
     let clean = |id: &str| u64::from(day.stock.of(id).clean);
     let (start, end) = (parse_local_date(&trip.departs_on).unwrap_or(0), parse_local_date(&trip.returns_on).unwrap_or(0));
     let mut items: Vec<Item> = Vec::new();
