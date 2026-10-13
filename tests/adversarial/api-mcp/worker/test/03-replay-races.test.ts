@@ -847,7 +847,7 @@ describe("commands racing on the same stock", () => {
     expect(refusedReports.map((r) => `${r.status} ${r.error!.code}`), `${refusedReports.length} of 80 reports were refused`).toEqual([]);
   });
 
-  it("four parallel board publications for one day make one board with consecutive revisions; one request retransmitted makes one revision", async () => {
+  it("four parallel board publications for one day make one board with consecutive revisions", async () => {
     const owner = world.real;
     const date = await ownerDay(owner, 4);
     const published = await Promise.all(
@@ -865,9 +865,14 @@ describe("commands racing on the same stock", () => {
     expect(revisions, "one revision per independent publication").toHaveLength(4);
     expect(boards[0]!.current_revision).toBe(revisions.length);
     for (const p of published) expect(p.body.board?.boardId, "every publication answers with the day's board").toBe(boards[0]!.board_id);
+  });
 
+  defect("L03-4", "a retransmitted POST /v1/recommendations (mode 'board') with the same clientRequestId is refused with 409 idempotency_key_reuse once the first call has created the board", async () => {
+    const owner = world.real;
     const other = await ownerDay(owner, 5);
     const requestId = uid("publish-retransmitted");
+    const first = await owner.api.post("/v1/recommendations", { clientRequestId: requestId, mode: "board", date: other });
+    expect(first.status).toBe(200);
     const retransmitted = await Promise.all(
       Array.from({ length: 4 }, async () => {
         const response = await owner.api.post("/v1/recommendations", { clientRequestId: requestId, mode: "board", date: other });

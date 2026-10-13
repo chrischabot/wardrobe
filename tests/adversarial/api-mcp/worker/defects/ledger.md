@@ -1,8 +1,8 @@
 # Open product defects: ledger (replay and races, time, invariants)
 
-> **Status 2026-10-12:** L03-3, L04-1 to L04-6, L13-1 and L13-2 are fixed and re-verified. Their tests are now ordinary
+> **Status 2026-10-13:** L03-3, L04-1 to L04-6, L13-1 and L13-2 are fixed and re-verified. Their tests are now ordinary
 > `[fixed <id>]` tests; see "Fixed and re-verified" in `../DEFECTS.md`. Their entries below are kept as the record of
-> what was found. L03-2 is still open.
+> what was found. L03-2 and L03-4 are open.
 
 Found by `test/03-replay-races.test.ts`, `test/04-time.test.ts` and `test/13-invariants.test.ts` against
 garderobe-rebuild 5db4fd87 (clean checkout `adv-base-5db4fd8`). Each entry was registered in its test file with
@@ -30,6 +30,15 @@ test of that rule.)
 - Actual: the first `laundry.return {}` returns the batch (1 item clean). The second `laundry.return {}` for the same instant answers 200 "Laundry returned: 1 item clean (no pickup had been recorded; your report stands)" and the piece that became dirty after the pickup, which was never in a bag, goes from `dirty: 1` to `clean: 1`. Over MCP the same second report runs directly (`laundry.return` is a routine action), observed in a probe: "Laundry returned: 56 items clean (no pickup had been recorded...)".
 - Reproduction (synthetic owner): `care.mark_dirty` A at now-50h; `laundry.collect {}` at now-40h (batch holds A); `care.mark_dirty` C at now-30h; `laundry.return {}` at now-2h (A clean, C dirty); `laundry.return {}` again with a new key, same `occurredAt` (C becomes clean).
 - Where: adv-base-5db4fd8/packages/domain/src/handlers/wear-care.ts:555-580 (no batch outstanding: every dirty service piece is washed, although a returned batch is on record and the piece became dirty after that batch's pickup).
+
+### L03-4: A retransmitted `POST /v1/recommendations` (`mode: "board"`) with the same `clientRequestId` is refused with 409 `idempotency_key_reuse` once the first call has created the board
+- Severity: medium
+- Owning workstream: daily (packages/daily)
+- Test: test/03-replay-races.test.ts, "a retransmitted POST /v1/recommendations (mode 'board') with the same clientRequestId is refused with 409 idempotency_key_reuse once the first call has created the board"
+- Expected: Retransmitting the identical `POST /v1/recommendations` (`mode: "board"`, same `clientRequestId`, same `date`) returns the published board (200) and creates only one board revision.
+- Actual: Once the first call has published the board for `date` (recorded under `recommend:<clientRequestId>:1` with `reason: "compose"` in its `requestFingerprint`), a retry or late concurrent retransmission of the exact same request sees `existing !== null` (`loadBoard` in `recommend` at `packages/daily/src/service.ts:459`), passes `reason: "rebuild"` into `prepareBoard` (`:471`), computes a different `requestFingerprint`, and fails in `sameRequest(prior, fingerprint)` (`:172`) with 409 `idempotency_key_reuse`: `"this request ID was already used for a different board request"`.
+- Reproduction: `POST /v1/recommendations` `{ clientRequestId, mode: "board", date }` on a date without a board (200); send the identical `POST /v1/recommendations` `{ clientRequestId, mode: "board", date }` again (409 `idempotency_key_reuse`).
+- Where: `packages/daily/src/service.ts:459-471` (`recommend` chooses `reason: existing ? "rebuild" : "compose"` before `prepareBoard` checks `answerIfClaimed()`; `rebuildDay` at `:488-501` does the same).
 
 ### L04-1: A wear whose occurredAt lies decades before its own wearing date is accepted and ordered there, so an older wash "cleans" today's wear
 - Severity: low
