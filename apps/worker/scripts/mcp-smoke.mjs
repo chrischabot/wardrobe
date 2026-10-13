@@ -77,12 +77,15 @@ try {
   const forged = await callTool(writer.client, "garderobe_command", { type: "wear.record", payload: { wearingDate, garmentIds: ["gmt_not_a_real_garment"] }, idempotencyKey: `smoke-missing-${Date.now()}` });
   check("an invented garment is refused, nothing is created", !forged.ok && forged.error.code === "not_found");
 
-  // A correction is not a report: it waits for the owner, and the answer names the proposal and its summary.
+  // Under the 2026-10-05 contract a bounded correction applies at once with undo, while a section 3 change waits for the owner and can be rejected.
   const rename = await callTool(writer.client, "garderobe_command", { type: "garment.correct", payload: { garmentId: syntheticId, changes: { name: "Renamed by the smoke test's connection" }, source: { kind: "owner_statement" } }, idempotencyKey: `smoke-rename-${Date.now()}` });
-  const renameId = rename.error?.details?.proposalId;
+  const renamed = rename.ok && (await api("GET", `/v1/items/${syntheticId}`)).json.detail.garment.name === "Renamed by the smoke test's connection";
+  const undoneRename = rename.ok ? await callTool(writer.client, "garderobe_command", { type: "command.undo", payload: { commandId: rename.data.receipt.commandId }, idempotencyKey: `smoke-undo-rename-${Date.now()}` }) : null;
+  const routing = await callTool(writer.client, "garderobe_command", { type: "inference.set_routing", payload: { task: "conversation", profileId: "smoke-fixture-profile", gatewayId: "smoke-fixture-gateway" }, idempotencyKey: `smoke-routing-${Date.now()}` });
+  const routingId = routing.error?.details?.proposalId;
   const unchanged = (await api("GET", `/v1/items/${syntheticId}`)).json.detail.garment.name === "Smoke-test shirt (synthetic, not real stock)";
-  const rejected = renameId ? await api("POST", `/v1/proposals/${renameId}/decision`, { decision: "reject" }) : null;
-  check("a correction waits for the owner with its proposal identifier and summary, and the owner rejects it", !rename.ok && rename.error.code === "confirmation_required" && Boolean(rename.error.details?.summary) && unchanged && rejected?.json?.proposal?.state === "rejected", rename.error?.details?.summary ?? rename.error?.message);
+  const rejected = routingId ? await api("POST", `/v1/proposals/${routingId}/decision`, { decision: "reject" }) : null;
+  check("a bounded correction applies at once with undo, while a section 3 change waits for the owner and is rejected", Boolean(rename.ok && renamed && undoneRename?.ok) && !routing.ok && routing.error.code === "confirmation_required" && Boolean(routing.error.details?.summary) && unchanged && rejected?.json?.proposal?.state === "rejected", routing.error?.details?.summary ?? routing.error?.message);
 
   const removal = { type: "garment.remove_fabricated", payload: { garmentId: syntheticId, reason: "smoke-test cleanup of a synthetic garment" }, idempotencyKey: `smoke-remove-${Date.now()}` };
   const held = await callTool(writer.client, "garderobe_command", removal);
