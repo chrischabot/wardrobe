@@ -317,6 +317,7 @@ describe("Journey 08: an overshirt goes back, a knit is exchanged for the right 
     expect(partial.result.refund).toEqual({ expectedMinor: 12_000, receivedMinor: 5_000, state: "partial" });
     read = await theCase(returnCase);
     expect(read.refund).toEqual({ expectedMinor: 12_000, receivedMinor: 5_000, state: "partial", currency: "GBP" });
+    expect(await line(orderId, overshirtLine)).toMatchObject({ state: "delivered", refundedMinor: 5_000 });
     // A partial refund never closes the case by itself.
     expect(read.state).toBe("retailer_received");
 
@@ -341,7 +342,7 @@ describe("Journey 08: an overshirt goes back, a knit is exchanged for the right 
   it("the shop's refund notices on the order keep its money right: partial, then refunded, and a repeated notice counts once", async () => {
     const notice = (dedupeKey: string, amountMinor: number) => exec(api(), "purchase.record_event", { orderId, event: { kind: "refund", dedupeKey, occurredAt: new Date().toISOString(), sourceRef: "refund notice (SYNTHETIC)", lineKeys: ["overshirt-L"], amountMinor } });
     expect((await notice("SYN-1001-refund-1", 5_000)).outcome).toBe("committed");
-    expect(await line(orderId, overshirtLine)).toMatchObject({ state: "delivered", refundedMinor: 5_000 });
+    expect(await line(orderId, overshirtLine)).toMatchObject({ state: "delivered", refundedMinor: 12_000 });
     expect((await notice("SYN-1001-refund-2", 7_000)).outcome).toBe("committed");
     expect(await line(orderId, overshirtLine)).toMatchObject({ state: "refunded", refundedMinor: 12_000 });
     const repeated = await notice("SYN-1001-refund-2", 7_000);

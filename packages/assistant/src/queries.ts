@@ -77,7 +77,7 @@ async function hydrateOrder(db: Db, userId: string, r: any): Promise<Order> {
       state: l.state,
       garmentId: l.garment_id,
       deliveredOn: l.delivered_on,
-      refundedMinor: l.refunded_minor > 0 ? l.refunded_minor : (returnRefundByLine.get(l.line_id) ?? 0),
+      refundedMinor: Math.max(l.refunded_minor, returnRefundByLine.get(l.line_id) ?? 0),
       replaces: l.replaces_order_id && l.replaces_line_id ? { orderId: l.replaces_order_id, lineId: l.replaces_line_id } : null,
     })),
     events: events.map((e) => ({ eventId: e.event_id, kind: e.kind, occurredAt: e.occurred_at, sourceRef: e.source_ref, lineIds: json(e.line_ids_json, []), amountMinor: e.amount_minor })),

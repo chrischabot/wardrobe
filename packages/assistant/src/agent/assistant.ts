@@ -957,35 +957,40 @@ export abstract class GarderobeAssistantBase extends Think<any> {
         const flushBuffered = async (id: string) => {
           const full = bufferedText.get(id);
           if (full === undefined) return;
-          bufferedText.delete(id);
           await onEvent(JSON.stringify({ type: "text-delta", id, delta: redactSecrets(full).text, replace: true }));
+          bufferedText.delete(id);
         };
         await this.runTurn({
           mode: "stream",
           input: [message],
           callback: {
             onStart: () => {},
-            // Reasoning never leaves the actor, and text deltas are buffered until the text block finishes so a
-            // credential split across chunks is redacted on the complete text before anything is emitted.
+            // Reasoning and incremental tool-argument deltas never leave the actor, and text deltas are buffered
+            // until the text block finishes so a credential split across chunks is redacted on the complete text.
             onEvent: async (chunk: string) => {
               if (/"type"\s*:\s*"reasoning/.test(chunk)) return;
+              let parsed: Record<string, unknown>;
               try {
-                const parsed = JSON.parse(chunk) as Record<string, unknown>;
-                const type = typeof parsed["type"] === "string" ? parsed["type"] : "";
-                const id = typeof parsed["id"] === "string" ? parsed["id"] : "default";
-                if (type === "text-delta" && typeof parsed["delta"] === "string") {
-                  bufferedText.set(id, (bufferedText.get(id) ?? "") + parsed["delta"]);
-                  return;
-                }
-                if (type === "text-end") {
-                  await flushBuffered(id);
-                } else if (type === "finish" || type === "finish-step") {
-                  for (const key of [...bufferedText.keys()]) await flushBuffered(key);
-                }
-                await onEvent(JSON.stringify(redactDeep(parsed)));
+                parsed = JSON.parse(chunk) as Record<string, unknown>;
               } catch {
                 // Ignore malformed non-JSON stream chunks rather than forwarding unparsed text.
+                return;
               }
+              const type = typeof parsed["type"] === "string" ? parsed["type"] : "";
+              const id = typeof parsed["id"] === "string" ? parsed["id"] : "default";
+              if (type === "text-delta" && typeof parsed["delta"] === "string") {
+                bufferedText.set(id, (bufferedText.get(id) ?? "") + parsed["delta"]);
+                return;
+              }
+              if (type === "tool-input-start" || type === "tool-input-delta" || type.endsWith("-delta")) {
+                return;
+              }
+              if (type === "text-end") {
+                await flushBuffered(id);
+              } else if (type === "finish" || type === "finish-step") {
+                for (const key of [...bufferedText.keys()]) await flushBuffered(key);
+              }
+              await onEvent(JSON.stringify(redactDeep(parsed)));
             },
             onDone: () => {},
             onError: (err: string) => {

@@ -706,7 +706,14 @@ export function retrievalRefusal(rt: Pick<TurnRuntime, "allowedUrls">, url: stri
 /** Words about the owner's body and health: they leave in a search query only when the request itself used them. */
 const PRIVATE_TERMS = /\b(nerve|neuropath\w*|injur\w*|damage\w*|heal\w*|recover\w*|feet|foot|toes?|ankles?|blister\w*|sprain\w*|fractur\w*|wound\w*|sore\w*|ache\w*|aching|limp\w*|orthotic\w*|insole\w*|plantar|fasciitis|tendon\w*|bunion\w*|gout|edema|oedema|ulcer\w*|infect\w*|numb\w*|tingl\w*|surgery|operation|diagnos\w*|chemo\w*|cancer|diabet\w*|arthrit\w*|medical|medication|disab\w*|podiatr\w*|physio\w*|doctor\w*|surgeon\w*|clinic\w*|hospital\w*|patient\w*|therap\w*|chronic|symptom\w*|allerg\w*|irritat\w*|itch\w*|chaf\w*|restriction\w*|rash|eczema|psoriasis|swelling|swollen|pain|weight|kg|kilos?|stone|lbs?|pounds heavy|bmi|password|address|postcode|phone|salary|income)\b/gi;
 
-const REASON_STOP = new Set(["the", "and", "for", "with", "from", "that", "this", "are", "was", "were", "his", "her", "their", "our", "out", "into", "not", "all", "any", "can", "may", "new", "some"]);
+const REASON_STOP = new Set([
+  "the", "and", "for", "with", "from", "that", "this", "are", "was", "were", "his", "her", "their", "our", "out", "into", "not", "all", "any", "can", "may", "new", "some",
+  "shirt", "shirts", "trouser", "trousers", "pant", "pants", "jean", "jeans", "chino", "chinos", "jacket", "jackets", "coat", "coats", "blazer", "blazers", "suit", "suits",
+  "sweater", "sweaters", "jumper", "jumpers", "cardigan", "cardigans", "crewneck", "polo", "polos", "rugby", "rugbies", "overshirt", "overshirts", "chore", "mac", "parka", "overcoat",
+  "shoe", "shoes", "boot", "boots", "sneaker", "sneakers", "loafer", "loafers", "derby", "derbies", "oxford", "oxfords", "sock", "socks", "belt", "belts", "scarf", "scarves", "tie", "ties",
+  "wool", "cotton", "linen", "cashmere", "silk", "denim", "flannel", "corduroy", "tweed", "shetland", "lambswool", "merino", "alpaca", "suede", "leather", "canvas", "chambray", "poplin", "twill",
+  "navy", "blue", "black", "grey", "gray", "brown", "tan", "olive", "green", "white", "cream", "ecru", "beige", "khaki", "burgundy", "charcoal", "indigo", "moss", "oatmeal",
+]);
 
 /**
  * Why a web search query may not be sent, or null when it may. A query is model-written text that leaves
@@ -734,10 +741,15 @@ export async function searchQueryRefusal(rt: Pick<TurnRuntime, "db" | "principal
   const terms = [...new Set((q.match(PRIVATE_TERMS) ?? []).map((t) => t.toLowerCase()).filter((t) => !askedTerms.has(t)))];
   if (terms.length > 0) return `the query mentions ${terms.join(", ")}, which was not in what was asked; the owner's health and personal details are not sent to a search provider`;
   // Stored restriction reasons and comfort notes may not be copied into an outbound query even when listed medical words are omitted.
-  const wordsOf = (text: string) => (text.toLowerCase().match(/[a-z]{3,}/g) ?? []).filter((w) => !REASON_STOP.has(w));
+  const wordsOf = (text: string | null | undefined) => ((text ?? "").toLowerCase().match(/[a-z]{3,}/g) ?? []).filter((w) => !REASON_STOP.has(w));
   const askedWords = new Set(wordsOf(asked));
   const queryWords = new Set(wordsOf(q));
-  const notes = await all<{ reason: string }>(rt.db, "SELECT reason FROM restrictions WHERE user_id = ? UNION ALL SELECT text AS reason FROM comfort_feedback WHERE user_id = ?", rt.principal.userId, rt.principal.userId);
+  const notes = await all<{ reason: string | null }>(
+    rt.db,
+    "SELECT reason FROM restrictions WHERE user_id = ? AND reason IS NOT NULL UNION ALL SELECT text AS reason FROM comfort_feedback WHERE user_id = ? AND text IS NOT NULL",
+    rt.principal.userId,
+    rt.principal.userId,
+  );
   for (const row of notes) {
     const leaked = [...new Set(wordsOf(row.reason))].filter((w) => queryWords.has(w) && !askedWords.has(w));
     if (leaked.length >= 2) {

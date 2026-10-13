@@ -271,14 +271,18 @@ describe("purchase and return guards found in review (real D1, the owner's real 
     expect(await orderVersion(w, orderId)).toBe(before);
   });
 
-  it("shows a return case's recorded refund on the order line it refunds until order-level refund notices arrive (journey D08-1)", async () => {
+  it("shows a return case's recorded refund on the order line it refunds and never drops the total when a partial order notice arrives afterwards (journey D08-1)", async () => {
     const o = await w.owner.exec("purchase.import_order", { merchant: "SYNTH Shop", merchantKey: "synth-d08-1", orderNumber: "D08-1", currency: "GBP", lines: [{ lineKey: "shirt-L", productName: "SYNTH shirt", priceMinor: 12_000, currency: "GBP" }] }, TAP);
     const orderId = String((o.result as { orderId: string }).orderId);
     const lineId = (await lineRow(w, orderId, "shirt-L")).line_id;
     const opened = await w.owner.exec("return.open_case", { kind: "return", orderId, lineId, refundExpectedMinor: 12_000, currency: "GBP" }, TAP);
     const caseId = String(opened.result["caseId"]);
     await w.owner.exec("return.update_case", { caseId, refundReceivedMinor: 5_000 }, TAP);
+    expect((await getOrder(w.h.db, w.owner.principal(), orderId))!.lines[0]!.refundedMinor).toBe(5_000);
     await w.owner.exec("return.update_case", { caseId, refundReceivedMinor: 7_000 }, TAP);
+    expect((await getOrder(w.h.db, w.owner.principal(), orderId))!.lines[0]!.refundedMinor).toBe(12_000);
+    // A subsequent partial order-level refund notice for the first 5,000 does not drop the displayed refund from 12,000 to 5,000.
+    await w.owner.exec("purchase.record_event", { orderId, event: { kind: "refund", dedupeKey: "d08-1-ref-1", occurredAt: "2026-09-15T10:00:00Z", sourceRef: "synthetic:ref1", lineKeys: ["shirt-L"], amountMinor: 5_000 } }, TAP);
     expect((await getOrder(w.h.db, w.owner.principal(), orderId))!.lines[0]!.refundedMinor).toBe(12_000);
   });
 });
