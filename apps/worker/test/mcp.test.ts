@@ -260,16 +260,19 @@ describe("typed commands that wait for the owner (section 3: removing a garment 
     expect(undone.ok, JSON.stringify(undone.error)).toBe(true);
   });
 
-  it("stops a connection from filling the owner's list", async () => {
+  it("says so when a request names a garment that is not in the wardrobe, and stops a connection from filling the owner's list", async () => {
     // A synthetic owner, so the real owner's list is not filled by a test.
     const other = await provisionOwner();
     const noisy = await connectMcp(other, { write: true, clientName: "Noisy assistant (test)", redirectUri: "https://noisy.client.test/cb" });
-    const ask = (n: number) => noisy.client.callTool({ name: "garderobe_command", arguments: { type: "inference.set_routing", payload: { task: "conversation", profileId: `fixture-profile-${n}`, gatewayId: "fixture-gateway" }, idempotencyKey: `noisy-${n}-${crypto.randomUUID()}` } });
+    const ask = (n: number) => noisy.client.callTool({ name: "garderobe_command", arguments: { type: "garment.remove_fabricated", payload: { garmentId: `gmt_invented_${n}`, reason: "Synthetic removal for unknown piece" }, idempotencyKey: `noisy-${n}-${crypto.randomUUID()}` } });
     for (let n = 0; n < 40; n++) expect(toolResult(await ask(n)).error!.code, `request ${n}`).toBe("confirmation_required");
     const over = toolResult(await ask(40));
     expect(over.error).toMatchObject({ code: "rate_limited", details: { reason: "too_many_requests_waiting" } });
     const listed = (await other.api.json("GET", "/v1/proposals")).proposals as any[];
     expect(listed).toHaveLength(40);
+    expect(listed[0].summary).toMatch(/an identifier that matches no record on file \(\u201Cgmt_invented_\d+\u201D\)/);
+    // Confirming such a request changes nothing: the command refuses it and the proposal stays open.
+    expect((await other.api.post(`/v1/proposals/${listed[0].proposalId}/decision`, { decision: "confirm" })).status).toBe(404);
     expect((await other.api.json("GET", "/v1/proposals")).proposals).toHaveLength(40);
     await noisy.close();
   });

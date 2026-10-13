@@ -257,7 +257,7 @@ export function buildMcpServer(app: App, caller: McpCaller): McpServer {
           }
           case "command_types": {
             const types = describeCommandTypes(app.registry);
-            return ok(envelope(types as unknown as Record<string, unknown>, { total: types.types.length }), `${types.types.length} command types. A type marked consequential waits for the owner's confirmation in the Garderobe app when sent from this connection (some others wait depending on the payload, such as a change to an unbounded set); system types cannot be used from this connection.`);
+            return ok(envelope(types as unknown as Record<string, unknown>, { total: types.types.length }), `${types.types.length} command types. A type marked consequential waits for the owner's confirmation in the Garderobe app when sent from this connection (a background job that reads the owner's mailbox or files also waits for the owner; a change to an unbounded set is refused); system types cannot be used from this connection.`);
           }
           case "trips": {
             const trips = await requireDaily(app, "trips").trips(principal);
@@ -282,7 +282,7 @@ export function buildMcpServer(app: App, caller: McpCaller): McpServer {
   if (caller.canWrite) {
     server.registerTool(
       "garderobe_command",
-      { title: "Change the wardrobe", description: "One typed, constrained change (see view command_types of garderobe_inventory). Returns the verified receipt. Applied at once with a receipt and an undo: every change the owner reported or asked for. Waits for the owner instead (kept as a proposal only the owner can confirm in the Garderobe app): irreversible erasure, authorization towards another party, connections, model routing and jobs that read the owner's mailbox or files, rewriting the style profile, and changes to an unbounded set. Lifting a restriction is refused. Repeat the same call later to learn the outcome of a proposal.", inputSchema: MCP_TOOL_CONTRACTS.garderobe_command.input, outputSchema: McpCommandOutput, annotations: annotations("garderobe_command", "Change the wardrobe") },
+      { title: "Change the wardrobe", description: "One typed, constrained change (see view command_types of garderobe_inventory). Returns the verified receipt. Applied at once with a receipt and an undo: every change the owner reported or asked for. Waits for the owner instead (kept as a proposal only the owner can confirm in the Garderobe app): irreversible erasure, authorization towards another party, connections, model routing and jobs that read the owner's mailbox or files, and rewriting the style profile. Changes to an unbounded set and lifting a restriction are refused. Repeat the same call later to learn the outcome of a proposal.", inputSchema: MCP_TOOL_CONTRACTS.garderobe_command.input, outputSchema: McpCommandOutput, annotations: annotations("garderobe_command", "Change the wardrobe") },
       async (args) => {
         try {
           const rawAck = (args.payload as Record<string, unknown> | null)?.acknowledgedRestrictionIds;
@@ -323,7 +323,7 @@ export function buildMcpServer(app: App, caller: McpCaller): McpServer {
             }
             if (decided.state === "rejected") throw new ApiException("forbidden", "the owner rejected this change in the Garderobe app; nothing was changed", { reason: "rejected_by_owner", proposalId: stored.row.proposal_id });
             if (decided.state === "expired") throw new ApiException("confirmation_required", "the owner did not confirm this change in time; nothing was changed. Send it again with a new idempotencyKey if it is still wanted.", { reason: "proposal_expired", proposalId: stored.row.proposal_id });
-            throw new ApiException("confirmation_required", "nothing was changed: this change waits for the owner (irreversible erasure, authorization towards another party, what a model or outside connection may reach, rewriting the style profile, or a change to an unbounded set). It is kept as a proposal that only the owner can confirm in the Garderobe app. Tell the owner it is waiting there; repeat this exact call later to learn the outcome.", { reason: "owner_confirmation_required", state: "pending", proposalId: stored.row.proposal_id, summary: decided.summary, expiresAt: decided.expiresAt });
+            throw new ApiException("confirmation_required", "nothing was changed: this change waits for the owner (irreversible erasure, authorization towards another party, what a model or outside connection may reach, or rewriting the style profile). It is kept as a proposal that only the owner can confirm in the Garderobe app. Tell the owner it is waiting there; repeat this exact call later to learn the outcome.", { reason: "owner_confirmation_required", state: "pending", proposalId: stored.row.proposal_id, summary: decided.summary, expiresAt: decided.expiresAt });
           }
           const receipt = await executeCommand(app, principal, envelope, caller.exec);
           return ok({ receipt }, receiptLine(receipt));

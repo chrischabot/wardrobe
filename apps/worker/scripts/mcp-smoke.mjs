@@ -46,7 +46,8 @@ try {
   const snapshot = await callTool(reader.client, "garderobe_inventory", { view: "snapshot" });
   check("garderobe_inventory: complete snapshot equals the API's", snapshot.ok && snapshot.data.complete === true && snapshot.data.total === wardrobe.total, `${snapshot.data?.total} garments`);
 
-  const date = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+  const ownerToday = (await api("GET", "/v1/today")).json.localDate;
+  const date = new Date(Date.parse(`${ownerToday}T12:00:00Z`) + 86_400_000).toISOString().slice(0, 10);
   const recommended = await callTool(reader.client, "garderobe_recommend", { date, count: 3, clientRequestId: `smoke-${Date.now()}` });
   check("garderobe_recommend: validated options from the real wardrobe", recommended.ok && recommended.data.options.length > 0, recommended.ok ? recommended.data.options.map((o) => o.name).join(" | ") : recommended.error?.message);
 
@@ -58,7 +59,7 @@ try {
   // Writes go to a clearly labelled synthetic garment, never to real stock: no wear history is invented.
   const created = await api("POST", "/v1/commands", { type: "garment.create", payload: { name: "Smoke-test shirt (synthetic, not real stock)", category: "shirt", roles: ["top"], careChannel: "service", acquisition: "owned", quantity: 1, isSynthetic: true, source: { kind: "system", note: "synthetic smoke-test garment" } }, idempotencyKey: `smoke-create-${Date.now()}`, authorization: "owner_tap", source: { channel: "ios" } });
   const syntheticId = created.json.affected.find((a) => a.kind === "garment").id;
-  const wearingDate = new Date().toISOString().slice(0, 10);
+  const wearingDate = ownerToday;
   const args = { type: "wear.record", payload: { wearingDate, garmentIds: [syntheticId] }, idempotencyKey: `smoke-wear-${Date.now()}` };
   const wrote = await callTool(writer.client, "garderobe_command", args);
   check("garderobe_command: verified receipt", wrote.ok && ["committed", "merged"].includes(wrote.data.receipt.outcome), wrote.ok ? wrote.data.receipt.summary : wrote.error?.message);
@@ -99,7 +100,7 @@ try {
   check("the synthetic garment is gone and the real inventory is unchanged", wardrobeAfter.total === wardrobe.total && !wardrobeAfter.items.some((i) => i.garment.garmentId === syntheticId), `${wardrobeAfter.total} garments`);
 
   const asked = await callTool(reader.client, "garderobe_ask", { message: "What is in the wash?", clientTurnId: `smoke-ask-${Date.now()}`, mode: "start" });
-  check("garderobe_ask: returns a durable run handle", asked.ok ? Boolean(asked.data.runId) : asked.error.code === "module_unavailable", asked.ok ? `run ${asked.data.runId} (${asked.data.state})` : asked.error.message);
+  check("garderobe_ask: returns a durable run handle", Boolean(asked.ok && asked.data?.runId), asked.ok ? `run ${asked.data.runId} (${asked.data.state})` : asked.error?.message);
 
   const grants = (await api("GET", "/v1/assistants")).json.grants;
   const grant = grants.find((g) => g.clientName === "Smoke reader" && g.status === "active");

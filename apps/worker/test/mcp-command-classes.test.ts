@@ -233,14 +233,47 @@ describe("a typed command from a connected assistant", () => {
     await mcp.close();
   });
 
+  it("is refused as stale when the owner changed the garment after the request was made: confirming answers 409 and nothing changes", async () => {
+    const other = await provisionOwner();
+    const id = await fixtureGarment(other, "Synthetic stale-request shirt (test fixture, not real stock)");
+    const secondId = await fixtureGarment(other, "Synthetic second shirt (test fixture, not real stock)");
+    const version = (await garment(other, id)).garment.version as number;
+    const mcp = await connectMcp(other, { write: true, clientName: "Slow assistant (test)" });
+    const remove = await call(mcp, "garment.remove_fabricated", { garmentId: id, reason: "Synthetic removal against old version" }, { expectedVersions: { [`garment:${id}`]: version } });
+    const merge = await call(mcp, "garment.merge", { sourceGarmentId: secondId, targetGarmentId: id }, { expectedVersions: { [`garment:${id}`]: version } });
+    expect(remove.error!.code).toBe("confirmation_required");
+    expect(merge.error!.code).toBe("confirmation_required");
+    // The owner corrects the garment in the app, which moves its version on.
+    expect((await other.api.command("garment.correct", { garmentId: id, changes: { colour: "white" }, source })).status).toBe(200);
+    const before = await commandCount(other);
+    for (const proposalId of [(remove.error!.details as any).proposalId, (merge.error!.details as any).proposalId]) {
+      const response = await other.api.post(`/v1/proposals/${proposalId}/decision`, { decision: "confirm" });
+      expect(response.status).toBe(409);
+      expect(((await response.json()) as any).error.code).toBe("conflict");
+    }
+    expect(await commandCount(other)).toBe(before);
+    const after = await garment(other, id);
+    expect(after.garment.name).toBe("Synthetic stale-request shirt (test fixture, not real stock)");
+    expect(after.totalOwnedUnits).toBe(2);
+    // Both requests are still open; the owner can only reject them.
+    expect((await pending(other)).map((p) => p.state)).toEqual(["pending", "pending"]);
+    await mcp.close();
+  });
+
   it("counts only requests the owner has not decided towards a connection's limit, so a decided request makes room for the next", async () => {
     const other = await provisionOwner();
+    const id = await fixtureGarment(other, "Synthetic removable shirt (limit test fixture, not real stock)");
     const mcp = await connectMcp(other, { write: true, clientName: "Busy assistant (test)" });
-    const ask = (n: number) => call(mcp, "inference.set_routing", { task: "conversation", profileId: `fixture-profile-${n}`, gatewayId: "fixture-gateway" });
+    const ask = (n: number) =>
+      n === 0
+        ? call(mcp, "garment.remove_fabricated", { garmentId: id, reason: "Synthetic removal 0 (test fixture)" })
+        : call(mcp, "inference.set_routing", { task: "conversation", profileId: `fixture-profile-${n}`, gatewayId: "fixture-gateway" });
     for (let n = 0; n < 40; n++) expect((await ask(n)).error!.code, `request ${n}`).toBe("confirmation_required");
     expect((await ask(40)).error).toMatchObject({ code: "rate_limited", details: { reason: "too_many_requests_waiting" } });
-    const [first, second] = await pending(other);
-    expect((await other.api.post(`/v1/proposals/${first.proposalId}/decision`, { decision: "reject" })).status).toBe(200);
+    const allPending = await pending(other);
+    const first = allPending.find((p) => p.type === "garment.remove_fabricated")!;
+    const second = allPending.find((p) => p.type === "inference.set_routing")!;
+    expect((await other.api.post(`/v1/proposals/${first.proposalId}/decision`, { decision: "confirm" })).status).toBe(200);
     expect((await other.api.post(`/v1/proposals/${second.proposalId}/decision`, { decision: "reject" })).status).toBe(200);
     expect((await ask(41)).error!.code).toBe("confirmation_required");
     expect((await ask(42)).error!.code).toBe("confirmation_required");
