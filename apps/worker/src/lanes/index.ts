@@ -128,8 +128,10 @@ function guardRelayedText(r: CommandRegistry): void {
     definition.plan = async (context, payload) => {
       const ctx = context as unknown as GuardContext;
       if (!relayedTurn(ctx)) return plan.call(definition, context, payload);
-      // Lifts are refused by guardRestrictionLifts with their own reason; undo is judged by the command it undoes.
+      // Lifts, internal commands and unbounded sets are refused with their own reasons; undo is judged by the command it undoes.
       const disposition = type === "command.undo" ? await connectedDisposition(r, ctx.db, ctx.userId, type, payload as Record<string, unknown>) : connectedDispositionOfType(r, type, payload as Record<string, unknown>);
+      if (disposition === "lift") throw new CommandError("forbidden", "a connected assistant cannot lift a restriction or undo the command that recorded one; the owner lifts it in the Garderobe app or in their own Garderobe conversation", { reason: type === "command.undo" ? "restriction_not_lifted_by_undo" : "restriction_lift_not_relayed" });
+      if (disposition === "internal") throw new CommandError("forbidden", `'${type}' is not available to a connected assistant; nothing was changed`, { reason: "not_available_to_connected_assistant" });
       if (disposition === "bounded") throw new CommandError("invalid_command", BOUND_MESSAGE, { reason: "change_exceeds_bound", limit: CONNECTED_BULK_LIMIT });
       if (disposition !== "owner") return plan.call(definition, context, payload);
       // Kept for the owner, exactly as it would run; the owner sees it in the app and decides.

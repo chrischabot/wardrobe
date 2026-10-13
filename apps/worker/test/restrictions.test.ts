@@ -117,7 +117,12 @@ describe("text relayed by a connected assistant (garderobe_ask, garderobe_resear
 
     const measureMsg = "My chest is 50 inches";
     const measureData = await askTurn(measureMsg, { toolCalls: [{ toolName: "record_measurement", input: { key: "chest", value: 50, unit: "in", ownerQuote: measureMsg } }] });
-    // A measurement has no automatic undo in the foundation's handler, and its receipt says so.
+    // Contract "Changes apply at once with undo on every surface" (art_fb7552fba71d83c5 §4, citing spec L90):
+    // "A receipt says whether undo is available (receipt.undo.available, with unavailableReason otherwise).
+    // Commands that have no automatic undo today still apply at once and say so in the receipt (L90: 'the card
+    // states whether it can be reversed and offers the applicable correction')." Foundation's measurement.record
+    // handler (packages/domain/src/handlers/style.ts:610) sets undo: { unavailableReason: "record the corrected
+    // measurement; earlier values stay in the history" }.
     expect((measureData.receipts as any[]).find((r) => r.type === "measurement.record")).toMatchObject({ outcome: "committed", undoAvailable: false });
 
     // A non-allowlisted profile amendment becomes a one-tap proposal rather than applying directly.
@@ -148,11 +153,16 @@ describe("text relayed by a connected assistant (garderobe_ask, garderobe_resear
     const lifts: [string, Record<string, unknown>][] = [
       ["restriction.resolve", { restrictionId: restriction.restrictionId, evidence: { kind: "owner_statement", ref: "msg_relayed" } }],
       ["command.undo", { commandId: addedBy }],
+      ["style.import_document", { title: "Synthetic import", content: "# Synthetic\n", expectedSha256: "0".repeat(64), source: { kind: "system" } }],
     ];
     for (const [type, payload] of lifts) {
       const attempt = app.service.execute(relayed, { type, payload, idempotencyKey: `relayed-${crypto.randomUUID()}`, expectedVersions: {}, authorization: "owner_statement", source: { channel: "mcp", parentKind: "turn", parentId: "trn_test_relayed" } });
       await expect(attempt, type).rejects.toMatchObject({ code: "forbidden" });
     }
+    const { TurnRequest } = await import("@garderobe/contracts/ext/api");
+    expect(TurnRequest.safeParse({ clientTurnId: "turn-shared-url-only", sharedUrl: "https://shop.example.com/item" }).success).toBe(true);
+    expect(TurnRequest.safeParse({ clientTurnId: "turn-pasted-text-only", pastedText: "Order confirmation #1234" }).success).toBe(true);
+    expect(TurnRequest.safeParse({ clientTurnId: "turn-empty-turn" }).success).toBe(false);
     expect(await snapshot(owner)).toEqual(before);
     expect(await commandCount(owner)).toBe(commandsBefore);
     // Ordinary relayed changes need the turn's stored words to carry them (the assistant's policy/intent.ts), which

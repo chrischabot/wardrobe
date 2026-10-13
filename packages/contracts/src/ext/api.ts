@@ -610,7 +610,7 @@ export const TurnIntent = z.enum(["chat", "add_item", "identify", "what_i_wore",
 
 export const TurnRequest = z.object({
   clientTurnId: z.string().min(8).max(128).describe("Stable ID created before sending; a retransmission returns the same turn."),
-  /** Only what the owner typed or said. May be empty when a photograph is sent on its own; then nothing can be changed. */
+  /** Only what the owner typed or said. May be empty when a photograph, shared link or pasted text is sent on its own; then nothing can be changed. */
   text: z.string().max(20000).default(""),
   attachmentIds: z.array(z.string()).max(4).default([]).describe("Finalized upload asset IDs only: photographs the assistant should look at."),
   /** What each attached photograph is, when the capture sheet knows (same order is not required; matched by asset ID). */
@@ -622,7 +622,10 @@ export const TurnRequest = z.object({
   sharedUrl: z.string().url().optional(),
   /** Pasted or forwarded third-party text: data for the assistant to read; it can never authorize a change. */
   pastedText: z.string().max(200000).optional(),
-}).refine((t) => t.text.trim().length > 0 || t.attachmentIds.length > 0, "a turn needs text or a photograph");
+}).refine(
+  (t) => t.text.trim().length > 0 || t.attachmentIds.length > 0 || Boolean(t.sharedUrl) || Boolean(t.pastedText && t.pastedText.trim().length > 0),
+  "a turn needs text, a photograph, a shared link or pasted text",
+);
 export type TurnRequest = z.input<typeof TurnRequest>;
 export const TurnResponse = z.object({
   turnId: z.string(),
