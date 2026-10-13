@@ -22,7 +22,7 @@ const LIFT = ["assistant.lift_restriction", "restriction.resolve"];
 const INTERNAL = [
   "board.present", "board.publish", "calendar.record_snapshot", "connection.record_discovery", "connection.record_health", "conversation.confirm_erasure",
   "exposure.publish", "exposure.supersede", "import.record_run", "inference.record_probe", "inference.reserve", "inference.settle", "job.update", "laundry.apply_weekly_reset",
-  "mail.record_sync", "media.apply_retention", "media.complete_job", "media.discard_composite", "media.expire_uploads", "media.fail_job", "media.import_records",
+  "mail.record_sync", "media.apply_retention", "media.authorize_upload", "media.complete_job", "media.discard_composite", "media.expire_uploads", "media.fail_job", "media.finalize_upload", "media.import_records",
   "media.reapply_deletions", "media.record_composite", "media.record_discovery", "media.record_normalization", "search.record_instance", "style.import_document",
   "trip.record_packing_proposal", "weather.record_snapshot",
 ];

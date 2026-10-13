@@ -42,12 +42,15 @@ export const BOUND_MESSAGE = `a connected assistant can change at most ${MAX_APP
 /** Whether a payload applies to more than a bounded, named set (the assistant's `isUnboundedChange`). */
 export const unboundedBulk = (type: string, payload: Record<string, unknown>): boolean => isUnboundedChange(type, payload);
 
+/** Upload-session protocol steps belong to the HTTP upload routes (/v1/uploads/*), never to a connected assistant. */
+const UPLOAD_SESSION_TYPES: ReadonlySet<string> = new Set(["media.authorize_upload", "media.finalize_upload"]);
+
 /** The part that depends only on the type and payload (no ledger read). Unknown types are `direct`: the command service names the error. */
 export function connectedDispositionOfType(registry: CommandRegistry, type: string, payload: Record<string, unknown>): ConnectedDisposition {
   if (!registry.has(type)) return "direct";
   if (forbiddenForConnectedAssistant(type, payload)) return "lift";
   const definition = registry.get(type);
-  if (definition.class === "system" || definition.requiredScope === "admin" || !registry.allowedAuthorizations(definition).includes("owner_statement")) return "internal";
+  if (UPLOAD_SESSION_TYPES.has(type) || definition.class === "system" || definition.requiredScope === "admin" || !registry.allowedAuthorizations(definition).includes("owner_statement")) return "internal";
   if (isUnboundedChange(type, payload)) return "bounded";
   return classifyChange(type, payload, "mcp") === "confirm" ? "owner" : "direct";
 }

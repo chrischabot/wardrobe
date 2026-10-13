@@ -508,7 +508,7 @@ describe("the original stays with the owner in the app", () => {
     expect(context).not.toContain("/v1/media/signed/");
   });
 
-  defect("D10-3", "a connected assistant gets image bytes, a storage location or a link over MCP, or can be authorized to upload", async () => {
+  it("[fixed D10-3] a connected assistant gets image bytes, a storage location or a link over MCP, or can be authorized to upload", async () => {
     const texts: string[] = [];
     for (const args of [{ view: "item", garmentId }, { view: "snapshot" }, { view: "items", limit: 5 }] as Record<string, unknown>[]) {
       const result = await victimMcp.client.callTool({ name: "garderobe_inventory", arguments: args });

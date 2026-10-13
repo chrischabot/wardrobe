@@ -214,7 +214,13 @@ export function buildMcpServer(app: App, caller: McpCaller): McpServer {
           }
           case "item": {
             const item = await readItem(app, principal, need(args.garmentId, "garmentId"));
-            return ok(envelope(item as unknown as Record<string, unknown>), `${item.detail.garment.name}: ${item.detail.totalOwnedUnits} owned unit(s); ${item.detail.recordedWearCount} recorded wear(s). ${item.detail.wearCountCaveat}`);
+            const media = item.media
+              ? {
+                  ...item.media,
+                  assets: item.media.assets.map(({ hadLocationMetadata: _loc, ...asset }) => asset),
+                }
+              : null;
+            return ok(envelope({ ...item, media } as unknown as Record<string, unknown>), `${item.detail.garment.name}: ${item.detail.totalOwnedUnits} owned unit(s); ${item.detail.recordedWearCount} recorded wear(s). ${item.detail.wearCountCaveat}`);
           }
           case "availability": {
             const snapshot = await getAvailability(app.db, principal, { ...(args.date ? { forDate: args.date } : {}), nowMs });
