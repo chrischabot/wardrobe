@@ -1098,8 +1098,8 @@ as TypeScript's `staleVersions: "conflict"` does.
 
 The media core of `packages/media` and `routes/media.ts` (`src/media.rs`,
 `src/image.rs`): the owner's photographs are stored in the app's own private
-storage and read back through the owner's routes or a short-lived signed
-link. Photographs in the export follow in a later part.
+storage and read back through the owner's routes, a short-lived signed link
+or the owner's portable export.
 
 - **Uploads in pieces.** Ferrite refuses a request body above 256 KiB, so the
   content route takes a photograph in pieces of at most 256 KiB, each at
@@ -1155,6 +1155,9 @@ link. Photographs in the export follow in a later part.
   altered or unknown link, or one for a photograph that is not active, is
   the same bare 404, so a link reveals nothing about what exists. A link
   lives at most 15 minutes.
+- **Export.** The owner's portable export packages the photographs within a
+  1.5 MiB budget, without metadata unless the owner asks for
+  `includeLocation` (see "Portable export").
 - **Limits, stated rather than hidden.** HEIC is refused (this server cannot
   clean it; the app converts to JPEG). One rendition per asset, the
   original: a requested `width` is checked against 160, 320, 640 and 1280 and
@@ -1169,7 +1172,7 @@ order, the token, completion before the last byte, the owner-only command
 and its receipt, rejections with their reasons, the garment's photograph,
 the rendition, the asset's views and signed links without GPS or comment
 (and the original with it only for the owner's own request), and the
-export's honest media component.
+export with and without `includeLocation` and past its photograph budget.
 
 ## Known limits
 
@@ -1177,8 +1180,7 @@ Recorded rather than fixed, under the owner's P0/P1 direction. Each is either mi
 the lines of the milestone it was found in.
 
 - Photographs (`src/media.rs`, `src/image.rs`):
-  - The export does not package photographs yet (its media component says
-    so). The item page's `media` stays null and the inventory page names no
+  - The item page's `media` stays null and the inventory page names no
     image; the app asks `GET /v1/items/{id}/image` for each garment.
   - The unchanged iOS client sends a photograph in one `PUT`, so against
     this server it can upload only photographs of at most 256 KiB until it
@@ -1235,12 +1237,16 @@ the lines of the milestone it was found in.
   - No passphrase encryption: a request with a passphrase is refused with
     501 `module_unavailable` (`details.module: "export-encryption"`), never
     answered with an unencrypted package.
-  - Photographs are stored (see "Photographs") but not yet packaged: with
-    any stored, the media component is `incomplete`, holds no file and no
-    location data, and its note gives how many are stored; with none it is
-    complete with no records. This server stores no conversation, so that
-    component is complete with no records and says why. `includeLocation`
-    is recorded on the job (the owner only).
+  - Photographs are packaged under `media/<assetId>.<ext>` while they fit in
+    1.5 MiB (half the package); the rest are counted as omitted and the
+    media component is incomplete. Each photograph spends the budget by its
+    recorded length (plus 64 bytes for the orientation block), whether its
+    packaged copy is smaller or not, so the originals read stay within the
+    budget too; one that cannot fit is omitted without being read. Without `includeLocation` each is the
+    copy without metadata that every other read serves; with it (the owner
+    only) each is the file as supplied, location included. This server
+    stores no conversation, so that component is complete with no records
+    and says why.
   - Receipts are the commands the exported records name, the newest 200
     (the ledger's recent list) and the undo links between them; once the
     recent list is full the component is reported incomplete, since an
@@ -1579,7 +1585,7 @@ From `docs/building-on-upstream-core.md` in `iGentAI/ferrite-labs`.
 |---|---|---|
 | 8 s request deadline (api routes); a late reply is a `504` while the effect still happens | Conversation turns, recommendation runs, research and Calendar sync wait on models or outside services | Slice: a command is a few APE reads and one guarded write; receipt lists are capped at 200 reads (default 50). Later: anything that waits on a model or an outside call runs from a queue and the route answers with a run ID to poll or stream, which the TypeScript API already has as resumable runs. Idempotency keys make a request that timed out safe to send again |
 | 256 KiB request body; chunked bodies refused | Offline replay `POST /v1/commands/batch` (4 MB in TypeScript), photo uploads, portable import | Slice: payload lists are capped at 200 items; a photograph arrives in pieces of at most 256 KiB at `?offset=` (see "Photographs"). Later: the app sends batches in parts under 256 KiB; import packages upload in numbered parts |
-| Reply about 4 MiB (the reply envelope, not the body) | Portable export, media downloads | Slice: a photograph is at most 3 MiB and an export package at most 3 MiB. Later: export and media are served in parts from blob storage |
+| Reply about 4 MiB (the reply envelope, not the body) | Portable export, media downloads | Slice: a photograph is at most 3 MiB and an export package at most 3 MiB, with at most 1.5 MiB of photographs. Later: export and media are served in parts from blob storage |
 | One `set-cookie` per reply | Web sign-in that needs a session cookie and a CSRF cookie | Slice: bearer tokens, no cookies; the OAuth consent page needs none (the owner token in the form is the proof, so a cross-site form cannot forge it). Later: the `packages/auth` pattern, one cookie whose value changes phase, and the CSRF token in the body or a header |
 | No `Host` header reaches the app (`host` is refused in `forward_headers`) | OAuth issuer, metadata URLs, `WWW-Authenticate` challenges | The public origin is the deploy secret `WARDROBE_PUBLIC_ORIGIN`; the OAuth and MCP routes refuse to answer without it |
 | Stream routes get no headers; no session affinity | MCP Streamable HTTP's optional SSE stream and `Mcp-Session-Id` | The MCP endpoint is stateless with JSON responses: tools answer within one request, and `GET /mcp` is 405 |
@@ -1629,12 +1635,11 @@ small change of its own, and passes `ferrite check`, `ferrite test` and
 4. **Conversation actor.** The Durable Object conversation authority as APE
    state plus queue-driven turns, model calls through Ferrite's AI gateway
    egress (only the project's allowed model), streamed over SSE with a ticket.
-5. **Media.** Started: uploads in pieces, finalization as a command, the
-   garment's photograph, renditions, signed links and assets, all without
-   location unless the owner asks for the original, see "Photographs".
-   Next, from `wardrobe/.fabric-parked/ferrite-7b.patch`: photographs in
-   the export.
-   After that: media review, photos-needed, deletion and selfie retention,
+5. **Media.** The media core is in: uploads in pieces, finalization as a
+   command, the garment's photograph, renditions, signed links, assets and
+   photographs in the export, all without location unless the owner asks,
+   see "Photographs".
+   Next: media review, photos-needed, deletion and selfie retention,
    then HEIC cleaning, thumbnails and composites in Rust. Cloudflare Images,
    AI Search and the Cache API have no Ferrite equivalent; search over the
    wardrobe becomes an index the app keeps in its own store.

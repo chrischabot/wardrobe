@@ -2,7 +2,7 @@
 //! upload, send its bytes in pieces within Ferrite's 256 KiB body cap, finalize it through the
 //! command service (a receipt like every other change), then read the garment's photograph, the
 //! rendition, the asset and a signed link, none of which carries location unless the owner asks for
-//! the original as supplied.
+//! the original as supplied; and the portable export with and without `includeLocation`.
 //!
 //! Test doubles: the store is an in-memory double of the APE binding (the same guarded-commit
 //! semantics), and the image files are synthetic, built byte by byte with the structure of a JPEG
@@ -129,6 +129,23 @@ fn jpeg(w: u16, h: u16, pad: usize) -> Vec<u8> {
 
 fn find(haystack: &[u8], needle: &[u8]) -> bool {
     haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// The entries of a ZIP archive written without compression, by walking its local headers.
+fn entries(zip: &[u8]) -> BTreeMap<String, Vec<u8>> {
+    let u16_at = |i: usize| u16::from_le_bytes([zip[i], zip[i + 1]]) as usize;
+    let u32_at = |i: usize| u32::from_le_bytes([zip[i], zip[i + 1], zip[i + 2], zip[i + 3]]) as usize;
+    let mut out = BTreeMap::new();
+    let mut i = 0;
+    while i + 30 <= zip.len() && u32_at(i) == 0x0403_4b50 {
+        let size = u32_at(i + 18);
+        let (name_len, extra_len) = (u16_at(i + 26), u16_at(i + 28));
+        let name = String::from_utf8(zip[i + 30..i + 30 + name_len].to_vec()).unwrap();
+        let start = i + 30 + name_len + extra_len;
+        out.insert(name, zip[start..start + size].to_vec());
+        i = start + size;
+    }
+    out
 }
 
 fn upload_request(client: &str, intent: &str, content_type: &str, bytes: usize, garment: Option<&str>) -> Value {
@@ -343,11 +360,69 @@ async fn uploads_are_refused_for_what_they_are_and_rejections_are_recorded_with_
     assert_eq!(done.json["state"], "finalized", "{}", done.json);
     let image = owner(&mut store, now + 4_000, "GET", &format!("/v1/items/{OXFORD_BLUE}/image"), Value::Null).await;
     assert_eq!(image.status, 200);
+}
 
-    // The export does not package photographs yet, and says so rather than claim the component complete.
-    let job = owner(&mut store, now + 10_000, "POST", "/v1/exports", json!({"clientRequestId": "export-photos"})).await;
-    assert_eq!((job.status, job.json["complete"].as_bool()), (200, Some(false)), "{}", job.json);
+#[tokio::test]
+async fn the_export_carries_photographs_without_location_unless_the_owner_asks_for_it() {
+    let mut store = MemStore::default();
+    let now = at("2026-10-13T08:00:00Z");
+    let photo = jpeg(800, 600, 20_000);
+    let done = upload(&mut store, now, "capture-0001", "image/jpeg", &photo, Some(OXFORD_BLUE)).await;
+    assert_eq!(done.json["state"], "finalized", "{}", done.json);
+    let asset_id = done.json["asset"]["assetId"].as_str().unwrap().to_string();
+
+    for (client, include_location) in [("export-0001", false), ("export-0002", true)] {
+        let job = owner(&mut store, now + 10_000, "POST", "/v1/exports", json!({"clientRequestId": client, "includeLocation": include_location})).await;
+        assert_eq!(job.status, 200, "{}", job.json);
+        let media = job.json["components"].as_array().unwrap().iter().find(|c| c["name"] == "media").unwrap().clone();
+        assert_eq!((media["state"].as_str(), media["records"].as_u64()), (Some("complete"), Some(1)), "{media}");
+        let id = job.json["exportId"].as_str().unwrap();
+        let ticket = owner(&mut store, now + 10_000, "POST", &format!("/v1/exports/{id}/ticket"), Value::Null).await;
+        let package = send(&mut store, now + 11_000, "GET", ticket.json["url"].as_str().unwrap(), None, &[], Vec::new()).await;
+        assert_eq!(package.status, 200);
+        let files = entries(&package.bytes);
+        let packaged = &files[&format!("media/{asset_id}.jpg")];
+        if include_location {
+            assert_eq!(packaged, &photo, "the original as supplied, location included");
+        } else {
+            assert!(!has_location(packaged), "no location without includeLocation");
+            assert!(!has_location(&package.bytes), "anywhere in the package");
+            assert_eq!(probe(packaged), probe(&photo));
+        }
+        let records: Value = serde_json::from_slice(&files["records/media.json"]).unwrap();
+        assert_eq!((records["assets"][0]["assetId"].as_str(), records["includesLocation"].as_bool()), (Some(asset_id.as_str()), Some(include_location)));
+        let manifest: Value = serde_json::from_slice(&files["manifest.json"]).unwrap();
+        let listed = manifest["components"].as_array().unwrap().iter().find(|c| c["name"] == "media").unwrap()["files"].clone();
+        assert_eq!(listed, json!(["records/media.json", format!("media/{asset_id}.jpg")]));
+    }
+}
+
+#[tokio::test]
+async fn photographs_beyond_the_export_budget_are_left_out_and_the_component_says_so() {
+    let mut store = MemStore::default();
+    let now = at("2026-10-13T08:00:00Z");
+    // Three photographs of about 700 KB: two fit in the 1.5 MiB for photographs, the third does not.
+    let mut sizes = Vec::new();
+    for n in 0..3 {
+        let photo = jpeg(1000 + n, 800, 700_000);
+        sizes.push(photo.len());
+        let done = upload(&mut store, now + n as u64 * 10_000, &format!("capture-big-{n}"), "image/jpeg", &photo, Some(OXFORD_BLUE)).await;
+        assert_eq!(done.json["state"], "finalized", "{}", done.json);
+    }
+    let job = owner(&mut store, now + 60_000, "POST", "/v1/exports", json!({"clientRequestId": "export-budget"})).await;
+    assert_eq!(job.status, 200, "{}", job.json);
+    assert_eq!((job.json["state"].as_str(), job.json["complete"].as_bool()), (Some("completed_incomplete"), Some(false)));
     let media = job.json["components"].as_array().unwrap().iter().find(|c| c["name"] == "media").unwrap().clone();
-    assert_eq!((media["state"].as_str(), media["records"].as_u64()), (Some("incomplete"), Some(0)), "{media}");
-    assert!(media["note"].as_str().unwrap().starts_with("1 photographs are stored on this server"), "{media}");
+    assert_eq!((media["state"].as_str(), media["records"].as_u64()), (Some("incomplete"), Some(3)), "{media}");
+    assert!(media["note"].as_str().unwrap().contains("1 photographs did not fit"), "{media}");
+    let id = job.json["exportId"].as_str().unwrap();
+    let ticket = owner(&mut store, now + 60_000, "POST", &format!("/v1/exports/{id}/ticket"), Value::Null).await;
+    let package = send(&mut store, now + 61_000, "GET", ticket.json["url"].as_str().unwrap(), None, &[], Vec::new()).await;
+    let files = entries(&package.bytes);
+    let photos: Vec<&Vec<u8>> = files.iter().filter(|(k, _)| k.starts_with("media/")).map(|(_, v)| v).collect();
+    assert_eq!(photos.len(), 2, "{:?}", files.keys().collect::<Vec<_>>());
+    assert!(photos.iter().map(|p| p.len()).sum::<usize>() <= wardrobe::exports::PHOTO_BUDGET_BYTES);
+    assert!(sizes.iter().sum::<usize>() > wardrobe::exports::PHOTO_BUDGET_BYTES);
+    let records: Value = serde_json::from_slice(&files["records/media.json"]).unwrap();
+    assert_eq!(records["assets"].as_array().map(Vec::len), Some(3), "every record, even of a photograph left out");
 }

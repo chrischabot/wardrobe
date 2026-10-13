@@ -15,9 +15,10 @@
 //! grants and token hashes (connected assistants are listed by name, scopes and dates only),
 //! notification device tokens (devices are listed by ID, environment and date only), download
 //! tickets, idempotency markers, run records, and each command's request hash and internal undo
-//! data. This server stores no photographs and no conversation yet, so the package holds none and no
-//! location data can leave with it; `includeLocation` is recorded on the job and refused to anyone
-//! but the owner.
+//! data. Photographs are included under `media/` while they fit in [`PHOTO_BUDGET_BYTES`] (the rest
+//! are counted as omitted and the component is incomplete), each with its metadata removed, location
+//! included, unless the owner asked for `includeLocation`; only then are the originals, location and
+//! all, packaged. This server stores no conversation yet, so the package holds none.
 //!
 //! Storage: the index `exports` (its own commit guard) holds every job; a package is stored in parts
 //! of [`PART_BYTES`] under `x/<exportId>/<n>`, written in the same guarded commit as its job. A
@@ -47,6 +48,8 @@ pub const DOWNLOAD_WINDOW_MS: u64 = 24 * 3_600_000;
 pub const TICKET_TTL_MS: u64 = 5 * 60_000;
 /// The largest package this server builds: a reply is bounded at about 4 MiB of arbitrary bytes.
 pub const MAX_PACKAGE_BYTES: usize = 3 * 1024 * 1024;
+/// The most photograph bytes one package carries; the records need the rest of [`MAX_PACKAGE_BYTES`].
+pub const PHOTO_BUDGET_BYTES: usize = MAX_PACKAGE_BYTES / 2;
 /// The size of one stored part of a package.
 pub const PART_BYTES: usize = 192 * 1024;
 /// Jobs kept in the index; the oldest whose package was emptied make room.
@@ -483,6 +486,8 @@ struct Part {
     records: usize,
     note: Option<String>,
     value: Value,
+    /// Files of this component other than its `records/<name>.json`.
+    files: Vec<(String, Vec<u8>)>,
 }
 
 impl Part {
@@ -529,7 +534,7 @@ async fn raw<S: Store>(store: &mut S, key: &[u8]) -> Result<Option<Value>, CmdEr
 
 fn part(name: &'static str, title: &'static str, records: usize, missing: usize, what: &str, value: Value) -> Part {
     let (state, note) = if missing == 0 { ("complete", None) } else { ("incomplete", Some(format!("{missing} {what} could not be read and are missing from this package"))) };
-    Part { name, title, state, records, note, value }
+    Part { name, title, state, records, note, value, files: Vec::new() }
 }
 
 struct Collected {
@@ -539,7 +544,7 @@ struct Collected {
 }
 
 /// Read every component of the package from the records the landed routes read.
-async fn collect<S: Store>(store: &mut S, now_ms: u64, l: &Ledger) -> Result<Collected, CmdError> {
+async fn collect<S: Store>(store: &mut S, now_ms: u64, l: &Ledger, include_location: bool) -> Result<Collected, CmdError> {
     let cat = catalogue();
     let mut parts = Vec::new();
     let mut seen = BTreeSet::new();
@@ -678,22 +683,30 @@ async fn collect<S: Store>(store: &mut S, now_ms: u64, l: &Ledger) -> Result<Col
         }),
     ));
 
-    let none = |name: &'static str, title: &'static str, note: &str| Part { name, title, state: "complete", records: 0, note: Some(note.to_string()), value: json!({"note": note}) };
+    let none = |name: &'static str, title: &'static str, note: &str| Part { name, title, state: "complete", records: 0, note: Some(note.to_string()), value: json!({"note": note}), files: Vec::new() };
     parts.push(none("conversation", "Conversation messages", "this server stores no conversation (the conversation is not ported to it), so there are no messages to include"));
-    // Photographs are stored (`src/media.rs`) but not yet packaged: say so rather than claim the
-    // component complete.
-    let media_title = "Photographs and derived images";
-    parts.push(match crate::media::stored_count(store).await {
-        Ok(0) => none("media", media_title, "no photographs are stored, so the package holds none and no location data"),
-        Ok(n) => {
-            let note = format!("{n} photographs are stored on this server, but this export does not package photographs yet, so none of them, and no location data, is in this package");
-            Part { name: "media", title: media_title, state: "incomplete", records: 0, value: json!({"note": note, "storedPhotographs": n}), note: Some(note) }
-        }
-        Err(_) => {
-            let note = "the list of photographs could not be read, so none is in this package".to_string();
-            Part { name: "media", title: media_title, state: "incomplete", records: 0, value: json!({"note": note}), note: Some(note) }
-        }
+
+    let (assets, photos, missing, omitted) = crate::media::export_photos(store, include_location, PHOTO_BUDGET_BYTES).await?;
+    let location = if include_location {
+        "photographs are the originals as uploaded, with any location they carry"
+    } else {
+        "photographs have their metadata, location included, removed"
+    };
+    let mut media = part("media", "Photographs", assets.len(), missing, "photographs or their records", json!({"includesLocation": include_location, "assets": assets}));
+    if omitted > 0 {
+        let more = format!("{omitted} photographs did not fit in this package's {PHOTO_BUDGET_BYTES} bytes for photographs and are missing from it");
+        media.state = "incomplete";
+        media.note = Some(match media.note.take() {
+            Some(n) => format!("{n}; {more}"),
+            None => more,
+        });
+    }
+    media.note = Some(match media.note.take() {
+        Some(n) => format!("{n}; {location}"),
+        None => location.to_string(),
     });
+    media.files = photos;
+    parts.push(media);
 
     Ok(Collected { ledger: l.clone(), parts, last_command_at })
 }
@@ -712,7 +725,7 @@ async fn build<S: Store>(store: &mut S, now_ms: u64, export_id: &str, include_lo
     loop {
         attempt += 1;
         let (before, l) = api::read_ledger(store).await?;
-        let mut collected = collect(store, now_ms, &l).await?;
+        let mut collected = collect(store, now_ms, &l, include_location).await?;
         let after = store.get(b"ledger").await.map_err(|_| internal("the wardrobe could not be read just now; try again"))?;
         let coherent = before == after;
         if coherent || attempt >= BOUNDARY_ATTEMPTS {
@@ -750,6 +763,10 @@ fn package(c: &Collected, now_ms: u64, export_id: &str, include_location: bool, 
         let text = serde_json::to_string_pretty(&p.value).unwrap_or_default();
         add(&mut zip, &mut files, &path, text.as_bytes());
         component_files.entry(p.name).or_default().push(path);
+        for (path, data) in &p.files {
+            add(&mut zip, &mut files, path, data);
+            component_files.entry(p.name).or_default().push(path.clone());
+        }
     }
     for (path, text) in views(c, &snapshot) {
         add(&mut zip, &mut files, path, text.as_bytes());
@@ -846,6 +863,7 @@ fn readme(exported_at: &str, complete: bool) -> String {
         "# Your Garderobe export\n\nExported {exported_at}. Format {FORMAT_VERSION}.\n\n{}\n\n\
          - `views/` holds readable copies: the inventory and wear history as CSV, your profile document exactly as you supplied it, and a summary.\n\
          - `records/` holds every record as JSON, one file per component.\n\
+         - `media/` holds your photographs, if any were stored.\n\
          - `manifest.json` lists the components, what each holds and what is never exported; `checksums.sha256` lists a SHA-256 for every file.\n\n\
          No password, sign-in, session, token or other credential is in this package. Keep it private: it describes your wardrobe and how you dress.\n",
         if complete { "Every component is complete." } else { "Some components are incomplete; `manifest.json` and `views/summary.md` say which and why." }

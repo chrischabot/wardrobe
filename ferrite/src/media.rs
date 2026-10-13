@@ -733,11 +733,6 @@ async fn complete<S: Store>(store: &mut S, principal: Principal, now_ms: u64, up
 
 // ─────────────────────────────── reads ───────────────────────────────
 
-/// How many photographs are stored (the portable export reports them, `src/exports.rs`).
-pub(crate) async fn stored_count<S: Store>(store: &mut S) -> Result<usize, CmdError> {
-    Ok(load_index(store).await?.len())
-}
-
 fn image_reply(content_type: &str, bytes: Vec<u8>, if_none_match: Option<&str>) -> Reply {
     let etag = format!("\"{}\"", hex_digest(&bytes));
     let fresh = if_none_match.map_or(false, |v| v.trim() == etag);
@@ -980,4 +975,52 @@ pub async fn route<S: Store>(store: &mut S, tokens: &Tokens, principal: Principa
         Route::Asset(id) => raw_reply(asset(store, id, query, inm).await),
         Route::ItemImage(id) => raw_reply(item_image(store, id, query, inm).await),
     })
+}
+
+// ─────────────────────────────── export ───────────────────────────────
+
+/// The photographs for a portable export: every asset record, and the photographs themselves while
+/// they fit in `budget` bytes, each without metadata unless `include_location` (the owner's own
+/// signed-in export). Returns the records, the files (`media/<assetId>.<ext>`), how many records or
+/// photographs could not be read, and how many photographs did not fit.
+pub(crate) async fn export_photos<S: Store>(store: &mut S, include_location: bool, budget: usize) -> Result<(Vec<Value>, Vec<(String, Vec<u8>)>, usize, usize), CmdError> {
+    let index = load_index(store).await?;
+    let (mut records, mut files, mut missing, mut omitted, mut used) = (Vec::new(), Vec::new(), 0, 0, 0usize);
+    for entry in &index {
+        let asset = match load_asset(store, entry["assetId"].as_str().unwrap_or_default()).await {
+            Ok(Some(a)) => a,
+            _ => {
+                missing += 1;
+                continue;
+            }
+        };
+        let ext = match content_type_of(&asset).as_str() {
+            "image/png" => "png",
+            "image/webp" => "webp",
+            _ => "jpg",
+        };
+        // The recorded length bounds what is read: a photograph that cannot fit is omitted without
+        // reading it, and the budget is spent by that recorded bound, not by the (smaller) copy
+        // packaged, so the originals read and the files packaged both stay within it. A copy without
+        // metadata is at most a few bytes longer than the original (the orientation block replaces a
+        // larger Exif block), so the original length plus that block bounds both.
+        let recorded = asset.view["renditions"][0]["byteLength"].as_u64().unwrap_or(u64::MAX).saturating_add(64);
+        if used as u64 + recorded > budget as u64 {
+            omitted += 1;
+            records.push(asset.view);
+            continue;
+        }
+        // Within the budget, so it fits in usize.
+        let recorded = recorded as usize;
+        used += recorded;
+        match served_bytes(store, &asset, include_location).await {
+            Ok(bytes) if bytes.len() <= recorded => {
+                files.push((format!("media/{}.{ext}", asset.view["assetId"].as_str().unwrap_or_default()), bytes));
+            }
+            Ok(_) => omitted += 1,
+            Err(_) => missing += 1,
+        }
+        records.push(asset.view);
+    }
+    Ok((records, files, missing, omitted))
 }
