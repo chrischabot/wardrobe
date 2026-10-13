@@ -59,9 +59,11 @@ state and request queue with the platform, and says so.
 
 All over HTTP with the app's own receipts as evidence: the public health route;
 sign-in (no token and a wrong token refused with `401 unauthenticated` and no data);
-the owner's inventory (127 garments, 144 owned units, source digest equal to the
-SHA-256 of `requirements/wardrobe_inventory_clean.csv`), also read by the assistant
-and narrowed by category; `care.mark_dirty` relayed by the assistant, applied at
+the owner's inventory (`GET /v1/wardrobe`: one complete page of 127 owned garments
+and 144 owned units), also read by the assistant and narrowed by category; the MCP
+snapshot read (the same garments, balances and revision, its totals, and a source
+digest equal to the SHA-256 of `requirements/wardrobe_inventory_clean.csv`; the
+inventory page carries no import source, so this is checked only where MCP runs); `care.mark_dirty` relayed by the assistant, applied at
 once with a receipt offering undo and the balances moved; the receipt stored and
 listed; the same request answered from its receipt; a reused key refused
 (`409 idempotency_key_reuse`); the assistant claiming an owner tap and the owner on

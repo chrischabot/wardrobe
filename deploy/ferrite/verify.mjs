@@ -74,19 +74,39 @@ export function invalidTokenRefusal(res) {
 }
 const REPLAY_REFUSALS = [[400, "invalid_command"], [400, "unknown_command"], [403, "forbidden"], [404, "not_found"], [409, "precondition_failed"], [409, "idempotency_key_reuse"]];
 
+/**
+ * One inventory item in the flat form the checks read. `GET /v1/wardrobe` answers InventoryPage items
+ * (`{garment: {garmentId, category, careChannel, version, …}, balances: [{bucket, ref, quantity}], totalOwnedUnits, …}`);
+ * the MCP snapshot view answers flat items (`{garmentId, category, careChannel, quantity, version, balances: {bucket: n}}`).
+ * A listed bucket's quantities are summed (a garment can be at two services or on two trips).
+ */
+export function flatItem(i) {
+  const nested = Boolean(i?.garment) && typeof i.garment === "object";
+  const g = nested ? i.garment : (i ?? {});
+  const balances = {};
+  if (Array.isArray(i?.balances)) for (const b of i.balances) balances[b?.bucket] = (balances[b?.bucket] ?? 0) + Number(b?.quantity);
+  else if (i?.balances && typeof i.balances === "object") Object.assign(balances, i.balances);
+  return { garmentId: g.garmentId, category: g.category, careChannel: g.careChannel, quantity: nested ? i.totalOwnedUnits : i?.quantity, version: g.version, balances };
+}
+
+/** A page's items, each in the flat form. */
+export function flatItems(page) {
+  return (Array.isArray(page?.items) ? page.items : []).map(flatItem);
+}
+
 /** Laundered single garments that are clean now, from an inventory page. */
 export function launderableClean(page, n = 2) {
-  return (page?.items ?? []).filter((i) => i.careChannel === "service" && Number(i.balances?.clean) >= 1 && Number(i.quantity) === 1).slice(0, n).map((i) => i.garmentId);
+  return flatItems(page).filter((i) => i.careChannel === "service" && Number(i.balances.clean) >= 1 && Number(i.quantity) === 1).slice(0, n).map((i) => i.garmentId);
 }
 
 /** The balances of one garment on a page, or null. */
 export function balancesOf(page, garmentId) {
-  return (page?.items ?? []).find((i) => i.garmentId === garmentId)?.balances ?? null;
+  return flatItems(page).find((i) => i.garmentId === garmentId)?.balances ?? null;
 }
 
 /** garmentId → balances for a page. */
 function balanceMap(page) {
-  return new Map((page?.items ?? []).map((i) => [i.garmentId, i.balances ?? {}]));
+  return new Map(flatItems(page).map((i) => [i.garmentId, i.balances]));
 }
 
 /**
@@ -108,19 +128,33 @@ export function exactlyChanged(before, after, changes = {}) {
   return Object.keys(changes).every((id) => b.has(id));
 }
 
-/** The parts of an inventory read that two readers must see identically; object keys are put in one order. */
+const sortedKeys = (o) => (o && typeof o === "object" && !Array.isArray(o) ? Object.fromEntries(Object.keys(o).sort().map((k) => [k, o[k]])) : (o ?? null));
+
+/**
+ * The parts of an inventory read that two readers must see identically, in either item shape; object keys are put in
+ * one order and an empty bucket is the same as an unlisted one. The totals are counted from the garments themselves,
+ * because the two reads report theirs under different names.
+ */
 export function inventoryView(page) {
-  const sorted = (o) => (o && typeof o === "object" && !Array.isArray(o) ? Object.fromEntries(Object.keys(o).sort().map((k) => [k, o[k]])) : o ?? null);
-  return {
-    items: (page?.items ?? []).map((i) => ({ garmentId: i.garmentId, category: i.category, careChannel: i.careChannel, quantity: i.quantity, version: i.version, balances: sorted(i.balances) })).sort((x, y) => String(x.garmentId).localeCompare(String(y.garmentId))),
-    counts: sorted(page?.counts),
-    sourceSha256: page?.source?.sha256 ?? null,
-    wardrobeRevision: page?.wardrobeRevision ?? null,
-  };
+  const items = flatItems(page)
+    .map((i) => ({ ...i, balances: sortedKeys(Object.fromEntries(Object.entries(i.balances).filter(([, n]) => Number(n) !== 0))) }))
+    .sort((x, y) => String(x.garmentId).localeCompare(String(y.garmentId)));
+  return { items, garments: items.length, ownedUnits: items.reduce((n, i) => n + Number(i.quantity), 0), wardrobeRevision: page?.wardrobeRevision ?? null };
 }
 
+/**
+ * Whether two reads hold the same inventory: the same garments, balances, versions and revision, and wherever both
+ * report the same thing under the same names (the totals, the import source) it agrees too.
+ */
 export function sameInventory(x, y) {
-  return Boolean(x?.items?.length) && JSON.stringify(inventoryView(x)) === JSON.stringify(inventoryView(y));
+  if (!x?.items?.length || JSON.stringify(inventoryView(x)) !== JSON.stringify(inventoryView(y))) return false;
+  // Every total both reads report under one name must agree: each shared counts field, total and complete.
+  const xc = x.counts && typeof x.counts === "object" ? x.counts : {};
+  const yc = y?.counts && typeof y.counts === "object" ? y.counts : {};
+  for (const k of Object.keys(xc)) if (Object.hasOwn(yc, k) && JSON.stringify(xc[k]) !== JSON.stringify(yc[k])) return false;
+  for (const k of ["total", "complete"]) if (Object.hasOwn(x, k) && y && Object.hasOwn(y, k) && x[k] !== y[k]) return false;
+  if ((x.source !== undefined || y?.source !== undefined) && Boolean(x.source) === Boolean(y?.source) && x.source?.sha256 !== y?.source?.sha256) return false;
+  return true;
 }
 
 /** A committed receipt of a command applied at once, offering undo. */
@@ -313,7 +347,7 @@ const OWN_TEXT = new Set(["reason", "outcomes[].what", "outcomes[].expected"]);
 const SAFE_STRING = /^[A-Za-z0-9_.:+-]{1,128}$/;
 export const EVIDENCE_PATHS = new Set([
   "reason", "httpStatus", "contractVersion", "code", "items", "distinctIds", "unitsCounted",
-  "counts", "counts.garments", "counts.ownedUnits", "sourceSha256", "expectedSourceSha256", "wardrobeRevision",
+  "counts", "counts.garments", "counts.ownedUnits", "counts.owned", "total", "complete", "sourceSha256", "expectedSourceSha256", "wardrobeRevision",
   "receipts", "expected", "commandId", "ownedByRun", "units", "revisionBefore", "revisionAfter", "listed",
   "replayed", "undoCommandId", "receiptUndoAvailable", "secondUndoStatus", "statuses", "revisionDelta",
   "outcomes", "outcomes[].what", "outcomes[].httpStatus", "outcomes[].code", "outcomes[].expected", "outcomes[].ok",
@@ -441,22 +475,23 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
   // run. Anything older, however it was reached (a reused key outside the listed page), is never undone.
   const ownedByRun = (id, revision) => Boolean(first && preexisting) && typeof id === "string" && Number.isInteger(revision) && revision > first.wardrobeRevision && !preexisting.has(id);
   try {
-    await check("inventory", `the owner reads the imported inventory: ${EXPECTED.garments} garments, ${EXPECTED.ownedUnits} owned units, from the supplied CSV`, async () => {
+    await check("inventory", `the owner reads the imported inventory: one complete page of ${EXPECTED.garments} owned garments and ${EXPECTED.ownedUnits} owned units`, async () => {
       const r = await owner("GET", "/v1/wardrobe");
       first = r.status === 200 ? r.json : null;
-      const items = r.json?.items ?? [];
+      const items = flatItems(r.json);
       const ids = new Set(items.map((i) => i.garmentId));
-      // Owned units are counted from the garments themselves, not only taken from the reported total.
+      // Owned units are counted from the garments themselves (each one's total owned units), not only taken from a
+      // reported total. The page carries no import source: the MCP snapshot check holds it to the supplied CSV.
       const units = items.reduce((n, i) => n + (Number.isInteger(i.quantity) && i.quantity > 0 ? i.quantity : Number.NaN), 0);
       return {
-        pass: r.status === 200 && items.length === EXPECTED.garments && ids.size === items.length && units === EXPECTED.ownedUnits && r.json?.counts?.garments === EXPECTED.garments && r.json?.counts?.ownedUnits === EXPECTED.ownedUnits && r.json?.source?.sha256 === sourceSha256,
+        pass: r.status === 200 && items.length === EXPECTED.garments && items.every((i) => typeof i.garmentId === "string" && i.garmentId.length > 0) && ids.size === items.length && units === EXPECTED.ownedUnits && r.json?.total === EXPECTED.garments && r.json?.complete === true && r.json?.counts?.owned === EXPECTED.garments,
         httpStatus: r.status,
         items: items.length,
         distinctIds: ids.size,
         unitsCounted: Number.isNaN(units) ? null : units,
+        total: r.json?.total ?? null,
+        complete: r.json?.complete ?? null,
         counts: r.json?.counts ?? null,
-        sourceSha256: r.json?.source?.sha256 ?? null,
-        expectedSourceSha256: sourceSha256,
         wardrobeRevision: r.json?.wardrobeRevision ?? null,
       };
     });
@@ -474,11 +509,11 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
       return { pass: r.status === 200 && sameInventory(r.json, first), httpStatus: r.status, items: (r.json?.items ?? []).length };
     });
     await check("inventory", "a category filter returns exactly that category's garments", async () => {
-      const category = first?.items?.[0]?.category;
+      const category = flatItems(first)[0]?.category;
       if (!category) return { notRun: "the inventory could not be read" };
       const r = await owner("GET", `/v1/wardrobe?category=${encodeURIComponent(category)}`);
-      const got = (r.json?.items ?? []).map((i) => i.garmentId).sort();
-      const want = first.items.filter((i) => i.category === category).map((i) => i.garmentId).sort();
+      const got = flatItems(r.json).map((i) => i.garmentId).sort();
+      const want = flatItems(first).filter((i) => i.category === category).map((i) => i.garmentId).sort();
       return { pass: r.status === 200 && got.length > 0 && JSON.stringify(got) === JSON.stringify(want), httpStatus: r.status, items: got.length, expected: want.length };
     });
 
@@ -591,17 +626,18 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
     await check("refusals", "invalid, unknown and impossible commands are refused with their codes and write nothing", async () => {
       if (!ready) return { notRun: unready };
       const start = await page();
-      const shoe = (start.items ?? []).find((i) => i.careChannel === "none")?.garmentId;
+      const shoe = flatItems(start).find((i) => i.careChannel === "none")?.garmentId;
       if (!shoe) return { notRun: "the inventory has no garment without laundering" };
       const top = await newestReceipt();
       const tries = [];
       const attempt = async (what, body, status, code) => tries.push([what, await mutate(owner, body), status, code]);
       await attempt("fraction", command("care.mark_dirty", { items: [{ garmentId: a, quantity: 1.5 }] }, `verify-${runId}-frac`, "owner_tap", "ios"), 400, "invalid_command");
-      await attempt("unknown type", command("laundry.collect", {}, `verify-${runId}-unknown`, "owner_tap", "ios"), 400, "unknown_command");
+      // Names the app does not have: laundry.collect and GET /v1/laundry are real now.
+      await attempt("unknown type", command("garment.levitate", {}, `verify-${runId}-unknown`, "owner_tap", "ios"), 400, "unknown_command");
       await attempt("digits-only field name", { ...command("care.mark_dirty", { items: [{ garmentId: a }], 123: true }, `verify-${runId}-field`, "owner_tap", "ios") }, 400, "invalid_command");
       await attempt("missing undo target", command("command.undo", { commandId: "cmd_nope" }, `verify-${runId}-nope`, "owner_tap", "ios"), 404, "not_found");
       await attempt("unlaunderable", command("care.mark_dirty", { items: [{ garmentId: shoe }] }, `verify-${runId}-shoe`, "owner_tap", "ios"), 409, "precondition_failed");
-      tries.push(["no such route", await owner("GET", "/v1/laundry"), 404, "not_found"]);
+      tries.push(["no such route", await owner("GET", "/v1/no-such-route"), 404, "not_found"]);
       const end = await page();
       const outcomes = tries.map(([what, r, status, code]) => ({ what, httpStatus: r.status, code: r.json?.error?.code ?? null, expected: `${status} ${code}`, ok: refusal(r, status, code) }));
       return { pass: outcomes.every((o) => o.ok) && exactlyChanged(start, end) && end.wardrobeRevision === start.wardrobeRevision && (await newestReceipt()) === top, outcomes };
@@ -717,10 +753,11 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
         const form = await consentForm("wardrobe.read wardrobe.write", pkcePair(), randomBytes(12).toString("hex"));
         const { issued, form_mac: mac, ...unissued } = form.fields;
         if (form.status !== 200 || !issued || !mac) return { pass: false, step: "consent_page", httpStatus: form.status };
-        // "Nothing granted" is read from the owner's own list: the run's fresh client must hold no grant afterwards.
+        // "Nothing granted" is read from the owner's own list of connected assistants (`GET /v1/assistants`): the
+        // run's fresh client must hold no grant afterwards.
         const grantsOfClient = async () => {
-          const r = await owner("GET", "/v1/connections");
-          return r.status === 200 && Array.isArray(r.json?.connections) ? r.json.connections.filter((c) => c?.clientId === client).length : null;
+          const r = await owner("GET", "/v1/assistants");
+          return r.status === 200 && Array.isArray(r.json?.grants) ? r.json.grants.filter((c) => c?.clientId === client).length : null;
         };
         const before = await grantsOfClient();
         const wrong = await postForm(meta.authorize, { ...form.fields, owner_token: `not-the-owner-${runId}`, decision: "allow", write: "on" });
@@ -741,7 +778,7 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
         return { pass: Boolean(reader) && JSON.stringify(reader.scopes) === JSON.stringify(["wardrobe.read"]), step: out.step ?? null, httpStatus: out.httpStatus ?? null, scopes: reader?.scopes ?? null };
       });
 
-      await check("mcp", "an MCP client session: initialize, initialized, tools/list offers the read and write tools, and a snapshot read equals the owner's inventory", async () => {
+      await check("mcp", `an MCP client session: initialize, initialized, tools/list offers the read and write tools, and a snapshot read equals the owner's inventory, reports ${EXPECTED.garments} garments and ${EXPECTED.ownedUnits} owned units, and names the supplied CSV as its source`, async () => {
         if (!writer) return { notRun: noClient() ?? "no read-write grant was obtained" };
         const init = await mcp(writer, "initialize", { protocolVersion: MCP_VERSION, capabilities: {}, clientInfo: { name: "wardrobe-verify", version: "1" } }, { version: null });
         const note = await mcp(writer, "notifications/initialized", undefined, { notification: true });
@@ -751,11 +788,16 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
         const sc = snap.json?.result?.structuredContent;
         const now = await page();
         return {
-          pass: init.status === 200 && init.json?.result?.protocolVersion === MCP_VERSION && init.json?.result?.serverInfo?.name === "garderobe" && note.status === 202 && list.status === 200 && names.includes("garderobe_inventory") && names.includes("garderobe_command") && snap.status === 200 && snap.json?.result?.isError !== true && sc?.complete === true && sameInventory(sc?.data, now),
+          pass:
+            init.status === 200 && init.json?.result?.protocolVersion === MCP_VERSION && init.json?.result?.serverInfo?.name === "garderobe" && note.status === 202 && list.status === 200 && names.includes("garderobe_inventory") && names.includes("garderobe_command") && snap.status === 200 && snap.json?.result?.isError !== true && sc?.complete === true && sameInventory(sc?.data, now) &&
+            sc?.data?.counts?.garments === EXPECTED.garments && sc?.data?.counts?.ownedUnits === EXPECTED.ownedUnits && sc?.data?.source?.sha256 === sourceSha256,
           protocolVersion: init.json?.result?.protocolVersion ?? null,
           tools: names,
           statuses: [init.status, note.status, list.status, snap.status],
           items: Array.isArray(sc?.data?.items) ? sc.data.items.length : null,
+          counts: sc?.data?.counts ?? null,
+          sourceSha256: sc?.data?.source?.sha256 ?? null,
+          expectedSourceSha256: sourceSha256,
         };
       });
       await check("mcp", 'over MCP the assistant relays "it is in the wash": a committed receipt with undo moves exactly that balance, and command.undo over MCP takes it back', async () => {
@@ -851,9 +893,11 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
         return { status: null, json: null };
       }
     };
+    // Settings › Connected assistants: `GET /v1/assistants` lists the grants (`/v1/connections` is outbound tool
+    // connections, a different list).
     const listed = async () => {
-      const r = await safe(() => call(tokens.owner, "GET", "/v1/connections"));
-      const rows = r.status === 200 && Array.isArray(r.json?.connections) ? r.json.connections : null;
+      const r = await safe(() => call(tokens.owner, "GET", "/v1/assistants"));
+      const rows = r.status === 200 && Array.isArray(r.json?.grants) ? r.json.grants : null;
       return { status: r.status, rows };
     };
     const before = client ? await listed() : { status: null, rows: [] };
@@ -876,7 +920,7 @@ export async function runVerification({ origin, tokens, target, runId = `${Date.
       if (r.status === null || r.status >= 500 || r.status === 408) unanswered += 1;
       return r;
     };
-    const disconnect = (g) => counted(() => call(tokens.owner, "POST", `/v1/connections/${encodeURIComponent(g.grantId)}/disconnect`));
+    const disconnect = (g) => counted(() => call(tokens.owner, "POST", `/v1/assistants/${encodeURIComponent(g.grantId)}/disconnect`));
     const revokeToken = (t) => counted(() => call(null, "POST", meta.revoke, undefined, "Bearer", { form: new URLSearchParams({ token: t, client_id: client ?? "" }).toString() }));
     for (const [i, g] of all.entries()) {
       const byRevocation = i > 0 && meta && typeof g.refresh === "string";

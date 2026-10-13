@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { exitPolicy } from "../lib/cli.mjs";
 import { redact } from "../lib/redact.mjs";
-import { balancesOf, cleanupUnresolved, committedWithUndo, csvSha256, evidenceValue, exactlyChanged, gatePasses, hiddenFields, authParams, invalidTokenRefusal, pkcePair, httpClient, installInterruptHandlers, keepLocksForWritesInFlight, launderableClean, lineTail, portFree, refusal, runVerification, sameInventory, verifyLocal, writesInFlight, writesUnanswered } from "../verify.mjs";
+import { balancesOf, flatItem, cleanupUnresolved, committedWithUndo, csvSha256, evidenceValue, exactlyChanged, gatePasses, hiddenFields, authParams, invalidTokenRefusal, pkcePair, httpClient, installInterruptHandlers, keepLocksForWritesInFlight, launderableClean, lineTail, portFree, refusal, runVerification, sameInventory, verifyLocal, writesInFlight, writesUnanswered } from "../verify.mjs";
 import { createHash } from "node:crypto";
 import { tokensFile, withTargetLock } from "../lib/state.mjs";
 
@@ -119,6 +119,25 @@ test("inventory comparisons: exact balance changes and identical reads", () => {
   const kb = { ...ka, counts: { ownedUnits: 1, garments: 1 }, items: [{ ...ka.items[0], balances: { dirty: 0, clean: 1 } }] };
   assert.ok(sameInventory(ka, kb), "key order of counts and balances does not matter");
   assert.equal(sameInventory(ka, { ...kb, counts: { ownedUnits: 2, garments: 1 } }), false, "values still do");
+  // GET /v1/wardrobe answers InventoryPage items; the MCP snapshot answers flat ones. The same garments and balances
+  // in either shape are the same inventory, and a difference in either is still seen.
+  const pageItem = (id, clean, dirty, extra = {}) => ({ garment: { garmentId: id, category: "Shirt", careChannel: "service", version: 1, name: "n" }, aliases: [], balances: [{ bucket: "clean", ref: null, quantity: clean }, ...(dirty ? [{ bucket: "dirty", ref: null, quantity: dirty }] : [])], totalOwnedUnits: clean + dirty, availability: { status: "available" }, ...extra });
+  const rest = { items: [pageItem("a", 1, 0), pageItem("b", 1, 0), pageItem("c", 1, 0)], total: 3, complete: true, counts: { owned: 3, available: 3, incoming: 0, retired: 0 }, wardrobeRevision: 0 };
+  const snapshot = { ...before, counts: { garments: 3, ownedUnits: 3 }, items: before.items.map((i) => ({ ...i, balances: { ...i.balances, service: 0, trip: 0 } })) };
+  assert.ok(sameInventory(snapshot, rest), "an MCP snapshot and an inventory page of the same garments");
+  assert.ok(sameInventory(rest, snapshot));
+  assert.equal(sameInventory(snapshot, { ...rest, items: [pageItem("a", 0, 1), pageItem("b", 1, 0), pageItem("c", 1, 0)] }), false, "a balance differs");
+  assert.equal(sameInventory(snapshot, { ...rest, items: [pageItem("a", 1, 0, { totalOwnedUnits: 2 }), pageItem("b", 1, 0), pageItem("c", 1, 0)] }), false, "owned units differ");
+  assert.equal(sameInventory(snapshot, { ...rest, items: rest.items.slice(1) }), false, "a garment is missing");
+  assert.equal(sameInventory(rest, { ...rest, counts: { ...rest.counts, owned: 2 } }), false, "two pages' totals must agree");
+  assert.equal(sameInventory(rest, { ...rest, total: 2 }), false, "two pages' totals must agree");
+  assert.equal(sameInventory(rest, { ...rest, complete: false }), false, "both pages complete");
+  assert.equal(sameInventory(rest, { ...rest, counts: { ...rest.counts, owned: 2, extra: 1 } }), false, "an added counts field does not hide a shared one that differs");
+  assert.ok(sameInventory(rest, { ...rest, counts: { ...rest.counts, extra: 1 } }), "a field only one read reports is not compared");
+  // A garment at two services counts both; mark-dirty is seen as an exact change in the page shape too.
+  assert.deepEqual(flatItem({ garment: { garmentId: "s" }, balances: [{ bucket: "service", ref: "o1", quantity: 1 }, { bucket: "service", ref: "o2", quantity: 1 }], totalOwnedUnits: 2 }).balances, { service: 2 });
+  assert.ok(exactlyChanged(rest, { ...rest, items: [pageItem("a", 0, 1), pageItem("b", 1, 0), pageItem("c", 1, 0)] }, { a: { clean: -1, dirty: 1 } }));
+  assert.equal(exactlyChanged(rest, { ...rest, items: [pageItem("a", 0, 0), pageItem("b", 1, 0), pageItem("c", 1, 0)] }, { a: { clean: -1, dirty: 1 } }), false);
   // An ended grant's token counts as refused only with the documented invalid_token body and nothing else.
   assert.ok(invalidTokenRefusal({ status: 401, json: { error: "invalid_token", error_description: "x" } }));
   for (const bad of [{ status: 401, json: { error: "invalid_token", result: { tools: [] } } }, { status: 401, json: { error: "invalid_token", error_description: { result: { tools: [] } } } }, { status: 401, json: { jsonrpc: "2.0", id: 1, result: {} } }, { status: 401, json: null }, { status: 403, json: { error: "invalid_token" } }]) {
@@ -135,6 +154,10 @@ test("verification judgements and the verify run's structure", () => {
   const page = { items: [{ garmentId: "a", careChannel: "service", quantity: 1, balances: { clean: 1, dirty: 0 } }, { garmentId: "b", careChannel: "none", quantity: 1, balances: { clean: 1, dirty: 0 } }, { garmentId: "c", careChannel: "service", quantity: 1, balances: { clean: 0, dirty: 1 } }, { garmentId: "d", careChannel: "service", quantity: 1, balances: { clean: 1, dirty: 0 } }] };
   assert.deepEqual(launderableClean(page), ["a", "d"]);
   assert.deepEqual(balancesOf(page, "c"), { clean: 0, dirty: 1 });
+  // The same reads on an inventory page (GET /v1/wardrobe).
+  const restPage = { items: page.items.map((i) => ({ garment: { garmentId: i.garmentId, careChannel: i.careChannel, version: 1 }, balances: Object.entries(i.balances).map(([bucket, quantity]) => ({ bucket, ref: null, quantity })), totalOwnedUnits: i.quantity })) };
+  assert.deepEqual(launderableClean(restPage), ["a", "d"]);
+  assert.deepEqual(balancesOf(restPage, "c"), { clean: 0, dirty: 1 });
   assert.match(csvSha256(), /^[0-9a-f]{64}$/);
   const src = readFileSync(path.join(DIR, "verify.mjs"), "utf8");
   assert.ok(src.includes("} finally {\n    await cleanUp();"), "every change is taken back in a finally block");
@@ -149,7 +172,7 @@ test("verification judgements and the verify run's structure", () => {
  * client commit a command in the middle of the run; `leakWriteTool` offers and runs the write tool for read-only grants.
  */
 const PUBLIC = "https://wardrobe.example";
-function fakeApp({ failReceiptList = false, foreignAfter = null, brokenIdempotency = false, staleKeySuffix = null, mcp = true, leakWriteTool = false, breakToken = false, failFirstDisconnect = false, refreshAfterEnd = false, refreshUnavailable = false, forbiddenUnanswered = false, accessSurvivesEnd = false, readOnlyCannotRead = false, grantOnWrongToken = false, commitThenUnavailable = false } = {}) {
+function fakeApp({ snapshotSha = "f".repeat(64), failReceiptList = false, foreignAfter = null, brokenIdempotency = false, staleKeySuffix = null, mcp = true, leakWriteTool = false, breakToken = false, failFirstDisconnect = false, refreshAfterEnd = false, refreshUnavailable = false, forbiddenUnanswered = false, accessSurvivesEnd = false, readOnlyCannotRead = false, grantOnWrongToken = false, commitThenUnavailable = false } = {}) {
   const OWNER = "owner-token-for-the-fake-app-0001";
   const ASSISTANT = "assistant-token-for-the-fake-app-01";
   // 127 garments, 144 owned units: seventeen garments are owned twice.
@@ -188,8 +211,10 @@ function fakeApp({ failReceiptList = false, foreignAfter = null, brokenIdempoten
       const r = state.receipts.find((x) => x.commandId === decodeURIComponent(url.pathname.slice(13))) ?? (state.stale?.commandId === decodeURIComponent(url.pathname.slice(13)) ? state.stale : null);
       return r ? [200, r] : err(404, "not_found");
     }
-    if (mcp && who === "owner" && req.method === "GET" && url.pathname === "/v1/connections") return [200, { connections: [...oauth.grants.values()].map((g) => ({ grantId: g.id, clientId: g.clientId, status: g.active ? "active" : "revoked" })) }];
-    const disconnect = /^\/v1\/connections\/([^/]+)\/disconnect$/.exec(url.pathname);
+    if (mcp && who === "owner" && req.method === "GET" && url.pathname === "/v1/assistants") return [200, { grants: [...oauth.grants.values()].map((g) => ({ grantId: g.id, clientId: g.clientId, status: g.active ? "active" : "revoked" })) }];
+    // Outbound tool connections: none, as on the app. The run must not read its grants here.
+    if (who === "owner" && req.method === "GET" && url.pathname === "/v1/connections") return [200, { connections: [] }];
+    const disconnect = /^\/v1\/assistants\/([^/]+)\/disconnect$/.exec(url.pathname);
     if (mcp && who === "owner" && req.method === "POST" && disconnect) {
       if (failFirstDisconnect && !oauth.failedOnce) {
         oauth.failedOnce = true;
@@ -203,7 +228,19 @@ function fakeApp({ failReceiptList = false, foreignAfter = null, brokenIdempoten
     if (req.method !== "POST" || url.pathname !== "/v1/commands") return err(404, "not_found");
     return runCommand(who, JSON.parse(body));
   };
-  const wardrobePage = (cat = null) => ({ items: items.filter((i) => !cat || i.category === cat).map((i) => ({ ...i, balances: { ...i.balances } })), counts: { garments: 127, ownedUnits: 144 }, source: { sha256: "f".repeat(64) }, wardrobeRevision: state.revision });
+  // GET /v1/wardrobe answers the InventoryPage shape; the MCP snapshot view the flat items with the import source.
+  const wardrobePage = (cat = null) => {
+    const list = items.filter((i) => !cat || i.category === cat);
+    return {
+      items: list.map((i) => ({ garment: { garmentId: i.garmentId, category: i.category, careChannel: i.careChannel, version: i.version }, aliases: [], balances: Object.entries(i.balances).map(([bucket, quantity]) => ({ bucket, ref: null, quantity })), totalOwnedUnits: i.quantity, availability: { status: "available" } })),
+      total: list.length,
+      complete: true,
+      nextCursor: null,
+      counts: { owned: 127, available: 127, incoming: 0, retired: 0 },
+      wardrobeRevision: state.revision,
+    };
+  };
+  const snapshot = () => ({ items: items.map((i) => ({ ...i, balances: { ...i.balances, service: 0, trip: 0 } })), counts: { garments: 127, ownedUnits: 144 }, source: { sha256: snapshotSha }, wardrobeRevision: state.revision });
   const runCommand = (who, c) => {
     state.posts++;
     if (who === "assistant" && c.authorization === "owner_tap") return err(403, "forbidden");
@@ -337,7 +374,7 @@ function fakeApp({ failReceiptList = false, foreignAfter = null, brokenIdempoten
     if (msg.method === "tools/list") return ok({ tools: tools(g) });
     const { name, arguments: args = {} } = msg.params ?? {};
     if (name === "garderobe_inventory" && readOnlyCannotRead && !g.scopes.includes("wardrobe.write")) return [200, { jsonrpc: "2.0", id: msg.id, error: { code: -32603, message: "read failed" } }];
-    if (name === "garderobe_inventory") return ok({ structuredContent: args.view === "receipts" ? { complete: true, data: { receipts: state.receipts.slice(0, args.limit ?? 50) } } : { complete: true, data: wardrobePage() } });
+    if (name === "garderobe_inventory") return ok({ structuredContent: args.view === "receipts" ? { complete: true, data: { receipts: state.receipts.slice(0, args.limit ?? 50) } } : { complete: true, data: snapshot() } });
     if (name === "garderobe_command") {
       if (!g.scopes.includes("wardrobe.write") && !leakWriteTool) return oerr(403, "insufficient_scope", { "www-authenticate": `Bearer error="insufficient_scope", scope="wardrobe.read wardrobe.write", resource_metadata="${metadataUrl}"` });
       const [status, json] = runCommand("assistant", { type: args.type, payload: args.payload, idempotencyKey: args.idempotencyKey, authorization: "owner_statement", source: { channel: "mcp" } });
@@ -389,6 +426,14 @@ test("verification against a fake app: every check passes and cleanup leaves the
   // No OAuth code or token reaches the report (the evidence file is this report).
   const text = JSON.stringify(report);
   for (const g of app.oauth.grants.values()) for (const secret of [g.code, g.access, g.refresh]) assert.equal(text.includes(secret.split(".")[2]), false);
+});
+
+test("an MCP snapshot that names another import source fails the MCP check", async () => {
+  const report = await runAgainst(fakeApp({ snapshotSha: "e".repeat(64) }));
+  const snap = report.results.find((r) => r.group === "mcp" && r.name.includes("snapshot read"));
+  assert.equal(snap.status, "fail");
+  assert.equal(snap.sourceSha256, "e".repeat(64));
+  assert.equal(report.passed, false);
 });
 
 test("a read-only grant that is offered and allowed the write tool fails the scope check; its write is still taken back", async () => {
