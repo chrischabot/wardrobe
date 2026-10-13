@@ -9,7 +9,7 @@
  */
 import { ASSISTANT_COMMANDS } from "@garderobe/contracts/ext/assistant";
 import { FOUNDATION_COMMANDS } from "@garderobe/contracts";
-import { CommandError, all, first, type Db } from "@garderobe/domain";
+import { CommandError, all, first, selectGarments, type Db } from "@garderobe/domain";
 import { GARMENT_RECORD_VERSION_SQL } from "./classes.ts";
 
 /** The longest single stored value a summary shows. A longer one is not clipped: the request is refused. */
@@ -191,7 +191,7 @@ const RECORDS: Record<string, { sql: string; say: (row: Record<string, unknown>)
   rst: { sql: "SELECT kind, reason FROM restrictions WHERE user_id = ? AND restriction_id = ?", say: (r) => `the restriction (${words(r["kind"])}) whose reason is ${quoted(r["reason"])}` },
   trp: { sql: "SELECT name, departs_on, returns_on FROM trips WHERE user_id = ? AND trip_id = ?", say: (r) => `the trip ${quoted(r["name"])} (${r["departs_on"]} to ${r["returns_on"]})` },
   brd: { sql: "SELECT local_date FROM boards WHERE user_id = ? AND board_id = ?", say: (r) => `the outfit board for ${r["local_date"]}` },
-  opt: { sql: "SELECT o.position, o.revision, b.local_date FROM board_options o JOIN boards b ON b.user_id = o.user_id AND b.board_id = o.board_id WHERE o.user_id = ? AND o.option_id = ? ORDER BY o.revision DESC LIMIT 1", say: (r) => `outfit option ${Number(r["position"]) + 1} on the board for ${r["local_date"]} (revision ${r["revision"]})` },
+  opt: { sql: "SELECT o.position, o.state, o.revision, b.local_date FROM board_options o JOIN boards b ON b.user_id = o.user_id AND b.board_id = o.board_id WHERE o.user_id = ? AND o.option_id = ? ORDER BY o.revision DESC LIMIT 1", say: (r) => `${r["state"] === "reserve" ? "reserve outfit" : "outfit option"} ${Number(r["position"])} on the board for ${r["local_date"]} (revision ${r["revision"]})` },
   lb: { sql: "SELECT channel, picked_up_at FROM laundry_batches WHERE user_id = ? AND batch_id = ?", say: (r) => `the ${r["channel"] === "handwash" ? "hand-wash" : "laundry service"} bag picked up on ${String(r["picked_up_at"]).slice(0, 10)}` },
   cmd: { sql: "SELECT type, receipt_json FROM commands WHERE user_id = ? AND command_id = ?", say: (r) => `the earlier change whose receipt read ${quoted(receiptSummary(r["receipt_json"]))}` },
   job: { sql: "SELECT title FROM assistant_jobs WHERE user_id = ? AND job_id = ?", say: (r) => `the background work ${quoted(r["title"])}` },
@@ -506,7 +506,14 @@ async function sentenceFor(db: Db, userId: string, type: string, p: P): Promise<
       if (p.labelRef) changes.push(`label ${quoted(p.labelRef)}`);
       if (p.shipmentRef) changes.push(`shipment ${quoted(p.shipmentRef)}`);
       if (p.nextAction) changes.push(`next step ${quoted(p.nextAction)}`);
-      return `Update the ${c ? `${c.kind} (currently ${words(c.state)})` : `return ${quoted(p.caseId)}`}: ${changes.join("; ") || "no change"}.`;
+      // A value set to nothing clears what was recorded, and the summary says so.
+      if (p.nextAction === "" || p.nextAction === null) changes.push("clear the next step");
+      if (p.labelRef === "" || p.labelRef === null) changes.push("clear the label");
+      if (p.shipmentRef === "" || p.shipmentRef === null) changes.push("clear the shipment");
+      if (p.collectionPreference === "" || p.collectionPreference === null) changes.push("clear the collection preference");
+      const named = typeof p.caseId === "string" ? await referenceInWords(db, userId, p.caseId) : null;
+      const which = named ?? (c ? `the ${c.kind} ${quoted(p.caseId)}` : `return ${quoted(p.caseId)}`);
+      return `Update ${which}${c ? ` (currently ${words(c.state)})` : ""}: ${changes.join("; ") || "no change"}.`;
     }
     case "return.link_exchange":
       return `Link the replacement order line to ${(await referenceInWords(db, userId, String(p.caseId))) ?? `the exchange ${quoted(p.caseId)}`}, so the piece is not counted twice.`;
@@ -520,7 +527,7 @@ async function sentenceFor(db: Db, userId: string, type: string, p: P): Promise<
       let pieces = (p.garmentIds ?? []) as string[];
       if (p.moveStock && pieces.length === 0) pieces = (await all<{ garment_id: string }>(db, "SELECT garment_id FROM lifecycle_project_items WHERE user_id = ? AND project_id = ?", userId, p.projectId)).map((r) => r.garment_id);
       const stock = p.moveStock && own(moves, p.kind) ? ` ${await g(pieces)} ${own(moves, p.kind)}.` : "";
-      return `Record ${quoted(words(p.kind))} on the project ${project ? quoted(project.title) : quoted(p.projectId)}${minor(p.proceedsMinor, p.currency) ? `, proceeds ${minor(p.proceedsMinor, p.currency)}` : ""}${p.nextAction ? `, next step ${quoted(p.nextAction)}` : ""}.${stock}`;
+      return `Record ${quoted(words(p.kind))} on the project ${project ? quoted(project.title) : quoted(p.projectId)}${minor(p.proceedsMinor, p.currency) ? `, proceeds ${minor(p.proceedsMinor, p.currency)}` : ""}${p.nextAction ? `, next step ${quoted(p.nextAction)}` : p.nextAction === "" ? ", clearing the next step" : ""}.${stock}`;
     }
     case "lifecycle.authorize_action": {
       const project = await first<{ title: string }>(db, "SELECT title FROM lifecycle_projects WHERE user_id = ? AND project_id = ?", userId, p.projectId);
@@ -611,8 +618,25 @@ export async function expectedVersionsFor(db: Db, userId: string, type: string, 
       await garment(p.sourceGarmentId);
       await garment(p.targetGarmentId);
       break;
-    // `garment.bulk_correct` names no pieces (it selects them when it runs); its own `expectedCount`
-    // guard refuses it when the set it would change is no longer the set that was counted.
+    case "garment.bulk_correct": {
+      // The selection is evaluated when the command runs; the request is held to the pieces it selects now and
+      // their record versions, so a confirmation never changes a piece the owner was not shown as it is. A
+      // selection that cannot be evaluated is an error, never an empty snapshot, and EVERY selected piece is held.
+      if (p.selector && typeof p.selector === "object") {
+        const rows = await selectGarments(db, userId, p.selector as never);
+        for (const r of rows) await garment(r["garment_id"]);
+      }
+      break;
+    }
+    case "purchase.mark_delivered": {
+      // Held to the order and to the record of the piece its line names.
+      await versioned("order", "orders", "order_id", p.orderId);
+      if (typeof p.orderId === "string" && typeof p.lineId === "string") {
+        const line = await first<{ garment_id: string | null }>(db, "SELECT garment_id FROM order_lines WHERE user_id = ? AND order_id = ? AND line_id = ?", userId, p.orderId, p.lineId);
+        if (line?.garment_id) await garment(line.garment_id);
+      }
+      break;
+    }
     case "reminder.set":
       // Changing an existing reminder is held to the reminder the summary named.
       await versioned("reminder", "reminders", "reminder_id", p.reminderId);

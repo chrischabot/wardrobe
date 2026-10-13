@@ -151,11 +151,18 @@ const WHEN = new RegExp(
  * alternative ("the coat or the oxford"), a condition, a contrast, a modal, a question's auxiliary,
  * another person, or a second report verb ("I wore the coat and washed the oxford" is not one wear report
  * of two pieces). `isDirectReport` already turns most of these sentences away; a clause holding one is no
- * report here either, whatever that filter does (change reviews, 2026-10-03).
+ * report here either, whatever that filter does (change reviews, 2026-10-03). An auxiliary or a verb of
+ * having or owning outside the report's own wording starts a second statement ("I wore the coat today and
+ * have the oxford at home" reports no wear of the oxford; change review of 8445a1e9).
  */
-const NOT_SMALL = new Set("or not no yes do does did will would can could should may might if than but about you your he she his her they their wore wear wearing worn washed wash clean dirty got get put had".split(" "));
+const REPORT_CONNECTING_WORDS = [
+  "the", "a", "an", "and", "of", "in", "on", "at", "to", "for", "with", "from",
+  "my", "our", "this", "these", "those", "it", "them", "both",
+  "just", "also", "too", "over", "under", "into", "out", "up", "down",
+  "new", "old", "one", "two", "pair", "pairs", "again",
+];
 /** The small words that may stand in a report beside the pieces, as written and as `tokensOf` reduces them ("this" becomes "thi"). */
-const SMALL_WORDS: ReadonlySet<string> = new Set([...NAMING_STOP].filter((w) => !NOT_SMALL.has(w)).flatMap((w) => [w, ...tokensOf(w)]));
+const SMALL_WORDS: ReadonlySet<string> = new Set(REPORT_CONNECTING_WORDS.flatMap((w) => [w, ...tokensOf(w)]));
 
 function onlyPiecesAndTime(rest: string, wardrobe: GarmentWords[], garments: Map<string, string[]>): boolean {
   const pieceWords = new Set<string>();
@@ -188,8 +195,9 @@ export function reportDateOf(sentence: string, localDate: string): string | null
   for (const m of s.matchAll(/\b(\d{4}-\d{2}-\d{2})\b/g)) found.add(m[1]!);
   for (const m of s.matchAll(/\b(\S+)\s+days?\s+ago\b/g)) {
     const n = /^\d+$/.test(m[1]!) ? Number(m[1]) : NUMBER_WORDS[m[1]!];
-    // "Eight days ago", "a few days ago": not a day this code can fix.
-    if (n === undefined) return null;
+    // "Eight days ago", "a few days ago": not a day this code can fix. Nor is a number of days outside
+    // the report window ("999999999999 days ago" must give no date, never throw).
+    if (n === undefined || !Number.isSafeInteger(n) || n < 0 || n > REPORT_WINDOW_DAYS) return null;
     found.add(shiftDate(localDate, -n));
   }
   const today = new Date(`${localDate}T00:00:00Z`).getUTCDay();

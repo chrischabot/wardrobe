@@ -17,6 +17,15 @@ export const NAMING_STOP: ReadonlySet<string> = new Set(
   ),
 );
 
+/**
+ * Words for a part of a garment (a collar, a cuff, a sole). They appear in product descriptions ("Soft Ivy
+ * Button Down Collar") but say which part the owner means, never which piece: "the navy Pima oxford collar
+ * scratched" names the navy Pima oxford, not every Pima oxford whose description mentions its collar.
+ */
+export const PART_WORDS: ReadonlySet<string> = new Set(
+  "collar collars cuff cuffs sleeve sleeves button buttons pocket pockets placket hem hems yoke lapel lapels lining sole soles heel heels waistband stitching seam seams".split(" "),
+);
+
 /** Category nouns: they say what kind of thing, never which one. */
 export const CATEGORY_WORDS: Record<string, string[]> = {
   shirt: ["shirt", "oxford", "poplin", "buttondown"],
@@ -86,9 +95,34 @@ export function namedInText(wardrobe: GarmentWords[], clause: string): Map<strin
   const flat = (text: string) => ` ${text.replace(/[^\p{L}\p{N}']+/gu, " ").trim()} `;
   const frequency = new Map<string, number>();
   for (const g of wardrobe) for (const w of g.words) frequency.set(w, (frequency.get(w) ?? 0) + 1);
+  const out = new Map<string, string[]>();
+  // An alias that itself contains a word phrases are cut at ("black and tan boots", "black - tan boots") keeps its
+  // phrase whole during splitting, so it enters the same candidate dominance and best-match competition as every
+  // other candidate rather than bypassing it or being split into separate phrases.
+  const said = normalizeText(clause);
+  const protectedSpans: [number, number][] = [];
+  for (const g of wardrobe) {
+    for (const alias of g.aliases) {
+      if (alias.length < 3 || !/[,;:()]|\s-\s|\b(?:and|with|over|under|plus|then)\b/.test(alias)) continue;
+      const words = tokensOfAlias(alias);
+      if (words.length === 0) continue;
+      const re = new RegExp(`(?<![\\p{L}\\p{N}'])${words.map(escapeRe).join("[^\\p{L}\\p{N}']+")}(?![\\p{L}\\p{N}'])`, "gu");
+      for (const m of said.matchAll(re)) protectedSpans.push([m.index!, m.index! + m[0].length]);
+    }
+  }
+  const sepRe = /[,;:()]|\s-\s|\b(?:and|with|over|under|plus|then)\b/g;
+  const parts: string[] = [];
+  let last = 0;
+  for (const m of said.matchAll(sepRe)) {
+    const start = m.index!;
+    const end = start + m[0].length;
+    if (protectedSpans.some(([s, e]) => start >= s && end <= e)) continue;
+    parts.push(said.slice(last, start));
+    last = end;
+  }
+  parts.push(said.slice(last));
   // One piece is named within one noun phrase: "the Stratton cords and the olive belt" is two.
-  const phrases = normalizeText(clause)
-    .split(/[,;:()]|\s-\s|\b(?:and|with|over|under|plus|then)\b/)
+  const phrases = parts
     .map((part) => ({ text: flat(part), tokens: tokensOf(part) }))
     .filter((phrase) => phrase.tokens.length > 0);
   interface Candidate {
@@ -99,7 +133,6 @@ export function namedInText(wardrobe: GarmentWords[], clause: string): Map<strin
     /** What is reported as having named the piece. */
     said: string[];
   }
-  const out = new Map<string, string[]>();
   for (const { text, tokens } of phrases) {
     const candidates: Candidate[] = [];
     for (const g of wardrobe) {
@@ -126,15 +159,15 @@ export function namedInText(wardrobe: GarmentWords[], clause: string): Map<strin
     const named = best[0]!;
     if (!out.has(named.garmentId) || named.said.length > out.get(named.garmentId)!.length) out.set(named.garmentId, named.said);
   }
-  // An alias that itself contains a word phrases are cut at ("black and tan boots") is looked for in the whole clause.
-  const whole = flat(normalizeText(clause));
-  for (const g of wardrobe) {
-    if (out.has(g.garmentId)) continue;
-    const alias = g.aliases.find((a) => a.length >= 3 && /\b(?:and|with|over|under|plus|then)\b|[,;:()]/.test(a) && whole.includes(flat(a)));
-    if (alias) out.set(g.garmentId, [alias]);
-  }
   return out;
 }
+
+/** The words of an alias as written (lower case, no punctuation), for finding it in a clause. */
+function tokensOfAlias(alias: string): string[] {
+  return normalizeText(alias).split(/[^\p{L}\p{N}']+/u).filter(Boolean);
+}
+
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 export const loadWardrobeWords = (db: Db, userId: string): Promise<GarmentWords[]> => wardrobeWords(db, userId);
 
@@ -152,7 +185,7 @@ async function wardrobeWords(db: Db, userId: string): Promise<GarmentWords[]> {
     name: g.name,
     category: g.category,
     careChannel: g.care_channel,
-    words: new Set(tokensOf([g.name, g.maker, g.product, g.fabric, g.colour, g.pattern].filter(Boolean).join(" ")).filter((t) => !NAMING_STOP.has(t))),
+    words: new Set(tokensOf([g.name, g.maker, g.product, g.fabric, g.colour, g.pattern].filter(Boolean).join(" ")).filter((t) => !NAMING_STOP.has(t) && !PART_WORDS.has(t))),
     aliases: byGarment.get(g.garment_id) ?? [],
   }));
 }

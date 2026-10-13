@@ -71,6 +71,7 @@ describe("A (unit): what trusted code reads as the owner's own report", () => {
       // a second statement about another piece is not part of the first report, in either direction
       "I wore the Grandfather Coat today and washed the navy Pima oxford.",
       "Washed the navy Pima oxford and wore the Grandfather Coat today.",
+      "I wore the Grandfather Coat today and have the navy Pima oxford at home.",
       "I wore the Grandfather Coat today, not the navy Pima oxford.",
       "Wearing the Grandfather Coat today if I can.",
       "Got lucky and kept the curry from going down the navy Pima oxford.",
@@ -103,6 +104,16 @@ describe("A (unit): what trusted code reads as the owner's own report", () => {
     const whites = [g("white", "shirt", "pima oxford white"), g("offwhite", "shirt", "lightweight oxford offwhite")];
     expect([...namedInText(whites, "Got curry down the white oxford.").keys()]).toEqual(["white"]);
     expect([...namedInText(whites, "Got curry down the off-white oxford.").keys()]).toEqual(["offwhite"]);
+    // Spanning aliases compete in candidate dominance: "black and tan boots" beats a sibling "tan boots",
+    // while a more specific record-word match ("bespoke horween black tan boots") dominates the shorter spanning alias.
+    const spanningSet = [
+      g("alias-boot", "footwear", "field boot", ["black and tan boots", "black - tan boots"]),
+      g("tan-boot", "footwear", "tan boot"),
+      g("bespoke-boot", "footwear", "bespoke horween black tan boot"),
+    ];
+    expect([...namedInText(spanningSet, "I wore the black and tan boots today.").keys()]).toEqual(["alias-boot"]);
+    expect([...namedInText(spanningSet, "I wore the black - tan boots today.").keys()]).toEqual(["alias-boot"]);
+    expect([...namedInText(spanningSet, "I wore the bespoke Horween black and tan boots today.").keys()]).toEqual(["bespoke-boot"]);
   });
 
   it("adversarial D12-1: credentials in six more common forms are removed (SYNTHETIC values assembled here; none is a real credential)", () => {
