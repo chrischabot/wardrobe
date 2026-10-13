@@ -77,7 +77,7 @@
     "errors": []
   },
   "invariantChecks": {
-    "passed": 13151,
+    "passed": 13143,
     "failed": 0,
     "notApplicable": 3,
     "byCheck": {
@@ -177,12 +177,12 @@
         "notApplicable": 0
       },
       "calendar.event_identity_is_stable": {
-        "passed": 310,
+        "passed": 311,
         "failed": 0,
         "notApplicable": 0
       },
       "calendar.event_revision_not_ahead_of_board": {
-        "passed": 310,
+        "passed": 311,
         "failed": 0,
         "notApplicable": 0
       },
@@ -207,7 +207,7 @@
         "notApplicable": 0
       },
       "calendar.projected_revision_is_the_event_s": {
-        "passed": 286,
+        "passed": 276,
         "failed": 0,
         "notApplicable": 0
       },
@@ -1215,7 +1215,7 @@
     "oauth": {
       "connections": 3,
       "authorizations": 3,
-      "tokenRefreshes": 357
+      "tokenRefreshes": 354
     },
     "ownerRequestsInTheApp": 16,
     "testDoorRequests": 890
@@ -1299,7 +1299,7 @@
       "laundry pickups": 3,
       "laundry returns": 2,
       "laundry: a missed bag returned days late": 1,
-      "managed Calendar event writes (insert, replace, remove)": 38,
+      "managed Calendar event writes (insert, replace, remove)": 40,
       "managed Calendar events replaced in place under a newer revision": 26,
       "morning boards with options marked as suiting a calendar entry": 4,
       "morning boards, calendar ok": 23,
@@ -1314,11 +1314,13 @@
       "mornings away on the trip": 3,
       "mornings while the service was paused": 2,
       "most garments at once whose availability was an estimate": 79,
-      "offers checked without a thermal check (forecast unavailable, stale or just changed)": 72,
+      "offers checked without a thermal check (forecast unavailable, stale or just changed)": 67,
       "orders logged (SYNTHETIC order)": 1,
       "outfits chosen the evening before": 5,
-      "owner observations contradicting the ledger: a spill (was available)": 2,
-      "owner observations contradicting the ledger: all of it in the hamper (was estimated)": 2,
+      "owner observations contradicting the ledger: a spill (was available)": 1,
+      "owner observations contradicting the ledger: a spill (was estimated)": 1,
+      "owner observations contradicting the ledger: all of it in the hamper (was available)": 1,
+      "owner observations contradicting the ledger: all of it in the hamper (was estimated)": 1,
       "owner observations contradicting the ledger: counted clean (was estimated)": 2,
       "packing proposals (from the destination's SIMULATED forecast)": 1,
       "parcels posted back (physical departure recorded separately)": 1,
@@ -1389,10 +1391,10 @@
       }
     ]
   },
-  "outcomeDigest": "1b9702ff458bad71",
+  "outcomeDigest": "dc4e80474d2ee294",
   "simulated": {
     "from": "2027-10-10T18:30:00Z",
     "to": "2027-11-07T23:10:00Z"
   },
-  "realSeconds": 238
+  "realSeconds": 173
 }

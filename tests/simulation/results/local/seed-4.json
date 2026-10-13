@@ -76,7 +76,7 @@
     "errors": []
   },
   "invariantChecks": {
-    "passed": 12931,
+    "passed": 12933,
     "failed": 0,
     "notApplicable": 3,
     "byCheck": {
@@ -201,7 +201,7 @@
         "notApplicable": 0
       },
       "calendar.projected_revision_is_the_event_s": {
-        "passed": 271,
+        "passed": 273,
         "failed": 0,
         "notApplicable": 0
       },
@@ -1265,7 +1265,7 @@
       "laundry exceptions: one piece did not come back with the bag": 1,
       "laundry pickups": 2,
       "laundry returns": 2,
-      "managed Calendar event writes (insert, replace, remove)": 37,
+      "managed Calendar event writes (insert, replace, remove)": 38,
       "managed Calendar events replaced in place under a newer revision": 26,
       "morning boards with options marked as suiting a calendar entry": 4,
       "morning boards, calendar ok": 23,
@@ -1284,8 +1284,7 @@
       "outfits chosen the evening before": 6,
       "owner observations contradicting the ledger: a spill (was available)": 1,
       "owner observations contradicting the ledger: a spill (was estimated)": 1,
-      "owner observations contradicting the ledger: all of it in the hamper (was available)": 1,
-      "owner observations contradicting the ledger: all of it in the hamper (was estimated)": 1,
+      "owner observations contradicting the ledger: all of it in the hamper (was estimated)": 2,
       "owner observations contradicting the ledger: counted clean (was estimated)": 1,
       "owner observations contradicting the ledger: counted clean (was unavailable)": 1,
       "packing proposals (from the destination's SIMULATED forecast)": 1,
@@ -1354,10 +1353,10 @@
       }
     ]
   },
-  "outcomeDigest": "e7bb527090c7f90a",
+  "outcomeDigest": "08d7354ed66ec6cc",
   "simulated": {
     "from": "2027-09-05T18:30:00Z",
     "to": "2027-10-03T22:10:00Z"
   },
-  "realSeconds": 213
+  "realSeconds": 167
 }

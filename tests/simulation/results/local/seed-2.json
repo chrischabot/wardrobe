@@ -76,14 +76,14 @@
     "errors": []
   },
   "invariantChecks": {
-    "passed": 13063,
-    "failed": 41,
-    "notApplicable": 4,
+    "passed": 13089,
+    "failed": 0,
+    "notApplicable": 5,
     "byCheck": {
       "amend.replaces_only_what_it_corrects": {
-        "passed": 1,
+        "passed": 2,
         "failed": 0,
-        "notApplicable": 1
+        "notApplicable": 0
       },
       "ask.returns_a_durable_run": {
         "passed": 2,
@@ -126,8 +126,8 @@
         "notApplicable": 0
       },
       "availability.what_the_owner_made_unavailable_stays_unavailable": {
-        "passed": 315,
-        "failed": 40,
+        "passed": 355,
+        "failed": 0,
         "notApplicable": 0
       },
       "board.limited_when_the_forecast_is_not_fresh": {
@@ -171,12 +171,12 @@
         "notApplicable": 0
       },
       "calendar.event_identity_is_stable": {
-        "passed": 309,
+        "passed": 310,
         "failed": 0,
         "notApplicable": 0
       },
       "calendar.event_revision_not_ahead_of_board": {
-        "passed": 309,
+        "passed": 310,
         "failed": 0,
         "notApplicable": 0
       },
@@ -201,7 +201,7 @@
         "notApplicable": 0
       },
       "calendar.projected_revision_is_the_event_s": {
-        "passed": 277,
+        "passed": 291,
         "failed": 0,
         "notApplicable": 0
       },
@@ -246,7 +246,7 @@
         "notApplicable": 0
       },
       "contract.a_change_the_owner_asks_for_applies_at_once": {
-        "passed": 124,
+        "passed": 123,
         "failed": 0,
         "notApplicable": 0
       },
@@ -266,7 +266,7 @@
         "notApplicable": 0
       },
       "contract.receipt_states_whether_undo_is_available": {
-        "passed": 124,
+        "passed": 123,
         "failed": 0,
         "notApplicable": 0
       },
@@ -391,8 +391,8 @@
         "notApplicable": 0
       },
       "laundry.a_late_piece_moves_exactly_one_unit_home": {
-        "passed": 0,
-        "failed": 1,
+        "passed": 1,
+        "failed": 0,
         "notApplicable": 0
       },
       "laundry.a_piece_still_away_is_not_offered": {
@@ -506,7 +506,7 @@
         "notApplicable": 0
       },
       "owner_text.no_internal_codes": {
-        "passed": 469,
+        "passed": 466,
         "failed": 0,
         "notApplicable": 0
       },
@@ -536,12 +536,12 @@
         "notApplicable": 0
       },
       "receipt.an_accepted_command_returns_one": {
-        "passed": 124,
+        "passed": 123,
         "failed": 0,
         "notApplicable": 0
       },
       "receipt.idempotent_repeat": {
-        "passed": 120,
+        "passed": 119,
         "failed": 0,
         "notApplicable": 0
       },
@@ -556,27 +556,27 @@
         "notApplicable": 0
       },
       "receipt.names_who_acted": {
-        "passed": 120,
+        "passed": 119,
         "failed": 0,
         "notApplicable": 0
       },
       "receipt.reads_back_as_returned": {
-        "passed": 120,
+        "passed": 119,
         "failed": 0,
         "notApplicable": 0
       },
       "receipt.repeat_writes_nothing": {
-        "passed": 120,
+        "passed": 119,
         "failed": 0,
         "notApplicable": 0
       },
       "receipt.revision_not_ahead_of_ledger": {
-        "passed": 120,
+        "passed": 119,
         "failed": 0,
         "notApplicable": 0
       },
       "receipt.well_formed": {
-        "passed": 120,
+        "passed": 119,
         "failed": 0,
         "notApplicable": 0
       },
@@ -606,47 +606,47 @@
         "notApplicable": 0
       },
       "recommended.complete_outfit": {
-        "passed": 349,
+        "passed": 347,
         "failed": 0,
         "notApplicable": 0
       },
       "recommended.garments_exist_under_their_names": {
-        "passed": 349,
+        "passed": 347,
         "failed": 0,
         "notApplicable": 0
       },
       "recommended.not_hard_excluded": {
-        "passed": 349,
+        "passed": 347,
         "failed": 0,
         "notApplicable": 0
       },
       "recommended.not_made_unavailable_by_owner": {
-        "passed": 349,
+        "passed": 347,
         "failed": 0,
         "notApplicable": 0
       },
       "recommended.not_restricted": {
-        "passed": 349,
+        "passed": 347,
         "failed": 0,
         "notApplicable": 0
       },
       "recommended.offered_role_is_the_garment_s_own": {
-        "passed": 349,
+        "passed": 347,
         "failed": 0,
         "notApplicable": 0
       },
       "recommended.owned": {
-        "passed": 349,
+        "passed": 347,
         "failed": 0,
         "notApplicable": 0
       },
       "recommended.profile_hard_constraints": {
-        "passed": 349,
+        "passed": 347,
         "failed": 0,
         "notApplicable": 0
       },
       "recommended.trip_day_uses_packed_pieces_only": {
-        "passed": 3,
+        "passed": 1,
         "failed": 0,
         "notApplicable": 0
       },
@@ -866,9 +866,9 @@
         "notApplicable": 0
       },
       "trip.a_trip_day_is_answered_from_the_suitcase": {
-        "passed": 3,
+        "passed": 1,
         "failed": 0,
-        "notApplicable": 0
+        "notApplicable": 2
       },
       "trip.packed_is_what_the_suitcase_holds": {
         "passed": 1,
@@ -997,465 +997,7 @@
       }
     }
   },
-  "failures": [
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 82,
-      "stepKind": "undo_a_report",
-      "day": 5,
-      "date": "2027-06-05",
-      "at": "2027-06-05T19:00:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 83,
-      "stepKind": "sweep",
-      "day": 5,
-      "date": "2027-06-05",
-      "at": "2027-06-05T20:05:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 84,
-      "stepKind": "plan_tomorrow",
-      "day": 5,
-      "date": "2027-06-05",
-      "at": "2027-06-05T20:20:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 85,
-      "stepKind": "night",
-      "day": 5,
-      "date": "2027-06-05",
-      "at": "2027-06-05T21:30:01Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 86,
-      "stepKind": "sweep",
-      "day": 6,
-      "date": "2027-06-06",
-      "at": "2027-06-06T05:45:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 87,
-      "stepKind": "sweep",
-      "day": 6,
-      "date": "2027-06-06",
-      "at": "2027-06-06T05:55:01Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 88,
-      "stepKind": "sweep",
-      "day": 6,
-      "date": "2027-06-06",
-      "at": "2027-06-06T06:05:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 89,
-      "stepKind": "morning",
-      "day": 6,
-      "date": "2027-06-06",
-      "at": "2027-06-06T06:15:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 5,
-      "stepKind": "owner_observation",
-      "day": 6,
-      "date": "2027-06-06",
-      "at": "2027-06-06T07:19:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 91,
-      "stepKind": "return_label",
-      "day": 6,
-      "date": "2027-06-06",
-      "at": "2027-06-06T09:00:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 92,
-      "stepKind": "sweep",
-      "day": 6,
-      "date": "2027-06-06",
-      "at": "2027-06-06T11:30:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 1,
-      "stepKind": "becomes_unavailable",
-      "day": 6,
-      "date": "2027-06-06",
-      "at": "2027-06-06T11:34:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 5,
-      "stepKind": "comes_back",
-      "day": 6,
-      "date": "2027-06-06",
-      "at": "2027-06-06T12:25:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 95,
-      "stepKind": "ask",
-      "day": 6,
-      "date": "2027-06-06",
-      "at": "2027-06-06T13:00:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 96,
-      "stepKind": "calendar_change",
-      "day": 6,
-      "date": "2027-06-06",
-      "at": "2027-06-06T13:41:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 97,
-      "stepKind": "evening_report",
-      "day": 6,
-      "date": "2027-06-06",
-      "at": "2027-06-06T18:30:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 98,
-      "stepKind": "sweep",
-      "day": 6,
-      "date": "2027-06-06",
-      "at": "2027-06-06T20:05:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 99,
-      "stepKind": "plan_tomorrow",
-      "day": 6,
-      "date": "2027-06-06",
-      "at": "2027-06-06T20:20:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 100,
-      "stepKind": "night",
-      "day": 6,
-      "date": "2027-06-06",
-      "at": "2027-06-06T21:30:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 101,
-      "stepKind": "sweep",
-      "day": 6,
-      "date": "2027-06-06",
-      "at": "2027-06-06T22:10:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 102,
-      "stepKind": "sweep",
-      "day": 7,
-      "date": "2027-06-07",
-      "at": "2027-06-07T05:45:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 103,
-      "stepKind": "sweep",
-      "day": 7,
-      "date": "2027-06-07",
-      "at": "2027-06-07T05:55:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 104,
-      "stepKind": "sweep",
-      "day": 7,
-      "date": "2027-06-07",
-      "at": "2027-06-07T06:05:01Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 105,
-      "stepKind": "after_baseline",
-      "day": 7,
-      "date": "2027-06-07",
-      "at": "2027-06-07T06:08:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 106,
-      "stepKind": "morning",
-      "day": 7,
-      "date": "2027-06-07",
-      "at": "2027-06-07T06:15:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 107,
-      "stepKind": "return_post",
-      "day": 7,
-      "date": "2027-06-07",
-      "at": "2027-06-07T09:00:01Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 108,
-      "stepKind": "trip_proposal",
-      "day": 7,
-      "date": "2027-06-07",
-      "at": "2027-06-07T10:00:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 109,
-      "stepKind": "sweep",
-      "day": 7,
-      "date": "2027-06-07",
-      "at": "2027-06-07T11:30:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 110,
-      "stepKind": "calendar_change",
-      "day": 7,
-      "date": "2027-06-07",
-      "at": "2027-06-07T14:43:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 3,
-      "stepKind": "comes_back",
-      "day": 7,
-      "date": "2027-06-07",
-      "at": "2027-06-07T15:17:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 4,
-      "stepKind": "becomes_unavailable",
-      "day": 7,
-      "date": "2027-06-07",
-      "at": "2027-06-07T16:25:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 113,
-      "stepKind": "evening_report",
-      "day": 7,
-      "date": "2027-06-07",
-      "at": "2027-06-07T18:30:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 114,
-      "stepKind": "amend_a_report",
-      "day": 7,
-      "date": "2027-06-07",
-      "at": "2027-06-07T19:10:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 115,
-      "stepKind": "sweep",
-      "day": 7,
-      "date": "2027-06-07",
-      "at": "2027-06-07T20:05:02Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 116,
-      "stepKind": "plan_tomorrow",
-      "day": 7,
-      "date": "2027-06-07",
-      "at": "2027-06-07T20:20:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 117,
-      "stepKind": "night",
-      "day": 7,
-      "date": "2027-06-07",
-      "at": "2027-06-07T21:30:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 118,
-      "stepKind": "sweep",
-      "day": 8,
-      "date": "2027-06-08",
-      "at": "2027-06-08T05:45:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 119,
-      "stepKind": "sweep",
-      "day": 8,
-      "date": "2027-06-08",
-      "at": "2027-06-08T05:55:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 120,
-      "stepKind": "sweep",
-      "day": 8,
-      "date": "2027-06-08",
-      "at": "2027-06-08T06:05:01Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "availability.what_the_owner_made_unavailable_stays_unavailable",
-      "seed": "2",
-      "step": 121,
-      "stepKind": "morning",
-      "day": 8,
-      "date": "2027-06-08",
-      "at": "2027-06-08T06:15:00Z",
-      "message": "Heavy rustic linen — sage: still at the laundry service (SIMULATED event), but available ()",
-      "evidence": null
-    },
-    {
-      "check": "laundry.a_late_piece_moves_exactly_one_unit_home",
-      "seed": "2",
-      "step": 122,
-      "stepKind": "laundry_late_return",
-      "day": 8,
-      "date": "2027-06-08",
-      "at": "2027-06-08T10:30:00Z",
-      "message": "after the late piece came back: Heavy rustic linen — sage: expected clean=2, service|lb_35e61a762a4f42aeacae91c77f9f2252=-1, found clean=1",
-      "evidence": {
-        "commandId": "cmd_fc48e442debe451d9fe575563c06d4ab",
-        "batchId": "lb_35e61a762a4f42aeacae91c77f9f2252",
-        "wrong": [
-          "Heavy rustic linen — sage: expected clean=2, service|lb_35e61a762a4f42aeacae91c77f9f2252=-1, found clean=1"
-        ]
-      }
-    }
-  ],
+  "failures": [],
   "notApplicable": [
     {
       "check": "undo.keeps_what_another_report_still_supports",
@@ -1463,14 +1005,19 @@
       "why": "no garment of the undone report of 2027-06-02 has another report behind it"
     },
     {
-      "check": "amend.replaces_only_what_it_corrects",
-      "step": 114,
-      "why": "the report has no shirt to correct, or no other shirt was free"
+      "check": "trip.a_trip_day_is_answered_from_the_suitcase",
+      "step": 141,
+      "why": "no option for 2027-06-10 (No complete outfit is available for this day: 0 eligible trousers.), but the simulated owner left 1 proposed piece(s) at home: Cord — navy (bottom)"
     },
     {
       "check": "swap.undo_restores_the_board",
       "step": 146,
       "why": "no home board for 2027-06-11 (trip)"
+    },
+    {
+      "check": "trip.a_trip_day_is_answered_from_the_suitcase",
+      "step": 151,
+      "why": "no option for 2027-06-11 (No complete outfit is available for this day: 0 eligible trousers.), but the simulated owner left 1 proposed piece(s) at home: Cord — navy (bottom)"
     },
     {
       "check": "undo.keeps_what_another_report_still_supports",
@@ -1481,16 +1028,16 @@
   "toolCoverage": {
     "byTool": {
       "garderobe_inventory": {
-        "calls": 1968,
-        "answered": 1965,
+        "calls": 1960,
+        "answered": 1957,
         "refused": 3,
         "refusalCodes": {
           "not_found": 3
         }
       },
       "garderobe_command": {
-        "calls": 255,
-        "answered": 244,
+        "calls": 253,
+        "answered": 242,
         "refused": 11,
         "refusalCodes": {
           "not_found": 3,
@@ -1518,8 +1065,8 @@
         "refusalCodes": {}
       },
       "garderobe_run": {
-        "calls": 13,
-        "answered": 7,
+        "calls": 15,
+        "answered": 9,
         "refused": 6,
         "refusalCodes": {
           "precondition_failed": 2,
@@ -1534,12 +1081,12 @@
       }
     },
     "inventoryViews": {
-      "snapshot": 1013,
-      "receipts": 518,
+      "snapshot": 1008,
+      "receipts": 514,
       "items": 12,
       "item": 8,
       "availability": 1,
-      "history": 368,
+      "history": 369,
       "laundry": 16,
       "style": 1,
       "resolve": 3,
@@ -1550,7 +1097,7 @@
       "orders": 7
     },
     "runActions": {
-      "status": 8,
+      "status": 10,
       "resume": 2,
       "respond": 2,
       "cancel": 1
@@ -1566,7 +1113,7 @@
         "direct": 30
       },
       "wear.record": {
-        "direct": 31,
+        "direct": 29,
         "owner_app": 2
       },
       "garment.move": {
@@ -1583,7 +1130,7 @@
         "direct": 4
       },
       "wear.amend": {
-        "direct": 1
+        "direct": 2
       },
       "style.set_brief": {
         "direct": 3
@@ -1657,7 +1204,7 @@
     "oauth": {
       "connections": 3,
       "authorizations": 3,
-      "tokenRefreshes": 359
+      "tokenRefreshes": 358
     },
     "ownerRequestsInTheApp": 16,
     "testDoorRequests": 889
@@ -1754,7 +1301,7 @@
       "mornings away on the trip": 3,
       "mornings while the service was paused": 2,
       "most garments at once whose availability was an estimate": 79,
-      "offers checked without a thermal check (forecast unavailable, stale or just changed)": 71,
+      "offers checked without a thermal check (forecast unavailable, stale or just changed)": 69,
       "orders logged (SYNTHETIC order)": 1,
       "outfits chosen the evening before": 12,
       "owner observations contradicting the ledger: a spill (was estimated)": 2,
@@ -1768,22 +1315,23 @@
       "repair probes: marked dirty": 1,
       "repair probes: sent to cleaner": 1,
       "repair probes: worn today late report": 1,
-      "route.direct": 124,
+      "route.direct": 123,
       "route.refused": 4,
       "scheduled sweeps run (the product's own scheduled handler)": 148,
       "suitcases packed": 1,
       "suitcases unpacked": 1,
       "swaps on tomorrow's board": 3,
       "swaps undone": 3,
+      "trip days undressable because proposed pieces were left at home (SIMULATED owner's packing)": 2,
       "trips planned (SIMULATED circumstance)": 1,
-      "wear reports corrected (route: direct)": 1,
-      "wear reports from the suitcase": 3,
+      "wear reports corrected (route: direct)": 2,
+      "wear reports from the suitcase": 1,
       "wear reports made the next morning": 1,
       "wear reports made the same evening": 19,
       "wear reports repeated as a new report": 6,
       "wear reports repeated from the owner's app": 2,
       "wear reports undone": 2,
-      "wear reports with a second pair of socks used": 2,
+      "wear reports with a second pair of socks used": 3,
       "weekly laundry baselines the ledger has applied": 4,
       "worn: as chosen": 9,
       "worn: one piece differs": 5,
@@ -1791,7 +1339,7 @@
     }
   },
   "commands": {
-    "total": 132,
+    "total": 131,
     "refused": [
       {
         "step": 31,
@@ -1827,10 +1375,10 @@
       }
     ]
   },
-  "outcomeDigest": "91f7dedc92a87140",
+  "outcomeDigest": "8e5af3c9d5690c26",
   "simulated": {
     "from": "2027-05-30T18:30:00Z",
-    "to": "2027-06-27T22:10:03Z"
+    "to": "2027-06-27T22:10:00Z"
   },
-  "realSeconds": 248
+  "realSeconds": 169
 }

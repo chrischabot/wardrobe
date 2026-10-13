@@ -8,7 +8,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_4736be6407214d259c014c4d134d5ddc",
+  "commandId": "cmd_77bcd8961117495e8c96d111bc8122ad",
   "summary": "Settings updated (version 2): timezone, homeLocation"
  },
  {
@@ -20,7 +20,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_03cce3d03b344ddcb39712feae8e4fda",
+  "commandId": "cmd_9e8ef8977bf1480fba4608b608552f98",
   "summary": "Added “SYNTHETIC second-owner shirt (isolation check)” (1 owned)"
  },
  {
@@ -32,7 +32,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_8a097a0b0bd9433e8f10fe132a666ed6",
+  "commandId": "cmd_0365c28f511e4c24a60d0917e2bfe013",
   "summary": "Added “SYNTHETIC second-owner trousers (isolation check)” (1 owned)"
  },
  {
@@ -44,7 +44,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_00edb5fd60984e83b0e6e153f66500d3",
+  "commandId": "cmd_f4a46d4c94ce4e148c7ae826c3feb8da",
   "summary": "Chosen for 2027-05-31: option 5 (an intention, not a recorded wear)"
  },
  {
@@ -56,8 +56,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_2c17add3aee14a7391faf79fd981b22b",
-  "summary": "Recorded for today: Drake's Navy Cotton-Linen Raglan Work Coat, Clark oxford — evergreen, Di Sondrio beige chino, Anderson's belt — olive (dark khaki), Merino — inky blue, NB 990v4 — grey"
+  "commandId": "cmd_73e4825d2c1142d9874281b372cedd83",
+  "summary": "Recorded for today: Drake's Tobacco Summer Moleskin Games Mk.I, Lightweight oxford — gold, Di Sondrio grey chino, Anderson's belt — black, Merino — deep earth brown, NB 990v4 — navy"
  },
  {
   "step": 5,
@@ -68,7 +68,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_da03d2dae9094c7eba5bcb66cd12b278",
+  "commandId": "cmd_b8678d489b654bd18a0bb537a90f8556",
   "summary": "ISTO Linen Work Jacket — navy: now at the tailor"
  },
  {
@@ -80,7 +80,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_40f1a6fe0835413e9821c6f8fa1eb938",
+  "commandId": "cmd_6e835232c2de4c389d2693a04bd154cc",
   "summary": "Chosen for 2027-06-02: option 3 (an intention, not a recorded wear)"
  },
  {
@@ -92,7 +92,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_294738d6c57d47029ff70b2c7499c188",
+  "commandId": "cmd_a8dc32df5e7f4b94a63fc7e43e117b02",
   "summary": "Chosen for 2027-06-02: option 3 (an intention, not a recorded wear)"
  },
  {
@@ -104,7 +104,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_59a453ad89f645b3a55602ba6fe9476c",
+  "commandId": "cmd_f912c305ab5a4fff95481d1e797b203f",
   "summary": "Logged “SIMULATED Shirtmaker” order “SIM-2-1” with 1 line. 1 wardrobe record created as ordered, not arrived. Ordered, not arrived: nothing is wearable yet"
  },
  {
@@ -116,7 +116,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_7b72e4ff73054e90b0b3163cb0998b2f",
+  "commandId": "cmd_84b3297953d74427bebd584f0fc2dcdf",
   "summary": "Drake's Tobacco Summer Moleskin Games Mk.I: now at the tailor"
  },
  {
@@ -140,8 +140,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_b6a377053b60495aa0a725eace7e2a5b",
-  "summary": "Recorded for today: Drake's Black Heavy Twill Chore, Heavy rustic linen — sage, Di Sondrio grey chino, Anderson's belt — brown, Merino — true black, NB 990v4 — navy"
+  "commandId": "cmd_5455704cbbb44d79abcb36d94434ef58",
+  "summary": "Recorded for today: Mr P Cotton-Linen Field Jacket, Flannel plaid — grey/slate/black ombre, Denim — light olive, Anderson's belt — brown, Merino — blue jean, NB 990v4 — navy"
  },
  {
   "step": 34,
@@ -152,7 +152,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_a88f95563aa749a9842e9fc726f64810",
+  "commandId": "cmd_b23f6581da234cc9b77bbda18755d2ee",
   "summary": "Chosen for 2027-06-03: option 1 (an intention, not a recorded wear)"
  },
  {
@@ -164,8 +164,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_abe573eadff54ba88660c15a22de80c4",
-  "summary": "Washed and clean: Merino — inky blue, Merino — true black"
+  "commandId": "cmd_c379f9d98ea04993875d8dae86f9e112",
+  "summary": "Washed and clean: Merino — blue jean, Merino — deep earth brown"
  },
  {
   "step": 46,
@@ -176,8 +176,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_87ad4d7d9f9d4ab089dfc60527d90840",
-  "summary": "Recorded for today: PWVC Cashmere Cord Bark, Lightweight oxford — light blue striped (thin), Akita slub 5-pocket — cream, Anderson's belt — olive (dark khaki), Merino — deep earth brown, NB 990v4 — olive/cream"
+  "commandId": "cmd_f546379d342f4d9b9dbc6fcccd91c15b",
+  "summary": "Recorded for today: Cotton-linen oxford — Portuguese light blue, Stratton stretch corduroy, Anderson's belt — brown, Merino — blue jean, NB 990v4 — olive/cream"
  },
  {
   "step": 47,
@@ -188,8 +188,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_c12cd6854bfa47bf8ade7ae2f5a79936",
-  "summary": "Corrected 2027-06-03: removed Lightweight oxford — light blue striped (thin); added Pima oxford — light blue university stripe"
+  "commandId": "cmd_6d906aa4a07f4f1e890ab0de5918ea82",
+  "summary": "Corrected 2027-06-03: removed Cotton-linen oxford — Portuguese light blue; added Pima oxford — light blue university stripe"
  },
  {
   "step": 48,
@@ -200,7 +200,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_2196702611d747548a788d3f06dd1f93",
+  "commandId": "cmd_a05b1c6b7dc5492e9154dac2dc74d360",
   "summary": "Brief for 2027-06-04: “(SIMULATED circumstance) Working from home; nobody will see me.”"
  },
  {
@@ -212,7 +212,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_6afa1a3b9dcb44d18535c88fcfb26a04",
+  "commandId": "cmd_db9505650de941ef86722c8f2bdefb3f",
   "summary": "Chosen for 2027-06-04: option 1 (an intention, not a recorded wear)"
  },
  {
@@ -224,8 +224,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_80de50c29bd14f9e8e03b15538285209",
-  "summary": "Recorded for today: Pima oxford — wine/burgundy"
+  "commandId": "cmd_53acbdb0fc3542fe82e41adb6d1dc3c0",
+  "summary": "Recorded for today: Pima oxford — sage+red fancy stripe"
  },
  {
   "step": 51,
@@ -236,8 +236,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_87052b0e5d154769a0f7fd5d6df17d7b",
-  "summary": "Option 2 for 2027-06-04: Heavy rustic linen — slate swapped for Irish linen — olive; the rest of the outfit is unchanged"
+  "commandId": "cmd_0168da9a0c4c4b60adf4eb0dd543b1fa",
+  "summary": "Option 2 for 2027-06-04: Heavy rustic linen — slate swapped for Lightweight oxford — blue; the rest of the outfit is unchanged"
  },
  {
   "step": 51,
@@ -248,8 +248,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_4d12505068294966b3c6c10b8c9f52bc",
-  "summary": "Undone: Option 2 for 2027-06-04: Heavy rustic linen — slate swapped for Irish linen — olive; the rest of the outfit is unchanged. Option 2 for 2027-06-04: swap undone; the outfits of revision 2 are back (Heavy rustic linen — slate is back)"
+  "commandId": "cmd_84319d136e5144189a3c23688a83f941",
+  "summary": "Undone: Option 2 for 2027-06-04: Heavy rustic linen — slate swapped for Lightweight oxford — blue; the rest of the outfit is unchanged. Option 2 for 2027-06-04: swap undone; the outfits of revision 2 are back (Heavy rustic linen — slate is back)"
  },
  {
   "step": 56,
@@ -260,7 +260,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_cef4dabfcd6249a69d01016acba6f6ca",
+  "commandId": "cmd_1ac5b91cbdaa455499d14982d94e36c8",
   "summary": "Chosen for 2027-06-04: option 2 (an intention, not a recorded wear)"
  },
  {
@@ -272,7 +272,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_799ee96007424afead452ef4bd1c1d18",
+  "commandId": "cmd_8ea6dd25af884f039a3d70c87a0850da",
   "summary": "Laundry collected: 7 items in the batch"
  },
  {
@@ -284,7 +284,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_2dc47b3e0285474b95c7a3d3e45a72ef",
+  "commandId": "cmd_eb1e7265bbc7446f954899de18b63e15",
   "summary": "SYNTHETIC ordered shirt, moss (simulated order): 1 arrived and is now in the wardrobe"
  },
  {
@@ -296,7 +296,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_128f722fbfbb48efbfdc071154b87756",
+  "commandId": "cmd_eb1984d997cc40c198a079d730a9a4b1",
   "summary": "“SYNTHETIC ordered shirt, moss (simulated order)” from “SIMULATED Shirtmaker” marked delivered on 2027-06-04"
  },
  {
@@ -308,7 +308,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_e66c0ac3f61f4ed8b8d0edd0cc52fb41",
+  "commandId": "cmd_30560df7d4bd4dd19e019857eb0b49de",
   "summary": "Restriction recorded (other); reason given: “SIMULATED event: lent to a friend”. 1 garment excluded until it is explicitly resolved"
  },
  {
@@ -320,7 +320,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_f944fc4723f94de4b6aee4dad6bebb28",
+  "commandId": "cmd_4c426bd9e7b34932972103bb12b02cd5",
   "summary": "Drake's Tobacco Summer Moleskin Games Mk.I: now back in the wardrobe"
  },
  {
@@ -332,7 +332,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_547306eda6f44b2c876f598ee8093a7b",
+  "commandId": "cmd_5a86c2d87e3d4f54b310e68bf75ef39d",
   "summary": "Recorded for today: Clark oxford — beige, Trunk Clothiers cord, Alpaca — true black, NB 990v4 — navy"
  },
  {
@@ -344,7 +344,7 @@
   "outcome": "merged",
   "code": null,
   "reason": null,
-  "commandId": "cmd_7a15a96dc6574f7cb053ecbfe0ca3bfb",
+  "commandId": "cmd_28eff11f7046451da5ae5410457554cc",
   "summary": "Already recorded for today: Clark oxford — beige, Trunk Clothiers cord, Alpaca — true black, NB 990v4 — navy. The report was merged; nothing was counted twice"
  },
  {
@@ -356,7 +356,7 @@
   "outcome": "merged",
   "code": null,
   "reason": null,
-  "commandId": "cmd_1ddaf12d24b64989a747143ed19d0a7b",
+  "commandId": "cmd_4e54bd0f690e48f0a13ac655152ef3ba",
   "summary": "Already recorded for today: Clark oxford — beige, Trunk Clothiers cord, Alpaca — true black, NB 990v4 — navy. The report was merged; nothing was counted twice"
  },
  {
@@ -368,8 +368,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_154e32702227418d8f144c2a8f27ba97",
-  "summary": "In the wash: Olive reverse sateen fatigue"
+  "commandId": "cmd_cb1a0042b0c64f33848ea3997e65f115",
+  "summary": "In the wash: JP double-pleated heavyweight chino — soft olive"
  },
  {
   "step": 77,
@@ -380,7 +380,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_04a881694325454999b39e6a28864de6",
+  "commandId": "cmd_42aab229bc9e4b7b8ade25634bd522db",
   "summary": "Exchange opened for “SYNTHETIC ordered shirt, moss (simulated order)”. Deadline to post: 2027-07-04 (Europe/London). It stays in your wardrobe until it physically leaves"
  },
  {
@@ -392,8 +392,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_e47b9cf551a540b8a69cc193cc54c00e",
-  "summary": "Laundry returned: 6 items clean; still away: Heavy rustic linen — sage"
+  "commandId": "cmd_615bd2c2e08747e19147c80619c812c0",
+  "summary": "Laundry returned: 6 items clean; still away: Pima oxford — light blue university stripe"
  },
  {
   "step": 79,
@@ -404,7 +404,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_3347dccf7cfc43c294428429554c6a17",
+  "commandId": "cmd_8bb2408871bb4875838d4ce110176423",
   "summary": "Trip “SIMULATED trip to Rotterdam” recorded: 2027-06-09 to 2027-06-11, Rotterdam (SIMULATED forecast). Nothing is packed until you say so"
  },
  {
@@ -416,8 +416,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_23578c3c3b2740f5a75e9f47ec4b798f",
-  "summary": "Recorded for today: Drake's Navy Cotton-Linen Games Mk.IV, Lightweight oxford — light blue extra-wide stripe, Bergamo cotton-linen chino — bone white, Anderson's belt — brown, Merino — inky blue, NB 990v4 — grey"
+  "commandId": "cmd_3419e8d58b584449ae373382f3311e13",
+  "summary": "Recorded for today: ISTO Linen Work Jacket — clay, Lightweight oxford — pink, Di Sondrio faded navy lightweight, Anderson's belt — black, Merino — deep earth brown, NB 990v4 — olive/cream"
  },
  {
   "step": 81,
@@ -428,8 +428,8 @@
   "outcome": "merged",
   "code": null,
   "reason": null,
-  "commandId": "cmd_cc8ba3e35cf94b68bcbccfc01ff13bae",
-  "summary": "Already recorded for today: Drake's Navy Cotton-Linen Games Mk.IV, Lightweight oxford — light blue extra-wide stripe, Bergamo cotton-linen chino — bone white, Anderson's belt — brown, Merino — inky blue, NB 990v4 — grey. The report was merged; nothing was counted twice"
+  "commandId": "cmd_8decff366e56430abac348969230a7da",
+  "summary": "Already recorded for today: ISTO Linen Work Jacket — clay, Lightweight oxford — pink, Di Sondrio faded navy lightweight, Anderson's belt — black, Merino — deep earth brown, NB 990v4 — olive/cream. The report was merged; nothing was counted twice"
  },
  {
   "step": 81,
@@ -440,8 +440,8 @@
   "outcome": "merged",
   "code": null,
   "reason": null,
-  "commandId": "cmd_210da8e3eeec486c94337996e2b04841",
-  "summary": "Already recorded for today: Drake's Navy Cotton-Linen Games Mk.IV, Lightweight oxford — light blue extra-wide stripe, Bergamo cotton-linen chino — bone white, Anderson's belt — brown, Merino — inky blue, NB 990v4 — grey. The report was merged; nothing was counted twice"
+  "commandId": "cmd_95b13766cb224cc0be46c06fccea716a",
+  "summary": "Already recorded for today: ISTO Linen Work Jacket — clay, Lightweight oxford — pink, Di Sondrio faded navy lightweight, Anderson's belt — black, Merino — deep earth brown, NB 990v4 — olive/cream. The report was merged; nothing was counted twice"
  },
  {
   "step": 82,
@@ -452,8 +452,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_46bd14192c7443ed945728e036f36d0f",
-  "summary": "Undone: Recorded for today: Drake's Black Heavy Twill Chore, Heavy rustic linen — sage, Di Sondrio grey chino, Anderson's belt — brown, Merino — true black, NB 990v4 — navy. Wear record for 2027-06-02 undone (6 counted wears withdrawn)"
+  "commandId": "cmd_30a218fde8d54cae9b7959fea6d0b62d",
+  "summary": "Undone: Recorded for today: Mr P Cotton-Linen Field Jacket, Flannel plaid — grey/slate/black ombre, Denim — light olive, Anderson's belt — brown, Merino — blue jean, NB 990v4 — navy. Wear record for 2027-06-02 undone (6 counted wears withdrawn)"
  },
  {
   "step": 89,
@@ -464,7 +464,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_86a869588c5f4731b2ea99f73472d70d",
+  "commandId": "cmd_315449c266194e4a8b79cae65a6a871e",
   "summary": "Chosen for 2027-06-06: option 2 (an intention, not a recorded wear)"
  },
  {
@@ -476,7 +476,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_0262b1d0400940f39bbd668ed2192305",
+  "commandId": "cmd_10bc4f245eb74035bb04312bf67c9a27",
   "summary": "Merino — biscuit beige: counts corrected to 2 clean, 0 awaiting care, 2 owned"
  },
  {
@@ -488,7 +488,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_68600139f4c94fd4a46dd4249d57ce2e",
+  "commandId": "cmd_1babd8682a1f4e5da948a07ccda0c12e",
   "summary": "“SYNTHETIC ordered shirt, moss (simulated order)”: Label ready. Next: post the parcel. It is still in your wardrobe until it physically leaves"
  },
  {
@@ -500,8 +500,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_daf958842d024f88962a7ecb81b6ac27",
-  "summary": "Pima oxford — light blue university stripe: 1 lost; 0 still owned"
+  "commandId": "cmd_f57d0e5bb67643108c5440366a496398",
+  "summary": "Pima oxford — fatigue: 1 lost; 0 still owned"
  },
  {
   "step": 5,
@@ -512,7 +512,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_78e8d7fc00474c1cb3b6d340e1e7425e",
+  "commandId": "cmd_df842c3dec6a40cfb3aef7677f5b7a59",
   "summary": "ISTO Linen Work Jacket — navy: now back in the wardrobe"
  },
  {
@@ -524,8 +524,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_c42637705f4a47c9b3c2966fd927ef72",
-  "summary": "Recorded for today: Drake's Black Heavy Twill Chore, California plaid, Di Sondrio grey chino, Anderson's belt — brown, Merino — true black, NB 990v4 — navy"
+  "commandId": "cmd_b38f3afbec504d8a840ca158d075d96c",
+  "summary": "Recorded for today: Lightweight oxford — blue, Palermo linen drawstring — neutral, Anderson's belt — brown, Merino — strong blue, NB 990v4 — grey"
  },
  {
   "step": 97,
@@ -536,8 +536,8 @@
   "outcome": "merged",
   "code": null,
   "reason": null,
-  "commandId": "cmd_9bc7808cd892476d8fd28b0732fd2e32",
-  "summary": "Already recorded for today: Drake's Black Heavy Twill Chore, California plaid, Di Sondrio grey chino, Anderson's belt — brown, Merino — true black, NB 990v4 — navy. The report was merged; nothing was counted twice"
+  "commandId": "cmd_1e7fa2fe28ed4f2a8167d8d2bfde5e8e",
+  "summary": "Already recorded for today: Lightweight oxford — blue, Palermo linen drawstring — neutral, Anderson's belt — brown, Merino — strong blue, NB 990v4 — grey. The report was merged; nothing was counted twice"
  },
  {
   "step": 106,
@@ -548,7 +548,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_4099a5e3daee474eac12a3fca5e4f232",
+  "commandId": "cmd_7cfcc606d704427e8e8ed94a9430e837",
   "summary": "Chosen for 2027-06-07: option 1 (an intention, not a recorded wear)"
  },
  {
@@ -560,7 +560,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_568b4001d5ee4c1d8119e03ac18b2fd7",
+  "commandId": "cmd_cf837595e3b64de499df7836319e881f",
   "summary": "Chosen for 2027-06-07: option 2 (an intention, not a recorded wear)"
  },
  {
@@ -572,7 +572,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_19b71b7bd3454dbfb9e27d01364dd8a0",
+  "commandId": "cmd_4a3753a21ecb497fac912b056533b205",
   "summary": "“SYNTHETIC ordered shirt, moss (simulated order)”: Marked as posted. Shipment recorded."
  },
  {
@@ -584,7 +584,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_d43486762bf04b3a8fe19c601c018bca",
+  "commandId": "cmd_3410c309500549e8b0f1b5fc77482bfe",
   "summary": "SYNTHETIC ordered shirt, moss (simulated order): 1 returned to seller; 0 still owned"
  },
  {
@@ -596,7 +596,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_1669b687500c43b0b3576996b8729f3d",
+  "commandId": "cmd_facb0b7fee9445708f2fac96c52ce2e8",
   "summary": "Logged “SIMULATED Shirtmaker” order “SIM-2-2” with 1 line, linked to the order it replaces. 1 wardrobe record created as ordered, not arrived. Ordered, not arrived: nothing is wearable yet"
  },
  {
@@ -608,7 +608,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_7314a435e2054479ba2e1066eef9a886",
+  "commandId": "cmd_8b877933efa84f428a15314449b52c72",
   "summary": "Exchange linked: “SYNTHETIC replacement shirt, moss, one size up (simulated e…” (L) is the incoming replacement. It counts as owned only once it arrives, and the outgoing piece until it leaves"
  },
  {
@@ -632,7 +632,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_f0d085c240eb4c60a662148a2f9f87e9",
+  "commandId": "cmd_a9ff683a00224c2592a127d6690e9157",
   "summary": "Restriction resolved (other); it was recorded with the reason “SIMULATED event: lent to a friend”. 1 garment is no longer excluded by it"
  },
  {
@@ -644,7 +644,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_f6b6b886901540e0b002589947e8134f",
+  "commandId": "cmd_2767708a9ec849c897d955983239eded",
   "summary": "Drake's Waxed Chasseur: planning policy set to excluded; reason given: “SIMULATED event: damaged, needs a repair”"
  },
  {
@@ -656,8 +656,20 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_88512c47f0694e218c8770444546ffdf",
-  "summary": "Recorded for today: Di Sondrio beige chino, Anderson's belt — olive (dark khaki), Merino — deep forest green, NB 990v4 — grey"
+  "commandId": "cmd_f18f73362ebf4924ae09a0104fd0ab72",
+  "summary": "Recorded for today: ISTO Linen Work Jacket — navy, Lightweight oxford — moss, Denim — white, Anderson's belt — olive (dark khaki), Merino — inky blue, NB 990v4 — grey"
+ },
+ {
+  "step": 114,
+  "day": 7,
+  "type": "wear.amend",
+  "label": "a wear report is corrected",
+  "route": "direct",
+  "outcome": "committed",
+  "code": null,
+  "reason": null,
+  "commandId": "cmd_99f2c641c6dd4d7a9f35f973d9784dd6",
+  "summary": "Corrected 2027-06-07: removed Lightweight oxford — moss; added Irish linen — slate+navy plaid"
  },
  {
   "step": 116,
@@ -668,7 +680,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_5e1c44ee42ca4317840175fb89fd121d",
+  "commandId": "cmd_2f34f00c2bb745948cf4c35436a0b25e",
   "summary": "Chosen for 2027-06-08: option 1 (an intention, not a recorded wear)"
  },
  {
@@ -680,7 +692,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_e3e8264aefac45849c8080ad3f14d2e0",
+  "commandId": "cmd_2f9ecf518a6e40c892eeae480c01b500",
   "summary": "Selection cleared for 2027-06-08"
  },
  {
@@ -692,8 +704,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_fc48e442debe451d9fe575563c06d4ab",
-  "summary": "Washed and clean: Heavy rustic linen — sage"
+  "commandId": "cmd_366b81e116a84c619d4bdd9d0906e042",
+  "summary": "Washed and clean: Pima oxford — light blue university stripe"
  },
  {
   "step": 124,
@@ -704,8 +716,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_90b7401deeac4e298d10dacb48ccdb12",
-  "summary": "Recorded for today: Lightweight oxford — blue, Denim — light olive, Merino — milky tea beige, NB 990v4 — olive/cream"
+  "commandId": "cmd_7014bf5fcf0d462c898230d32558e360",
+  "summary": "Recorded for today: Lightweight oxford — blue stripe, Cord — navy, Merino — milky tea beige, NB 990v4 — olive/cream"
  },
  {
   "step": 127,
@@ -716,8 +728,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_97d2d8d81130401fa22d541c3f245f1f",
-  "summary": "Packed for “SIMULATED trip to Rotterdam”: Flannel plaid — rust+grey, Joseph Turner flannel — Prince of Wales check, Anderson's belt — black, Merino — fire red, NB 990v4 — olive/cream, Pima oxford — sage+red fancy stripe and 6 more"
+  "commandId": "cmd_611d1aa8ecdb4dabbc0b087ca240c775",
+  "summary": "Packed for “SIMULATED trip to Rotterdam”: Flannel plaid — rust+grey, Anderson's belt — brown, Merino — fire red, NB 990v4 — olive/cream, Pima oxford — sage+red fancy stripe, Merino — deep earth brown and 5 more"
  },
  {
   "step": 132,
@@ -728,32 +740,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_4964c16d67074042be07d9666b97204e",
-  "summary": "Recorded for today: Pima oxford — wine/burgundy, Joseph Turner flannel — Prince of Wales check, Anderson's belt — black, Merino — inky blue, NB 990v4 — olive/cream"
- },
- {
-  "step": 141,
-  "day": 10,
-  "type": "wear.record",
-  "label": "worn on the trip",
-  "route": "direct",
-  "outcome": "committed",
-  "code": null,
-  "reason": null,
-  "commandId": "cmd_3c17c06a9dde4a9392171b451dc12bee",
-  "summary": "Recorded for today: Flannel plaid — rust+grey, Joseph Turner flannel — Prince of Wales check, Anderson's belt — black, Merino — fire red, NB 990v4 — olive/cream"
- },
- {
-  "step": 151,
-  "day": 11,
-  "type": "wear.record",
-  "label": "worn on the trip",
-  "route": "direct",
-  "outcome": "committed",
-  "code": null,
-  "reason": null,
-  "commandId": "cmd_b6ce1ab747b64c11a3ee790a2e3f1567",
-  "summary": "Recorded for today: Selvedge twill — olive, Cord — beige, Anderson's belt — black, Merino — pine green, NB 990v4 — olive/cream"
+  "commandId": "cmd_9fb7cca545424b6fba1eaaf7d4acec97",
+  "summary": "Recorded for today: Pima oxford — sage+red fancy stripe, Cord — beige, Anderson's belt — brown, Merino — fire red, NB 990v4 — olive/cream"
  },
  {
   "step": 154,
@@ -764,8 +752,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_e706796634d24f0b8810b263f9fab9fc",
-  "summary": "Unpacked from “SIMULATED trip to Rotterdam”: Selvedge twill — olive, Pima oxford — sage+red fancy stripe, NB 990v4 — olive/cream, Joseph Turner flannel — Prince of Wales check, Anderson's belt — black, Silk knit tie — navy and 6 more; laundered pieces are awaiting care, not marked clean"
+  "commandId": "cmd_879d58e8c6784cff96a8e10570eac9f0",
+  "summary": "Unpacked from “SIMULATED trip to Rotterdam”: Pima oxford — sage+red fancy stripe, NB 990v4 — olive/cream, Merino — deep earth brown, Pima oxford — charcoal, Anderson's belt — brown, Merino — correct grey and 5 more; laundered pieces are awaiting care, not marked clean"
  },
  {
   "step": 156,
@@ -776,7 +764,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_01edeb6413674dfcaccfba4b5be76872",
+  "commandId": "cmd_fa05525022f64712b81b73bd78d2ea7e",
   "summary": "Chosen for 2027-06-12: option 2 (an intention, not a recorded wear)"
  },
  {
@@ -788,7 +776,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_07a9543420c7489789a693f3f9353cd5",
+  "commandId": "cmd_43e43ebc717c4670bc5bf400f413a9cc",
   "summary": "Chosen for 2027-06-12: option 2 (an intention, not a recorded wear)"
  },
  {
@@ -800,7 +788,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_cd44cf92d12447c7bb37b89e00ae5d15",
+  "commandId": "cmd_f46774eabe80407ba042a1682252326c",
   "summary": "Drake's Waxed Chasseur: planning policy set to normal; reason given: “SIMULATED event: repaired”"
  },
  {
@@ -812,8 +800,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_b0c545b1320f4299b673015ec27647cd",
-  "summary": "Recorded for today: PWVC Cashmere Cord Bark, Lightweight oxford — light blue striped (thin), Akita slub 5-pocket — cream, Anderson's belt — olive (dark khaki), Merino — deep earth brown, NB 990v4 — olive/cream"
+  "commandId": "cmd_318f2fc1d57d4b17a7eb280980688d66",
+  "summary": "Recorded for today: Cotton-linen oxford — Portuguese light blue, Stratton stretch corduroy, Anderson's belt — brown, Merino — blue jean, NB 990v4 — olive/cream"
  },
  {
   "step": 166,
@@ -824,8 +812,8 @@
   "outcome": "merged",
   "code": null,
   "reason": null,
-  "commandId": "cmd_b266cbf5f9874d48b0610545577f7904",
-  "summary": "Already recorded for today: PWVC Cashmere Cord Bark, Lightweight oxford — light blue striped (thin), Akita slub 5-pocket — cream, Anderson's belt — olive (dark khaki), Merino — deep earth brown, NB 990v4 — olive/cream. The report was merged; nothing was counted twice"
+  "commandId": "cmd_6524b076501f40df811f5454a3d1f170",
+  "summary": "Already recorded for today: Cotton-linen oxford — Portuguese light blue, Stratton stretch corduroy, Anderson's belt — brown, Merino — blue jean, NB 990v4 — olive/cream. The report was merged; nothing was counted twice"
  },
  {
   "step": 7,
@@ -836,7 +824,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_8cccd72006d842739e0b63cc2c20938a",
+  "commandId": "cmd_7087e37885fe48d4ab825b14b15992b9",
   "summary": "Alpaca — inky blue: 1 lost; 0 still owned"
  },
  {
@@ -848,8 +836,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_deb349a8a46a4283b09ed7aaf8f6e36c",
-  "summary": "In the wash: Merino — deep earth brown"
+  "commandId": "cmd_b00a7e5a68bd40359c163ddfd49681b6",
+  "summary": "In the wash: Merino — golden yellow"
  },
  {
   "step": 178,
@@ -872,7 +860,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_bd7ae10941344e17a771aad804e548b4",
+  "commandId": "cmd_c21a3c6b51e44d9a8d17e8e9b1293250",
   "summary": "Recorded for today: Drake's Clifford boot"
  },
  {
@@ -884,7 +872,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_b9b1572b9a5e471cbe1854d62f6ed526",
+  "commandId": "cmd_0678fe9a72e54ac0a86a89a12b34fbaa",
   "summary": "Undone: Recorded for today: Drake's Clifford boot. Wear record for 2027-06-13 undone (1 counted wear withdrawn)"
  },
  {
@@ -896,8 +884,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_ee933f17ebaf48bc957997a204d777ee",
-  "summary": "Recorded for today: Drake's Waxed Chasseur, Lightweight oxford — light blue extra-wide stripe, Bergamo cotton-linen chino — bone white, Anderson's belt — olive (dark khaki), Merino — blue jean, NB 990v4 — olive/cream"
+  "commandId": "cmd_47f329c440a64b609b0518e980293310",
+  "summary": "Recorded for today: Drake's Olive Jungle Jacket, Lightweight oxford — pink, Di Sondrio faded navy lightweight, Anderson's belt — olive (dark khaki), Merino — deep forest green, NB 990v4 — olive/cream"
  },
  {
   "step": 180,
@@ -908,7 +896,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_f8aace3612e141639296cdfcc0a86d0c",
+  "commandId": "cmd_959ee6513e8c410d9e4762d7ce0207ac",
   "summary": "Brief for 2027-06-14: “(SIMULATED circumstance) Working from home; nobody will see me.”"
  },
  {
@@ -920,7 +908,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_653ae1de670e4163821af7f6be36ef69",
+  "commandId": "cmd_0adaaffd5434416eb03462f0c02a5732",
   "summary": "Chosen for 2027-06-14: option 4 (an intention, not a recorded wear)"
  },
  {
@@ -932,8 +920,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_dc04c5fc21f245f89166094898a0e796",
-  "summary": "Denim — white: now at the tailor"
+  "commandId": "cmd_0b12cc94e0044168a79776b758e57a9a",
+  "summary": "Akita slub 5-pocket — cream: now at the tailor"
  },
  {
   "step": 189,
@@ -944,7 +932,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_6524a2ab74fd48b0b920ad4ed02f3421",
+  "commandId": "cmd_0d5d08b8a0e5491bbb48f017802e8df3",
   "summary": "Chosen for 2027-06-14: option 1 (an intention, not a recorded wear)"
  },
  {
@@ -956,8 +944,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_89e67db00239451fb97c975159c6673f",
-  "summary": "Recorded for today: Cotton-linen oxford — blue wide stripe, Stratton stretch corduroy, Anderson's belt — olive (dark khaki), Merino — deep forest green, NB 990v4 — grey"
+  "commandId": "cmd_c50e378ac0b949b2855d7ba394e9f66a",
+  "summary": "Recorded for today: ISTO Linen Work Jacket — navy, Cotton-linen oxford — blue wide stripe, Di Sondrio walnut chino, Anderson's belt — olive (dark khaki), Merino — inky blue, NB 990v4 — grey"
  },
  {
   "step": 214,
@@ -968,7 +956,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_87eb70fe158546de9038bc9d15f37183",
+  "commandId": "cmd_6541d01ba5e34275848893dba75d08aa",
   "summary": "Brief for 2027-06-17: “(SIMULATED circumstance) Working from home; nobody will see me.”"
  },
  {
@@ -980,7 +968,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_0fad68f01fd144a8a3cc013f64cdec80",
+  "commandId": "cmd_ff4186d3c090488ea4b3a904f8985920",
   "summary": "Chosen for 2027-06-17: option 5 (an intention, not a recorded wear)"
  },
  {
@@ -992,7 +980,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_3ec46c5ae37b43b38457db99746cd032",
+  "commandId": "cmd_a8223d791b594c53af5030a6f24cb83d",
   "summary": "Chosen for 2027-06-17: option 2 (an intention, not a recorded wear)"
  },
  {
@@ -1004,7 +992,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_13e584b94d554390ab8280843625ac07",
+  "commandId": "cmd_dc94d251b205414db25fe9083e02af75",
   "summary": "Restriction recorded (other); reason given: “SIMULATED event: lent to a friend”. 1 garment excluded until it is explicitly resolved"
  },
  {
@@ -1016,8 +1004,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_77d60043e1c64a9e9dbb69fbebf8f293",
-  "summary": "Washed and clean: Alpaca — true black, Merino — blue jean, Merino — deep earth brown, Merino — deep forest green, Merino — fire red, Merino — inky blue and 3 more"
+  "commandId": "cmd_2ae57462180041aebba1b17bc21465a6",
+  "summary": "Washed and clean: Alpaca — true black, Merino — blue jean, Merino — correct grey, Merino — deep earth brown, Merino — deep forest green, Merino — fire red and 4 more"
  },
  {
   "step": 229,
@@ -1028,8 +1016,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_130c62df80e34e509b672dcc744f8fec",
-  "summary": "Recorded for today: Drake's Navy Cotton-Linen Raglan Work Coat, Clark oxford — evergreen, JP double-pleated heavyweight chino — navy, Anderson's belt — olive (dark khaki), Merino — inky blue, NB 990v4 — grey"
+  "commandId": "cmd_d598af0faba64dd6b1cc9f02b30383ed",
+  "summary": "Recorded for today: Lightweight oxford — light blue extra-wide stripe, Joseph Turner flannel — charcoal, Anderson's belt — brown, Merino — strong blue, NB 990v4 — navy"
  },
  {
   "step": 231,
@@ -1040,7 +1028,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_b73c212ba669495d892e0118f9ca5a81",
+  "commandId": "cmd_57be48c2078c4ce5973b1135b0d73a40",
   "summary": "Chosen for 2027-06-18: option 1 (an intention, not a recorded wear)"
  },
  {
@@ -1052,8 +1040,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_afd066ee8d0b49328c1aafaa719e1ad5",
-  "summary": "Lightweight oxford — red stripe: 1 lost; 0 still owned"
+  "commandId": "cmd_011914ce048b457394925848a4ebe2b8",
+  "summary": "Lightweight oxford — gold: 1 lost; 0 still owned"
  },
  {
   "step": 232,
@@ -1064,8 +1052,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_4bf4df8160dd44739705291bd6c66b2c",
-  "summary": "Option 4 for 2027-06-18: Irish linen — slate+navy plaid swapped for Lightweight oxford — light blue; the rest of the outfit is unchanged"
+  "commandId": "cmd_6a13280dcae844d4a4a22a2c5c8dc91d",
+  "summary": "Option 4 for 2027-06-18: Clark oxford — evergreen swapped for Lightweight oxford — laurel; the rest of the outfit is unchanged"
  },
  {
   "step": 232,
@@ -1076,8 +1064,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_08270028f17c45dc969bf12c2c321be4",
-  "summary": "Undone: Option 4 for 2027-06-18: Irish linen — slate+navy plaid swapped for Lightweight oxford — light blue; the rest of the outfit is unchanged. Option 4 for 2027-06-18: swap undone; the outfits of revision 2 are back (Irish linen — slate+navy plaid is back)"
+  "commandId": "cmd_78310739b0944d85bc67d4660a95a0fe",
+  "summary": "Undone: Option 4 for 2027-06-18: Clark oxford — evergreen swapped for Lightweight oxford — laurel; the rest of the outfit is unchanged. Option 4 for 2027-06-18: swap undone; the outfits of revision 3 are back (Clark oxford — evergreen is back)"
  },
  {
   "step": 237,
@@ -1088,7 +1076,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_a31c38c8b6a948ea9b904e2395202aa9",
+  "commandId": "cmd_6163033e508d46cb8c0be74eb01070b8",
   "summary": "Chosen for 2027-06-18: option 2 (an intention, not a recorded wear)"
  },
  {
@@ -1100,8 +1088,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_2cb85150df6f43a291f9993d630114cb",
-  "summary": "Laundry collected: 14 items in the batch"
+  "commandId": "cmd_24bc691d23d8450bbcb61cd236ec9c78",
+  "summary": "Laundry collected: 13 items in the batch"
  },
  {
   "step": 239,
@@ -1112,7 +1100,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_ecc0d86546c14829959cce5e73d97dac",
+  "commandId": "cmd_99c659bf551342c99486e982ceac1e1c",
   "summary": "“SYNTHETIC ordered shirt, moss (simulated order)”: Exchange complete."
  },
  {
@@ -1124,8 +1112,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_3b76eccd71a84edbb9b1466d452a6858",
-  "summary": "Merino — biscuit beige: counts corrected to 2 clean, 0 awaiting care, 2 owned"
+  "commandId": "cmd_a0da41a65e4244298607705ee60ebb0e",
+  "summary": "Lightweight oxford — yellow stripe: counts corrected to 1 clean, 0 awaiting care, 1 owned"
  },
  {
   "step": 244,
@@ -1136,7 +1124,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_cd5064d5e2b84791a0876001201062f6",
+  "commandId": "cmd_25196c84776842f2bf53b2e7fa77d590",
   "summary": "Chosen for 2027-06-19: option 2 (an intention, not a recorded wear)"
  },
  {
@@ -1148,8 +1136,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_a8ea44b9125f437ca965ae788b19fdfc",
-  "summary": "In the wash: California plaid"
+  "commandId": "cmd_7fb70a4aa6224bfbb7c02d0f676fe079",
+  "summary": "In the wash: Lightweight oxford — off-white"
  },
  {
   "step": 249,
@@ -1160,7 +1148,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_fd9e837840194ae0a30d4ce7aeddff5c",
+  "commandId": "cmd_58473254e8f848d89406876762ec00a2",
   "summary": "Chosen for 2027-06-19: option 3 (an intention, not a recorded wear)"
  },
  {
@@ -1172,8 +1160,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_500318eafc0b4a029164c44e1df0c621",
-  "summary": "In the wash: Bergamo cotton-linen chino — sand"
+  "commandId": "cmd_ec59d1bba92c401d881c4c94518d5308",
+  "summary": "In the wash: Bergamo cotton-linen chino — bone white"
  },
  {
   "step": 8,
@@ -1184,8 +1172,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_94f67bf2de7149eda4e82b5f00e693da",
-  "summary": "Heavy rustic linen — slate: planning policy set to excluded; reason given: “SIMULATED event: damaged, needs a repair”"
+  "commandId": "cmd_8eddf20b6b0f4c708ad79af0c10fa3fb",
+  "summary": "Heavy rustic linen — sage: planning policy set to excluded; reason given: “SIMULATED event: damaged, needs a repair”"
  },
  {
   "step": 254,
@@ -1196,8 +1184,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_4c3d21164f1b41499a6349dc3df1feb9",
-  "summary": "Laundry returned: 13 items clean; still away: Pima oxford — wine/burgundy"
+  "commandId": "cmd_b1448a09df414f2e8c9fd9b625c4b536",
+  "summary": "Laundry returned: 12 items clean; still away: Pima oxford — wine/burgundy"
  },
  {
   "step": 257,
@@ -1208,8 +1196,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_5aee3d6d233644a8bb5fdb2f32cdc7e5",
-  "summary": "Recorded for today: ISTO Linen Work Jacket — navy, Cotton-linen oxford — dark navy stripe, Di Sondrio walnut chino, Anderson's belt — brown, Merino — pine green, NB 990v4 — grey"
+  "commandId": "cmd_68bc7530892f4960923a746cc3b47c9d",
+  "summary": "Recorded for today: Drake's Black Heavy Twill Chore, Irish linen — slate blue, Denim — white, Anderson's belt — black, Merino — blue jean, NB 990v4 — navy"
  },
  {
   "step": 257,
@@ -1220,8 +1208,8 @@
   "outcome": "merged",
   "code": null,
   "reason": null,
-  "commandId": "cmd_7ddb3bc92a0d4ca68f1f7edb0ad987c9",
-  "summary": "Already recorded for today: ISTO Linen Work Jacket — navy, Cotton-linen oxford — dark navy stripe, Di Sondrio walnut chino, Anderson's belt — brown, Merino — pine green, NB 990v4 — grey. The report was merged; nothing was counted twice"
+  "commandId": "cmd_69b2c81d09fa4888b3ca2dd41e865567",
+  "summary": "Already recorded for today: Drake's Black Heavy Twill Chore, Irish linen — slate blue, Denim — white, Anderson's belt — black, Merino — blue jean, NB 990v4 — navy. The report was merged; nothing was counted twice"
  },
  {
   "step": 259,
@@ -1232,7 +1220,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_1fd5abd506384360aeb1fa6c6d4f911b",
+  "commandId": "cmd_2f69e4e7384648f0a5b18dd14d908b04",
   "summary": "Chosen for 2027-06-20: option 3 (an intention, not a recorded wear)"
  },
  {
@@ -1244,7 +1232,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_669f1f3500774b08afdbe81763d3f288",
+  "commandId": "cmd_e97bc335790648bea8750b055d5c5156",
   "summary": "Chosen for 2027-06-20: option 3 (an intention, not a recorded wear)"
  },
  {
@@ -1256,7 +1244,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_0986ec816fe2487d998450921f9a974c",
+  "commandId": "cmd_097606a8e044417c819f5f7a8035f1a8",
   "summary": "Recorded for today: Lightweight oxford — light blue striped (thin), Joseph Turner flannel — Prince of Wales check, Merino — inky blue, NB 990v4 — navy"
  },
  {
@@ -1268,7 +1256,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_485daab81948468a8b89cf96e959b2a6",
+  "commandId": "cmd_5b71c1f6d26b4508a73c4e549277aff3",
   "summary": "Chosen for 2027-06-21: option 1 (an intention, not a recorded wear)"
  },
  {
@@ -1280,7 +1268,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_f9c09de777334d93bb2aa8ebcf35f3bb",
+  "commandId": "cmd_50e8dd5af79943239917f835d5dd34fb",
   "summary": "Selection cleared for 2027-06-21"
  },
  {
@@ -1304,7 +1292,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_dd663572808d48eda524d50c5a63065f",
+  "commandId": "cmd_c13fa9e079dd41549c068813efe3fa04",
   "summary": "Restriction resolved (other); it was recorded with the reason “SIMULATED event: lent to a friend”. 1 garment is no longer excluded by it"
  },
  {
@@ -1316,8 +1304,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_82064a11227045afaa15c6b748967506",
-  "summary": "Recorded for today: Drake's Navy Cotton-Linen Games Mk.IV, Lightweight oxford — slate, Bergamo cotton-linen chino — bone white, Anderson's belt — brown, Merino — inky blue, NB 990v4 — olive/cream"
+  "commandId": "cmd_d988272bb0624ae9941da2ac5aa06b38",
+  "summary": "Recorded for today: ISTO Linen Work Jacket — clay, Lightweight oxford — pink, Single-pleated Di Sondrio navy, Anderson's belt — olive (dark khaki), Merino — deep earth brown, NB 990v4 — olive/cream"
  },
  {
   "step": 279,
@@ -1328,7 +1316,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_423c7f76190f48ebbef3a390ce58d203",
+  "commandId": "cmd_85a6a233bf824fb88504059845ad9f7b",
   "summary": "Recommendations paused from 2027-06-22 until 2027-06-24. Conversation, observations and return deadlines are unaffected"
  },
  {
@@ -1340,7 +1328,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_79a1f81df1504dd4bfa36a68bbbc021e",
+  "commandId": "cmd_b2b95a42fb5c4782bde090951dd967bf",
   "summary": "Pima oxford — wine/burgundy: recorded as lost at the laundry; it stays out of suggestions until you say it is back"
  },
  {
@@ -1352,8 +1340,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_ebea0ad398d449c8a2ed662522c75656",
-  "summary": "Washed and clean: Merino — inky blue, Merino — pine green"
+  "commandId": "cmd_6ce99ae958944a13980c556488c95e0a",
+  "summary": "Washed and clean: Merino — blue jean, Merino — deep earth brown, Merino — inky blue, Merino — strong blue"
  },
  {
   "step": 297,
@@ -1364,7 +1352,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_39dba60d59cd4922a66581b2093e40f0",
+  "commandId": "cmd_bf3471535a404c38b3a281c4c15d83f9",
   "summary": "Recorded for yesterday: Lightweight oxford — laurel, JP double-pleated heavyweight chino — soft olive, Merino — milky tea beige, NB 990v4 — olive/cream"
  },
  {
@@ -1376,7 +1364,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_285c056638004f5a93cf4192a659cf61",
+  "commandId": "cmd_4f6205d97c7e4e879f1789ce17bcf31d",
   "summary": "Recorded for today: Pima oxford — sage+red fancy stripe, Di Sondrio walnut chino, Merino — inky blue, NB 990v4 — grey"
  },
  {
@@ -1388,7 +1376,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_32d2b130051642fe85833e533d76b807",
+  "commandId": "cmd_5e32b6b56d2c4076b71830edc0c8d5b2",
   "summary": "Chosen for 2027-06-24: option 1 (an intention, not a recorded wear)"
  },
  {
@@ -1400,8 +1388,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_967cbd067b9b4e29804ad55c48626f31",
-  "summary": "Heavy rustic linen — slate: planning policy set to normal; reason given: “SIMULATED event: repaired”"
+  "commandId": "cmd_ca8c487c375641469df9e8e806a3e1eb",
+  "summary": "Heavy rustic linen — sage: planning policy set to normal; reason given: “SIMULATED event: repaired”"
  },
  {
   "step": 315,
@@ -1412,8 +1400,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_42b035696eaf4545a9b1f44513be2b79",
-  "summary": "Option 3 for 2027-06-25: Lightweight oxford — pink swapped for Lightweight oxford — light blue; the rest of the outfit is unchanged"
+  "commandId": "cmd_1a7868497282496d97af0f74c08c3d24",
+  "summary": "Option 3 for 2027-06-25: Cotton-linen oxford — Portuguese light blue swapped for Cotton-linen oxford — blue wide stripe; the rest of the outfit is unchanged"
  },
  {
   "step": 315,
@@ -1424,8 +1412,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_92363156165a456fa17bd1f5e15bea76",
-  "summary": "Undone: Option 3 for 2027-06-25: Lightweight oxford — pink swapped for Lightweight oxford — light blue; the rest of the outfit is unchanged. Option 3 for 2027-06-25: swap undone; the outfits of revision 1 are back (Lightweight oxford — pink is back)"
+  "commandId": "cmd_ccf623e42b4746158905e288dde8bbaf",
+  "summary": "Undone: Option 3 for 2027-06-25: Cotton-linen oxford — Portuguese light blue swapped for Cotton-linen oxford — blue wide stripe; the rest of the outfit is unchanged. Option 3 for 2027-06-25: swap undone; the outfits of revision 1 are back (Cotton-linen oxford — Portuguese light blue is back)"
  },
  {
   "step": 323,
@@ -1436,7 +1424,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_8890359146b4492baf46827902ed678d",
+  "commandId": "cmd_9bd68de55fe549b4b42fb52d6e938534",
   "summary": "Laundry collected: 12 items in the batch"
  },
  {
@@ -1448,8 +1436,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_2778e6d1eff94fdcb484a3e1509afaa3",
-  "summary": "Recorded for today: Lightweight oxford — blue, Di Sondrio faded navy lightweight, Alpaca bed sock — clotted cream, NB 990v4 — navy"
+  "commandId": "cmd_a706d9c230444e5488e2e5f2f24ba230",
+  "summary": "Recorded for today: ISTO denim shirt, Di Sondrio grey chino, Alpaca bed sock — clotted cream, NB 990v4 — navy"
  },
  {
   "step": 326,
@@ -1460,8 +1448,8 @@
   "outcome": "merged",
   "code": null,
   "reason": null,
-  "commandId": "cmd_de0e57a52b9841da8f4aefedf46e70f7",
-  "summary": "Already recorded for today: Lightweight oxford — blue, Di Sondrio faded navy lightweight, Alpaca bed sock — clotted cream, NB 990v4 — navy. The report was merged; nothing was counted twice"
+  "commandId": "cmd_373852b778b04a9d93c0d1088fd6b57f",
+  "summary": "Already recorded for today: ISTO denim shirt, Di Sondrio grey chino, Alpaca bed sock — clotted cream, NB 990v4 — navy. The report was merged; nothing was counted twice"
  },
  {
   "step": 327,
@@ -1472,7 +1460,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_a4c83f977ab94b67b2bfde2ca97e144d",
+  "commandId": "cmd_6d555f1287d24702b176ff887e12921e",
   "summary": "Undone: Recorded for today: Pima oxford — sage+red fancy stripe, Di Sondrio walnut chino, Merino — inky blue, NB 990v4 — grey. Wear record for 2027-06-23 undone (4 counted wears withdrawn)"
  },
  {
@@ -1484,7 +1472,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_eaaf569489b34a9c9f61db87409a5aa0",
+  "commandId": "cmd_000d40f6f51d42b9a860937c509a0c26",
   "summary": "Chosen for 2027-06-26: option 1 (an intention, not a recorded wear)"
  },
  {
@@ -1496,7 +1484,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_31fe0480d8cb4d7a82deb203bde73583",
+  "commandId": "cmd_32e2fd448c2b4bb0b7e073e8df7d1ff9",
   "summary": "Selection cleared for 2027-06-26"
  },
  {
@@ -1508,7 +1496,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_c10c96e2c8954297a78e2c9c6f39cdc5",
+  "commandId": "cmd_9f9fb9c87eb6494895c523925ae098b1",
   "summary": "Laundry returned: 10 items clean"
  },
  {
@@ -1520,8 +1508,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_376edbb30493435da14ae3b87b508d6d",
-  "summary": "In the wash: Bergamo cotton-linen chino — bone white"
+  "commandId": "cmd_312903ff0ccc4146834251593bf2bdc3",
+  "summary": "In the wash: Bergamo cotton-linen chino — sand"
  },
  {
   "step": 341,
@@ -1532,7 +1520,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_e7d4b11d80fe4ab3acc56b5a8185d352",
+  "commandId": "cmd_89aecab21c37402bbed27635a4e48f96",
   "summary": "Recorded for today: Selvedge twill — camel, Cord — navy, Anderson's belt — brown, Merino — fire red, NB 990v4 — grey"
  },
  {
@@ -1544,7 +1532,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_fdfc83579cdc4fef9ea4b5ac0fb0e7e4",
+  "commandId": "cmd_98632825c6fb4a0190336bbb44d5e8cf",
   "summary": "Chosen for 2027-06-27: option 1 (an intention, not a recorded wear)"
  },
  {
@@ -1556,7 +1544,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_d1519ccabfc548a2bb59fd3cb9a0be15",
+  "commandId": "cmd_879753f3756f4b31a7c97d1ceb49f4d8",
   "summary": "Chosen for 2027-06-27: option 1 (an intention, not a recorded wear)"
  },
  {
@@ -1568,8 +1556,8 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_aaa12777eaad45d18a22cbd485633f0a",
-  "summary": "Recorded for today: ISTO Linen Work Jacket — clay, Lightweight oxford — moss, Di Sondrio beige chino, Anderson's belt — brown, Merino — deep forest green, NB 990v4 — grey"
+  "commandId": "cmd_d0f996e5ca9a45f4b3ea895ad6674f91",
+  "summary": "Recorded for today: Drake's Navy Cotton-Linen Games Mk.IV, Lightweight oxford — light blue, Trunk Clothiers cord, Anderson's belt — brown, Merino — inky blue, NB 990v4 — grey"
  },
  {
   "step": 350,
@@ -1580,7 +1568,7 @@
   "outcome": "committed",
   "code": null,
   "reason": null,
-  "commandId": "cmd_9a7ba43629754d72a8b49d218af20349",
-  "summary": "Noted: ISTO Linen Work Jacket — clay was too warm. Applied to that context only"
+  "commandId": "cmd_78e9d19062ed484cbe846eba3cfac698",
+  "summary": "Noted: Drake's Navy Cotton-Linen Games Mk.IV was too warm. Applied to that context only"
  }
 ]
