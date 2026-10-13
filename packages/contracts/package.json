@@ -1,25 +1,21 @@
 {
   "name": "@garderobe/contracts",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Versioned Garderobe API and domain contracts (zod schemas, TypeScript types, JSON Schema)",
+  "description": "Versioned shared contracts: Zod schemas, TypeScript types, generated JSON Schema and Swift Codable types.",
   "exports": {
     ".": "./src/index.ts",
-    "./json-schema/*": "./json-schema/*"
+    "./ext/*": "./src/ext/*.ts",
+    "./generated/schema.json": "./generated/garderobe-contracts.schema.json"
   },
   "scripts": {
-    "schemas": "tsx scripts/emit-json-schema.ts",
+    "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json"
+    "generate": "node --experimental-strip-types scripts/generate.ts",
+    "generate:check": "node --experimental-strip-types scripts/generate.ts --check"
   },
   "dependencies": {
     "zod": "4.6.5"
-  },
-  "devDependencies": {
-    "@types/node": "^22.0.0",
-    "tsx": "4.23.15",
-    "typescript": "7.0.2",
-    "vitest": "4.1.11"
   }
 }

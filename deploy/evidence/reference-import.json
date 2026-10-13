@@ -1,0 +1,19 @@
+{
+  "what": "The owner's profile and inventory imported by the real importer into a fresh LOCAL database (Miniflare D1). The deployed development database must reconcile to exactly these values.",
+  "source": "node deploy/rehearse.mjs",
+  "secondSeedChangedNothing": true,
+  "secondSeedReplayedReceipts": 169,
+  "import": {
+    "seeded": true,
+    "garments": 127,
+    "units": 144,
+    "inventoryDigest": "57eb3e655d6e48c72c27b9a54e661a59a1c3f28b1e5b49003c2496b71b81f46f",
+    "profileSha256": "e15639d891f9a5264c7eff13d05a478bcb188745aea11323b2131db37f5cb198",
+    "currentRules": 28,
+    "measurements": 5,
+    "activeRestrictions": 1,
+    "wearObservations": 0,
+    "laundryBatches": 0,
+    "importCommands": 169
+  }
+}

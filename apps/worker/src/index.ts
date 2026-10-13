@@ -1,0 +1,93 @@
+/**
+ * The Garderobe Worker entry.
+ *
+ * One Worker serves two trust domains (specification section 15):
+ *  - the app/API hostname, behind Cloudflare Access: `/v1/*`, `/auth/*`, `/board`, the MCP consent
+ *    page, and the provider callback (authenticated by its own one-time state);
+ *  - the MCP hostname, under the Workers OAuth provider: discovery, token, registration, revocation
+ *    and the MCP transport at `/mcp`.
+ * Every request enters through the OAuth provider, which answers its own protocol endpoints, hands
+ * token-bearing `/mcp` requests to the protected MCP handler and everything else to the application
+ * router. The router refuses Access-trust routes on any hostname other than the app hostname.
+ */
+import { appFor } from "./app.ts";
+import { configOf, type Env } from "./env.ts";
+import { errorResponse, json } from "./http.ts";
+import { oauthProviderFor } from "./mcp/handler.ts";
+import { appRouter } from "./routes/index.ts";
+import { sweepExpired } from "./maintenance.ts";
+import { resumeErasures } from "./identity/erasure.ts";
+import { runScheduledBackups } from "./backup/service.ts";
+import { deliverNotifications } from "./notifications/service.ts";
+import { projectReminderEvents, runAssistantJobs, runConnectionHealth } from "./scheduled/assistant.ts";
+import { GarderobeAssistant as AssistantActor } from "@garderobe/assistant";
+import { CommandService } from "@garderobe/domain";
+import { bindEnv, composedRegistry } from "./lanes/index.ts";
+
+/**
+ * The conversation actor (Think Durable Object, binding `ASSISTANT`). It is the assistant
+ * workstream's class; this subclass only hands the Worker's bindings to the shared composition so the
+ * actor executes commands on the same registry as every other surface.
+ */
+export class GarderobeAssistant extends AssistantActor {
+  private ownCommands: CommandService | null = null;
+  private readonly bindings: Env;
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx as never, env as never);
+    this.bindings = env;
+    bindEnv(env);
+  }
+  /** The actor's commands run on the registry composed for its own bindings, never another environment's. */
+  protected override commands(): CommandService {
+    this.ownCommands ??= new CommandService({ db: this.db, registry: composedRegistry(this.bindings), clock: () => this.now() });
+    return this.ownCommands;
+  }
+}
+
+async function applicationFetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  const app = appFor(env);
+  const response = await appRouter().handle(app, request, ctx);
+  if (response) return response;
+  return json({ error: { code: "not_found", message: "no such route", details: {} } }, 404);
+}
+
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    try {
+      configOf(env);
+    } catch (error) {
+      console.error(String((error as Error).message));
+      return errorResponse(error);
+    }
+    return oauthProviderFor(env, applicationFetch).fetch(request, env, ctx);
+  },
+
+  /** Cron: the daily service's due phases and calendar projections, media and assistant maintenance, and expiry sweeps. */
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    const app = appFor(env);
+    const nowMs = app.now();
+    const jobs: Promise<unknown>[] = [sweepExpired(app, nowMs), oauthProviderFor(env, applicationFetch).purgeExpiredData(env), resumeErasures(app, nowMs), runScheduledBackups(app, nowMs)];
+    const failed = (what: string) => (error: unknown) => console.error(`${what} failed`, String((error as Error)?.message ?? error).slice(0, 200));
+    // Connection health comes first: it is checked before the evening composition and the morning delivery.
+    const health = app.assistant ? runConnectionHealth(app, nowMs).catch(failed("connection health")) : Promise.resolve();
+    if (app.daily) jobs.push(health.then(() => app.daily!.scheduled(nowMs)));
+    if (app.media) jobs.push(app.media.scheduled(nowMs));
+    if (app.assistant) jobs.push(app.assistant.maintenance(nowMs), runAssistantJobs(app, nowMs));
+    // After the daily phases above have queued this sweep's reminders, due notifications are sent and
+    // reminder events are written to the outfit calendar.
+    ctx.waitUntil(
+      Promise.allSettled(jobs)
+        .then(() => Promise.allSettled([deliverNotifications(app, app.now()).catch(failed("notification delivery")), app.assistant ? projectReminderEvents(app, app.now()).catch(failed("reminder calendar projection")) : null])),
+    );
+    ctx.waitUntil(
+      Promise.allSettled(jobs).then((results) => {
+        for (const r of results) if (r.status === "rejected") console.error("scheduled work failed", String((r.reason as Error)?.message ?? r.reason));
+      }),
+    );
+  },
+
+  async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
+    const app = appFor(env);
+    if (app.media) await app.media.queue(batch);
+  },
+} satisfies ExportedHandler<Env>;

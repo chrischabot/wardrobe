@@ -1,0 +1,87 @@
+{
+  "mode": "dry run: nothing remote was written",
+  "at": "2026-10-12T14:57:01.239Z",
+  "app": {
+    "name": "wardrobe",
+    "routes": [
+      "/health",
+      "/v1/",
+      "/.well-known/",
+      "/oauth/",
+      "/mcp"
+    ],
+    "services": [
+      "requests:queue",
+      "state:ape"
+    ]
+  },
+  "account": "not_logged_in",
+  "accountReason": "`ferrite account` reports not logged in: no credential document at ~/.config/ferrite/credentials.toml",
+  "plan": [
+    "ferrite check and ferrite test (local)",
+    "node deploy/ferrite/verify.mjs --local --start-dev (local)",
+    "under the target's lock: the public origin (--public-origin=, else ferrite host --json), its bearer tokens, generated once into deploy/ferrite/.state/<account>__<app>.tokens.json (0600), set as WARDROBE_OWNER_TOKEN and WARDROBE_ASSISTANT_TOKEN and the origin as WARDROBE_PUBLIC_ORIGIN with ferrite secrets set (stdin), then one ferrite deploy for app wardrobe (routes /health, /v1/, /.well-known/, /oauth/, /mcp; services requests:queue, state:ape)",
+    "ferrite host --json must report the origin that was set, then node deploy/ferrite/verify.mjs --deployed"
+  ],
+  "steps": [
+    {
+      "step": "ferrite check",
+      "needsAccount": false,
+      "what": "admission gate, spec statics, cargo check (local)"
+    },
+    {
+      "step": "ferrite test",
+      "needsAccount": false,
+      "what": "the crate's unit and harness tests (local)"
+    },
+    {
+      "step": "ferrite dev + node deploy/ferrite/verify.mjs --local",
+      "needsAccount": false,
+      "what": "the HTTP verification against the local plane"
+    },
+    {
+      "step": "ferrite account",
+      "needsAccount": true,
+      "what": "confirms the signed-in account with the platform"
+    },
+    {
+      "step": "ferrite host",
+      "needsAccount": true,
+      "what": "the app's origin before and after its first deploy"
+    },
+    {
+      "step": "ferrite secrets set WARDROBE_OWNER_TOKEN / WARDROBE_ASSISTANT_TOKEN / WARDROBE_PUBLIC_ORIGIN",
+      "needsAccount": true,
+      "what": "the app's bearer tokens and its public origin, from stdin"
+    },
+    {
+      "step": "ferrite deploy",
+      "needsAccount": true,
+      "what": "one charged build and rollout"
+    },
+    {
+      "step": "ferrite status / ferrite logs",
+      "needsAccount": true,
+      "what": "running instances and recent logs"
+    },
+    {
+      "step": "node deploy/ferrite/verify.mjs --deployed",
+      "needsAccount": true,
+      "what": "the same HTTP verification against the deployed origin (needs the host and the deployed tokens)"
+    },
+    {
+      "step": "node deploy/ferrite/teardown.mjs --execute",
+      "needsAccount": true,
+      "what": "secrets deleted and the app scaled to zero instances"
+    }
+  ],
+  "check": {
+    "command": "ferrite check",
+    "exit": 0,
+    "signal": null,
+    "ms": 237,
+    "stdoutBytes": 1409,
+    "stderrBytes": 0,
+    "spawnFailed": false
+  }
+}

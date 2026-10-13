@@ -1,0 +1,119 @@
+{
+  "title": "Outfit preview of four real owner garments",
+  "note": "The garments are the owner's own, imported from requirements/wardrobe_inventory_clean.csv. No photograph of any of them exists, so every piece is a labelled placeholder: an outline, the garment's name and NO PHOTO YET. Nothing in this example is a picture of a garment, and none was invented.",
+  "writtenBy": "packages/media/tools/composite-example.mjs",
+  "checkedBy": "packages/media/test/composite-example.test.ts",
+  "slots": [
+    {
+      "role": "top",
+      "garmentId": "gmt_ec41eb7ad2e2ab344b0e03c3",
+      "name": "Brushed wool — Subalpino navy"
+    },
+    {
+      "role": "bottom",
+      "garmentId": "gmt_0bd82c642c7606199361d3d4",
+      "name": "Akita slub 5-pocket — cream"
+    },
+    {
+      "role": "footwear",
+      "garmentId": "gmt_14bc4338d6760f6a13434b2f",
+      "name": "NB 990v4 — grey"
+    },
+    {
+      "role": "socks",
+      "garmentId": "gmt_8c8b983912a6effbc6b33a86",
+      "name": "Alpaca bed sock — clotted cream"
+    }
+  ],
+  "labels": [
+    "No photo yet"
+  ],
+  "manifestHash": "0244169d9691eb2f5a3aff5bd67cd7d1a40d3ebddb319ae0cd3255d12effe765",
+  "manifest": {
+    "templateVersion": "layout-1",
+    "template": "separates",
+    "canvas": {
+      "width": 900,
+      "height": 1200,
+      "background": "#FFFFFF"
+    },
+    "layers": [
+      {
+        "role": "bottom",
+        "garmentId": "gmt_0bd82c642c7606199361d3d4",
+        "shoppingCandidateId": null,
+        "name": "Akita slub 5-pocket — cream",
+        "assetId": null,
+        "renditionId": null,
+        "renditionVersion": null,
+        "renditionSha256": null,
+        "imageLabel": "missing",
+        "x": 0.26,
+        "y": 0.4,
+        "width": 0.48,
+        "height": 0.4,
+        "scale": 1,
+        "z": 20
+      },
+      {
+        "role": "top",
+        "garmentId": "gmt_ec41eb7ad2e2ab344b0e03c3",
+        "shoppingCandidateId": null,
+        "name": "Brushed wool — Subalpino navy",
+        "assetId": null,
+        "renditionId": null,
+        "renditionVersion": null,
+        "renditionSha256": null,
+        "imageLabel": "missing",
+        "x": 0.22,
+        "y": 0.04,
+        "width": 0.56,
+        "height": 0.36,
+        "scale": 1,
+        "z": 30
+      },
+      {
+        "role": "footwear",
+        "garmentId": "gmt_14bc4338d6760f6a13434b2f",
+        "shoppingCandidateId": null,
+        "name": "NB 990v4 — grey",
+        "assetId": null,
+        "renditionId": null,
+        "renditionVersion": null,
+        "renditionSha256": null,
+        "imageLabel": "missing",
+        "x": 0.3,
+        "y": 0.81,
+        "width": 0.4,
+        "height": 0.16,
+        "scale": 1,
+        "z": 40
+      },
+      {
+        "role": "socks",
+        "garmentId": "gmt_8c8b983912a6effbc6b33a86",
+        "shoppingCandidateId": null,
+        "name": "Alpaca bed sock — clotted cream",
+        "assetId": null,
+        "renditionId": null,
+        "renditionVersion": null,
+        "renditionSha256": null,
+        "imageLabel": "missing",
+        "x": 0.7313,
+        "y": 0.859,
+        "width": 0.1275,
+        "height": 0.102,
+        "scale": 0.85,
+        "z": 41
+      }
+    ],
+    "caption": "Top: Brushed wool — Subalpino navy (no photo yet). Bottom: Akita slub 5-pocket — cream (no photo yet). Footwear: NB 990v4 — grey (no photo yet). Socks: Alpaca bed sock — clotted cream (no photo yet)."
+  },
+  "preview": {
+    "renderer": "garderobe-compositor-1",
+    "width": 900,
+    "height": 1200,
+    "pixelsSha256": "762b1a4f5d0a73216a006b5c46c93943947171c203f5ea72da3dc7552e014890",
+    "svgSha256": "a1e99d1298588315ba12f1b71ee14126a45ce13d54b3645498fb8bcdbe5df72c"
+  }
+}

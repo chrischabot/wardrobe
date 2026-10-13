@@ -1,0 +1,85 @@
+{
+  "status": "passed",
+  "scope": "Evaluation assets and grader controls only; no replacement application run.",
+  "checks": [
+    {
+      "status": "passed",
+      "cases": 64,
+      "historical_evidence": 42,
+      "selected_conversations": 13,
+      "checks": [
+        "Source hashes and exact message quotations",
+        "Complete unchanged profile",
+        "No conversation split leakage",
+        "No judge-only fields in candidate packets",
+        "Assistant candidates exclude thinking and tool parts"
+      ]
+    },
+    {
+      "grader_negative_control": "missing socks",
+      "caught": true
+    },
+    {
+      "grader_negative_control": "invented garment",
+      "caught": true
+    },
+    {
+      "grader_negative_control": "restricted footwear",
+      "caught": true
+    },
+    {
+      "grader_negative_control": "duplicate primary role",
+      "caught": true
+    },
+    {
+      "grader_negative_control": "stale Calendar revision",
+      "caught": true
+    },
+    {
+      "grader_negative_control": "state without adapter provenance",
+      "caught": true
+    },
+    {
+      "status": "passed",
+      "judgments": 8,
+      "verdicts": {
+        "pass": 1,
+        "revise": 3,
+        "fail": 3,
+        "insufficient_evidence": 1
+      }
+    },
+    {
+      "judgment_exact_excerpts": "C001",
+      "passed": true
+    },
+    {
+      "judgment_exact_excerpts": "C002",
+      "passed": true
+    },
+    {
+      "judgment_exact_excerpts": "C003",
+      "passed": true
+    },
+    {
+      "judgment_exact_excerpts": "C004",
+      "passed": true
+    },
+    {
+      "judgment_exact_excerpts": "C005",
+      "passed": true
+    },
+    {
+      "judgment_exact_excerpts": "C006",
+      "passed": true
+    },
+    {
+      "judgment_exact_excerpts": "C007",
+      "passed": true
+    },
+    {
+      "judgment_exact_excerpts": "C008",
+      "passed": true
+    }
+  ]
+}

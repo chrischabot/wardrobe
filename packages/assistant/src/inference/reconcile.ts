@@ -1,0 +1,209 @@
+/**
+ * Reconciling model-call reservations whose outcome is not known (specification sections 8 and 12).
+ *
+ * A reservation is taken before a model call is dispatched and settled when the call ends. Two things
+ * leave one open: the call ended without a clear answer from the provider (a timeout, a dropped stream,
+ * a stop by the owner), which the model service records as `uncertain`; or the actor was evicted between
+ * the reservation and its settlement, which leaves it `reserved` with nobody left to settle it.
+ *
+ * This sweep closes them only on evidence:
+ *   - a reservation still `reserved` long after any call could be running is recorded as `uncertain`
+ *     (it was an abandoned call, and whether it was charged is not known);
+ *   - an `uncertain` reservation is looked up in the provider's own record of the call. A record showing
+ *     usage settles it at the cost of that usage; a record showing the call was refused or produced nothing
+ *     releases it; no record leaves it exactly as it is.
+ * It never guesses: without a lookup, or when the lookup finds nothing or fails, the reservation stays
+ * uncertain and keeps counting against its day's budget.
+ */
+import { all, isCommandError, systemPrincipalFor, toInstant, type CommandService, type Db } from "@garderobe/domain";
+import { actualCostMicroUsd, pricingSpecFor } from "./registry.ts";
+
+/** One dispatched model call, as it can be identified in the provider's record. */
+export interface DispatchedCall {
+  gatewayId: string;
+  /** The run ID sent as Gateway metadata (`garderobe_run`). */
+  runId: string;
+  /** The attempt number sent as Gateway metadata (`garderobe_attempt`). */
+  attempt: number;
+  task: string;
+  /** When the reservation was taken (the call was dispatched just after). */
+  reservedAt: string;
+}
+
+export type ProviderUsageFinding =
+  /**
+   * The provider's record shows the call used tokens: it is settled at the cost of that usage. `atLeast`
+   * marks a record that also holds an entry of this call that says nothing reliable (a dropped stream
+   * beside a charged retry): the recorded usage is then a lower bound, and the reservation is settled
+   * at that cost or at the amount reserved, whichever is larger, instead of staying uncertain for good.
+   */
+  | { status: "charged"; inputTokens: number; outputTokens: number; resolvedModel: string | null; ref: string; atLeast?: boolean }
+  /** The provider's record shows the call failed or was served without usage: nothing was charged. */
+  | { status: "not_charged"; ref: string }
+  /** The provider has no record that can be tied to this call. Not proof that nothing was charged. */
+  | { status: "not_found" };
+
+/** The provider's own record of what a dispatched call used. Production: AI Gateway logs. Tests: a labelled fake. */
+export interface ProviderUsageLookup {
+  find(call: DispatchedCall): Promise<ProviderUsageFinding>;
+}
+
+/** A reservation still open after this long belongs to no running call: the longest model timeout is two minutes. */
+export const ABANDONED_AFTER_MS = 10 * 60_000;
+/** The provider's record of a call may trail the call itself; an uncertain reservation is not looked up sooner than this. */
+export const LOOKUP_NOT_BEFORE_MS = 2 * 60_000;
+/** Reservations older than this are no longer looked up: they stay uncertain for good and remain reported as such. */
+export const LOOKUP_WINDOW_MS = 30 * 86_400_000;
+
+/** How many uncertain reservations one sweep looks up in the provider's record unless the caller says otherwise. */
+export const DEFAULT_LOOKUPS_PER_SWEEP = 25;
+
+export interface ReconcileDeps {
+  db: Db;
+  service: CommandService;
+  nowMs: number;
+  /** Absent: abandoned reservations are still marked uncertain, and nothing uncertain is closed. */
+  usageLookup?: ProviderUsageLookup | null;
+}
+
+export interface ReconcileResult {
+  /** `reserved` reservations of calls that are no longer running, now recorded as uncertain. */
+  markedUncertain: number;
+  /** Uncertain reservations settled at the usage the provider recorded. */
+  settled: number;
+  /** Uncertain reservations released because the provider recorded no charge. */
+  released: number;
+  /** Uncertain reservations left as they are: no provider record, no lookup configured, or an unknown profile. */
+  stillUncertain: number;
+  /** Lookups that failed (the provider's record could not be read); those reservations are left as they are. */
+  lookupFailures: number;
+  /** Uncertain reservations inside the lookup window that this sweep did not reach; a later sweep starts further on. */
+  notLookedUp: number;
+}
+
+interface OpenRow {
+  user_id: string;
+  reservation_id: string;
+  run_id: string;
+  task: string;
+  profile_id: string;
+  attempt: number;
+  gateway_id: string;
+  state: string;
+  error_class: string | null;
+  created_at: string;
+  reserved_microusd: number;
+}
+
+const SYSTEM = { authorization: "system_schedule" as const, source: { channel: "system" as const } };
+
+const COLUMNS = "user_id, reservation_id, run_id, task, profile_id, attempt, gateway_id, state, error_class, created_at, reserved_microusd";
+
+export async function reconcileInferenceReservations(deps: ReconcileDeps, opts: { limit?: number; maxAbandoned?: number } = {}): Promise<ReconcileResult> {
+  const result: ReconcileResult = { markedUncertain: 0, settled: 0, released: 0, stillUncertain: 0, lookupFailures: 0, notLookedUp: 0 };
+  const limit = Math.max(1, opts.limit ?? DEFAULT_LOOKUPS_PER_SWEEP);
+  const principals = new Map<string, Awaited<ReturnType<typeof systemPrincipalFor>> | null>();
+  const principalFor = async (userId: string) => {
+    if (!principals.has(userId)) {
+      // A disabled account's accounting is left untouched, like its other scheduled work.
+      principals.set(userId, await systemPrincipalFor(deps.db, userId, "inference-reconcile", "system").catch(() => null));
+    }
+    return principals.get(userId) ?? null;
+  };
+  /** Whether the settling command itself changed the reservation (a no-op or a replay changed nothing). */
+  const changed = (receipt: { outcome: string; replayed?: boolean }) => receipt.outcome !== "noop" && !receipt.replayed;
+
+  // 1. Calls that can no longer be running, oldest first, ALL of them (marking is a local write): pages
+  // are read by position in (time, ID) order, so a row that could not be marked is passed, not re-read.
+  const cutoff = toInstant(deps.nowMs - ABANDONED_AFTER_MS);
+  let after: { at: string; id: string } | null = null;
+  for (let seen = 0; seen < (opts.maxAbandoned ?? 2000); ) {
+    const page: OpenRow[] = await all<OpenRow>(
+      deps.db,
+      `SELECT ${COLUMNS} FROM inference_reservations WHERE state = 'reserved' AND julianday(created_at) < julianday(?) AND (? IS NULL OR julianday(created_at) > julianday(?) OR (julianday(created_at) = julianday(?) AND reservation_id > ?)) ORDER BY julianday(created_at), reservation_id LIMIT 100`,
+      cutoff, after?.at ?? null, after?.at ?? null, after?.at ?? null, after?.id ?? "",
+    );
+    if (page.length === 0) break;
+    for (const row of page) {
+      seen++;
+      after = { at: row.created_at, id: row.reservation_id };
+      const principal = await principalFor(row.user_id);
+      if (!principal) continue;
+      try {
+        const receipt = await deps.service.execute(principal, { type: "inference.settle", payload: { reservationId: row.reservation_id, outcome: "uncertain", errorClass: "abandoned" }, idempotencyKey: `inference-reconcile:${row.reservation_id}:abandoned`, ...SYSTEM });
+        // A call that settled itself in the meantime is left as it settled (the command is then a no-op).
+        if (changed(receipt)) result.markedUncertain++;
+      } catch (e) {
+        if (!isCommandError(e)) throw e;
+      }
+    }
+  }
+
+  // 2. Uncertain reservations, against the provider's record. Each sweep looks up at most `limit` of them:
+  // those never looked up first, then those looked up longest ago (`looked_up_at`, migration 0205, set
+  // for every reservation a sweep takes up whatever the lookup then says). With N uncertain reservations
+  // in the window every one of them is therefore taken up within ceil(N / limit) sweeps, whatever period
+  // the sweeps run on. Earlier versions started at the newest 25 (third review: the rest starved), at a
+  // position derived from the clock (a period sharing a factor with the number of slices never reached
+  // some), and at random (coverage only on average; change reviews, 2026-10-03).
+  const window = [toInstant(deps.nowMs - LOOKUP_NOT_BEFORE_MS), toInstant(deps.nowMs - LOOKUP_WINDOW_MS)] as const;
+  const WHERE = "state = 'uncertain' AND julianday(created_at) < julianday(?) AND julianday(created_at) > julianday(?)";
+  const total = (await all<{ n: number }>(deps.db, `SELECT COUNT(*) AS n FROM inference_reservations WHERE ${WHERE}`, ...window))[0]?.n ?? 0;
+  if (!deps.usageLookup) {
+    result.stillUncertain = total;
+    return result;
+  }
+  const uncertain = await all<OpenRow>(deps.db, `SELECT ${COLUMNS} FROM inference_reservations WHERE ${WHERE} ORDER BY (looked_up_at IS NOT NULL), julianday(looked_up_at), julianday(created_at), reservation_id LIMIT ?`, ...window, limit);
+  result.notLookedUp = Math.max(0, total - uncertain.length);
+  for (const row of uncertain) {
+    // Taken up now, whatever follows: the next sweep goes on to the others. This is the sweep's own
+    // bookkeeping about when it last asked, not a change to what the reservation says was spent.
+    await deps.db.prepare("UPDATE inference_reservations SET looked_up_at = ? WHERE user_id = ? AND reservation_id = ?").bind(toInstant(deps.nowMs), row.user_id, row.reservation_id).run();
+    const principal = await principalFor(row.user_id);
+    if (!principal) {
+      result.stillUncertain++;
+      continue;
+    }
+    let finding: ProviderUsageFinding;
+    try {
+      finding = await deps.usageLookup.find({ gatewayId: row.gateway_id, runId: row.run_id, attempt: row.attempt, task: row.task, reservedAt: row.created_at });
+    } catch {
+      result.lookupFailures++;
+      continue;
+    }
+    if (finding.status === "not_found") {
+      result.stillUncertain++;
+      continue;
+    }
+    // The provider's record is named on the settling command, so the ledger shows what closed the reservation.
+    const source = { channel: "system" as const, parentKind: "job" as const, parentId: `provider-record:${finding.ref}`.slice(0, 128) };
+    try {
+      if (finding.status === "not_charged") {
+        const receipt = await deps.service.execute(principal, { type: "inference.settle", payload: { reservationId: row.reservation_id, outcome: "released", errorClass: row.error_class }, idempotencyKey: `inference-reconcile:${row.reservation_id}:released`, authorization: "system_schedule", source });
+        // Counted only when this command released it; a reservation that closed some other way meanwhile is not.
+        if (changed(receipt)) result.released++;
+        continue;
+      }
+      const spec = pricingSpecFor(row.profile_id);
+      if (!spec) {
+        // The price of a profile that is neither active nor in the retired-profile compatibility table is not known; the reservation is not priced by guess.
+        result.stillUncertain++;
+        continue;
+      }
+      const cost = actualCostMicroUsd(spec, finding.inputTokens, finding.outputTokens);
+      const receipt = await deps.service.execute(principal, {
+        type: "inference.settle",
+        // A lower bound is never settled below what was held for the call.
+        payload: { reservationId: row.reservation_id, outcome: "settled", actualMicroUsd: finding.atLeast ? Math.max(cost, Number(row.reserved_microusd) || 0) : cost, inputTokens: finding.inputTokens, outputTokens: finding.outputTokens, resolvedModel: finding.resolvedModel ?? spec.apiModelId ?? null, errorClass: row.error_class },
+        idempotencyKey: `inference-reconcile:${row.reservation_id}:settled`,
+        authorization: "system_schedule",
+        source,
+      });
+      if (changed(receipt)) result.settled++;
+    } catch (e) {
+      if (!isCommandError(e)) throw e;
+      result.stillUncertain++;
+    }
+  }
+  return result;
+}

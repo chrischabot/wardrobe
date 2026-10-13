@@ -1,81 +1,197 @@
-# Garderobe end-to-end MCP simulation
+# Garderobe simulation: the MCP server over four simulated weeks
 
-A reproducible, seeded multi-week simulation of the owner's life with Garderobe, driven **only through the MCP server** (plus the scheduled daily phases), against the local Worker or the deployed `garderobe-dev` endpoint. It uses the owner's real profile and wardrobe: each run seeds a fresh simulation owner with `data/owner-profile.md`, its 41 rules, the May 2026 CSV and the owner-asserted additions, through the foundation importer. Unknown colours, makers, sizes and counts stay as the importer leaves them.
+A seeded simulator that drives the Garderobe Worker the way a connected assistant does, for weeks of
+changing conditions, and checks invariants on application state and receipts after every step.
 
-## What one run does
+The simulator is an MCP client and nothing else towards the wardrobe: it registers, runs the
+authorization-code flow with PKCE, gets the owner's consent, and calls the seven tools with its own
+Garderobe token. The owner's own part, which a connected assistant cannot do by design, is done as the
+signed-in owner on the app hostname: claiming the account, approving consent, confirming or rejecting a
+request that still waits for the owner (only the short list of the 2026-10-05 contract, section 3),
+connecting the calendar, asking for a packing proposal, lifting a restriction the simulation itself added.
 
-`src/scenario.ts` turns one integer seed into a plan of at least 28 days (default seed `20261005`, Monday 5 October to Sunday 1 November 2026, across the 25 October change from BST to GMT). Every seed contains every condition below. The seed decides the weather values, calendar events, which garments the circumstances touch, and which outfit the owner picks.
+What a connected assistant's typed command must do follows the owner's decision of 2026-10-05, "Follow
+the specification everywhere" (library document "Contract: changes apply at once with undo on every
+surface"): a change the owner asks for applies at once with a receipt that says whether it can be undone;
+only irreversible erasure, authorization towards another party, connection and model-routing changes and
+rewriting the profile document wait for the owner; lifting a restriction is refused. `lib/sim.mjs`
+(`contractRoute`, `expectContractRoute`) holds that list, and every command the simulation sends is
+checked against it centrally in `Sim.command` once the outcome is known (after the simulated owner
+decided a request that waited); the route checked is the server's first answer, so a direct type that
+waited fails `contract.*` even though the run then goes on. A refusal for
+a domain reason (invalid payload, stale version) is not counted as a routing decision.
 
-| Area | Simulated conditions |
+Other checks worth knowing: a read-only connection forcing `garderobe_command` with a valid change to
+a real garment must be denied for scope (HTTP 403, `insufficient_scope`) and change nothing; a repaired
+option must fill the removed piece's role with a piece wearable that day; unpacking and a laundry
+return are checked unit by unit against the snapshot before (owned units conserved, returned units
+clean, a piece still away stays at the service, every other garment unchanged). The plan digest is
+reproducible: one seed always gives the same timeline, byte for byte. The outcome digest records option
+compositions and worn pieces by role and garment name, without identifiers or clock readings; it
+identifies a run, but it differs between runs on fresh databases, because the product's variety jitter
+(packages/daily/src/compose.ts, seeded with the owner and garment IDs) is keyed by IDs the importer
+generates anew for every database. Two runs of one seed take the same steps under the same conditions;
+the boards they are offered may differ. Local state goes only in a directory outside the repository that carries the
+`.garderobe-simulation-state` marker; any other directory is refused rather than emptied.
+
+## Running
+
+From the repository root, after `npm install` (or `bash tools/sandbox-install.sh` in the Fabric sandbox):
+
+| Command | What it does |
 | --- | --- |
-| Weather (home, and Amsterdam on trip days) | mild, cool, cold snap, heavy rain, rain after 16:00, strong wind, the 14–16 °C jacket band, cold start with a warm afternoon, unseasonal warmth; a forecast revised overnight (the evening compose sees a different forecast from the morning); two provider outages |
-| Calendar (Google Calendar stand-in) | office meetings, formal meetings, dinners, weekend outdoor plans, an all-day wedding, declined and cancelled events, a flight, a trip dinner, an event title carrying a prompt injection, and a calendar outage |
-| Availability | a spill (mark in wash), service-laundry collection and return twice a week, a partial return with a missing shirt, a repair restriction set and lifted (with the owner's confirmation), trousers at the tailor and back, seasonal storage, a three-day trip (create, proposal, packed, trip-day boards from the suitcase, unpacked) |
-| Circumstance | random outfit selection every day (with a random shoe when an option offers two), a forgotten wear log, shirt-swap previews, occasion previews, the owner saying his feet have healed (the sneakers-only restriction then lifts, and the sneaker-plus-welted pairing applies), a two-day pause and resume, a temporary "working from home" brief |
-| Assistant (`garderobe_ask`, `garderobe_research`) | about 40 questions: pick from the board, build an outfit, rain plan, evening change, swap a shirt, trip outfit, a week's recall, deep questions (a purchase verdict, fit, provenance, keep or sell), an adversarial request to ignore the healing restriction and log it, the healing statement, and a research topic |
+| `npm run sim:local -w @garderobe/simulation -- --seeds 1,2,3,4,5 --out results/local` | Five seeds, four weeks each, locally: one fresh database per seed, seeded with the owner's real profile and inventory, served by the simulation Worker under `wrangler dev`. Writes one result per seed and a summary into `tests/simulation/results/local/`. Exit code 0 only when every seed ran to its last step and no invariant check failed. |
+| `npm run sim -w @garderobe/simulation -- --target <target.json> --seeds 1,2,3,4,5 --out <directory>` | The same simulator against any target described by a file (see "Targets"). |
+| `npm test -w @garderobe/simulation` | The parts that need no Worker: the timeline is a pure function of the seed, every plan holds every kind of condition, and the independent checker catches each violation (negative controls). This is what the root `npm test` runs; the simulation itself takes minutes and a running Worker, so it is not part of `npm test`. |
+| `npm run typecheck -w @garderobe/simulation` | Typecheck of the simulation Worker entry. |
 
-For each simulated day (London time): the evening before, the real `DailyService.runPhase('evening')` composes the board; at 06:40 and 06:50 the morning refresh and final validation run; at 07:00 the owner reads Today over MCP; then questions, the pick (`select_option`), the wear (`record_wear`), daytime and evening circumstances, and late questions. Every read is checked and assistant turns are audited at the end.
+Options of `sim:local`: `--weeks N` (at least 4), `--parallel N` (seeds at the same time, default 2),
+`--until-day N` (stop early, for debugging), `--state <directory>` (local databases, keys and logs;
+default: a directory in the system's temporary directory, never inside the repository), `--port N`.
 
-## Checks
+## What a run is
 
-- **Profile hard constraints** on every board and preview option, and on every *actionable* outfit card from the assistant. These are the journey suite's independent checkers (`tests/journeys/harness/profile.ts`: socks always, sneakers only while the healing restriction stands and then sneaker plus welted, shirts, knits and trousers against the peak, outerwear against the departure, the 14–16 °C lightweight-oxford rule, no shirt or trousers repeated within seven days, perceptible names, only eligible pieces).
-- **Availability**: nothing offered that the simulated owner declared away (tailor, repair, storage, missing from the laundry, spilled on and not yet laundered, packed for the trip), and nothing the inventory itself lists as unavailable at that moment. Trip-day options must come from the suitcase.
-- **Weather applied**: the board's departure and peak temperatures must match the simulated curve (±1.5 °C). An outage must be surfaced, not shown as fresh weather.
-- **Pause**: no outfits on paused days.
-- **Assistant turns** (read from D1 through the hook's audit route): the turn is dated on the simulated day, which proves the actor's clock followed the simulation. Actionable cards pass the checks above and reference only garments available when the question was asked. Rejected cards name the failed validator rule. Answers contain no maker codes or internal ids. The adversarial request logs nothing. On dev, every chat step ran on `gpt-6.1-sol` or `claude-opus-5-5`. The models, tokens and app-ledger cost of each turn are listed.
+`lib/timeline.mjs` turns a seed into a plan and nothing else decides anything: the same seed gives the
+same plan byte for byte (`timeline.planDigest` in each result). A numeric seed also fixes the season:
+seeds 0 to 5 start on six Mondays of 2027 spread over the year, two of them with a daylight-saving
+change inside the four weeks. The simulated dates lie in the future on purpose: the local key-value
+store refuses an expiry in the real past.
 
-## Running it
+A plan holds, in advance:
 
-From `garderobe/`:
+- **Weather**: a forecast for every day with a seasonal drift, rain on some days, a two-day heat
+  spike, a two-day cold snap, sudden rain announced on the morning itself (before or after the board
+  was published), and two forecast outages (one over an evening composition and the next morning, one
+  in daytime).
+- **Calendar**: formal entries, workouts, ordinary entries and the trip's travel, each appearing on
+  some earlier day; some move to another day, some are cancelled.
+- **Circumstance**: a three-day trip with a packing proposal, a suitcase and an unpacking; two days
+  of illness with no reports; days working from home; a pause of two or three days, ended by the
+  owner or by its resume date; an order that arrives and is returned or exchanged.
+- **Availability**: garments lost, at the cleaner, lent, damaged, and coming back; the owner's own
+  observations that contradict the ledger ("all of it is in the hamper", a count, a spill); a weekly
+  laundry with one exception per week kind (a piece still away, a piece lost by the service, a bag
+  that did not come back, a week with no laundry reports at all); and repair probes: tomorrow's
+  outfit is chosen in the evening and one of its pieces then becomes unavailable.
+- **Every day**: which option is chosen, changed or rejected, whether other options are asked for,
+  what is actually worn relative to the choice, whether the report is late, repeated or also sent
+  from the app, and a comfort note now and then. Choices are stored as draws and resolved at run time
+  against what the server actually offered, in a stable order.
 
-```sh
-# Local comparison run (fresh local state and owner, local Worker, simulation, shutdown). The assistant uses the product's deterministic fake model.
-npx tsx tests/simulation/scripts/local-run.ts --seed 20261005
+`lib/schedule.mjs` lays these out as timed steps (about 350 per seed). For each step the runner sets
+the target's clock, runs the step, and then checks every standing invariant.
 
-# Live run on garderobe-dev (dev only). Order matters: deploy first, because provisioning rewrites the
-# service-token policy; setup-dev then re-adds the simulation token and seeds a fresh owner.
-npm run deploy:dev
-npx tsx tests/simulation/scripts/spend.ts                    # remaining budget under the $50 gateway rule
-npx tsx tests/simulation/scripts/setup-dev.ts --budget-usd 25
-npx tsx tests/simulation/src/run.ts --target dev --seed 20261005 --deployed-version <version id>
-npx tsx tests/simulation/scripts/spend.ts --since <run start ISO>   # spend per model during the run
-npx tsx tests/simulation/scripts/compare.ts --seed 20261005        # local vs dev, day by day
+## Invariants
 
-# Unit tests of the harness itself (header signing, scenario reproducibility and coverage)
-npm test --workspace @garderobe/simulation-tests
+Checked after every step (`lib/invariants.mjs`), on state read back through MCP:
+
+- No offered garment, on today's board, tomorrow's board or in a recommendation, is unknown, not
+  owned, hard-excluded, restricted, made unavailable by the simulated owner, or against a hard
+  constraint of the profile. The profile check (`lib/profile-check.mjs`) is independent: it is written
+  from `requirements/chris-wardrobe-profile.md` section 8 and the inventory sheet alone and imports
+  nothing from the product. Its header says what it does not judge.
+- Wears: every report is counted, nothing is in the history that the simulation did not report, there
+  is one counted wear per garment and day, and each garment's wear count equals its reported days.
+- Availability: probabilities are probabilities; a hard exclusion states a hard reason; uncertainty
+  alone never excludes; what the owner made unavailable stays unavailable until it comes back.
+- The restriction recorded from the profile is in force at the start and is never lifted.
+- Calendar: one managed event per day, with the product's stable identifier, replaced under a
+  version precondition, with a revision that never goes back and is never ahead of the board.
+- Nothing is published for a paused day.
+
+Checked where they apply (`lib/sim.mjs`, `lib/handlers-*.mjs`): every accepted command's receipt reads
+back as returned, a repeat of the same call returns that receipt and writes nothing, the same key with
+another request is refused; a change the owner asks for applies at once and says whether it can be
+undone, and only a section 3 change waits for the owner (the 2026-10-05 contract); a wear report naming
+the restricted piece is recorded and taken back with undo, and the restriction stays in force; a planned
+piece that becomes unavailable is replaced on tomorrow's board by a wearable piece in the same role,
+automatically, in a new revision, with the choice kept; a swap on tomorrow's board applies at once with a
+receipt that offers an undo, and its undo brings back every outfit exactly, at the next board revision, with
+a receipt naming that revision and the choice untouched; an owner's count or "dirty" is what the ledger then
+says; the weekly baseline keeps laundry exceptions and does not call inferred cleanliness observed; a
+proposal is not a packed suitcase, a trip day is answered from the suitcase, unpacking makes nothing
+clean; stock leaves only on physical departure and an exchange never duplicates ownership; a
+connected assistant cannot lift a restriction; a run that failed says so and changes nothing; the
+synthetic second owner sees and touches nothing of the first.
+
+A failed check records the seed, the step, the target's time, a sentence, and the receipt it concerns.
+Nothing is retried or softened.
+
+## What is real and what stands in
+
+Real: the product Worker (`apps/worker/src/index.ts`: router, authentication, OAuth provider, MCP
+server, command service, ledger, daily service, scheduled handler, conversation actor), local D1 with
+every migration, KV, R2, queue and Durable Object, and the owner's profile and inventory, imported by
+the product's importer. The stock is the owner's real stock; no garment, wear or lifted restriction is
+added to it by the seed. Everything the simulation adds lives only in that seed's simulation database.
+
+Stand-ins, all labelled where they are defined, at external boundaries only:
+
+| Boundary | Stand-in | Where |
+| --- | --- | --- |
+| Time | A settable clock: the simulation Worker replaces `Date` so the simulator can set "now" | `worker/clock.ts` |
+| Open-Meteo forecast and geocoding | A scripted forecast in Open-Meteo's wire shape, parsed by the product's real adapter; an unscripted day or a place switched off answers 503 | `worker/conditions.ts` |
+| Google OAuth, calendar list and creation, Calendar events | An in-memory calendar in Google's documented wire shape (caller-supplied identifiers and 409, `If-Match` and 412, cancelled-on-delete) | `worker/conditions.ts` |
+| The five-minute cron | `POST /__sim/scheduled` runs the product's own `scheduled` handler once and waits for it | `worker/entry.ts` |
+| Cloudflare Access sign-in | An assertion signed with a key generated for the run, verified by the Worker's real verification code | `lib/local-target.mjs`, `lib/target.mjs` |
+| Language model | None. There is no model binding locally: `garderobe_ask` and `garderobe_research` return durable runs that end in a reported failure, and every board comes from the deterministic composer | |
+
+The simulation Worker entry serves only with `ENVIRONMENT` `local`, or as a development-only simulation
+deployment (`ENVIRONMENT` `development`, `SIM_DEPLOYMENT` `development-simulation`, a control token of at
+least 32 characters). Its doors need the run's control token (compared in constant time), and it awaits a
+request's background work before answering so that a step's effects are complete when state is read.
+Durable Object alarms are moved and drained through each object's own endpoint (objects register in a
+`SimulationRegistry` object); an object restarted in a new isolate fails the clock step as a void run.
+It is never part of the product Worker.
+
+Synthetic and labelled as such: the weather, the calendar entries, the circumstances, the events that
+make garments unavailable, the ordered shirt of the return or exchange (`SYNTHETIC ...`), and the
+second owner with its two garments, which exists only for the isolation check.
+
+## Targets
+
+A target is a JSON description (`lib/target.mjs`):
+
+```json
+{
+  "label": "local simulation Worker",
+  "appOrigin": "http://localhost:8850",
+  "mcpOrigin": "http://127.0.0.1:8850",
+  "signIn": { "kind": "local-assertion", "issuer": "...", "audience": "...", "privateJwk": { } },
+  "owners": {
+    "primary": { "subject": "...", "email": "...", "invitationCode": "...", "importedGarments": 127 },
+    "second": { "subject": "...", "email": "...", "invitationCode": "..." }
+  },
+  "doors": { "kind": "simulation-worker", "controlOrigin": "...", "controlToken": "...", "clock": true, "weather": true, "calendar": true, "scheduled": true }
+}
 ```
 
-Options for `run.ts`: `--seed N`, `--days N` (at least 28), `--limit-days N` (smoke run), `--max-asks N` (default 60), `--no-asks`, `--out <dir>` (default `tests/simulation/reports`). Reports are `reports/<target>-seed<seed>.{json,md}`; the JSON holds the whole plan and every record, and a partial report is written after every day.
+`bin/local.mjs` writes one per seed. For a deployment behind Cloudflare Access the sign-in kind is
+`headers-from-environment`: each owner names, per header, the environment variable that holds its
+value, so no credential is in a file. No Cloudflare management credential is used anywhere.
 
-## How the simulated world reaches the deployed Worker
+A timeline of weeks elapses in minutes only on a target whose clock the simulator sets. Besides the local
+Worker, the same simulation Worker can be deployed under its own name to development resources only
+(`lib/dev-target.mjs`): `devSimulationWranglerConfig` builds its Wrangler configuration (simulation-only
+resources, names checked; the secrets in `DEV_SECRETS` are set with `wrangler secret put`), and a target
+file of kind `development-simulation-worker` with HTTPS origins, `headers-from-environment` sign-in and
+`doors.controlTokenFromEnvironment` runs with `node bin/run.mjs --target <file>`. Before the first step the
+runner checks that the doors answer as a simulation Worker in that mode. A run in which the deployment
+served from more than one isolate reports itself void (changed boot ID, or 409 from the clock door).
 
-The hook is `worker/sim-hook.ts`. It is wired into the dev deployment's entry (`deploy/src/dev-entry.ts`) and the local simulation entry (`worker/local-entry.ts`), never into the product entry `backend/src/index.ts`.
+The live run against a development deployment has **not run**: it waits on the hosting decision (where the
+development simulation Worker and its resources live, and who deploys and seeds it). The product
+deployment has no clock door by design, and the runner refuses a target without one.
 
-- Each harness request carries `x-garderobe-sim`: the simulated clock, weather curves and calendar events for a window around the current day, plus the simulation owner id, HMAC-SHA256-signed with the `DEV_SIM_SECRET` Worker secret (`src/sim-state.ts`). A bad signature, or any header outside ENVIRONMENT `dev`/`local`, is refused with 403. A request without the header runs with the product defaults (Open-Meteo, no calendar, the real clock).
-- A valid header installs the state through the product's existing test seams: `installApiTestOverrides` (API, MCP tools, repair after commands) and `installTestDailyProviders` (the assistant's day context and outfit validation). Before an MCP call that can reach the assistant, the hook pushes the same state into the simulation owner's actor (`devSimulation`, added by the `withSimulation` mixin), whose clock then follows the simulated clock.
-- `POST /__sim/phase` runs one scheduled daily phase for the simulation owner. `POST /__sim/audit` returns that owner's assistant turns (with outfit cards) and model runs. Both need a valid header and act only on the owner named in it.
-- The fake weather provider is named after the scenario revision, so the shared D1 forecast cache never serves another scenario.
-- Limits: the overrides are per isolate, so do not run other dev traffic (for example `dev:verify`) during a simulation. The managed outfit calendar is not projected (`calendarStore: null`).
+## Layout
 
-Dev pieces the simulation adds (all dev-only):
-- the `DEV_SIM_SECRET` Worker secret (value in `deploy/.state/dev-sim-secret.json`);
-- the Access service token `garderobe-dev-automation-sim` in the reusable "Garderobe dev automation (service token)" policy (secret in `deploy/.state/access-service-token-sim.json`). `npm run deploy:dev` / `dev:provision` remove it from the policy again, so a plain deployment keeps its own two tokens;
-- one "Chris (simulation …)" owner per run on the dev D1 with an app model budget of $25 (`--budget-usd`). The service token's identity moves to the newest owner and is audited on both. Receipts are immutable, so earlier simulation owners stay in the database, unlinked.
-
-Without a signed header the dev Worker behaves exactly like the product, so `npm run dev:verify` still reflects the normal deployment.
-
-## Stand-ins
-
-| Part | Live on dev | Local comparison |
-| --- | --- | --- |
-| Worker, MCP server (2026-07-28), OAuth grant and consent, D1, Durable Object assistant, daily service, validator | real (deployed) | real (workerd via `wrangler dev --local`) |
-| Cloudflare Access | real Access at the edge (service token) plus the Worker's own verification | locally generated RSA key standing in for the Access team key |
-| Assistant model | real models through AI Gateway (Sol for routine turns, Opus 5.5 medium for deep turns; kimi for compaction) | the product's deterministic fake model (answers "Understood.", no tool calls, so no outfit cards) |
-| Weather | simulated curves (FakeWeatherProvider) via the signed hook | the same |
-| Google Calendar | simulated events (FakeCalendar) via the signed hook | the same |
-| Clock | simulated via the hook (API, daily service, assistant actor) | the same |
-| Gmail, Exa/Tavily, Browser Run, image providers | not exercised | not exercised |
-
-## Results
-
-See `reports/` and `FINDINGS.md`.
+| Path | Purpose |
+| --- | --- |
+| `worker/entry.ts`, `clock.ts`, `conditions.ts`, `seed.ts` | The simulation Worker (product Worker plus the labelled doors) and the seed of one simulation database |
+| `lib/timeline.mjs`, `lib/schedule.mjs`, `lib/rng.mjs`, `lib/dates.mjs` | Seed to plan to timed steps |
+| `lib/target.mjs`, `lib/local-target.mjs` | The target: MCP sessions, the owner's app requests, the doors; a local target per seed |
+| `lib/sim.mjs`, `lib/invariants.mjs`, `lib/profile-check.mjs` | Run state, command plumbing with receipt checks, standing invariants, the independent profile check |
+| `lib/handlers-daily.mjs`, `lib/handlers-conditions.mjs`, `lib/handlers-circumstances.mjs` | What each step does |
+| `lib/runner.mjs`, `lib/report.mjs`, `bin/local.mjs`, `bin/run.mjs` | Running seeds and writing results |
+| `results/` | Committed results: one JSON per seed and a summary per target |
+| `test/` | Tests that need no Worker |

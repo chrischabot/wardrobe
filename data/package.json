@@ -1,9 +1,0 @@
-{
-  "name": "@garderobe/data",
-  "version": "0.1.0",
-  "private": true,
-  "description": "Owner-supplied data kept byte-exact: style profile, derived rule catalogue, May 2026 inventory CSV",
-  "exports": {
-    "./*": "./*"
-  }
-}

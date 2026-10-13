@@ -1,0 +1,19 @@
+{
+  "name": "@garderobe/evals-check",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Runs the model-free checks of the evaluation harness in evals/ as a workspace test: its self-test (isolation and split guards), its typecheck, and the scripted ledger check of the development behavioural cases against the real Worker. The corpus runs that need the AI Gateway (evals/README.md) are not part of this.",
+  "scripts": {
+    "typecheck": "tsc -p ../../evals/tsconfig.json",
+    "test": "node ../../evals/run.mjs selftest && node ../../evals/run.mjs adapter-check --strict"
+  },
+  "dependencies": {
+    "@ai-sdk/openai": "4.0.83",
+    "@ai-sdk/provider": "4.0.21",
+    "@garderobe/assistant": "1.0.0",
+    "@garderobe/domain": "1.0.0",
+    "@garderobe/worker": "1.0.0",
+    "fflate": "0.8.3"
+  }
+}

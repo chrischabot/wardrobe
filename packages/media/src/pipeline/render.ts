@@ -1,0 +1,116 @@
+/**
+ * Background rendering of an outfit preview: load the manifest, read the approved renditions from
+ * private storage (each key re-checked against the owner), composite deterministically and store the
+ * PNG and the SVG scene. Never called on the path that prepares the morning board.
+ */
+import { all, first, isCommandError, sha256Hex } from "@garderobe/domain";
+import { CompositionManifest } from "@garderobe/contracts/ext/media";
+import { COMPOSITE_COLS, PREVIEW_INVALIDATED, staleCompositeItems, type CompositeRow } from "../commands/composites.ts";
+import { renderRaster } from "../compose/raster.ts";
+import { renderSvg } from "../compose/svg.ts";
+import { execSystem } from "../exec.ts";
+import { decodeImage, decodePng, encodePng, withoutLocation, withoutLocationForConversion, type Raster } from "../image/index.ts";
+import type { JobRow } from "../jobs.ts";
+import { assertOwnedKey, compositeKey } from "../keys.ts";
+import { limitsOf, type MediaRuntime } from "../runtime.ts";
+
+export const RENDERER_NAME = "garderobe-compositor-1";
+
+export async function runRenderJob(rt: MediaRuntime, job: JobRow): Promise<void> {
+  const userId = job.user_id;
+  const row = await first<CompositeRow>(rt.db, `SELECT ${COMPOSITE_COLS} FROM outfit_composites WHERE user_id = ? AND manifest_hash = ?`, userId, job.subject_id);
+  if (!row) {
+    await execSystem(rt, userId, "media.complete_job", { jobId: job.job_id, attempt: job.attempts, result: { skipped: "the composite no longer exists" } }, `job-done:${job.job_id}:${job.attempts}`);
+    return;
+  }
+  const manifest = CompositionManifest.parse(JSON.parse(row.manifest_json));
+  // A preview is only drawn, and only stored, while its request is open and every image it uses is still
+  // there. Checked before reading the images and again after rendering, immediately before anything is
+  // written; `media.record_composite` checks a third time inside its commit.
+  const invalidated = async (): Promise<string | null> => {
+    const now = await first<CompositeRow>(rt.db, `SELECT ${COMPOSITE_COLS} FROM outfit_composites WHERE user_id = ? AND manifest_hash = ?`, userId, job.subject_id);
+    if (!now) return "the composite no longer exists";
+    if (now.preview_state !== "queued") return now.preview_state === "none" && now.failure ? now.failure : PREVIEW_INVALIDATED;
+    return (await staleCompositeItems(rt.db, userId, job.subject_id)) > 0 ? PREVIEW_INVALIDATED : null;
+  };
+  const discard = (reason: string) => execSystem(rt, userId, "media.discard_composite", { manifestHash: row.manifest_hash, jobId: job.job_id, attempt: job.attempts, reason }, `discarded:${job.job_id}:${job.attempts}`);
+  const before = await invalidated();
+  if (before) {
+    await discard(before);
+    return;
+  }
+  const ids = [...new Set(manifest.layers.map((l) => l.renditionId).filter((id): id is string => !!id))];
+  const images = new Map<string, Raster>();
+  if (ids.length > 0) {
+    const marks = ids.map(() => "?").join(",");
+    // Only this owner's ACTIVE renditions can be drawn; a deleted or foreign rendition renders as missing.
+    const renditions = await all<{ rendition_id: string; kind: string; object_key: string; content_type: string; sha256: string }>(rt.db, `SELECT rendition_id, kind, object_key, content_type, sha256 FROM media_renditions WHERE user_id = ? AND status = 'active' AND rendition_id IN (${marks})`, userId, ...ids);
+    for (const r of renditions) {
+      assertOwnedKey(userId, r.object_key);
+      const object = await rt.deps.bucket.get(r.object_key);
+      if (!object) continue;
+      // Read into bytes only within its limit (an original: the upload limit; a generated file: the generated-file
+      // limit); a larger stored file is drawn as a missing image.
+      const byteLimit = r.kind === "original" ? limitsOf(rt.deps).maxUploadBytes : limitsOf(rt.deps).maxDerivedBytes;
+      if (object.size > byteLimit) continue;
+      const bytes = new Uint8Array(await object.arrayBuffer());
+      try {
+        images.set(r.rendition_id, (await decodeImage(bytes, { maxPixels: limitsOf(rt.deps).maxPixels })).raster);
+      } catch {
+        if (rt.deps.transcoder) {
+          // The converter gets the picture without its metadata (HEIC: metadata items blanked); one that cannot be cleaned is not sent.
+          const clean = withoutLocationForConversion(bytes, byteLimit);
+          const out = clean.ok ? await rt.deps.transcoder.toPng({ bytes: clean.bytes, contentType: r.content_type, maxEdge: 1200 }) : null;
+          if (out?.ok) {
+            // The converter's output is held to the same pixel limit as any decoded image; an oversized or corrupt one renders as missing.
+            try {
+              images.set(r.rendition_id, await decodePng(out.png, { maxPixels: limitsOf(rt.deps).maxPixels }));
+            } catch {
+              /* drawn as a missing image */
+            }
+          }
+        }
+      }
+    }
+  }
+  const svg = renderSvg(manifest);
+  let png: Uint8Array;
+  let renderer = RENDERER_NAME;
+  if (rt.deps.previewExporter) {
+    // Optional browser/image-service export of the SVG scene; the built-in compositor is the fallback.
+    const exported = await rt.deps.previewExporter.renderSvgToPng({ svg, width: manifest.canvas.width, height: manifest.canvas.height });
+    // A picture made outside this package is stored only without metadata; otherwise the built-in compositor draws it.
+    const clean = exported.ok ? withoutLocation(exported.png) : null;
+    if (clean?.ok && clean.contentType === "image/png") {
+      png = clean.bytes;
+      renderer = rt.deps.previewExporter.name;
+    } else png = await encodePng(renderRaster(manifest, images));
+  } else png = await encodePng(renderRaster(manifest, images));
+
+  const after = await invalidated();
+  if (after) {
+    // An image was deleted while the preview was being drawn from bytes already read: nothing is stored.
+    await discard(after);
+    return;
+  }
+  const previewSha256 = await sha256Hex(png);
+  // Generation-addressed keys: this render's files never replace the files of another runner's committed render,
+  // and a delayed purge of another generation never reaches them.
+  const previewKey = compositeKey(userId, row.manifest_hash, "image/png", previewSha256, job.job_id);
+  const svgKey = compositeKey(userId, row.manifest_hash, "image/svg+xml", previewSha256, job.job_id);
+  await rt.deps.bucket.put(previewKey, png, { httpMetadata: { contentType: "image/png" }, customMetadata: { manifestHash: row.manifest_hash, sha256: previewSha256 } });
+  await rt.deps.bucket.put(svgKey, svg, { httpMetadata: { contentType: "image/svg+xml" }, customMetadata: { manifestHash: row.manifest_hash } });
+  try {
+    await execSystem(rt, userId, "media.record_composite", { manifestHash: row.manifest_hash, jobId: job.job_id, attempt: job.attempts, previewSha256, previewBytes: png.length, hasSvg: true, renderer }, `rendered:${job.job_id}:${job.attempts}`);
+  } catch (e) {
+    // Refused. The files are removed only when a NEWER request owns the preview: this job's generation can then
+    // never be committed, so nothing can reference them. Otherwise (the same job's request is still current)
+    // they are left: a replacement attempt of this job writes the same bytes to the same keys and may commit
+    // them at any moment, and a later discard of this generation purges whatever is not committed.
+    if (isCommandError(e) && e.code === "precondition_failed") {
+      const now = await first<{ render_job_id: string | null }>(rt.db, "SELECT render_job_id FROM outfit_composites WHERE user_id = ? AND manifest_hash = ?", userId, row.manifest_hash);
+      if (now?.render_job_id && now.render_job_id !== job.job_id) await rt.deps.bucket.delete([previewKey, svgKey]);
+    }
+    throw e;
+  }
+}

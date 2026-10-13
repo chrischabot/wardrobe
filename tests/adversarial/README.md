@@ -1,71 +1,80 @@
-# Garderobe adversarial test suite
+# Garderobe adversarial tests
 
-This suite attacks the Garderobe backend, its HTTP API and its MCP server. It runs against the real Worker in workerd, with real local D1, R2, KV, Durable Objects and queues, through `@cloudflare/vitest-pool-workers`. Every owner in these tests is seeded with **the owner's real data**, using the same functions as the foundation seed (`demo/scripts/seed-local.ts`):
+Attacks on the **real application**: the real Worker inside workerd (its HTTP API, MCP server, OAuth
+provider and conversation actor) on a **real local D1** with every migration, local KV, R2 and the queue.
+Assertions read actual application state and stored receipts, never a stand-in. Only the network
+boundaries to external services are replaced, by the labelled test doubles the journey suite documents
+(`tests/journeys/src/outbound.ts`: scripted weather, an in-memory Calendar, and the Worker package's
+fixtures for Access assertions, the language model, Google OAuth and push).
 
-- `importOwnerData` with the byte-exact profile `data/owner-profile.md`, its rule catalogue and the May 2026 inventory CSV;
-- then `applyOwnerAssertedAdditions`, the owner's answer of 2026-09-29.
+## Running
 
-The result is 144 garments. Isolation tests import the same real data for a second identity, so every garment name exists on both sides and only ownership differs. The owner's source files are read, never written. Hostile CSVs are built in memory from a copy.
+From the repository root, after `npm install` (in the Fabric sandbox: `bash tools/sandbox-install.sh`):
 
-## Run it
+| Command | What it does |
+| --- | --- |
+| `npm test -w @garderobe/adversarial-tests` | **The whole suite.** Known open defects are expected failures; anything else that fails is a regression. Exit code 0 means "no regression", not "no open defects". |
+| `npm run test:strict -w @garderobe/adversarial-tests` | The acceptance view: every known open defect fails as an ordinary test. Its failures are exactly the open entries of the areas' `DEFECTS.md` files. |
+| `npm run test:domain -w @garderobe/adversarial-tests` | One area (`harness`, `domain`, `api-mcp`, `assistant`, `daily-media`). |
+| `npm run test:domain -w @garderobe/adversarial-tests -- -t "idempotency"` | Further arguments go to vitest unchanged. |
+| `npm run typecheck -w @garderobe/adversarial-tests` | Typecheck of every area. |
 
-```sh
-cd garderobe
-npm install
-npm run test:adversarial                       # the whole suite, one command (about 70 s)
-ADV_SHOW_DEFECTS=1 npm run test:adversarial    # run any knownDefect(...) tests as ordinary tests and print why each fails (none are open today)
-npm run typecheck --workspace @garderobe/adversarial-tests
-```
+The root `npm test` runs the default mode along with every other workspace.
 
-Each test file gets fresh storage. Nothing remote is contacted: remote bindings are off, and no test calls a real external host.
+## Layout and ownership
 
-## Defects: how they are tracked, and where they stand
-
-The first run found 16 defects (ADV-01 to ADV-16). Each was kept in the suite as an **expected failure**, written with `knownDefect('ADV-nn', …)` (`helpers/defects.ts`, which wraps `it.fails`), with a comment pointing to its entry in [DEFECTS.md](./DEFECTS.md). A known-defect test passes while the product still fails its assertion and turns red once the product is fixed; at that point it becomes an ordinary `it(...)`. `ADV_SHOW_DEFECTS=1` runs known-defect tests as ordinary tests so each failure's reason is visible.
-
-**Current status (final run on 2026-09-29): all 18 defects (ADV-01 to ADV-18) are fixed and run as ordinary tests; no expected failures remain.** ADV-17 and ADV-18 came from the MCP export, import and recovery threat class, and their tests were flipped unchanged once the fixes landed. In the earlier fix round, fifteen tests were flipped unchanged. ADV-12 was rewritten: export now deliberately carries no sessions, sign-in codes or token hashes (journey 17 requires this), so the new tests build the tampered package themselves and require import to refuse it or recreate nothing that works. [DEFECTS.md](./DEFECTS.md) has each defect's status, original reproduction and guarding tests. `knownDefect` remains available for future findings.
-
-## Stand-ins (test doubles) and what they replace
-
-| Stand-in | Replaces | Where |
+| Path | Owner | Contents |
 | --- | --- | --- |
-| `FakeModelTransport`, scripted to act as a hostile or prompt-injected model | Every model provider behind AI Gateway (chat, compaction, extraction) | `helpers/assistant.ts`. The Think actor, tools, intent policy and command service are real |
-| Hostile `CandidateProposer` / `ProseWriter` objects | A model plugged into the daily service's two model seams | `suites/hostile-model/recommendation-seams.test.ts` |
-| Hostile `ModelService` object | The email extraction model | `suites/hostile-model/assistant.test.ts` |
-| `FakeWeatherProvider` | Open-Meteo | all daily-service tests |
-| `FakeCalendar` | Google Calendar | daily-service tests; the calendar projection race tests |
-| `FakeGmail` | Gmail | email injection tests |
-| `FakeWeb` | Tavily / Exa / Browser Run page extraction | product-page injection tests |
-| `FakeMcpServer` + `MemoryCredentialStore` (via `installTestConnectors`) | Remote MCP servers and Worker secrets | MCP injection and secret-leakage tests |
-| A locally generated RSA key | The Cloudflare Access team signing key | every HTTP/MCP test (the Worker verifies it on the same code path as real Access assertions) |
-| A fetch double | The network, in `safeFetch` redirect tests | SSRF tests |
+| `package.json`, `tsconfig.json`, `vitest.config.ts`, `scripts/`, `harness/`, this file | domain adversarial thread (shared files) | Manifest, configuration, runner, shared harness and its own smoke test |
+| `domain/` | domain adversarial thread | Every domain command, the D1 ledger, the import boundary |
+| `api-mcp/` | API and MCP adversarial thread | HTTP API, MCP server, identity, recovery, export |
+| `assistant/` | assistant adversarial thread | Conversation authority, inference, memory, research |
+| `daily-media/` | daily-service and visual-wardrobe adversarial threads | Recommendations, weather, Calendar, repair, trips; media, Studio |
 
-The OAuth provider (`@cloudflare/workers-oauth-provider`), the MCP server (`@modelcontextprotocol/server` 2.2.0) and client (`@modelcontextprotocol/client` 2.2.0), D1, R2, KV, the Durable Object actor, the command service, validator, composer, publisher, importer and export are the real code.
+**A thread adds files only below its own directory and never edits a shared file.** That is enough:
 
-## Threat catalogue
+- Any `*.test.ts` below an area directory is picked up by the shared configuration.
+- Import the harness by relative path: `import { provisionOwner, refusal, ledgerFingerprint } from "../harness/index.ts";`
+- Area-local helpers live in the area (for example `api-mcp/support.ts`); files that do not end in
+  `.test.ts` are never run as tests.
+- The dependencies an area needs are already declared: `@garderobe/contracts`, `domain`, `daily`,
+  `assistant`, `media`, `worker`, `@modelcontextprotocol/client`, `jose`, `fflate`, `zod`. If something
+  else is needed, ask the owner of the shared files.
+- **Own outbound doubles.** A directory below an area with its own `vitest.config.ts` (for example
+  `daily-media/daily/vitest.config.ts`) is a separate vitest run with that directory as its root: the
+  runner (`scripts/run.mjs`) runs it after the shared configuration, and the shared configuration leaves
+  its files alone. Use `garderobeWorkerTestPlugin({ miniflare: { outboundService } })` there, and add
+  `define: { __ADVERSARIAL_STRICT__: JSON.stringify(process.env.ADVERSARIAL_STRICT === "1") }` if the run
+  uses `defect()`.
+- Each area keeps its own `COVERAGE.md` (what is attacked, by which test) and `DEFECTS.md` (open defects
+  with reproductions, and the fixed ones).
 
-There are 219 tests in 19 files, all ordinary must-pass tests; the final run had 219 passed. The ADV numbers below mark the tests that guard each fixed defect. The hostile-prose test skips only the slot `aliases` (ledger search phrases, which may carry maker codes) and also checks the rendered board text; see DEFECTS.md.
+## The harness (`harness/index.ts`)
 
-| Threat class | File | Tests | What is attacked |
-| --- | --- | --- | --- |
-| Hostile model: hallucinated ids, wrong roles, unsupported facts | `suites/hostile-model/recommendation-seams.test.ts` | 8 (ADV-01, 02) | Proposer inventing ids, foreign garments, welted shoes, the 990v6, sockless and bed-sock outfits, benched pieces, garbage and floods; prose claiming waterproofing, codes, internal ids, watches, "no socks", false day lines, paraphrases; short search-only names and maker codes in any case (strict search-name rule); hanging prose |
-| | `suites/hostile-model/assistant.test.ts` | 8 | `record_wear` with invented ids, create-to-succeed, `propose_outfit` with invented/wrong-role/welted/sockless slots, forged source/owner/key in tool input, selfie logging unseen pieces or creating garments, identify capture, What I wore with unknown ids, hostile email-extraction model |
-| Prompt injection (email, product page, MCP description/result, attachments) | `suites/prompt-injection/channels.test.ts` | 8 (ADV-04, 05) | A perfectly obedient injected model tries to lift the restriction, amend the profile, add a standing brief, add an item, add a standing comfort rule and mark an arrival through each channel; pasted third-party healing text; free-text amendments riding on a legitimate standing direction |
-| Profile integrity: validator | `suites/profile-integrity/validator.test.ts` | 16 | Every section 8 hard constraint against the real wardrobe: socks always (sockless, bed socks, alpaca above 12 °C, socks in another role), the loafer-without-socks look, every welted shoe, the boot and the 990v6 alone or as an alternative, a heavy shirt or knit under a jacket at 14–16 °C, morning-low dressing, heat and cold snap, the seven-day repeat and its boundary, navy fallback in swaps (validator and 20+ live swaps), benched/occasional/away pieces, SQL-shaped, foreign and wrong-role ids, huge candidates |
-| Profile integrity: requests, counts, time, exceptions | `suites/profile-integrity/requests-and-time.test.ts` | 14 (ADV-03) | Absurd/negative/NaN/infinite counts, over-asking, direct requests for forbidden pieces, excluding every sneaker or sock, a week of every shirt worn, a year of scheduler phases, an expired expected end, scheduler/import/calendar lift attempts, elapsed-time evidence, exceptions to rules that admit none, brief machine parameters, a one-day variety exception, a brief claiming healing |
-| Profile integrity: conversation | `suites/profile-integrity/conversation.test.ts` | 7 (ADV-06, 07) | Compaction (and a hostile compaction summary) never displaces the byte-exact profile; hash exposed on every surface; stored-body tampering; "just for today" versus amend_profile; a one-day exception stretched to 2099 |
-| Authorization: Access and hostnames, forged owner ids | `suites/authz/access-and-hosts.test.ts` | 13 | Identity headers without an assertion, alg none, HS256 keyed with the public key, embedded jwk/jku, unknown kid, lowercase alg, 14 claim abuses, payload swaps, garbage/oversize assertions, cookie assertions, 7 unprotected or look-alike hosts with forwarded-host headers, owner fields anywhere in bodies, `__proto__`, owner query params/headers, SQL-shaped query params and cursors |
-| Authorization: cross-owner isolation | `suites/authz/isolation.test.ts` | 10 | B probes A's garments, receipts, runs (status/events/cancel/input), commands on A's ids, A's idempotency key, recall and transcript, media (session, signed-token object/owner/purpose/expiry/signature swaps), local key outside local, B's export, forged/retried queue messages, MCP reads/runs/conversation/disconnect, SQLite compound foreign keys |
-| OAuth abuse | `suites/authz/oauth.test.ts` | 22 | Missing/plain PKCE, unknown scopes, unregistered or look-alike redirects, script/credentialed redirect registration, code bound to verifier/client/redirect/resource, issuer on the redirect, code replay, forged consent binding, swapped handle, another owner's session, consent replay, form-injected scopes, read→write on refresh, D1 narrowing, cross-client refresh, rotated refresh replay, stale KV after D1 revocation, grant version bump, reconnect, disabled user, MCP token on the app API, native client abuse and racing redemption/refresh |
-| MCP protocol abuse | `suites/mcp/protocol.test.ts` | 10 | Mcp-Name/Mcp-Method/protocol-version mismatches, malformed and forged `_meta`, batches, invalid JSON, unknown methods and tools, wrong content type, cross-site Origin, oversize text/items/nesting/6 MB bodies, MRTR replay, altered retries (garment, key, command, tampered and forged state), another owner or a read grant redeeming the state, expired questions revived by clock rewind, invalid choices |
-| Natural-language bypass on a read-only grant | `suites/mcp/read-only-bypass.test.ts` | 5 | `garderobe_ask` with a message demanding seven kinds of change and an obedient model; `garderobe_run` respond/cancel; `garderobe_research(topic)` on a write grant; owner-only commands as proposals |
-| MCP export, import and recovery (`garderobe_command` operations `export_data`, `import_data`, `issue_recovery_kit`) | `suites/mcp/account-portability.test.ts` | 20 (ADV-17, ADV-18) | Read grants (all three operations as proposals; replaying a write grant's confirmed key); missing or forged confirmation (a client without elicitation, `garderobe_run respond`, the app input route and confirmation page with an assistant token, cross-site and cross-owner confirmation, forged and declined request state replayed as "accept"); an auto-confirming hostile client that still cannot open links or collect codes; cross-owner key reuse, package naming and link swaps; replays (same link, no second export, key reuse for another operation, replay after expiry) and altered retries (other operation, package, key or grant); links guessed, tampered (extended expiry), kind-confused (export ↔ recovery), path-traversing, expired, superseded or reused, plus the local link secret outside local; ADV-12-style resealed packages refused at staging; a staged package tampered in R2 refused at import; racing imports of the same package and of two different packages; a full scan of D1, assistant-visible results and the export for codes and link tokens; a pasted recovery code; an injected model and email asking the assistant to export, import or recover; markup and spoofed questions carried in a staged package |
-| Idempotency and concurrency | `suites/ledger/idempotency-concurrency.test.ts` | 16 (ADV-08) | Altered payload under a reused key on HTTP, MCP and the domain; expectedVersions as part of identity; app + MCP + assistant + offline duplicate wears; 10/20 racing wear reports; 10 racing identical envelopes; racing wash/washed; racing selections and profile edits; laundry-vs-composition races (single and every attempt); pause during queued publication; out-of-order and concurrent Calendar projections; resurrection of an owner-deleted event |
-| Quantity attacks | `suites/ledger/quantities.test.ts` | 10 | Negative, zero, fractional, huge, string and non-finite quantities on six commands; empty and 31-item wear reports; bogus time zone; 50 units of a one-unit shirt; clean above owned; totalOwned below units away; wears of disposed garments; arrival of an owned garment; post-pickup wears; partial returns naming foreign/absent garments or over-counts; double returns; phantom batches; double pickup |
-| Time edge cases | `suites/ledger/time.test.ts` | 11 (ADV-09) | Both 01:30s of the October fall-back; the March skipped hour and midnight; the schedule across spring-forward; New York and London devices; the same instant in two zones; future dates in extreme zones; overnight outfits; missed weekly resets, backwards clocks and racing reset runs; a lagging scheduler asking for a past day |
-| SSRF and secret leakage | `suites/ssrf-secrets/ssrf-and-secrets.test.ts` | 9 (ADV-10) | 55 internal or credentialed URL encodings; IPv6 transition forms; redirect chains (absolute, protocol-relative, mapped IPv6, credentialed, metadata) and loops; `POST /v1/connections`; `garderobe_research` product URLs; a connector secret echoed by the upstream, then a full scan of every D1 table and the export; the redactor; keys and other grants' tokens in every API and MCP response |
-| Recovery credential reuse, export tampering and leakage | `suites/lifecycle/recovery-and-export.test.ts` | 16 (ADV-11; ADV-12 ×6) | Code reuse, wrong secret, malformed, superseded; racing redemptions; brute-force limit; taking over another identity; grants and sessions dead after recovery; edited/truncated/relabelled packages; import into a non-empty owner or escaping the target; credentials in the export; token hashes in the export; tampered exports (resealed) carrying injected sessions, sign-in codes, credential columns, re-activated grants or a relabelled credential table |
-| Hostile inventory re-import | `suites/import/hostile-reimport.test.ts` | 10 (ADV-13, 14, 15) | Unchanged re-import on a ledger with history; notes carrying injection and SQL; altered statuses on existing rows; duplicates; owner columns; formulas; `<img onerror>`; 100 KB fields; NUL bytes; blank rows; a new welted row claiming "Healed"; malformed, binary, header-only, empty, CR-only and BOM files; parser literalness; tampered profile text on re-import; duplicate and unrecognised-status rows; formulas in the export CSV view |
-| Property-based / fuzz (fast-check 4.10.2, fixed seed 20261006) | `suites/properties/invariants.test.ts` | 6 (ADV-16) | 40 random command sequences (wear, wash, washed, socks washed, pickup, return, reconcile, undo, replay, altered replay): stock never negative, one counted wear per garment/date, receipts immutable, replays idempotent, units conserved, estimator bounds. 3,000 random outfits × 6 weathers: valid ⇒ oracle-compliant. 2,000 mutations of valid options. 20 random published boards (9 weathers, wears, laundry, exclusions, counts): every option complete, valid, compliant, distinct shirts, no wear created. Receipt DELETE and UPDATE at the storage layer |
+| Export | Use |
+| --- | --- |
+| everything of `@garderobe/worker/testing` | `provisionOwner({ real })`, `ApiClient`, `accessAssertion` (also forged: `untrusted`, wrong audience, expired), `connectMcp`, `toolResult`, `decideConsent`, `enableFakeModel`, `publishBoard`, `uploadImage`, `testPng`, `readSse`, `testApp`, `ownerDay`, `SELF`-backed `selfFetch` |
+| `createLedgerHarness({ startAt, composed })` | The real command service on the same D1 with a clock the test moves: races, replay storms, date and timezone edges. `owner.exec(type, payload, opts)` returns the receipt; `createSyntheticOwner()`, `createRealOwner()` |
+| `refusal(promise)` | The typed error (`code`, `message`, `details`) of a command the service must refuse; a crash or an acceptance fails the test |
+| `committed(response)`, `refused(response)`, `exec(api, type, payload)` | The same for commands sent over HTTP |
+| `ledgerFingerprint(userId)`, `ledgerDiff(before, after, { ignore })` | Row count and content digest of **every** owner-scoped table. An empty difference proves a refused command wrote nothing: no orphan receipt, no partial mutation, no queued effect |
+| `defect(id, title, body, { intermittent })` | An open product defect kept as a test (expected failure by default, ordinary failure in the strict run) |
+| weather and Calendar doubles: `newPlace`, `scriptWeather`, `weatherDown`, `liveAt`, `seedCalendar`, `calendarFaults`, `connectOutfitCalendar`, `eventsOn`, `calendarState`, `editCalendarEvent`, `realOwnerAt`, `runCron`, `mcpCommand`, `wholeWardrobe`, `settleRun` | Scripting the external world and running scheduled work, shared with the journey suite |
+| `SYNTHETIC`, `REAL` | Title markers: every case says whether it uses constructed data or the owner's real import |
 
-The oracle `helpers/oracle.ts` checks section 8 of the owner's profile independently of the validator's code, so a validator bug does not also become a test bug.
+## Data
+
+`provisionOwner({ real: true })` and `createRealOwner()` import the owner's real profile and inventory
+(`requirements/`, byte-exact) through the real importer: personalization cases use those. Every other
+owner is a labelled synthetic fixture; boundary cases use synthetic owners and say so. No test invents
+an owned garment, a wear or a lifted restriction for the real owner outside its own throwaway copy of
+the account in the local test database.
+
+## Rules for a case
+
+1. Attack through a real entry point (HTTP route, MCP tool, command service, importer, scheduled run).
+2. Assert on stored state and receipts, not only on the status code: a refusal must also have written
+   nothing (`ledgerDiff` is empty), and an acceptance must have written exactly what its receipt says.
+3. A case that exposes a product defect becomes either a fix with an ordinary regression test, or a
+   `defect(...)` listed as open in the area's `DEFECTS.md` with its reproduction and owning workstream.
+4. Files run in parallel against one database: create your own owners, never assume an empty database.

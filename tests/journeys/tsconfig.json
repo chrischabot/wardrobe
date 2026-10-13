@@ -1,8 +1,7 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "lib": ["es2023"],
-    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-pool-workers/types"]
+    "types": ["@cloudflare/workers-types", "@cloudflare/vitest-pool-workers/types", "node"]
   },
-  "include": ["setup", "harness", "journeys", "vitest.config.ts"]
+  "include": ["src", "test", "vitest.config.ts"]
 }

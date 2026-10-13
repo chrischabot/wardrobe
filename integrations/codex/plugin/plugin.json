@@ -1,0 +1,30 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "wardrobe",
+  "version": "1.0.0",
+  "description": "Connect Codex to your Garderobe wardrobe: today's board, outfit recommendations, inventory, laundry and receipted wardrobe commands through the Garderobe MCP server and its own OAuth.",
+  "author": {
+    "name": "Garderobe",
+    "url": "https://github.com/chrischabot/wardrobe"
+  },
+  "homepage": "https://github.com/chrischabot/wardrobe/tree/garderobe-rebuild/integrations/codex",
+  "repository": "https://github.com/chrischabot/wardrobe",
+  "keywords": ["wardrobe", "outfits", "laundry", "mcp"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Wardrobe",
+        "shortDescription": "Your Garderobe wardrobe in Codex",
+        "longDescription": "Read today's outfit board, ask for validated recommendations, browse the inventory and laundry, and make the changes you ask for through Garderobe's own commands: each applied change returns a receipt and can be undone, and a change the server keeps for your confirmation waits in the Garderobe app. Restrictions can only be lifted by you in the app.",
+        "developerName": "Garderobe",
+        "category": "Productivity",
+        "capabilities": ["Read", "Write"],
+        "websiteURL": "https://github.com/chrischabot/wardrobe",
+        "defaultPrompt": [
+          "Use Wardrobe to show me today's outfit board.",
+          "Use Wardrobe to suggest three outfits for tomorrow."
+        ]
+      }
+    }
+  }
+}

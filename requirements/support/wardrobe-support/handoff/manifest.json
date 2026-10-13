@@ -1,0 +1,202 @@
+[
+  {
+    "path": "handoff/START-HERE.md",
+    "sha256": "b088b8e8239de83eebe97cd5cbe67842854791d3125e0d41cb29a80333d1cdcc",
+    "bytes": 4580
+  },
+  {
+    "path": "handoff/garderobe-replacement-design.md",
+    "sha256": "7f47ffd7aa5a7bcd92738c4eaa48d2ec0af79486440f490790007a8678558238",
+    "bytes": 212448
+  },
+  {
+    "path": "evals/README.md",
+    "sha256": "7d0411638dc5394048a5907b46d97d29d4fea43caae6dd489c76ebce246e790c",
+    "bytes": 9700
+  },
+  {
+    "path": "evals/cases.json",
+    "sha256": "691c6acc2ce82c716bf5ca5c6c69f533cc9f9876d5f86c78005b3af6045ccd62",
+    "bytes": 77281
+  },
+  {
+    "path": "evals/cases.md",
+    "sha256": "7f16758fc465fb10dfc8c37a60bcfe892c97a4ffdfb714281223dc6ae8df77e2",
+    "bytes": 42058
+  },
+  {
+    "path": "evals/evaluate.py",
+    "sha256": "6b425174dea7016e8bc1a6d0048469013c8383effd1bff2dbd6eef955ce604be",
+    "bytes": 11930
+  },
+  {
+    "path": "evals/fixtures/state-assertions.json",
+    "sha256": "7e784ca9649c99bc633b43e988094d3aa9f1d2b012f47ddec1f035332edd6378",
+    "bytes": 2113
+  },
+  {
+    "path": "evals/fixtures/wardrobe.json",
+    "sha256": "9edfe4f647174045d2b6dc1ae7e270bd30b557287cdb10a6be9c0c24605cfeb1",
+    "bytes": 14436
+  },
+  {
+    "path": "evals/judge.md",
+    "sha256": "d6efba2b6b0582216c33e38e5b5b4c5653ed5ffba12ee5ac3bb851ecff8f1148",
+    "bytes": 5644
+  },
+  {
+    "path": "evals/packets/H001-candidate.json",
+    "sha256": "f765a25305b1c9b1b9e812f597041d28ce21960cfa0b7f72313a9af5cf6bef38",
+    "bytes": 35756
+  },
+  {
+    "path": "evals/results/initial-judge-review.json",
+    "sha256": "1d1b900f4e5fa1ad3817043e2930bdf0bfff0d8642cf3e5ca67f77fc4945bcf4",
+    "bytes": 17229
+  },
+  {
+    "path": "evals/results/initial-judge-review.md",
+    "sha256": "9f899dcf1a200ccf4efed97e8d132e4c0468c084ee0ade952a524df5c449c306",
+    "bytes": 2489
+  },
+  {
+    "path": "evals/results/spec-revision-4.diff",
+    "sha256": "99f271bbdae5f97214aaa4f4ae2cde808f628a0f717c50c23346921093fa7cb2",
+    "bytes": 48469
+  },
+  {
+    "path": "evals/results/verification.json",
+    "sha256": "847d4acd78ded7f3e903aab377f32b92f5e992e0e60520c1d11b83dbb75f2771",
+    "bytes": 1869
+  },
+  {
+    "path": "evals/scripts/build_corpus.py",
+    "sha256": "f3e96746312018eb2fe0b897ae42f929992417c2b9ce99eb0ae9bb52540650d1",
+    "bytes": 41423
+  },
+  {
+    "path": "evals/scripts/extract_calibration.py",
+    "sha256": "9297bdf02d0984a9c9b4f700e84d1df1b476c45fc1ac22894bcb1e9b16d316dd",
+    "bytes": 2258
+  },
+  {
+    "path": "evals/scripts/revise_spec.py",
+    "sha256": "b77e42cae83ad94e21e287895a6eab26a3ed399152f8dd96e7cba98264d8c389",
+    "bytes": 33857
+  },
+  {
+    "path": "evals/scripts/write_initial_review.py",
+    "sha256": "231c01c545a6d983670e115a7df1bc655a566e57a31adc8ef9c015a4b91036ba",
+    "bytes": 12559
+  },
+  {
+    "path": "evals/sources/calibration-candidates.json",
+    "sha256": "f4523100debd3827df4927d87d6bd363c7201b904b6e6a255d6386c5186821d3",
+    "bytes": 53458
+  },
+  {
+    "path": "evals/sources/chris-wardrobe-profile.md",
+    "sha256": "e15639d891f9a5264c7eff13d05a478bcb188745aea11323b2131db37f5cb198",
+    "bytes": 14960
+  },
+  {
+    "path": "evals/sources/evidence.json",
+    "sha256": "25b21beee9d82dc8226bb1c1ff737439939219dbe110b764de99c05afd1cb283",
+    "bytes": 50999
+  },
+  {
+    "path": "evals/sources/manifest.json",
+    "sha256": "da99e19456991cdd6dc578263af090c419d15f728a5ac10eb6f14844c35d3483",
+    "bytes": 1123
+  },
+  {
+    "path": "evals/sources/owner-amendments.md",
+    "sha256": "6fc593e6ac4a06e14b9db919105193c31ce1aa210de670cf073385b2ab26a3ef",
+    "bytes": 4072
+  },
+  {
+    "path": "handoff/support/arcwell-native-ios-agent-design.md",
+    "sha256": "2e7977641eeef8f74f5631653a6fa9aef94e1d4b3039af069b84844d2c9d6b41",
+    "bytes": 18691
+  },
+  {
+    "path": "handoff/support/garderobe-usage-research.md",
+    "sha256": "0bd5bd577f71a35f3fabeef6204fe652fe1f36b4027652588297418ab526d372",
+    "bytes": 57640
+  },
+  {
+    "path": "handoff/support/claude-fable-peer-review.md",
+    "sha256": "25627383a24943b988a0f293d2bc1a59f1eb8878c7ce7241f261fd776a626bb5",
+    "bytes": 11675
+  },
+  {
+    "path": "handoff/support/claude-fable-peer-review-followup.md",
+    "sha256": "5383b2982f8a77bf8715f5eae4b5de61af431feb7f602fc349ce379e0305194e",
+    "bytes": 7070
+  },
+  {
+    "path": "handoff/support/weather-for-outfits/SKILL.md",
+    "sha256": "7b2d6fd684fae40fc588e577ceb3477c88f726489586595a6bb557063098132d",
+    "bytes": 3801
+  },
+  {
+    "path": "handoff/skills/better-ui/SKILL.md",
+    "sha256": "2482b7b89d851a3128d36edf5367f3223e113a4ef421b7358c7e6de3f2c83faf",
+    "bytes": 7152
+  },
+  {
+    "path": "handoff/skills/better-ui/animations.md",
+    "sha256": "5d2d9e4cefab494b6dd0683e7d2d9bc90788df9c536449c0828c241de965e846",
+    "bytes": 7033
+  },
+  {
+    "path": "handoff/skills/better-ui/enter-exit.md",
+    "sha256": "8db1b33d6c80a097218a530cb9749dff4b0a2b992236047a2e88661af5e930ea",
+    "bytes": 3807
+  },
+  {
+    "path": "handoff/skills/better-ui/icon-transitions.md",
+    "sha256": "60098242d33133a35a675719c447129b8931aecfbf05d58a6e2aa01e7894694e",
+    "bytes": 4061
+  },
+  {
+    "path": "handoff/skills/better-ui/icons.md",
+    "sha256": "74cc78322874df4e2286bb0f5835d68114f74be1c94f993c94f6af692f44733b",
+    "bytes": 4267
+  },
+  {
+    "path": "handoff/skills/better-ui/performance.md",
+    "sha256": "e4bc3c90d6e0281d295e2e7e39d545fb9abd8a67667b0c10e589eda8115e5b1e",
+    "bytes": 2928
+  },
+  {
+    "path": "handoff/skills/better-ui/surfaces.md",
+    "sha256": "5508a7caf07ae8de616e7d83e282d4a08c026dd7a2d3cf54979609e4e0301048",
+    "bytes": 6268
+  },
+  {
+    "path": "handoff/skills/emil-design-eng/SKILL.md",
+    "sha256": "e71de849347050c2c573c1cf24d742d5a13459557ecffa6e562f08006f46b5b7",
+    "bytes": 27226
+  },
+  {
+    "path": "handoff/skills/mobile-ios-design/SKILL.md",
+    "sha256": "2b3b2405aee645a345d137ce93bd86bac65d33da4ad40c4b6f007bf4a51b6c96",
+    "bytes": 6921
+  },
+  {
+    "path": "handoff/skills/mobile-ios-design/references/hig-patterns.md",
+    "sha256": "1d893427552da55887ed14a344532f40f736d5cc6d153ce385b9cc8c73c55302",
+    "bytes": 13627
+  },
+  {
+    "path": "handoff/skills/mobile-ios-design/references/ios-navigation.md",
+    "sha256": "8d6ab13ad2f6bf13b6555b2137f8861d4af374322f85fa3b06f10a6c0b70ef82",
+    "bytes": 14734
+  },
+  {
+    "path": "handoff/skills/mobile-ios-design/references/swiftui-components.md",
+    "sha256": "3eb82e50121d529ee664685da10f42f59aa8dee4cc14acaca4c5d377d8cd8700",
+    "bytes": 14116
+  }
+]

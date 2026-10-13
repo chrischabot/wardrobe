@@ -1,0 +1,561 @@
+{
+  "kind": "constructed_evaluation_fixture",
+  "not_live_inventory": true,
+  "default_date": "2026-09-15",
+  "timezone": "Europe/London",
+  "default_peak_c": 18,
+  "default_departure_c": 12,
+  "items": [
+    {
+      "id": "shirt-moss",
+      "name": "moss lightweight oxford",
+      "role": "shirt",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Cotton lightweight oxford",
+      "collar": "Sewn button-down",
+      "care": "Single wear-day"
+    },
+    {
+      "id": "shirt-slate",
+      "name": "slate lightweight oxford",
+      "role": "shirt",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Cotton lightweight oxford",
+      "collar": "Sewn button-down",
+      "care": "Single wear-day"
+    },
+    {
+      "id": "shirt-pink",
+      "name": "pink lightweight oxford",
+      "role": "shirt",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Cotton lightweight oxford",
+      "collar": "Sewn button-down",
+      "care": "Single wear-day"
+    },
+    {
+      "id": "shirt-gold",
+      "name": "gold lightweight oxford",
+      "role": "shirt",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Cotton lightweight oxford",
+      "collar": "Sewn button-down",
+      "care": "Single wear-day"
+    },
+    {
+      "id": "shirt-laurel",
+      "name": "laurel lightweight oxford",
+      "role": "shirt",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Cotton lightweight oxford",
+      "collar": "Sewn button-down",
+      "care": "Single wear-day"
+    },
+    {
+      "id": "shirt-blue",
+      "name": "blue lightweight oxford",
+      "role": "shirt",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Cotton lightweight oxford",
+      "collar": "Sewn button-down",
+      "care": "Single wear-day"
+    },
+    {
+      "id": "shirt-offwhite",
+      "name": "offwhite lightweight oxford",
+      "role": "shirt",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Cotton lightweight oxford",
+      "collar": "Sewn button-down",
+      "care": "Single wear-day"
+    },
+    {
+      "id": "shirt-yellow-stripe",
+      "name": "yellow stripe lightweight oxford",
+      "role": "shirt",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Cotton lightweight oxford",
+      "collar": "Sewn button-down",
+      "care": "Single wear-day"
+    },
+    {
+      "id": "shirt-red-stripe",
+      "name": "red stripe lightweight oxford",
+      "role": "shirt",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Cotton lightweight oxford",
+      "collar": "Sewn button-down",
+      "care": "Single wear-day"
+    },
+    {
+      "id": "shirt-plaid",
+      "name": "Rose and slate Californian plaid shirt",
+      "role": "shirt",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Lightweight cotton"
+    },
+    {
+      "id": "shirt-heavy-burgundy",
+      "name": "Burgundy heavy oxford",
+      "role": "shirt",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Heavy cotton oxford"
+    },
+    {
+      "id": "shirt-camel",
+      "name": "Camel cotton twill shirt",
+      "role": "shirt",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Heavy cotton twill"
+    },
+    {
+      "id": "shirt-tee",
+      "name": "White cotton crew-neck tee",
+      "role": "shirt",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Dry cotton jersey"
+    },
+    {
+      "id": "shirt-red-rugby",
+      "name": "Red cotton rugby shirt",
+      "role": "shirt",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Midweight cotton jersey"
+    },
+    {
+      "id": "trouser-navy",
+      "name": "navy chinos",
+      "role": "trousers",
+      "owned": true,
+      "quantity": 2,
+      "availability": "observed_available",
+      "fabric": "All-season cotton",
+      "care": "Single wear-day"
+    },
+    {
+      "id": "trouser-walnut",
+      "name": "walnut chinos",
+      "role": "trousers",
+      "owned": true,
+      "quantity": 2,
+      "availability": "observed_available",
+      "fabric": "All-season cotton",
+      "care": "Single wear-day"
+    },
+    {
+      "id": "trouser-beige",
+      "name": "beige chinos",
+      "role": "trousers",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "All-season cotton",
+      "care": "Single wear-day"
+    },
+    {
+      "id": "trouser-olive",
+      "name": "olive chinos",
+      "role": "trousers",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "All-season cotton",
+      "care": "Single wear-day"
+    },
+    {
+      "id": "trouser-grey",
+      "name": "grey chinos",
+      "role": "trousers",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "All-season cotton",
+      "care": "Single wear-day"
+    },
+    {
+      "id": "trouser-jeans",
+      "name": "Mid-wash jeans",
+      "role": "trousers",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Cotton denim"
+    },
+    {
+      "id": "trouser-orange",
+      "name": "Burnt-orange cotton trousers",
+      "role": "trousers",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "All-season cotton"
+    },
+    {
+      "id": "trouser-charcoal",
+      "name": "Charcoal wool trousers",
+      "role": "trousers",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "All-season wool"
+    },
+    {
+      "id": "trouser-brown-cord",
+      "name": "Brown corduroy trousers",
+      "role": "trousers",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Medium-weight cotton cord"
+    },
+    {
+      "id": "trouser-heavy-beige",
+      "name": "Beige heavy corduroy trousers",
+      "role": "trousers",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Heavy winter-weight cotton cord"
+    },
+    {
+      "id": "jacket-jungle",
+      "name": "Olive jungle jacket",
+      "role": "outerwear",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Soft cotton herringbone",
+      "care": "Reusable"
+    },
+    {
+      "id": "jacket-hunter",
+      "name": "Muted olive hunter jacket",
+      "role": "outerwear",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Light waxed cotton; waterproofing unverified",
+      "care": "Reusable"
+    },
+    {
+      "id": "jacket-academic",
+      "name": "Salt-and-pepper academic blazer",
+      "role": "outerwear",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Soft unstructured tweed",
+      "care": "Reusable"
+    },
+    {
+      "id": "jacket-camel",
+      "name": "Camel Games blazer",
+      "role": "outerwear",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Cotton twill",
+      "care": "Reusable"
+    },
+    {
+      "id": "jacket-bark",
+      "name": "Bark blazer",
+      "role": "outerwear",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Textured cotton and cashmere",
+      "care": "Reusable"
+    },
+    {
+      "id": "jacket-blue-work",
+      "name": "Blue work coat",
+      "role": "outerwear",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Cotton and linen outerwear",
+      "care": "Reusable"
+    },
+    {
+      "id": "jacket-black",
+      "name": "Black chore coat",
+      "role": "outerwear",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Heavy cotton twill",
+      "care": "Reusable"
+    },
+    {
+      "id": "jacket-tweed",
+      "name": "Dark flecked tweed blazer",
+      "role": "outerwear",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Heavy wool tweed",
+      "care": "Reusable"
+    },
+    {
+      "id": "coat-grey",
+      "name": "Grey grandad coat",
+      "role": "outerwear",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Mid-light grey wool herringbone",
+      "care": "Reusable"
+    },
+    {
+      "id": "cardigan-grey",
+      "name": "Grey textured cardigan",
+      "role": "outerwear",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Shetland wool",
+      "care": "Reusable"
+    },
+    {
+      "id": "shoe-navy",
+      "name": "navy New Balance 990v4",
+      "role": "shoes",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "footwear_kind": "sneaker",
+      "size": "UK 8.5",
+      "care": "Never laundered"
+    },
+    {
+      "id": "shoe-grey",
+      "name": "grey New Balance 990v4",
+      "role": "shoes",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "footwear_kind": "sneaker",
+      "size": "UK 8.5",
+      "care": "Never laundered"
+    },
+    {
+      "id": "shoe-olive",
+      "name": "olive New Balance 990v4",
+      "role": "shoes",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "footwear_kind": "sneaker",
+      "size": "UK 8.5",
+      "care": "Never laundered"
+    },
+    {
+      "id": "shoe-990v6",
+      "name": "Navy New Balance 990v6",
+      "role": "shoes",
+      "owned": true,
+      "quantity": 1,
+      "availability": "restricted",
+      "footwear_kind": "sneaker"
+    },
+    {
+      "id": "shoe-welted",
+      "name": "Café Paraboot Reims",
+      "role": "shoes",
+      "owned": true,
+      "quantity": 1,
+      "availability": "restricted",
+      "footwear_kind": "welted"
+    },
+    {
+      "id": "sock-navy",
+      "name": "navy merino socks",
+      "role": "socks",
+      "owned": true,
+      "quantity": 2,
+      "availability": "observed_available",
+      "fabric": "Wicking merino",
+      "care": "Hand-wash"
+    },
+    {
+      "id": "sock-brown",
+      "name": "brown merino socks",
+      "role": "socks",
+      "owned": true,
+      "quantity": 2,
+      "availability": "observed_available",
+      "fabric": "Wicking merino",
+      "care": "Hand-wash"
+    },
+    {
+      "id": "sock-forest",
+      "name": "forest merino socks",
+      "role": "socks",
+      "owned": true,
+      "quantity": 2,
+      "availability": "observed_available",
+      "fabric": "Wicking merino",
+      "care": "Hand-wash"
+    },
+    {
+      "id": "sock-teal",
+      "name": "teal merino socks",
+      "role": "socks",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "fabric": "Wicking merino",
+      "care": "Hand-wash"
+    },
+    {
+      "id": "sock-mustard",
+      "name": "mustard merino socks",
+      "role": "socks",
+      "owned": true,
+      "quantity": 2,
+      "availability": "observed_available",
+      "fabric": "Wicking merino",
+      "care": "Hand-wash"
+    },
+    {
+      "id": "sock-grey",
+      "name": "grey merino socks",
+      "role": "socks",
+      "owned": true,
+      "quantity": 2,
+      "availability": "observed_available",
+      "fabric": "Wicking merino",
+      "care": "Hand-wash"
+    },
+    {
+      "id": "sock-burgundy",
+      "name": "burgundy merino socks",
+      "role": "socks",
+      "owned": true,
+      "quantity": 2,
+      "availability": "observed_available",
+      "fabric": "Wicking merino",
+      "care": "Hand-wash"
+    },
+    {
+      "id": "belt-brown",
+      "name": "brown woven belt",
+      "role": "belt",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "care": "Never laundered"
+    },
+    {
+      "id": "belt-olive",
+      "name": "olive woven belt",
+      "role": "belt",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "care": "Never laundered"
+    },
+    {
+      "id": "belt-black",
+      "name": "black woven belt",
+      "role": "belt",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "care": "Never laundered"
+    },
+    {
+      "id": "tie-rust",
+      "name": "rust square-ended silk knit tie",
+      "role": "tie",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "care": "Reusable"
+    },
+    {
+      "id": "tie-burgundy",
+      "name": "burgundy square-ended silk knit tie",
+      "role": "tie",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "care": "Reusable"
+    },
+    {
+      "id": "tie-navy",
+      "name": "navy square-ended silk knit tie",
+      "role": "tie",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "care": "Reusable"
+    },
+    {
+      "id": "tie-green",
+      "name": "green square-ended silk knit tie",
+      "role": "tie",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "care": "Reusable"
+    },
+    {
+      "id": "scarf-green",
+      "name": "Muted olive wool-silk scarf",
+      "role": "scarf",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "care": "Reusable"
+    },
+    {
+      "id": "scarf-burgundy",
+      "name": "burgundy wool-silk scarf",
+      "role": "scarf",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "care": "Reusable"
+    },
+    {
+      "id": "scarf-blue",
+      "name": "blue wool-silk scarf",
+      "role": "scarf",
+      "owned": true,
+      "quantity": 1,
+      "availability": "observed_available",
+      "care": "Reusable"
+    }
+  ],
+  "policy": "Read the full profile and current amendments; case facts override fixture defaults."
+}

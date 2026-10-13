@@ -1,175 +1,300 @@
 # Garderobe
 
-A private wardrobe companion: Cloudflare backend, SwiftUI app for iOS 27 and an MCP interface to the same backend assistant. This directory is the fresh codebase built from `garderobe-replacement-design.md` (the spec). Nothing in it comes from a previous system; only the owner's data is imported.
+A private wardrobe companion, built from scratch from the revision 4 specification
+(`requirements/garderobe-replacement-design.md`), the owner's profile and his real inventory.
+TypeScript Cloudflare backend (D1 ledger, one command service), native SwiftUI client, HTTP API and MCP server.
+Only data and requirements were migrated; no code from any earlier application is used.
 
-This README covers the **foundation**: monorepo, shared contracts, D1 schema, domain command service, availability estimator, the owner's imported profile and wardrobe, and the test harness. Later workstreams (daily service, assistant, API/MCP, iOS, visual wardrobe, end-to-end simulation) build on the interfaces described here.
+## Commands
 
-## Quick start
+| Purpose | Command (from `wardrobe/`) |
+| --- | --- |
+| Install (normal checkout) | `npm install` |
+| Install (Fabric sandbox, where `node_modules` is redirected) | `bash tools/sandbox-install.sh` |
+| Typecheck and test everything | `npm test` |
+| The Worker suite at another time of day (the owner's day and the scheduled phases depend on the hour) | `GARDEROBE_TEST_CLOCK=22:40 npm test -w @garderobe/worker` |
+| Foundation tests only | `npm run test:foundation` |
+| One workspace | `npm test -w @garderobe/domain` |
+| Verify supplied documents, checklist, import report and generated contracts (checks only, writes nothing) | `npm run verify` |
+| Regenerate the inventory import report | `npm run import:report` |
+| Regenerate JSON Schema and Swift contracts | `npm run generate:contracts` |
 
-```sh
-cd garderobe
-npm install            # npm workspaces; .npmrc sets legacy-peer-deps (see "Toolchain")
-npm test               # typecheck all packages + contract tests + backend tests on real local D1
-npm run seed:demo      # apply migrations to local D1 and import the owner's real data (+ synthetic owner B)
-npm run seed:demo -- -- --with-test-events   # also apply the labelled scenario test events
-```
+Node 22+, TypeScript 7.0.2, zod 4.6.5, vitest 4.1.11 with `@cloudflare/vitest-pool-workers` 0.22.0.
+`npm run test:foundation` currently runs 198 foundation tests (16 contracts, 182 domain). Domain tests run inside workerd
+against a real local D1 database; nothing mocks the ledger. The bundled
+workerd accepts compatibility dates up to 2026-08-22.
 
-Everything runs locally. No Cloudflare, Google or third-party account is contacted: tests run in workerd through `@cloudflare/vitest-pool-workers` with remote bindings disabled, and the seed writes to wrangler's local state in `backend/.wrangler/`.
+### Verifying a change
 
-Other scripts: `npm run schemas` (regenerate JSON Schema), `npm run reconcile --workspace @garderobe/backend` (regenerate the import reconciliation report), `npm run dev --workspace @garderobe/backend` (`wrangler dev`).
+A change is verified by running, from this directory after the install, `npm run verify` and `npm test`,
+both of which must exit 0, and the Worker suite once more with the test clock in the owner's late evening
+(`GARDEROBE_TEST_CLOCK=22:40 npm test -w @garderobe/worker`; see `apps/worker/README.md`). A pull request
+states those commands with their exit status and test counts. The backend has no GitHub Actions workflow
+and no GitHub check stands in for these runs. The one workflow in `.github/workflows/`, `ios.yml`, is
+started by hand and exists because Xcode cannot run anywhere else (`ios/README.md`).
 
 ## Layout and ownership
 
-| Path | Contents | Owner |
-| --- | --- | --- |
-| `package.json`, `tsconfig.base.json`, `.npmrc` | Workspace root and shared compiler settings | Foundation |
-| `packages/contracts/` | Versioned zod schemas → TypeScript types and JSON Schema (`json-schema/*.json`) for the iOS app and MCP tool definitions | Foundation (additive changes by others; breaking changes mint a new `CONTRACTS_VERSION`) |
-| `backend/wrangler.jsonc` | Worker config: D1, R2, KV (incl. `OAUTH_KV`), Queues, Workflows, Durable Object (Think actor), AI binding, AI Gateway placeholders; no secrets | Foundation; small additive edits by others |
-| `backend/src/index.ts` | Worker entry: `/health`, the `GarderobeAssistant` Durable Object (explicit 501 until the assistant workstream installs Think) and `DailyServiceWorkflow` (applies weekly laundry resets) | Foundation; routes added by API/MCP, DO body by assistant, workflow steps by daily service |
-| `backend/migrations/0001_initial.sql` | Fresh D1 schema | Foundation. **Never edit**; add `0002_*.sql` and later |
-| `backend/src/domain/` | Command service, accounting, estimator, style, boards primitive, queries | Foundation |
-| `backend/src/import/` | Section 16 import boundary: CSV parser, owner inventory mapper, dataset importer, reconciliation | Foundation |
-| `backend/test/` | Real-D1 tests (workerd) | Foundation; others add files |
-| `data/` | Owner data kept byte-exact (profile, inventory CSV), rule catalogue, reconciliation report — see `data/README.md` | Foundation |
-| `demo/` | Synthetic second owner for isolation tests, labelled test events, local seed script | Foundation |
-| `backend/src/{recommend,daily,weather,calendar,trips}/`, `backend/migrations/0002_daily_service.sql` | Daily service: mandatory context, composition, validation, repair, publication, weather skill, Calendar projection, morning workflow, trips — interfaces in `backend/src/recommend/README.md` | Daily service |
-| `backend/src/{media,visual,studio}/`, `backend/migrations/0020_visual_wardrobe.sql`, `packages/contracts/src/visual.ts`, `demo/assets/` | Visual wardrobe: private R2 media with signed owner-scoped URLs, upload finalization, discovery/normalization jobs with fidelity checks, Photos needed, deterministic outfit composites (`outfit-layout/1`), Studio backend and commands (`save_combination`, `plan_outfit`, `remove_combination`), DEMO placeholder images — interfaces in `backend/src/media/README.md` | Visual wardrobe |
+Each workstream edits only its own directories. Nobody edits another workstream's files.
 
-## Toolchain (installed versions)
-
-| Package | Version |
+| Workstream | Owns |
 | --- | --- |
-| wrangler | 4.143.0 |
-| @cloudflare/workers-types | 5.20260929.1 |
-| @cloudflare/vitest-pool-workers | 0.22.0 (bundles wrangler 4.124.0, miniflare 5.20260815.0-alpha) |
-| vitest | 4.1.11 |
-| zod | 4.6.5 |
-| typescript | 7.0.2 |
-| tsx | 4.23.15 |
-| Node | 22.23 (engines: >= 22) |
+| foundation | root `package.json`, `package-lock.json`, `tsconfig.base.json`, `.npmrc`, `.gitignore`, `README.md`; `packages/contracts/` (except `src/ext/<lane>.ts`); `packages/domain/`; `migrations/0001-0099`; `requirements/`; `data/import/`; `tools/` |
+| api-mcp-identity | `apps/worker/` (Worker entry, wrangler config, routes, MCP, auth, recovery, export); `migrations/0300-0399`; `packages/contracts/src/ext/api.ts` |
+| daily-service | `packages/daily/`; `migrations/0100-0199`; `packages/contracts/src/ext/daily.ts` |
+| assistant | `packages/assistant/`; `migrations/0200-0299`; `packages/contracts/src/ext/assistant.ts` |
+| visual-wardrobe | `packages/media/`; `migrations/0400-0499`; `packages/contracts/src/ext/media.ts` |
+| ios | `ios/` (not an npm workspace) |
+| journey-tests | `tests/journeys/` |
+| adversarial-tests | `tests/adversarial/` |
+| simulation | `tests/simulation/` |
+| deployment | `deploy/`; `migrations/0600-0699` |
 
-Not installed by the foundation (not needed for this layer; they exist on npm): `@cloudflare/think` 0.19.0, `agents` 0.24.0, `@modelcontextprotocol/server` 2.2.0 (MCP SDK v2), `@cloudflare/workers-oauth-provider` 1.2.1. The assistant and API/MCP workstreams install and pin them.
+`requirements/CHECKLIST.md` is the requirement-to-code/test checklist: a workstream edits only the
+`Code`, `Tests` and `Status` cells of rows where it is the primary or secondary workstream.
 
-`.npmrc` sets `legacy-peer-deps=true` because npm 10.9 crashes (`Cannot read properties of null (reading 'edgesOut')`) while resolving vitest's optional browser peers in this workspace. `compatibility_date` is `2026-08-01` so that the vitest pool's bundled workerd supports it.
+### Adding things without editing foundation files
 
-## Principals and isolation
+- **A workspace.** Create `packages/<lane>/package.json` (or `apps/<name>/`, `tests/<name>/`); the root
+  globs `packages/*`, `apps/*`, `tests/*` pick it up. Give it `typecheck` and `test` scripts so the root
+  `npm test` runs them. Depend on `"@garderobe/contracts": "1.0.0"` and `"@garderobe/domain": "1.0.0"`.
+- **A dependency.** Declare it in your own workspace `package.json` and run the install command. The
+  lockfile is regenerated by the install; never hand-edit it. Use the root's pinned versions of
+  `typescript`, `vitest`, `wrangler`, `zod` and `@cloudflare/*` (do not redeclare other versions).
+- **A migration.** Add `migrations/<number>_<lane>_<name>.sql` in your number range. All migrations share
+  this one directory (wrangler `migrations_dir` points to it) and a landed file is never edited. Every
+  personal table carries `user_id`, owner-qualified primary keys and compound foreign keys such as
+  `FOREIGN KEY (user_id, garment_id) REFERENCES garments(user_id, garment_id)`.
+- **A contract.** Put zod schemas in `packages/contracts/src/ext/<lane>.ts` (that one file is yours) and
+  import them as `@garderobe/contracts/ext/<lane>`. The generator includes every exported schema in the
+  JSON Schema and Swift output, so the iOS client gets one generated file. No index edit is needed.
+- **A command.** In your package export `register<Lane>(registry: CommandRegistry)` that calls
+  `registry.register(define({ type, schema, class, requiredScope, plan, planUndo }))`. The plan returns
+  statements, preconditions, effects and outbox entries; the service commits them in one D1 batch with
+  the receipt. Use `registry.registerVersionResolver(kind, fn)` for your `expectedVersions` keys,
+  `registry.registerEntityNamer(kind, fn)` to say how one of your records is named in the owner's words
+  (a trip by its name: a foundation receipt that mentions it then shows that name, never the identifier),
+  `registry.registerEntityCheck(kind, fn)` to say whether one of your records may be the target of a
+  foundation command (`fn(db, userId, id)` resolves to `{ ok: true }` or `{ ok: false, reason }` in the
+  owner's words; `stock.pack` asks the check registered for `trip` and refuses with `precondition_failed`
+  when it says no or throws; with none registered any trip identifier is accepted, as before) and
+  `registry.addCommitHook(name, hook)` to add writes to other commands' batches (for example repairing
+  open boards inside the commit that recorded a wear). `apps/worker` composes the lanes:
+  `const registry = createFoundationRegistry(); registerDaily(registry); ...`.
 
-Every domain function takes a `Principal` (`{ userId, scopes, authenticatedBy }`) built by trusted authentication code (Access assertion, MCP OAuth grant, scheduler). All reads and writes are scoped by `principal.userId`; private tables use owner-qualified keys and compound foreign keys, so cross-user references fail in SQLite itself. Command bodies never carry ownership: any `userId`, `ownerId`, `owner`, `user`, `accountId` or `tenantId` field anywhere in a request is rejected with `forbidden_owner_field`. Another user's IDs return `not_found` (existence is not leaked). Mutations require the `wardrobe:write` scope; `readOnlyPrincipal()` gets `insufficient_scope`.
+## Public interfaces
 
-## Domain command service
+### `@garderobe/contracts` (contract version `1.1.0`, API `v1`)
 
-```ts
-import { CommandService, ownerPrincipal } from '@garderobe/backend/domain';
-const receipt = await new CommandService(env.DB, principal).execute({
-  idempotencyKey: 'app:7f3e…',         // 8-200 chars, stable per user intent
-  source: 'app',                        // app | web | conversation | mcp | import | offline_replay | calendar | system
-  expectedVersions: [{ entityType: 'restriction', entityId: 'rst_…', version: 1 }], // optional
-  command: { type: 'record_wear', timezone: 'Europe/London', items: [{ garmentId: 'g_…' }] },
-});
-```
+Zod schemas and inferred types: `CommandEnvelope`, `CommandReceipt`, `CommandErrorBody`,
+`FOUNDATION_COMMANDS` (one payload schema per command type), `Garment`, `GarmentDetail`, `InventoryPage`,
+`InventoryQuery`, `AvailabilitySnapshot`, `GarmentAvailability`, `JointAvailability`, `ExposureOption`,
+`StyleContext`, `StyleDocument`, `StyleRule`, `OwnerSettings`, `DEFAULT_OWNER_SETTINGS`, `Restriction`,
+`DailyRecord`, `AliasResolution`. Generated forms: `packages/contracts/generated/`
+(`garderobe-contracts.schema.json` and `swift/GarderobeContracts.swift`). After editing any contract
+source, including `src/ext/<lane>.ts`, run `npm run generate:contracts`; a test fails while the generated
+files are stale. The Swift file is typechecked with Swift 6.1.2 on Linux; it has not been built with Xcode.
 
-No model is involved. The service parses the envelope (strict zod), rejects forged owner fields, checks scope, hashes the request (`command` + `expectedVersions`), and returns the stored receipt for a repeated key and body (`replayed: true`). A reused key with a different body is rejected with `idempotency_key_reused`. The handler then plans the complete change and commits it in **one D1 batch**:
+Command envelope (the body of `POST /v1/commands` and the input of the MCP command tool; the owner comes
+from the authenticated connection, never from the body):
 
-1. a precondition insert into `command_preconditions` (`CHECK (ok = 1)`) that evaluates every expected version, lot version, counted-wear revision and state predicate; a mismatch raises a real constraint error and D1 rolls back everything;
-2. domain writes (observations, movements, balances, garments, batches, rules…);
-3. the receipt, its affected-entity index and outbox effects (`command_effects`);
-4. cleanup of the precondition row.
-
-On a precondition race, **observation** commands (the owner's physical statements) re-plan against the new state and commit with `rebased: true`; **edit** commands with stale `expectedVersions` return `outcome: 'conflict'` and write nothing. Receipts are never deleted (a trigger aborts `DELETE`). Undo is a compensating command with its own receipt; it rechecks intervening changes and marks the original `undoneByCommandId`.
-
-### Command catalogue
-
-| Command | Class | Effect | Undo |
-| --- | --- | --- | --- |
-| `record_wear` | observation | Observation + counted wear per (user, garment, local wearing date); duplicate reports merge (`outcome: 'merged'`); stock consumed once per counted wear | retract observation |
-| `amend_wear` | observation | New observation revision; old one superseded; counts and stock recomputed in event order | restore original |
-| `mark_in_wash` ("In the wash") | observation | Unit(s) from worn/clean to the hamper; rejected for never-laundered roles | void movement |
-| `mark_washed` ("I washed it") | observation | Hamper/worn → clean; clears dirty exceptions | void movement |
-| `socks_washed` | observation | Hand-wash hamper → clean (never a service batch) | void movements |
-| `laundry_collected` | observation | Snapshot of the service hamper at the pickup instant into a new batch | withdraw batch |
-| `laundry_returned` / `laundry_partial_return` | observation | Completes only that batch, less named exceptions (kept away as `still_away`) | restore batch |
-| `send_to_tailor` / `back_from_tailor` | observation | Location and units away/home; tailoring project opened/closed | restore garment |
-| `mark_arrived` ("Arrived") | observation | Incoming → owned; units received; order lines updated | restore garment |
-| `put_into_storage` / `take_out_of_storage` | observation | Units to/from storage; location follows when all units move | restore garment |
-| `reconcile_quantity` | observation | Aggregate corrections: `clean` and/or `totalOwned`; never invents units | void movements |
-| `dispose_item` | observation | Units retired; acquisition disposed with reason; history kept | restore garment |
-| `add_item` | intake | Explicit creation only (`explicit: true`, owner channel) | remove as mistaken entry (only without wears) |
-| `set_restriction` / `lift_restriction` | edit | Restriction lifecycle; lifting needs an owner statement from an owner channel (never scheduler, import, calendar or elapsed time) | lift / reinstate |
-| `select_option` | edit | Intention for a board option (never a wear); one footwear required when alternatives exist; queues a Calendar projection | restore previous choice |
-| `edit_style_profile` | edit | New verbatim document version (`baseVersion` required); rules whose quote vanished flagged `passage_status: 'missing'` | new version with the previous text |
-| `set_temporary_brief` | edit | Dated brief or exception; the profile is untouched; rejected for rules with `exceptionPolicy` `none` or `restriction_lift_only` | retire brief |
-| `undo` | compensation | Executes the stored compensation plan | — |
-
-### Receipt shape (`CommandReceipt`, contracts `2026-10-01`)
-
-```jsonc
+```json
 {
-  "schemaVersion": "2026-10-01",
-  "commandId": "cmd_…", "idempotencyKey": "…", "commandType": "record_wear",
-  "outcome": "committed" | "merged" | "rejected" | "conflict",
-  "replayed": false, "rebased": false,
-  "affected": [{ "entityType": "daily_wear", "entityId": "g_…|2026-10-06", "version": 1, "change": "created" }],
-  "summary": "Recorded 2026-10-06: counted Lightweight oxford — blue.",   // trusted code, never a model
-  "facts": { "observationId": "obs_…", "counted": […], "stockNotes": […], "warnings": […] },
-  "effects": { "state": "none" | "projection_pending" | "projected" | "failed", "items": [{ "effectId": "eff_…", "kind": "board_revalidation", "external": false, "status": "pending", "operationKey": "revalidate:cmd_…" }] },
-  "undo": { "available": true },
-  "compensatesCommandId": null, "undoneByCommandId": null,
-  "occurredAt": "…", "recordedAt": "…",
-  "error": null | { "code": "not_found", "message": "…", "details": {} }
+  "type": "wear.record",
+  "payload": { "wearingDate": "2026-09-15", "garmentIds": ["gmt_..."] },
+  "idempotencyKey": "client-generated-stable-id",
+  "expectedVersions": { "garment:gmt_...": 3, "wardrobe": 41 },
+  "occurredAt": "2026-09-15T07:10:00Z",
+  "authorization": "owner_tap",
+  "source": { "channel": "ios", "clientSubmissionId": "..." }
 }
 ```
 
-`rejected` and `conflict` receipts are returned but not stored (nothing changed). Every committed command that can affect availability queues an internal `board_revalidation` effect for the daily service; `select_option` queues an external `calendar_projection`.
+Receipt: `commandId`, `type`, `outcome` (`committed`, `merged`, `noop`), `summary`, `affected`
+(`kind`, `id`, `version`), `externalEffectState` (`none`, `projection_pending`, `projected`), `effects`,
+`undo` (`available`, `reason`), `repairs`, `result`, `occurredAt`, `recordedAt`, `wardrobeRevision`,
+`replayed`, `actor`, `channel`, `contractVersion`. Errors are `CommandError` with a `code`:
+`invalid_command`, `unknown_command`, `forbidden`, `not_found`, `ambiguous_target`, `conflict`,
+`idempotency_key_reuse`, `precondition_failed`, `not_undoable`, `internal`.
 
-## Wardrobe accounting (spec section 5)
+The same key with the same body returns the stored receipt (`replayed: true`); a different body is
+`idempotency_key_reuse`. `source.channel` must match the principal's channel.
 
-- **Separate facts:** acquisition (`incoming | owned | disposed`), planning policy (`normal | occasional | excluded`), condition, location and restrictions are independent fields. Physical units sit in buckets `clean, worn, hamper, laundry, storage, away, retired`; SQLite `CHECK` constraints keep every bucket non-negative.
-- **Journal and replay:** `stock_movements` stores the intent of each quantity change; balances are the event-ordered replay (`domain/stock/replay.ts`). A late report is inserted at its occurrence time, so yesterday's wear reported today does not undo today's known wash. Owner-observed wears draw from fallback buckets with an `accounting_repair` note rather than going negative; replay never creates units.
-- **Counted wear:** `daily_wears` PRIMARY KEY `(user_id, garment_id, wearing_date)`; the local wearing date is the key (an overnight outfit keeps its starting date; DST needs no special case). One `wear` movement per garment and date (partial unique index). A shirt change counts only the new shirt. Anonymous units (socks) move per counted wear, plus explicit `freshUnit` movements that never add a counted wear.
-- **Care:** `per_wear` garments go to the hamper, `single_wear_day` trousers go to `worn` (in use, not in a hamper), `multi_wear` and `never` garments never move; `never` implies `care_channel = 'none'` (schema `CHECK`). Pickup is a snapshot of the service hamper; returns complete only that batch; hand wash is separate.
+Expected versions are checked in the same batch as the writes, and a stale one is `conflict` with nothing
+written, for every command except the reports of wearing, washing and laundry, which are rebased onto the
+current state and never refused (specification section 5): `wear.record`, `wear.amend`, `care.mark_dirty`,
+`care.washed`, `laundry.collect`, `laundry.return`, `laundry.report_exception`. A command that removes,
+moves, receives or rewrites a record is refused on a stale version even though it is an observation:
+`garment.receive`, `garment.correct`, `garment.bulk_correct`, `garment.move`, `garment.retire`,
+`stock.reconcile`, `stock.pack`, `stock.unpack`, `measurement.record`, `size_experience.record`. A client
+that sends no expected version for these is not checked, so the owner's own tap still always lands; a
+proposal that carries the versions it was built against is refused once the record has moved on. A lane's
+own command chooses with `staleVersions: "rebase" | "conflict"` on its definition (default: `rebase` for
+class `observation`, `conflict` otherwise).
 
-## Availability estimator (`availability-estimator/1`)
+Foundation command types: `garment.create`, `garment.receive`, `garment.correct`, `garment.bulk_correct`,
+`garment.add_alias`,
+`garment.remove_alias`, `garment.set_planning_policy`, `garment.move`, `garment.retire`, `garment.merge`,
+`garment.remove_fabricated`, `stock.reconcile`, `stock.pack`, `stock.unpack`, `wear.record`, `wear.amend`,
+`care.mark_dirty`, `care.washed`, `laundry.collect`, `laundry.return`, `laundry.report_exception`,
+`laundry.apply_weekly_reset`, `restriction.add`, `restriction.resolve`, `style.import_document`,
+`style.save_document`, `style.resolve_fact_conflict`, `style.add_amendment`, `style.set_amendment_status`, `style.upsert_rule`,
+`style.add_direction`, `style.retire_direction`, `style.set_brief`, `style.retire_brief`,
+`measurement.record`, `size_experience.record`, `settings.update`, `exposure.publish`, `exposure.select`,
+`exposure.supersede`, `import.record_run`, `command.undo`.
 
-`estimateGarment(input)` (pure) and `estimateAvailability(db, principal, { targetDate, asOf?, garmentIds?, includeOccasional? })`. Initial parameters are **hypotheses, not calibrated accuracy**; the selection prior may only be learned from observed choices:
+Contract 1.1.0 additions (all additive; older payloads still parse):
 
-| Parameter | Value | Meaning |
-| --- | --- | --- |
-| `boardUseProbability` | 0.70 | P(owner uses an unselected board at all) |
-| `selectedBoardUseProbability` | 0.90 | P(board used once an option is selected) |
-| `selectedOptionProbability` | 0.85 | share of the selection probability for the chosen option; the rest spreads evenly |
-| `likelyAvailableThreshold` | 0.50 | cut-off for `likelyAvailable` |
+- **Save in My style.** `style.save_document` accepts `factResolutions` and its receipt carries
+  `result.factDiff` (`StyleFactDiff`). The diff is derived only from the passages that rules,
+  measurements and size experiences quote verbatim: a fact whose quotes all still occur is re-anchored to
+  the new version; a fact whose passage was removed or reworded keeps its value and becomes an open
+  `StyleFactConflict` unless the same save carries the owner's decision for it (`keep`, `replace`,
+  `retire`). Nothing is read out of the prose. `previewStyleSave(db, principal, { content })` returns the
+  same diff without writing; open conflicts are in `StyleContext.factConflicts` and
+  `listStyleFactConflicts`; `style.resolve_fact_conflict` decides one later. A rule that carries an active
+  restriction cannot be retired or changed by an edit of the text.
+- **Bulk edit.** `garment.bulk_correct` applies one correction to every garment a `GarmentSelector`
+  matches (category, search words, maker, colour, fabric, care channel, planning policy, explicit IDs), as
+  one command with one receipt and one undo. Read the set first with
+  `previewGarmentSelection(db, principal, selector)` and send its `count` as `expectedCount`.
+- **Garment measurements.** `GarmentDetail.measurements` lists the current measurements of the item; an
+  empty list means none are recorded.
 
-Per board day: each of N offerable options has probability 1/N (or the selection split); footwear alternatives share their option's probability (1/k, or 1 and 0 once chosen); a garment in several options sums them; the total is multiplied by the board-use probability. Days with any recorded wear contribute no uncertainty (the observation replaces it). Estimated clean units are physical clean units plus dirty units cleared by the latest applied weekly reset of the garment's pool. Service pool: dirtied before Friday's 09:00 collection cutoff, or in a batch collected before Sunday's 00:00 baseline. Hand wash: before its own baseline. Owner exceptions after the cutoff (still away, missed return, dirty, delay) override the reset. P(available) = P(Poisson-binomial inferred wears < estimated clean units). Resets are recorded once per owner, pool and cycle by `ensureLaundryResets` (idempotent, catches up after missed runs). They never record a pickup, return or movement. Inferred wears never enter wear counts.
+Ledger rules the other lanes rely on (regression-tested in `packages/domain/test/review-regressions.test.ts`,
+`review-pr2.test.ts`, `review-findings.test.ts` and `ledger-scrub.test.ts`):
 
-## Owner profile and rules
+- **Lifting a restriction.** The owner lifts a restriction in the app (`restriction.resolve` as actor
+  `owner`, including when he confirms a proposal). From any other actor, or on the `mcp` channel, the
+  command needs `evidence.ref` AND that reference must be confirmed by the verifier the conversation's
+  owner registered with `registry.setOwnerStatementVerifier(fn)` (the assistant lane checks that
+  `message:<id>` is the owner's own message of the turn issuing the command); otherwise it is `forbidden`
+  (`evidence_reference_required` / `evidence_reference_not_verified`). With no verifier registered, only
+  the owner lifts. `command.undo` of a `restriction.add` is `forbidden` (`restriction_not_lifted_by_undo`)
+  for an imported restriction whoever asks, and for anyone but the owner in the app otherwise; an undo is
+  never itself undoable. The rule that carries an active restriction stays exactly as it is: its status,
+  its kind (hard or soft) and every parameter. `style.upsert_rule`, a `replace` or `retire` decision in
+  `style.save_document`, and `command.undo` of the command that recorded the rule are all `forbidden`
+  (`rule_carries_active_restriction`) while the restriction is active.
+- **A covered garment stays covered.** A restriction's scope selects on a garment's own facts (category,
+  footwear kind, model). `garment.correct`, `garment.bulk_correct` and the undo of either are `forbidden`
+  (`correction_would_release_restriction`, with the `restrictionId`) when the change would take a garment
+  out of the scope of an active restriction; nothing is written, also for the other garments of a bulk
+  edit. Corrections that leave it covered are ordinary. This is refused for every caller for now; the
+  owner's confirmed path in the app (an acknowledgement naming the restriction) is not built yet.
+- **Quoted passages.** A `passage` on `measurement.record` or `size_experience.record` must name the
+  active style document by its hash and quote it verbatim, as a profile-derived rule must; otherwise
+  `precondition_failed` (`passage_not_in_document`). A fact recorded without a passage is not checked.
+- **Saving My style.** `style.save_document` must carry the version it was edited from
+  (`expectedVersions` key `style_document:<documentId>` or `style`); without one it is `invalid_command`
+  (`expected_version_required`), with a stale one `conflict`. A proposal for a profile save must carry it too.
+- **Laundry exceptions follow the units.** An exception is resolved (or reduced) only when a command's
+  replay actually moved units out from under it, and it records why (`laundry_exceptions.resolution`:
+  `returned`, `with_owner`, `inferred_baseline`, `reported_lost`, `withdrawn`) and by which command
+  (migration 0004). Undo restores exactly what its command settled and is refused
+  (`precondition_failed`) if the exception, batch item or batch changed since.
+  - `laundry.return` with no open batch releases what a reported missed cycle holds (from that cycle's
+    baseline on, even if the owner dates the return earlier) and settles the cycle's exception;
+    `stillAway` items become item exceptions.
+  - `care.washed` without a quantity is about the units awaiting a wash at home. Only when none is does it
+    bring back units reported still away; never units reported lost (a stated quantity is what brings a
+    lost unit back), and
+    never a missed cycle's units (those return with `laundry.return`, or one at a time when the garment
+    has nothing at home at all). When an uncounted "washed" moves nothing of a garment that has a unit
+    reported lost (its only unit, or one of several with nothing awaiting a wash), it
+    records nothing for it: no wash event is written (so withdrawing the lost report later cannot wash the
+    unit retroactively), the receipt says it is still recorded as lost (`result.leftAsLost`), and when
+    nothing else was washed the command is a `noop` with no undo. This is deliberate and follows the
+    owner's rule that a wash record matches what he actually reported: "washed" with no count is not a
+    statement that a lost piece has turned up.
+  - `laundry.return` of a recorded batch counts what the replay actually moved back, not the batch's
+    rows: a unit reported lost, or one a wear amendment showed was never in the bag, is not counted and
+    its batch item keeps `returned_quantity` as it was (the receipt's `repairs` say which and why). A unit
+    named `stillAway` is kept away before any unit of that item is returned.
+  - Undo of `laundry.return` of a recorded batch puts the bag back at the service with the batch, its
+    items and the exceptions the return opened or closed exactly as they were. It is refused
+    (`not_undoable`) once anything recorded since speaks for one of the returned units: a wear, a wash, a
+    count, or a weekly baseline (which would count the bag as back anyway); the item itself is corrected
+    instead. A return with no recorded pickup, or after a missed cycle, was already undoable.
+  - A unit held as still away that is then reported `lost` is the one that is lost.
+  - Undo of `laundry.collect` is refused once the batch has returned; otherwise the batch is marked
+    withdrawn (`laundry_batches.withdrawn_at`, migration 0003), never deleted. A withdrawn batch keeps
+    status `collected`: every reader, and every consumer of an export, must treat `withdrawn_at IS NOT
+    NULL` as "this pickup was withdrawn; not an open batch".
+- **Wear.** `additionalUnits` is the total of further units used for that garment and day: a repeated
+  report consumes nothing further. A wear resolves only the option sets that offered one of the reported
+  garments, and undo reopens them. A packed garment worn again on its trip stays in the suitcase, and
+  packing it again for the same trip leaves it as it is (worn stays worn). A wear is never added for a
+  future date, by `wear.record` or `wear.amend`, and a stated `occurredAt` more than a day before the
+  wearing date begins is `invalid_command` (`occurred_before_wearing_date`).
+- **A return and its time.** `laundry.return` of a recorded batch dated before that batch's pickup is
+  `invalid_command` (`return_before_pickup`). With no bag out: if a bag collected in the five days before
+  the report is already recorded as back, the report is a `noop` (the same return said twice does not
+  launder what has gone into the hamper since); otherwise it is the owner's word for a cycle whose pickup
+  was never recorded, and the receipt counts only what the replay actually made clean (`noop` when that
+  is nothing).
+- **Opening stock.** The stock a garment is created with as already owned (`garment.create`, including
+  the import) is journaled as `receive` with `opening: true` and precedes every other event of that
+  garment in the replay, however early the event is dated: "I wore it yesterday", said the day after the
+  import, moves the unit. Something created as on order has no stock before it arrives. Journal rows
+  written before this flag existed keep their recorded time.
+- **Inferred cleanliness.** `garments.clean_inferred` (migration 0005, materialized by the stock planner
+  from the replay's `cleanInferred`) is how many clean units are clean only by the weekly baseline. The
+  availability `basis` names those as an estimate and says "observed" only for what a wash, return, count
+  or the owner's own record established; imported stock nobody has reported on is called the imported
+  balance.
+- **Receipts read back.** `service.getReceipt`, `service.listReceipts` and an idempotent repeat return
+  the stored receipt with two things read from their own records: the current state of its effects (so
+  `externalEffectState` becomes `projected` once every effect is projected or superseded) and `undo`
+  (`available: false` once the command has been undone). `commands.receipt_json` itself is never
+  rewritten; a lane that reads that column directly sees the commit-time text.
+- **Time.** Instants and local dates must be real (no 13th month, no 31 February), timezones must be
+  IANA zone names the runtime knows (a bare UTC offset such as `+05:00` is refused), a local time is
+  00:00 to 23:59, and a weekly baseline cannot be applied for a future `asOf`.
+- **Concurrency.** A retry with the same idempotency key always gets the stored receipt, also when it
+  races the first send. An effect with an operation key already on record is not enqueued again and is
+  not listed in the second receipt.
+- **Receipt summaries.** A summary is the ledger's own sentence. Free text that came in with the command
+  (a restriction's reason, a direction, a brief, an amendment, a new name, an alias, a rule key) appears
+  in it only through `quoted()` (`handlers/common.ts`): inside typographic quotation marks, on one line,
+  with its own quotation marks flattened and its length bounded. The stored record keeps the text exactly
+  as given. A lane writing its own summaries should do the same. A summary never shows a command type or
+  a record identifier: an undo says what was undone in the original receipt's words, and `stock.pack` /
+  `stock.unpack` name the trip through the registered entity namer (or say "the trip" when none is
+  registered).
+- **Forgetting.** `planLedgerScrub(ctx, commandIds)` returns statements for a forgetting command's own
+  batch that remove a message's text from the ledger's copies (command payload, receipt prose, undo data,
+  source record, delivered effect and outbox payloads, action intents, incidental notes), plus an account:
+  `pendingEffects`/`pendingOutbox` (queued work that still holds its payload; call again once it ran),
+  `retained` (durable owner records such as a profile amendment, kept because their text is the record)
+  and `ledgerCopiesErased`. The scrubbed command keeps type, IDs, versions, outcome and times; its receipt
+  summary becomes `SCRUBBED_TEXT`, its undo is unavailable, and `commands.scrubbed_at` /
+  `scrubbed_by_command_id` say so. No fact is undone by forgetting.
+- **Accessories.** `attributes.accessoryKind` (`AccessoryKind`) classifies a generic accessory; the daily
+  service excludes watches and jewellery by this class and does not offer an unclassified accessory.
 
-`data/owner-profile.md` is imported verbatim as the owner's style document (version 1, SHA-256 `e15639d8…cb198`, **identical to the spec's value**). `data/owner-profile-rules.json` holds 41 machine rules with `ruleKey`, `strength` (hard/soft), `category`, `interpretation`, `machine` parameters, `exceptionPolicy` and a verbatim `passage` (section + quote). All section 8 hard constraints are present: `hard.socks_always`, `hard.sneakers_only_until_healed` (implemented as the `profile-sneakers-only` healing restriction on shoes, boots, `construction: welted` and `model: 990v6`), `hard.sneaker_and_welted_alternative` (dormant while that restriction is active), `hard.thermal_peak_for_base`, `hard.thermal_morning_for_outerwear`, `hard.thermal_jacket_14_16_lightweight_oxford`, `hard.variety_seven_days`, `hard.never_fall_back_to_navy`, `hard.perceptible_names`. The foundation stores and exposes rules; enforcing them during composition belongs to the daily service, and in conversation to the assistant. `getStyleContext(db, principal, date)` returns the complete documents, active rules, dated briefs, amendments, restrictions, dormant rule keys and the precedence statement.
+### `@garderobe/domain`
 
-## Owner wardrobe import
+- Writes: `new CommandService({ db, registry, clock })`, `service.execute(principal, envelope)`,
+  `service.getReceipt`, `service.listReceipts`; `createFoundationRegistry()`, `CommandRegistry`, `define`.
+- Principals: `createPrincipal` (trusted code only), `resolvePrincipal(db, { issuer, subject }, grant)`,
+  `systemPrincipalFor`, `createUser`, `linkIdentity`, `unlinkIdentity`, `setUserStatus`.
+- Reads, all `(db, principal, ...)`: `listInventory`, `getGarmentDetail`, `resolveAlias`,
+  `getAvailability`, `getJointAvailability`, `getDailyRecord`, `listCountedWears`, `getLaundryState`,
+  `getStyleContext`, `listStyleDocumentVersions`, `listRestrictions`, `getOwnerState`, `getSettings`,
+  `previewStyleSave`, `listStyleFactConflicts`, `previewGarmentSelection`.
+- Durable plumbing: `registerActionIntent`, `pendingActionIntents`, `claimDueEffects`, `settleEffect`,
+  `latestDesiredRevision`, `effectsForCommand`, `readOutbox`, `acknowledgeOutbox`.
+- Accounting primitives for lane commands: `ctx.stock()` (`StockPlanner`), `stockParts`, `loadGarments`,
+  `replayGarment`, the pure estimator (`estimateAll`, `jointAvailability`, `selectionProbability`).
+- `@garderobe/domain/testing`: `createHarness()` gives `{ db, clock, registry, service, createOwner,
+  createSyntheticOwner, createRealOwner }`; `owner.exec(type, payload, opts)`; `ownerDocuments()`.
+  Vitest config helper: `garderobeWorkersPlugin()` from `@garderobe/domain/testing/vitest-config`.
+- `@garderobe/domain/import`: `importOwnerData(service, principal, { profileText, inventoryCsv })`,
+  `buildInventoryImportPlan`, `detectConflicts`, `renderImportReport`.
 
-`data/wardrobe-inventory-2026-05.csv` is mapped by `backend/src/import/owner-inventory.ts` and written by `importDataset`. Of 130 rows, 127 are imported and 3 are merged ("pair 2" rows folded into one garment with quantity 2); none are held. The result is 127 garments and 144 units, including 29 sock pairs. Statuses are decomposed into separate facts. There are 32 migration issues, among them profile-vs-CSV conflicts: the 990v6, 993, rugbies, Shetland knitwear and indigo jeans are absent from the CSV, an owned moleskin blazer conflicts with the profile, and the CSV notes its own mislabel of the waxed Chasseur. See `data/owner-inventory-reconciliation.md`. No wears, batches or arrivals are invented. Scenario state lives in `demo/src/test-events.ts`, applied through commands and labelled `TEST EVENT`.
+## Supplied documents
 
-## Public interfaces for other workstreams
-
-Import from `@garderobe/backend/domain`, `@garderobe/backend/import` and `@garderobe/contracts`, never from internal files.
-
-| Need | Call |
-| --- | --- |
-| Execute any mutation (API `POST /v1/commands`, MCP `garderobe_command`, assistant tools, offline replay) | `new CommandService(db, principal, { now? }).execute(envelope)` / `executeCommand(...)` |
-| Read a receipt / an entity's receipts | `getReceipt(db, principal, commandId)`, `listReceiptsForEntity(db, principal, type, id)` |
-| Build principals | `ownerPrincipal(userId, authenticatedBy, scopes?)`, `readOnlyPrincipal(userId)`, `systemPrincipal(userId)` (scheduler) |
-| Users and login mapping | `createUser(db, input)`, `resolveIdentity(db, issuer, subject)` |
-| Wardrobe and item pages (`GET /v1/wardrobe`, `/v1/items/{id}`) | `listWardrobe(db, principal, query)` → `WardrobePage`; `getItemDetail(db, principal, id)` → `ItemDetail` |
-| Resolve an owner phrase | `resolveAlias(db, principal, phrase)` → resolved / ambiguous (with distinguishing facts) / not_found |
-| Hard eligibility and estimates | `evaluateEligibility(garmentRow, restrictions, opts)`, `estimateAvailability(...)`, `estimateGarment(...)`, `optionAvailability(ids, estimates)` |
-| Wear history | `listDailyWears(db, principal, { garmentId?, from?, to? })` |
-| Laundry sheet and weekly resets | `getLaundryState(db, principal)`, `ensureLaundryResets(db, principal, at)`, `listLaundryResets`, `dueCycles` |
-| Taste context | `getStyleContext(db, principal, date)`, `getStyleDocument`, `listStyleRules` |
-| Boards (daily service writes; API/MCP reads) | `publishBoardRevision(db, principal, { boardDate, timezone, options, expectedRevision, ... })`, `getBoard`, `findBoardByDate`, `getActiveSelection` |
-| Import | `importOwnerData(db, principal, sources)`, `importDataset(db, principal, dataset, opts)`, `buildInventoryReconciliation`, `renderReconciliationMarkdown` |
-| Scenario fixtures and isolation owner | `@garderobe/demo`: `applyTestEvents(executor, { garment, weekStart })`, `syntheticOwnerB` |
-| Contracts for Swift | `packages/contracts/json-schema/*.json` (draft 2020-12) |
-
-## Tests
-
-`npm test` runs `tsc` for all packages, the contract tests (Node) and the backend tests in workerd against real local D1 (migrations applied from `backend/migrations`, one fresh database per test file). Suites: `import` (profile byte-exactness, rules, restriction, row accounting, status mapping, quantities, facts, aliases, conflicts, idempotency, reconciliation freshness, held rows, CSV parser), `wear`, `socks`, `laundry`, `commands` (receipts, idempotency, forced late failure, all-or-nothing bulk, racing edits, explicit creation, lifecycle, select option, scopes), `isolation`, `estimator`, `style`, `test-events`, `smoke`.
+`requirements/` holds the specification, the owner profile, the inventory CSV and the original bundle,
+byte-for-byte, with `requirements/SHA256SUMS`; `requirements/support/` is the extracted bundle
+(`support-bundle-manifest.json` lists every extracted file with its hash).

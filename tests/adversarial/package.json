@@ -1,23 +1,29 @@
 {
   "name": "@garderobe/adversarial-tests",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Adversarial test suite for the Garderobe backend, HTTP API and MCP server, run in workerd against real local D1/R2/KV seeded with the owner's real profile and wardrobe",
+  "description": "Adversarial tests against the real local Garderobe Worker and real local D1: domain ledger, API and MCP, assistant authority, daily service and media.",
   "scripts": {
-    "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node scripts/run.mjs",
+    "test:strict": "ADVERSARIAL_STRICT=1 node scripts/run.mjs",
+    "test:harness": "node scripts/run.mjs --area harness",
+    "test:domain": "node scripts/run.mjs --area domain",
+    "test:api-mcp": "node scripts/run.mjs --area api-mcp",
+    "test:assistant": "node scripts/run.mjs --area assistant",
+    "test:daily-media": "node scripts/run.mjs --area daily-media"
   },
-  "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "0.22.0",
-    "@cloudflare/workers-types": "5.20260929.1",
-    "@garderobe/backend": "*",
-    "@garderobe/contracts": "*",
-    "@garderobe/demo": "*",
-    "@modelcontextprotocol/client-v2-2": "npm:@modelcontextprotocol/client@2.2.0",
-    "@types/node": "^22.0.0",
-    "fast-check": "4.10.2",
-    "typescript": "7.0.2",
-    "vitest": "4.1.11"
+  "dependencies": {
+    "@garderobe/assistant": "1.0.0",
+    "@garderobe/contracts": "1.0.0",
+    "@garderobe/daily": "1.0.0",
+    "@garderobe/domain": "1.0.0",
+    "@garderobe/media": "1.0.0",
+    "@garderobe/worker": "1.0.0",
+    "@modelcontextprotocol/client": "2.0.0",
+    "fflate": "0.8.3",
+    "jose": "6.2.12",
+    "zod": "4.6.5"
   }
 }

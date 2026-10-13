@@ -1,26 +1,20 @@
 {
-  "name": "@garderobe/simulation-tests",
-  "version": "0.1.0",
+  "name": "@garderobe/simulation",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "End-to-end MCP simulation: a seeded multi-week simulated calendar with random outfit selections and simulated availability, weather, calendar and circumstances, run against the local Worker or the deployed garderobe-dev endpoint on the owner's real profile and wardrobe",
+  "description": "Seeded multi-week simulation of the Garderobe MCP server: a real MCP client (OAuth, tool calls) against any base URL, with invariants checked on application state and receipts after every step.",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
-    "test": "vitest run --config vitest.config.ts",
-    "setup:local": "tsx scripts/setup-local.ts",
-    "sim:local": "tsx scripts/local-run.ts",
-    "setup:dev": "tsx scripts/setup-dev.ts",
-    "sim": "tsx src/run.ts",
-    "spend": "tsx scripts/spend.ts",
-    "compare": "tsx scripts/compare.ts"
+    "test": "node --test test/simulator.test.mjs",
+    "sim:local": "node bin/local.mjs",
+    "sim": "node bin/run.mjs"
   },
-  "devDependencies": {
-    "@cloudflare/workers-types": "5.20260929.1",
-    "@garderobe/backend": "*",
-    "@garderobe/contracts": "*",
-    "@modelcontextprotocol/client-v2-2": "npm:@modelcontextprotocol/client@2.2.0",
-    "@types/node": "^22.0.0",
-    "typescript": "7.0.2",
-    "vitest": "4.1.11"
+  "dependencies": {
+    "@garderobe/contracts": "1.0.0",
+    "@garderobe/domain": "1.0.0",
+    "@garderobe/worker": "1.0.0",
+    "@modelcontextprotocol/client": "2.0.0",
+    "jose": "6.2.12"
   }
 }

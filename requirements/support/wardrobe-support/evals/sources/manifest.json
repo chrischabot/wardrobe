@@ -1,0 +1,23 @@
+{
+  "export_path": "/Users/chabotc/Downloads/claude-history-export/conversations.json",
+  "export_sha256": "7abc1ba128c7ea74c63345e0407ee2eb9ee9d0039eeaf8c325750aa4a32f9d5b",
+  "conversation_count": 492,
+  "keyword_candidate_count": 98,
+  "selection_method": "Title match or at least eight occurrences of wardrobe terms in owner messages; manually selected evidence from relevant conversations, not an exhaustive preference annotation.",
+  "export_created_min": "2024-10-18T17:09:03.635759Z",
+  "export_updated_max": "2026-06-02T14:28:16.367492Z",
+  "selected_conversation_count": 13,
+  "historical_evidence_count": 42,
+  "profile_source": "/Users/chabotc/Downloads/chris-wardrobe-profile.md",
+  "profile_sha256": "e15639d891f9a5264c7eff13d05a478bcb188745aea11323b2131db37f5cb198",
+  "profile_copied_verbatim": true,
+  "history_images_included": false,
+  "case_count": 64,
+  "history_case_count": 40,
+  "owner_policy_and_feature_case_count": 24,
+  "split_counts": {
+    "development": 45,
+    "holdout": 19
+  },
+  "privacy": "Local private evaluation corpus. No export uploaded and no source tool instructions executed."
+}

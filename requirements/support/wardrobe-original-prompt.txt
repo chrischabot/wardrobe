@@ -1,0 +1,3 @@
+Here's the spec for this project, please create this front to back, start to finish, and have a full functionality and user experience focused test suite as well as an extensive set of adversarial tests included. Once completed, test the full mcp server's functionality with demo data, random outfit selections and various simulated conditions around availability, weather, calendar entries, and circumstance.
+
+Attached file "garderobe-replacement-design.md": fabric-attachment:9f174139-7da8-494a-98b1-d77b6af4f650

@@ -1,0 +1,6 @@
+/target
+/.ferrite
+/ferrite.local.toml
+# The CLI's local SDK twin and test harness: written by `ferrite new`, restored by
+# scripts/vendor-sdk.sh, never submitted by a deploy.
+/vendor

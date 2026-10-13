@@ -1,0 +1,29 @@
+// Debug.xcconfig
+// Base configuration of the Debug build configuration, for the project and
+// for every target.
+
+#include "Base.xcconfig"
+
+// The same file is the base of the project and of each target, so a value that
+// used $(inherited) here would be applied twice. Values are written whole.
+
+// Plain DWARF in the object files; no dSYM bundle for debug builds.
+DEBUG_INFORMATION_FORMAT = dwarf
+
+// Allow @testable import and keep symbols visible to tests.
+ENABLE_TESTABILITY = YES
+
+// No C optimisation.
+GCC_OPTIMIZATION_LEVEL = 0
+
+// DEBUG=1 for any C or Objective-C code.
+GCC_PREPROCESSOR_DEFINITIONS = DEBUG=1
+
+// Build only the architecture of the selected run destination.
+ONLY_ACTIVE_ARCH = YES
+
+// Makes #if DEBUG true in Swift.
+SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG
+
+// No Swift optimisation, for debuggable builds.
+SWIFT_OPTIMIZATION_LEVEL = -Onone

@@ -1,0 +1,155 @@
+name: iOS (manual)
+
+# Builds the SwiftUI app and runs the Swift package tests and the UI tests on a macOS runner.
+# Manual trigger only: this never runs on push, pull request or a schedule. A newer run on the same
+# branch cancels an older one. Results are published as notices on the check run and kept as an artifact.
+on:
+  workflow_dispatch:
+    inputs:
+      xcode:
+        description: "Xcode to use: empty for the runner's default, 'newest' for the newest installed, or a path such as /Applications/Xcode_26.2.app"
+        required: false
+        default: ""
+      deployment_target:
+        description: "IPHONEOS_DEPLOYMENT_TARGET override (empty: the chosen simulator's iOS version, at most the project's 27.0)"
+        required: false
+        default: ""
+      run_ui_tests:
+        description: "Run the UI tests (slower)"
+        type: boolean
+        default: true
+      run_package_tests:
+        description: "Run the Swift package tests on the macOS host"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          {
+            echo "runner: $(sw_vers -productName) $(sw_vers -productVersion) ($(uname -m))"
+            echo "installed: $(ls -d /Applications/Xcode*.app | tr '\n' ' ')"
+            case "${{ inputs.xcode }}" in
+              "") ;;
+              newest) sudo xcode-select -s "$(ls -d /Applications/Xcode*.app | sort -V | tail -1)" ;;
+              *) sudo xcode-select -s "${{ inputs.xcode }}" ;;
+            esac
+            echo "selected: $(xcode-select -p)"
+            xcodebuild -version | tr '\n' ' '; echo
+            swift --version 2>&1 | head -1
+            xcodebuild -showsdks | grep -i simulator || true
+            xcrun simctl list runtimes | grep -i ios || true
+          } 2>&1 | tee toolchain.txt
+          python3 ios/Tools/ci-report.py "Toolchain" toolchain.txt 1
+
+      - name: Project structure
+        run: |
+          python3 ios/Tools/generate-xcodeproj.py --check
+          python3 ios/Tools/check-xcodeproj.py | tail -3
+          python3 ios/Tools/check-app-sources.py
+
+      - name: Choose a simulator and deployment target
+        id: sim
+        run: |
+          xcrun simctl list devices available -j > devices.json
+          python3 - "${{ inputs.deployment_target }}" <<'PY' >> "$GITHUB_OUTPUT"
+          import json, re, sys
+          override = sys.argv[1]
+          best = None
+          for runtime, devices in json.load(open("devices.json"))["devices"].items():
+              m = re.search(r"iOS-(\d+)-(\d+)", runtime)
+              if not m: continue
+              version = (int(m.group(1)), int(m.group(2)))
+              for d in devices:
+                  if d.get("isAvailable") and d["name"].startswith("iPhone"):
+                      if best is None or version > best[0]: best = (version, d["udid"], d["name"])
+          if best is None:
+              sys.stderr.write("No iPhone simulator is available on this runner\n"); sys.exit(1)
+          (major, minor), udid, name = best
+          target = override or "%d.%d" % min((major, minor), (27, 0))
+          sys.stderr.write("Simulator: %s, iOS %d.%d; deployment target %s\n" % (name, major, minor, target))
+          print("udid=" + udid); print("name=" + name); print("target=" + target)
+          print("::notice title=Simulator::%s, iOS %d.%d, deployment target %s" % (name, major, minor, target), file=sys.stderr)
+          PY
+
+      - name: Build the app, share extension and UI tests for the simulator
+        run: |
+          set -o pipefail
+          status=0
+          # The simulator's iOS version as the deployment target (no iOS 27 SDK is installed on runners).
+          echo "IPHONEOS_DEPLOYMENT_TARGET = ${{ steps.sim.outputs.target }}" > ios/Config/Local.xcconfig
+          xcodebuild build-for-testing -project ios/Garderobe.xcodeproj -scheme Garderobe \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath DerivedData -IDEBuildingContinueBuildingAfterErrors=YES \
+            CODE_SIGNING_ALLOWED=NO > build.log 2>&1 || status=$?
+          # The distinct compiler and build-system errors, with the checkout path removed.
+          grep -E "(error|fatal error):|^xcodebuild: error|^error:|BUILD (SUCCEEDED|FAILED)|TEST BUILD (SUCCEEDED|FAILED)" build.log | sed "s#$PWD/##g" | awk '!seen[$0]++' > build-errors.txt || true
+          if [ "$status" != 0 ] && ! grep -qE "\.swift:[0-9]+" build-errors.txt; then
+            # Not a compile failure: show how the build ended (destinations, project problems).
+            { echo "---- end of build.log ----"; tail -60 build.log | sed "s#$PWD/##g"; } >> build-errors.txt
+          fi
+          echo "xcodebuild build-for-testing exit $status" >> build-errors.txt
+          tail -5 build.log
+          python3 ios/Tools/ci-report.py "Build" build-errors.txt 9
+          exit $status
+
+      - name: UI tests (demo mode, a recording of the real backend)
+        if: ${{ success() && inputs.run_ui_tests }}
+        run: |
+          set -o pipefail
+          status=0
+          xcodebuild test-without-building -project ios/Garderobe.xcodeproj -scheme Garderobe \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath DerivedData -resultBundlePath TestResults.xcresult \
+            -retry-tests-on-failure -test-iterations 2 \
+            CODE_SIGNING_ALLOWED=NO > test.log 2>&1 || status=$?
+          # Verdicts first (short), then each failure's detail. A test that fails and then passes on its one retry shows both lines.
+          { grep -E "Test Case .* (passed|failed)|Executed [0-9]+ tests|TEST (SUCCEEDED|FAILED|EXECUTE)" test.log | sed -E "s/Test Case '-\[GarderobeUITests\.GarderobeUITests ([A-Za-z0-9_]+)\]'/\1/" | awk '!seen[$0]++'
+            grep -E "error:|AUDIT-EXCLUDED|AUDIT-UNATTRIBUTED" test.log | sed "s#$PWD/##g; s#ios/App/GarderobeUITests/##; s#-\[GarderobeUITests\.GarderobeUITests ##" | awk '!seen[$0]++'; } > test-summary.txt || true
+          if ! grep -qE "(passed|failed) \(" test-summary.txt; then { echo "---- end of test.log ----"; tail -60 test.log | sed "s#$PWD/##g"; } >> test-summary.txt; fi
+          echo "xcodebuild test-without-building exit $status" >> test-summary.txt
+          tail -5 test.log
+          python3 ios/Tools/ci-report.py "UI tests" test-summary.txt 9
+          exit $status
+
+      - name: Swift package tests (macOS host)
+        if: ${{ !cancelled() && inputs.run_package_tests }}
+        working-directory: ios/GarderobeKit
+        run: |
+          set -o pipefail
+          status=0
+          swift test > ../../package-test.log 2>&1 || status=$?
+          grep -E "error:|✘|Test run with" ../../package-test.log | tail -60 > ../../package-summary.txt || true
+          echo "swift test exit $status" >> ../../package-summary.txt
+          cat ../../package-summary.txt
+          python3 ../Tools/ci-report.py "Package tests" ../../package-summary.txt 2
+          exit $status
+
+      - name: Keep logs and results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-and-test
+          path: |
+            toolchain.txt
+            build.log
+            build-errors.txt
+            test.log
+            test-summary.txt
+            package-test.log
+            TestResults.xcresult
+          if-no-files-found: ignore
+          retention-days: 14

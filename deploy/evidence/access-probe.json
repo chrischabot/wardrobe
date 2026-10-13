@@ -1,0 +1,135 @@
+{
+  "checkedAt": "2026-10-03T18:49:14.198Z",
+  "what": "Reach of the credentials present in this environment. Names, HTTP statuses, error codes and counts only.",
+  "environmentVariables": {
+    "CLOUDFLARE_API_TOKEN": false,
+    "CLOUDFLARE_ACCOUNT_ID": true,
+    "CF_AIG_TOKEN": true,
+    "R2_ACCESS_KEY_ID": true,
+    "R2_SECRET_ACCESS_KEY": true,
+    "R2_ENDPOINT": true,
+    "GARDEROBE_OWNER_EMAIL": false
+  },
+  "canDeploy": false,
+  "management": {
+    "withManagementCredential": "not in the environment",
+    "withGatewayCredential": {
+      "credentialValid": {
+        "httpStatus": 200,
+        "cloudflareErrorCodes": [],
+        "count": null
+      },
+      "workers": {
+        "httpStatus": 200,
+        "cloudflareErrorCodes": [],
+        "count": 0
+      },
+      "d1": {
+        "httpStatus": 401,
+        "cloudflareErrorCodes": [
+          10000
+        ],
+        "count": null
+      },
+      "kv": {
+        "httpStatus": 401,
+        "cloudflareErrorCodes": [
+          10000
+        ],
+        "count": null
+      },
+      "r2": {
+        "httpStatus": 403,
+        "cloudflareErrorCodes": [
+          10000
+        ],
+        "count": null
+      },
+      "queues": {
+        "httpStatus": 403,
+        "cloudflareErrorCodes": [
+          10000
+        ],
+        "count": null
+      },
+      "workflows": {
+        "httpStatus": 401,
+        "cloudflareErrorCodes": [
+          10000
+        ],
+        "count": null
+      },
+      "aiGateway": {
+        "httpStatus": 403,
+        "cloudflareErrorCodes": [
+          10000
+        ],
+        "count": null
+      },
+      "aiSearchNamespaces": {
+        "httpStatus": 200,
+        "cloudflareErrorCodes": [],
+        "count": 2
+      },
+      "accessApps": {
+        "httpStatus": 200,
+        "cloudflareErrorCodes": [],
+        "count": 0
+      },
+      "accessOrganization": {
+        "httpStatus": 403,
+        "cloudflareErrorCodes": [
+          10000
+        ],
+        "count": null
+      },
+      "zone": {
+        "httpStatus": 200,
+        "cloudflareErrorCodes": [],
+        "count": 0
+      }
+    }
+  },
+  "r2S3": {
+    "httpStatus": 200,
+    "buckets": 16,
+    "thisBuildsBuckets": [],
+    "otherBucketsFoundAndLeft": 16,
+    "garderobeNamedOthers": [
+      "garderobe-dev-media",
+      "garderobe-images"
+    ]
+  },
+  "gatewayRestInference": {
+    "note": "REST endpoint from outside a Worker; the application uses the AI binding, which only a deployed Worker can exercise, so nothing here is recorded as a model probe",
+    "routes": {
+      "deepseek/deepseek-flash": {
+        "httpStatus": 401,
+        "ms": 556,
+        "gatewayLogged": true,
+        "answered": false,
+        "resolvedModel": null,
+        "promptTokens": null,
+        "completionTokens": null
+      },
+      "anthropic/claude-fable-5-1": {
+        "httpStatus": 200,
+        "ms": 3095,
+        "gatewayLogged": true,
+        "answered": true,
+        "resolvedModel": "claude-fable-5-1",
+        "promptTokens": 18,
+        "completionTokens": 4
+      },
+      "openai/gpt-6-astra": {
+        "httpStatus": 401,
+        "ms": 291,
+        "gatewayLogged": true,
+        "answered": false,
+        "resolvedModel": null,
+        "promptTokens": null,
+        "completionTokens": null
+      }
+    }
+  }
+}

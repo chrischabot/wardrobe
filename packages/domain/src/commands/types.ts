@@ -1,0 +1,181 @@
+import type { z } from "zod";
+import type { AuthorizationBasis, EntityVersion, OwnerSettings, ParsedCommandEnvelope, Scope } from "@garderobe/contracts";
+import type { Db, Stmt } from "../db.ts";
+import type { Principal } from "../principal.ts";
+import type { StockPlanner } from "../stock/planner.ts";
+
+/** A predicate that must hold for the batch to commit. Evaluated by SQLite inside the batch. */
+export interface Precondition {
+  label: string;
+  /** SQL boolean expression (may contain subqueries) with `?` parameters. */
+  sql: string;
+  params: unknown[];
+  /**
+   * `client`: an expected version supplied by the caller - failure is a clean conflict (plan edits) or is
+   *   rebased internally (owner observations);
+   * `internal`: a version this plan read - failure means a concurrent commit; the service re-plans and retries;
+   * `state`: a quantity/state predicate - failure is `precondition_failed`.
+   */
+  class: "client" | "internal" | "state";
+}
+
+export interface PlannedEffect {
+  kind: string;
+  /** What the effect projects onto (e.g. the managed calendar event key). */
+  targetKey: string;
+  /** Stable external operation key; a repeated key is never enqueued twice. */
+  operationKey: string;
+  desiredRevision?: number;
+  payload: Record<string, unknown>;
+  availableAt?: string;
+}
+
+export interface PlannedOutbox {
+  topic: string;
+  entityKind: string;
+  entityId: string;
+  revision: number;
+  payload?: Record<string, unknown>;
+}
+
+/** What changed, for commit hooks (board repair, projections) owned by other workstreams. */
+export interface DomainChanges {
+  /** Garments whose quantities, location, acquisition, planning policy or restrictions changed. */
+  availabilityChanged: string[];
+  /** Counted wears created or retracted by this command. */
+  wears: { garmentId: string; wearingDate: string; change: "counted" | "merged" | "retracted" }[];
+  restrictionsChanged: boolean;
+  styleChanged: boolean;
+  settingsChanged: boolean;
+  laundryBaselineApplied: boolean;
+}
+
+export function noChanges(): DomainChanges {
+  return { availabilityChanged: [], wears: [], restrictionsChanged: false, styleChanged: false, settingsChanged: false, laundryBaselineApplied: false };
+}
+
+export interface CommandPlan {
+  outcome?: "committed" | "merged" | "noop";
+  /** Concise factual summary built from ledger records. */
+  summary: string;
+  preconditions?: Precondition[];
+  statements?: Stmt[];
+  affected?: EntityVersion[];
+  effects?: PlannedEffect[];
+  outbox?: PlannedOutbox[];
+  repairs?: string[];
+  result?: Record<string, unknown>;
+  /** Data the handler's planUndo needs; omit (with a reason) when the command cannot be undone. */
+  undo?: { data: Record<string, unknown> } | { unavailableReason: string };
+  changes?: Partial<DomainChanges>;
+  bumpWardrobe?: boolean;
+  bumpStyle?: boolean;
+}
+
+/** Extra writes a commit hook adds to the same batch (e.g. board repair by the daily service). */
+export interface PlanFragment {
+  preconditions?: Precondition[];
+  statements?: Stmt[];
+  affected?: EntityVersion[];
+  effects?: PlannedEffect[];
+  outbox?: PlannedOutbox[];
+  repairs?: string[];
+  result?: Record<string, unknown>;
+}
+
+export interface StoredCommand {
+  commandId: string;
+  type: string;
+  payload: Record<string, unknown>;
+  occurredAt: string;
+  recordedAt: string;
+  undo: { data: Record<string, unknown> } | { unavailableReason: string } | null;
+  undoneByCommandId: string | null;
+  undoesCommandId: string | null;
+}
+
+export interface CommandContext {
+  readonly db: Db;
+  readonly principal: Principal;
+  readonly userId: string;
+  readonly commandId: string;
+  /** When the report arrived (ISO instant). */
+  readonly now: string;
+  readonly nowMs: number;
+  /** When the event happened; equals `now` unless the envelope said otherwise. */
+  readonly occurredAt: string;
+  readonly occurredAtMs: number;
+  /** True when the caller supplied occurredAt explicitly. */
+  readonly occurredAtExplicit: boolean;
+  readonly envelope: ParsedCommandEnvelope;
+  readonly settings: OwnerSettings;
+  readonly settingsVersion: number;
+  readonly wardrobeRevision: number;
+  readonly styleRevision: number;
+  newId(prefix: string): string;
+  /** A stock planner bound to this command (journal + replay + balance materialization). */
+  stock(): StockPlanner;
+  /**
+   * Whether `ref` names a statement the owner really made, as far as this command's own conversation is
+   * concerned. Answered by the verifier the composition root registered; false when there is none.
+   */
+  verifyOwnerStatement(ref: string): Promise<boolean>;
+  /**
+   * The owner's own name for a record of another workstream (for example a trip), for use in a receipt
+   * summary. Answered by the namer that workstream registered; null when there is none or the record is
+   * unknown, in which case the summary speaks of the record without naming it. Never an identifier.
+   */
+  entityName(kind: string, id: string): Promise<string | null>;
+  /**
+   * Whether a record of another workstream (for example a trip) may be the target of this command, as the
+   * workstream that owns it says. With no check registered for the kind the answer is `{ ok: true }`: the
+   * domain cannot see the record and behaves as it did before. A check that throws answers `ok: false`.
+   */
+  checkEntity(kind: string, id: string): Promise<EntityCheckResult>;
+}
+
+/** Looks up the owner's name for a record (registered per kind by the workstream that owns the records). */
+export type EntityNamer = (db: Db, userId: string, id: string) => Promise<string | null>;
+
+/**
+ * Whether a record of another workstream may be the target of a command; `reason` is in the owner's words.
+ * `notFound` says the record is not this owner's at all (unknown, or another owner's): the command then
+ * answers not_found, so it never confirms that another owner's record exists.
+ */
+export type EntityCheckResult = { ok: true } | { ok: false; reason: string; notFound?: boolean };
+/** Answers for one owner's record (registered per kind by the workstream that owns the records). */
+export type EntityCheck = (db: Db, userId: string, id: string) => Promise<EntityCheckResult>;
+
+/** Checks an evidence reference against the record of what the owner said (registered by the conversation's owner). */
+export type OwnerStatementVerifier = (ctx: CommandContext, ref: string) => Promise<boolean>;
+
+export interface CommandDefinition<S extends z.ZodType = z.ZodType> {
+  type: string;
+  schema: S;
+  /**
+   * `observation`: an authoritative owner observation. `edit`: a plan/configuration edit.
+   * `system`: scheduled/administrative work. The class sets the default authorizations and the default
+   * for `staleVersions`.
+   */
+  class: "observation" | "edit" | "system";
+  /**
+   * What a stale client expected version does to this command. `rebase`: the versions are ignored and
+   * the command lands on the current state (specification section 5: a wear or wash report is never
+   * discarded because another client changed the record). `conflict`: the command is refused with
+   * `conflict` and writes nothing. Default: `rebase` for class `observation`, `conflict` otherwise.
+   * A command that removes, moves, receives or rewrites a record sets `conflict` even when it is an
+   * observation, so a change described against an old version is never applied to a newer record.
+   */
+  staleVersions?: "rebase" | "conflict";
+  requiredScope: Scope;
+  /** Authorization bases accepted for this command. Defaults by class (see registry). */
+  allowedAuthorizations?: AuthorizationBasis[];
+  plan(ctx: CommandContext, payload: z.output<S>): Promise<CommandPlan>;
+  /** Builds the compensating plan. Must recheck intervening changes. */
+  planUndo?(ctx: CommandContext, original: StoredCommand, data: Record<string, any>): Promise<CommandPlan>;
+}
+
+export type CommitHook = (ctx: CommandContext, plan: CommandPlan, changes: DomainChanges) => Promise<PlanFragment | void>;
+
+/** Resolves `kind:id` expected-version keys to a SQL scalar subquery returning the current version. */
+export type VersionResolver = (userId: string, id: string) => { sql: string; params: unknown[] };

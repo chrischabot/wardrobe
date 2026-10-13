@@ -1,0 +1,31 @@
+{
+  "at": "2026-10-12T14:56:53.408Z",
+  "result": "blocked",
+  "deployed": false,
+  "app": "wardrobe",
+  "account": "not_logged_in",
+  "reason": "`ferrite account` reports not logged in: no credential document at ~/.config/ferrite/credentials.toml",
+  "endpointProbe": {
+    "probed": true,
+    "tokenPresented": true,
+    "status": 401,
+    "error": "unauthenticated",
+    "accountTokenRequired": true,
+    "ms": 134
+  },
+  "needsOwnerAccount": [
+    "ferrite account",
+    "ferrite host",
+    "ferrite secrets set WARDROBE_OWNER_TOKEN / WARDROBE_ASSISTANT_TOKEN / WARDROBE_PUBLIC_ORIGIN",
+    "ferrite deploy",
+    "ferrite status / ferrite logs",
+    "node deploy/ferrite/verify.mjs --deployed",
+    "node deploy/ferrite/teardown.mjs --execute"
+  ],
+  "runsWithoutAccount": [
+    "ferrite check",
+    "ferrite test",
+    "ferrite dev + node deploy/ferrite/verify.mjs --local"
+  ],
+  "remaining": "the owner supplies his Ferrite account credential document (endpoint, account id, token) and imports it with `ferrite login --credentials-file <path>` (0600); then run this command again with --confirm=<account>/wardrobe"
+}

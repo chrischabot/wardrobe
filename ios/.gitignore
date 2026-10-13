@@ -1,6 +1,3 @@
-.build/
-.swiftpm/
+Config/Local.xcconfig
+GarderobeKit/.build/
 DerivedData/
-xcuserdata/
-*.xcuserstate
-Package.resolved

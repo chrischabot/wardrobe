@@ -1,0 +1,288 @@
+/**
+ * Ports: the ONLY boundary between the daily service and external services. Real adapters live in
+ * `weather/` and `calendar/`; tests substitute clearly labelled fakes here and nowhere else.
+ */
+import type { CalendarEventContext, OutfitCandidate, WeatherLocation, WeatherProviderName } from "@garderobe/contracts/ext/daily";
+
+export type FetchLike = (input: string, init?: { method?: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal }) => Promise<Response>;
+
+/** Deadline for one request to an external service, body included. A phase must never wait on a silent provider. */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+
+/** Longest delay a timer honours; a longer one would fire at once. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/** Thrown by `withDeadline` when the time ran out; adapters report it as a retryable network failure. */
+export class DeadlineError extends Error {
+  constructor(ms: number) {
+    super(`no complete response within ${ms} ms`);
+    this.name = "DeadlineError";
+  }
+}
+
+/** Settle with `work`, or reject after `timeoutMs` (`<= 0`, NaN or infinite: no deadline). `onTimeout` runs first. */
+export async function withDeadline<T>(work: Promise<T>, timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS, onTimeout?: () => void): Promise<T> {
+  if (!(timeoutMs > 0) || !Number.isFinite(timeoutMs)) return work;
+  const ms = Math.min(timeoutMs, MAX_TIMER_MS);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      onTimeout?.();
+      reject(new DeadlineError(ms));
+    }, ms);
+  });
+  // The losing promise of the race must not surface as an unhandled rejection.
+  deadline.catch(() => undefined);
+  work.catch(() => undefined);
+  try {
+    return await Promise.race([work, deadline]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/**
+ * Wrap a fetch so one exchange (headers AND body) is abandoned after `timeoutMs`: the request is aborted
+ * and the call rejects, which every adapter already reports as a retryable network failure. The body is
+ * read inside the deadline and handed on as a buffered response, so a provider that sends headers and
+ * then stalls cannot hold a scheduled phase either. A caller's own abort signal still aborts the request.
+ * `timeoutMs <= 0` (or an infinite one) disables the deadline; a deadline longer than a timer can hold
+ * is the longest a timer can hold.
+ */
+export function withRequestTimeout(fetchFn: FetchLike, timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS): FetchLike {
+  if (!(timeoutMs > 0) || !Number.isFinite(timeoutMs)) return fetchFn;
+  return async (input, init) => {
+    const controller = new AbortController();
+    const callers = init?.signal;
+    const forward = () => controller.abort();
+    if (callers?.aborted) controller.abort();
+    else callers?.addEventListener("abort", forward, { once: true });
+    try {
+      return await withDeadline(
+        (async () => {
+          const response = await fetchFn(input, { ...(init ?? {}), signal: controller.signal });
+          const text = await response.text();
+          const bodiless = response.status === 204 || response.status === 205 || response.status === 304;
+          return new Response(bodiless ? null : text, { status: response.status, statusText: response.statusText, headers: response.headers });
+        })(),
+        timeoutMs,
+        () => controller.abort(),
+      );
+    } finally {
+      callers?.removeEventListener("abort", forward);
+    }
+  };
+}
+
+/* ------------------------------- weather ------------------------------- */
+
+/** One normalized forecast hour. `null` = the provider did not supply the value (never zero). */
+export interface ProviderHour {
+  /** Local wall time in the forecast timezone, `YYYY-MM-DDTHH:00`. */
+  localTime: string;
+  /** UTC instant, ISO 8601 with Z. */
+  at: string;
+  temperatureC: number | null;
+  apparentTemperatureC: number | null;
+  precipitationProbabilityPct: number | null;
+  precipitationMm: number | null;
+  precipitationType: "none" | "rain" | "showers" | "snow" | "mixed" | "sleet" | "hail" | null;
+  windSpeedKmh: number | null;
+  windGustKmh: number | null;
+  humidityPct: number | null;
+}
+
+export interface ProviderForecast {
+  provider: WeatherProviderName;
+  attribution: string;
+  /** Timezone the local times are expressed in. */
+  timezone: string;
+  latitude: number;
+  longitude: number;
+  fetchedAt: string;
+  /** Forecast issue/model time when supplied by the provider, else null. */
+  issuedAt: string | null;
+  hours: ProviderHour[];
+  /** null = the provider has no alert feed; [] = none active. */
+  alerts: { title: string; severity: string | null; startsAt: string | null; endsAt: string | null; source: string | null }[] | null;
+  /** Fields the provider did not supply at all for this request (e.g. "issuedAt", "alerts"). */
+  missingFields: string[];
+}
+
+export interface ForecastRequest {
+  latitude: number;
+  longitude: number;
+  timezone: string;
+  /** Inclusive local dates. */
+  startDate: string;
+  endDate: string;
+}
+
+/** Thrown by adapters for any provider failure; the service turns it into a stale/unavailable state. */
+export class WeatherProviderError extends Error {
+  readonly detail: { provider: WeatherProviderName; status?: number; retryable: boolean };
+  constructor(message: string, detail: { provider: WeatherProviderName; status?: number; retryable: boolean }) {
+    super(message);
+    this.name = "WeatherProviderError";
+    this.detail = detail;
+  }
+}
+
+export interface WeatherProvider {
+  readonly name: WeatherProviderName;
+  forecast(request: ForecastRequest): Promise<ProviderForecast>;
+}
+
+export interface Geocoder {
+  /** Resolve a city-level label. Returns null when nothing matches (never a guess). */
+  geocode(label: string): Promise<WeatherLocation | null>;
+}
+
+/* ------------------------------- calendar ------------------------------ */
+
+/** Thrown when the owner's Calendar grant is absent or revoked: distinct from an empty calendar. */
+export class CalendarNotConnectedError extends Error {
+  constructor(message = "Google Calendar is not connected") {
+    super(message);
+    this.name = "CalendarNotConnectedError";
+  }
+}
+
+export class CalendarApiError extends Error {
+  readonly detail: { status: number | null; retryable: boolean; reason?: string };
+  constructor(message: string, detail: { status: number | null; retryable: boolean; reason?: string }) {
+    super(message);
+    this.name = "CalendarApiError";
+    this.detail = detail;
+  }
+}
+
+/** Raw event as read for day context, before influence weighting. */
+export interface CalendarEventRaw {
+  eventId: string;
+  calendarId: string;
+  title: string;
+  startsAt: string | null;
+  endsAt: string | null;
+  allDay: boolean;
+  location: string | null;
+  attendance: CalendarEventContext["attendance"];
+  cancelled: boolean;
+}
+
+export interface CalendarReader {
+  /** Events overlapping [timeMin, timeMax) in the given calendars. Throws CalendarNotConnectedError / CalendarApiError. */
+  listEvents(userId: string, request: { calendarIds: string[]; timeMin: string; timeMax: string; timezone: string }): Promise<CalendarEventRaw[]>;
+}
+
+/** The managed outfit event as the projector sees it. */
+export interface ManagedEvent {
+  eventId: string;
+  etag: string | null;
+  status: "confirmed" | "tentative" | "cancelled";
+  summary: string | null;
+  description: string | null;
+  /** extendedProperties.private */
+  privateProperties: Record<string, string>;
+  attendeeCount: number;
+  /**
+   * start/end as read back, in the form the projector writes (`ManagedEventWrite["time"]`); null when
+   * the event has a form the projector never writes (a multi-day span, a timed event without a time
+   * zone); absent when the adapter did not read it. The projector only reports an event current when
+   * this equals what it wrote, so an absent value never verifies.
+   */
+  time?: ManagedEventWrite["time"] | null;
+  /**
+   * The calendar reminder as read back: the minutes of a single popup override; null for no reminder
+   * at all; "other" for any other configuration (the calendar's default reminders, several overrides,
+   * another method); absent when the adapter did not read it (never verifies).
+   */
+  reminderMinutesBefore?: number | null | "other";
+}
+
+export interface ManagedEventWrite {
+  summary: string;
+  description: string;
+  privateProperties: Record<string, string>;
+  /** Timed presentation: start/end instants with the owner's timezone. All-day: a local date. */
+  time: { kind: "timed"; startsAt: string; endsAt: string; timezone: string } | { kind: "all_day"; localDate: string };
+  /** Calendar popup reminder minutes; null = no calendar reminder (app notifications are separate). */
+  reminderMinutesBefore: number | null;
+}
+
+/**
+ * Longest a CalendarWriter call may take (its `callDeadlineMs`). The projector holds a 60-second lease
+ * on each managed event and renews it before every call; a writer whose calls can outlast the lease
+ * (an infinite, absent or longer deadline) is refused, so a call can never outlive the lease it ran under.
+ */
+export const MAX_CALENDAR_CALL_MS = 45_000;
+
+export interface CalendarWriter {
+  /**
+   * Longest time one call of this writer takes, every request it makes and every access-token lookup
+   * included. A call that has not settled by then has failed and its requests are aborted (a retryable
+   * network failure). Finite and at most MAX_CALENDAR_CALL_MS for the outfit-calendar projector.
+   */
+  readonly callDeadlineMs: number;
+  /** null when the event does not exist (404, or 410 gone). A deleted event is returned with status "cancelled" when the API reports it so. */
+  getEvent(userId: string, calendarId: string, eventId: string): Promise<ManagedEvent | null>;
+  /** Insert with a caller-supplied ID. Throws CalendarApiError with reason "duplicate" on 409. Never sends invitations. */
+  insertEvent(userId: string, calendarId: string, eventId: string, write: ManagedEventWrite): Promise<ManagedEvent>;
+  /** Conditional update (If-Match when etag given). Throws CalendarApiError with reason "precondition" on 412. Only managed fields are sent. */
+  patchEvent(userId: string, calendarId: string, eventId: string, write: Partial<ManagedEventWrite> & { status?: "confirmed" }, etag: string | null): Promise<ManagedEvent>;
+  /**
+   * Delete the managed event (pause / suppression). A missing event is not an error. With `etag`, the delete
+   * is conditional (If-Match) and throws CalendarApiError with reason "precondition" on 412, so a delete
+   * that lands late cannot remove a newer write.
+   */
+  deleteEvent(userId: string, calendarId: string, eventId: string, etag?: string | null): Promise<void>;
+}
+
+/** True when every call of `writer` is bounded by a finite deadline of at most MAX_CALENDAR_CALL_MS. */
+export function hasBoundedCallDeadline(writer: Pick<CalendarWriter, "callDeadlineMs">): boolean {
+  const ms = writer.callDeadlineMs;
+  return typeof ms === "number" && Number.isFinite(ms) && ms > 0 && ms <= MAX_CALENDAR_CALL_MS;
+}
+
+/* ------------------------------ composition ---------------------------- */
+
+/** Compact, complete context handed to a composition model (assembled by trusted code, never by the model). */
+export interface CompositionRequest {
+  localDate: string;
+  count: number;
+  /** The mandatory context rendered for a model (full profile text, rules, inventory, weather, calendar, history). */
+  contextText: string;
+  /** Structured form of the same context for adapters that prefer it. */
+  contextData: Record<string, unknown>;
+  /** Rejections from earlier attempts in this run, so the model can repair them. */
+  rejections: { candidate: OutfitCandidate; violations: string[] }[];
+  deadlineAtMs: number;
+}
+
+/**
+ * The clock and timer behind the inference budget. In production it is the real wall clock (a hung
+ * model has to be abandoned in real time); a test supplies its own so the budget running out is an
+ * event the test causes, not something that depends on how busy the machine is.
+ */
+export interface BudgetClock {
+  now(): number;
+  /** Call `fire` once after `ms`; the returned function cancels it. */
+  after(ms: number, fire: () => void): () => void;
+}
+
+export const SYSTEM_BUDGET_CLOCK: BudgetClock = {
+  now: () => Date.now(),
+  after: (ms, fire) => {
+    const timer = setTimeout(fire, ms);
+    return () => clearTimeout(timer);
+  },
+};
+
+/**
+ * The composition model behind the AI Gateway (implemented by the assistant workstream). It only ever
+ * PROPOSES candidates by garment ID; everything it returns is validated in code before publication.
+ */
+export interface CompositionModel {
+  readonly profile: string;
+  propose(request: CompositionRequest): Promise<OutfitCandidate[]>;
+}

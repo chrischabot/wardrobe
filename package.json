@@ -2,32 +2,40 @@
   "name": "garderobe",
   "private": true,
   "version": "0.1.0",
-  "description": "Garderobe: private wardrobe companion (Cloudflare backend, SwiftUI app, MCP interface)",
+  "description": "Garderobe: a private wardrobe companion (fresh implementation of the revision 4 specification).",
+  "license": "MIT",
   "type": "module",
-  "workspaces": [
-    "packages/*",
-    "backend",
-    "demo",
-    "data",
-    "tests/*"
-  ],
   "engines": {
     "node": ">=22"
   },
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "tests/*"
+  ],
   "scripts": {
-    "test": "npm run typecheck && npm run test --workspace @garderobe/contracts && npm run test --workspace @garderobe/backend",
-    "typecheck": "npm run typecheck --workspaces --if-present && tsc -p deploy/tsconfig.json",
-    "schemas": "npm run schemas --workspace @garderobe/contracts",
-    "db:migrate:local": "npm run db:migrate:local --workspace @garderobe/backend",
-    "seed:demo": "npm run seed --workspace @garderobe/demo",
-    "test:adversarial": "npm run test --workspace @garderobe/adversarial-tests",
-    "test:journeys": "npm run test --workspace @garderobe/journey-tests",
-    "deploy:dev": "tsx deploy/scripts/dev.ts deploy",
-    "dev:provision": "tsx deploy/scripts/dev.ts provision",
-    "dev:seed": "tsx deploy/scripts/dev.ts seed",
-    "dev:probe": "tsx deploy/scripts/dev.ts probe",
-    "dev:verify": "tsx deploy/scripts/dev.ts verify",
-    "dev:measure": "tsx deploy/scripts/dev.ts measure",
-    "teardown:dev": "tsx deploy/scripts/dev.ts teardown"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run typecheck && npm run test --workspaces --if-present",
+    "test:foundation": "npm run test -w @garderobe/contracts -w @garderobe/domain",
+    "generate:contracts": "npm run generate -w @garderobe/contracts --",
+    "check:contracts": "npm run generate:check -w @garderobe/contracts",
+    "import:report": "npm run import:report -w @garderobe/domain --",
+    "check:import-report": "npm run import:report:check -w @garderobe/domain",
+    "verify:documents": "node tools/verify-documents.mjs",
+    "verify:checklist": "node tools/check-checklist.mjs",
+    "verify": "npm run verify:documents && npm run verify:checklist && npm run check:import-report && npm run check:contracts"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "0.22.0",
+    "@cloudflare/workers-types": "5.20260930.2",
+    "@types/node": "22.20.4",
+    "@vitest/runner": "4.1.11",
+    "@vitest/snapshot": "4.1.11",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11",
+    "wrangler": "4.145.0"
+  },
+  "dependencies": {
+    "zod": "4.6.5"
   }
 }

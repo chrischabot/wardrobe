@@ -1,22 +1,18 @@
 {
   "name": "@garderobe/journey-tests",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Functionality and user-experience journey suite: the real Garderobe Worker (HTTP API and MCP server) in workerd on local D1/R2/KV, seeded with the owner's real profile and imported wardrobe",
+  "description": "Functional and user-experience journeys through the real Garderobe Worker (HTTP API and MCP server) with the owner's real profile and inventory.",
   "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "typecheck": "tsc -p tsconfig.json"
+    "test:strict": "JOURNEYS_STRICT=1 vitest run",
+    "evals:check": "node evals/corpus-check.mjs"
   },
-  "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "0.22.0",
-    "@cloudflare/workers-types": "5.20260929.1",
-    "@garderobe/backend": "*",
-    "@garderobe/contracts": "*",
-    "@garderobe/demo": "*",
-    "@modelcontextprotocol/client-v2-2": "npm:@modelcontextprotocol/client@2.2.0",
-    "@types/node": "^22.0.0",
-    "typescript": "7.0.2",
-    "vitest": "4.1.11"
+  "dependencies": {
+    "@garderobe/contracts": "1.0.0",
+    "@garderobe/worker": "1.0.0",
+    "fflate": "0.8.3"
   }
 }

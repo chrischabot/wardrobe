@@ -1,0 +1,442 @@
+{
+  "target": "LOCAL REHEARSAL (Miniflare simulators; not a deployment, not platform evidence)",
+  "origins": {
+    "app": "http://localhost:8791"
+  },
+  "commit": null,
+  "startedAt": "2026-10-03T18:49:35.583Z",
+  "finishedAt": "2026-10-03T18:49:45.757Z",
+  "signIn": "automation door: the application's assertion check with this tooling's issuer; three labelled test identities",
+  "worker": "garderobe-rebuild-dev",
+  "summary": {
+    "passed": 35,
+    "failed": 0,
+    "notRun": 12
+  },
+  "results": [
+    {
+      "httpStatus": 401,
+      "code": "unauthenticated",
+      "group": "authentication",
+      "name": "a request without an assertion is refused",
+      "status": "pass",
+      "ms": 10
+    },
+    {
+      "httpStatus": 401,
+      "code": "unauthenticated",
+      "group": "authentication",
+      "name": "an assertion signed by another key is refused",
+      "status": "pass",
+      "ms": 47
+    },
+    {
+      "httpStatus": 401,
+      "code": "unauthenticated",
+      "group": "authentication",
+      "name": "an assertion that has expired is refused",
+      "status": "pass",
+      "ms": 8
+    },
+    {
+      "httpStatus": 401,
+      "code": "unauthenticated",
+      "group": "authentication",
+      "name": "an assertion for another application is refused",
+      "status": "pass",
+      "ms": 6
+    },
+    {
+      "httpStatus": 401,
+      "code": "unauthenticated",
+      "group": "authentication",
+      "name": "an assertion from another issuer is refused",
+      "status": "pass",
+      "ms": 7
+    },
+    {
+      "httpStatus": 401,
+      "group": "authentication",
+      "name": "a management-style bearer token is not an application login",
+      "status": "pass",
+      "ms": 5
+    },
+    {
+      "httpStatus": 403,
+      "code": "identity_not_linked",
+      "wardrobeStatus": 403,
+      "group": "authentication",
+      "name": "a valid identity that is not linked to an account gets nothing",
+      "status": "pass",
+      "ms": 17
+    },
+    {
+      "httpStatus": 403,
+      "code": "forbidden",
+      "group": "authentication",
+      "name": "an invitation code that was never issued is refused",
+      "status": "pass",
+      "ms": 15
+    },
+    {
+      "httpStatus": 200,
+      "claimedNow": true,
+      "group": "authentication",
+      "name": "the invited owner signs in and reaches the imported account",
+      "status": "pass",
+      "ms": 99
+    },
+    {
+      "httpStatus": 401,
+      "code": "unauthenticated",
+      "group": "authentication",
+      "name": "app routes are refused on the MCP hostname even with a valid assertion",
+      "status": "pass",
+      "ms": 6
+    },
+    {
+      "reason": "local rehearsal: Cloudflare Access has no local simulator here",
+      "remaining": "run `node deploy/verify.mjs` against the deployment",
+      "group": "authentication",
+      "name": "the person's door behind Cloudflare Access",
+      "status": "not_run",
+      "ms": null
+    },
+    {
+      "apiTotal": 127,
+      "databaseGarments": 127,
+      "units": 144,
+      "wearObservations": 0,
+      "laundryBatches": 0,
+      "group": "seed",
+      "name": "the API serves the complete imported inventory",
+      "status": "pass",
+      "ms": 55
+    },
+    {
+      "activeRestrictions": 1,
+      "wearObservations": 0,
+      "laundryBatches": 0,
+      "group": "hard constraints",
+      "name": "the imported sneakers-only restriction is active and no wear or laundry history was invented",
+      "status": "pass",
+      "ms": 20
+    },
+    {
+      "httpStatus": 200,
+      "state": "completed",
+      "options": 3,
+      "pieces": 15,
+      "piecesNotInWardrobe": 0,
+      "optionsWithFootwear": 3,
+      "footwearOffered": 3,
+      "footwearNotSneakers": 0,
+      "group": "hard constraints",
+      "name": "every recommended outfit for tomorrow is built from the owner's real garments and wears sneakers only",
+      "status": "pass",
+      "ms": 76
+    },
+    {
+      "total": 3,
+      "leaked": 0,
+      "group": "isolation",
+      "name": "the synthetic second owner sees only its own labelled garments",
+      "status": "pass",
+      "ms": 20
+    },
+    {
+      "readOfRealBySynthetic": 404,
+      "readOfSyntheticByReal": 404,
+      "crossWrite": 404,
+      "crossWriteCode": "not_found",
+      "group": "isolation",
+      "name": "one owner cannot read or change the other's garment, in either direction",
+      "status": "pass",
+      "ms": 41
+    },
+    {
+      "first": 200,
+      "replayed": true,
+      "differentBody": 409,
+      "differentBodyCode": "idempotency_key_reuse",
+      "group": "idempotency",
+      "name": "a repeated command returns the stored receipt; the same key with a different body is refused",
+      "status": "pass",
+      "ms": 65
+    },
+    {
+      "httpStatus": 401,
+      "protectedResourceMetadata": 200,
+      "authorizationServerMetadata": 200,
+      "group": "oauth",
+      "name": "the MCP endpoint refuses a request without a grant and points to its metadata",
+      "status": "pass",
+      "ms": 18
+    },
+    {
+      "httpStatus": 401,
+      "group": "oauth",
+      "name": "an Access assertion is not an MCP credential",
+      "status": "pass",
+      "ms": 25
+    },
+    {
+      "group": "oauth",
+      "name": "a read-only and a writing client register, get the owner's consent and receive tokens",
+      "status": "pass",
+      "ms": 293
+    },
+    {
+      "readerTools": 6,
+      "writerTools": 7,
+      "group": "scopes",
+      "name": "the read-only connection is not offered the write tool; the writing connection gets all seven",
+      "status": "pass",
+      "ms": 44
+    },
+    {
+      "httpStatus": 403,
+      "group": "scopes",
+      "name": "the write tool called with a read-only token is refused with a scope challenge",
+      "status": "pass",
+      "ms": 9
+    },
+    {
+      "mcpTotal": 4,
+      "apiTotal": 4,
+      "group": "mcp session",
+      "name": "the inventory snapshot over MCP equals the API's for the same owner",
+      "status": "pass",
+      "ms": 52
+    },
+    {
+      "outcome": "committed",
+      "errorCode": null,
+      "replayed": true,
+      "storedChannel": "mcp",
+      "group": "mcp session",
+      "name": "a wash report through the write tool commits once with a receipt the API also serves",
+      "status": "pass",
+      "ms": 66
+    },
+    {
+      "code": "confirmation_required",
+      "unchanged": true,
+      "group": "mcp session",
+      "name": "a correction sent by the connection waits for the owner and changes nothing",
+      "status": "pass",
+      "ms": 90
+    },
+    {
+      "code": "forbidden",
+      "group": "mcp session",
+      "name": "a connected assistant cannot lift a restriction",
+      "status": "pass",
+      "ms": 16
+    },
+    {
+      "statuses": [
+        401,
+        401,
+        401,
+        401
+      ],
+      "ownerDecision": "rejected",
+      "group": "mcp session",
+      "name": "proposals cannot be listed or decided with an MCP token, on either hostname; the owner rejects it in the app",
+      "status": "pass",
+      "ms": 42
+    },
+    {
+      "readerAfterDisconnect": 401,
+      "writerTools": 7,
+      "group": "mcp session",
+      "name": "disconnecting an assistant takes effect on its next request; the other keeps working",
+      "status": "pass",
+      "ms": 38
+    },
+    {
+      "repository": 19,
+      "applied": 19,
+      "missing": [],
+      "lateStatementFailure": "rejected",
+      "earlierStatementRolledBack": true,
+      "group": "platform: D1",
+      "name": "every migration in the repository is applied, in order",
+      "status": "pass",
+      "ms": 10
+    },
+    {
+      "lateStatementFailure": "rejected",
+      "earlierStatementRolledBack": true,
+      "group": "platform: D1",
+      "name": "a batch whose last statement fails leaves nothing applied",
+      "status": "pass",
+      "ms": 10
+    },
+    {
+      "sameKey": {
+        "calls": 8,
+        "distinctCommands": 1,
+        "errors": 0
+      },
+      "sameExpectedVersion": {
+        "calls": 8,
+        "committed": 1,
+        "refusalCodes": [
+          "conflict"
+        ]
+      },
+      "storedCommands": 2,
+      "versionBefore": 1,
+      "versionAfter": 3,
+      "ms": 191,
+      "group": "platform: D1",
+      "name": "simultaneous commands (checklist S08-029): one command per repeated key, one winner among conflicting writers, no orphan receipts",
+      "status": "pass"
+    },
+    {
+      "garments": 200,
+      "changed": 200,
+      "commandMs": 69,
+      "error": null,
+      "group": "platform: D1",
+      "name": "one bulk correction over the cap of 200 synthetic garments commits inside one invocation",
+      "status": "pass",
+      "ms": 2403
+    },
+    {
+      "MEDIA_BUCKET": {
+        "roundTrip": true,
+        "deleted": true
+      },
+      "EXPORT_BUCKET": {
+        "roundTrip": true,
+        "deleted": true
+      },
+      "ms": 234,
+      "group": "platform: R2",
+      "name": "an object round-trips and is deleted in each private bucket",
+      "status": "pass"
+    },
+    {
+      "reason": "local rehearsal: there is no public address locally",
+      "remaining": "run verify with the management token in the environment",
+      "group": "platform: R2",
+      "name": "neither bucket has a public address or a custom domain",
+      "status": "not_run",
+      "ms": null
+    },
+    {
+      "instanceId": "probe-musqxsfg",
+      "workflowStatus": "complete",
+      "resumedAfterMs": 5011,
+      "group": "platform: Workflows",
+      "name": "a two-step workflow with a durable sleep runs to completion",
+      "status": "pass",
+      "ms": 6071
+    },
+    {
+      "probeId": "probe-musqxpb3",
+      "reason": null,
+      "group": "platform: Queues",
+      "name": "a message is accepted by the media queue",
+      "status": "pass",
+      "ms": 7
+    },
+    {
+      "reason": "local rehearsal: the dead-letter queue is read through the Queues HTTP pull API",
+      "remaining": "run verify with the management token in the environment",
+      "group": "platform: Queues",
+      "name": "a message the consumer cannot process is retried and reaches the dead-letter queue",
+      "status": "not_run",
+      "ms": null
+    },
+    {
+      "transcode": {
+        "bytes": 104,
+        "png": true
+      },
+      "segmentation": {
+        "bytes": 104,
+        "png": true
+      },
+      "ms": 53,
+      "group": "platform: Images",
+      "name": "the media adapters transcode and segment on the Images binding",
+      "status": "pass"
+    },
+    {
+      "reason": "local rehearsal: the Workers runtime's outbound policy has no local simulator here",
+      "remaining": "run `node deploy/verify.mjs` against the deployment",
+      "group": "platform: outbound",
+      "name": "the runtime refuses private destinations and the DNS-over-HTTPS resolver answers",
+      "status": "not_run",
+      "ms": null
+    },
+    {
+      "reason": "local rehearsal: a call from the deployed Worker to the providers has no local simulator here",
+      "remaining": "run `node deploy/verify.mjs` against the deployment",
+      "group": "platform: research",
+      "name": "the assistant's MCP client discovers the hosted search providers' tools",
+      "status": "not_run",
+      "ms": null
+    },
+    {
+      "reason": "local rehearsal: AI Search has no local simulator here",
+      "remaining": "run `node deploy/verify.mjs` against the deployment",
+      "group": "platform: AI Search",
+      "name": "an owner's private instance is provisioned, indexes a document and finds it",
+      "status": "not_run",
+      "ms": null
+    },
+    {
+      "reason": "local rehearsal: the AI binding has no local simulator here",
+      "remaining": "run `node deploy/verify.mjs` against the deployment",
+      "group": "platform: AI Gateway",
+      "name": "every profile and operation answers with Unified Billing and is recorded",
+      "status": "not_run",
+      "ms": null
+    },
+    {
+      "reason": "local rehearsal: a model has no local simulator here",
+      "remaining": "run `node deploy/verify.mjs` against the deployment",
+      "group": "conversation",
+      "name": "a real conversation turn completes on the deployed actor",
+      "status": "not_run",
+      "ms": null
+    },
+    {
+      "reason": "local rehearsal: a local restart is not the platform's eviction",
+      "remaining": "run `node deploy/verify.mjs --restart` against the deployment",
+      "group": "platform: Durable Object",
+      "name": "the conversation's messages are the same after the product Worker is redeployed",
+      "status": "not_run",
+      "ms": null
+    },
+    {
+      "reason": "needs the owner's own Google sign-in, a Google OAuth client (GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET) and a chosen outfit calendar; none exists in this project",
+      "remaining": "owner: create the OAuth client in the dedicated Google Cloud project, give its ID and secret as Worker secrets, connect Google in the app and choose the outfit calendar",
+      "group": "external",
+      "name": "Google Calendar: read events and project the outfit event",
+      "status": "not_run",
+      "ms": null
+    },
+    {
+      "reason": "needs an Apple Developer team, a WeatherKit key and service ID; none exists in this project",
+      "remaining": "owner: create the WeatherKit key and give the team ID, key ID, service ID and private key as Worker secrets; Open-Meteo is the forecast source until then",
+      "group": "external",
+      "name": "Apple WeatherKit forecast",
+      "status": "not_run",
+      "ms": null
+    },
+    {
+      "reason": "the Tavily credential is on the owner's own machine (specification section 19) and is not a project secret",
+      "remaining": "owner: add the Tavily key as a connection in the app, or give it as a project secret to be stored as a connection credential",
+      "group": "external",
+      "name": "Tavily search with the owner's key",
+      "status": "not_run",
+      "ms": null
+    }
+  ]
+}

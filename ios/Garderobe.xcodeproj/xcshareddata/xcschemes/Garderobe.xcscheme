@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Scheme
-   LastUpgradeVersion = "1430"
+   LastUpgradeVersion = "2600"
    version = "1.7">
    <BuildAction
       parallelizeBuildables = "YES"
       buildImplicitDependencies = "YES"
-      runPostActionsOnFailure = "NO">
+      buildArchitectures = "Automatic">
       <BuildActionEntries>
          <BuildActionEntry
             buildForTesting = "YES"
@@ -15,23 +15,9 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "F30F7BF37FCEBF28A71B09C0"
+               BlueprintIdentifier = "944C9665890975F878E6AF06"
                BuildableName = "Garderobe.app"
                BlueprintName = "Garderobe"
-               ReferencedContainer = "container:Garderobe.xcodeproj">
-            </BuildableReference>
-         </BuildActionEntry>
-         <BuildActionEntry
-            buildForTesting = "YES"
-            buildForRunning = "NO"
-            buildForProfiling = "NO"
-            buildForArchiving = "NO"
-            buildForAnalyzing = "NO">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "54A3486AB80203AD810437C7"
-               BuildableName = "GarderobeUITests.xctest"
-               BlueprintName = "GarderobeUITests"
                ReferencedContainer = "container:Garderobe.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -42,43 +28,29 @@
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
       shouldUseLaunchSchemeArgsEnv = "YES"
-      codeCoverageEnabled = "YES"
-      onlyGenerateCoverageForSpecifiedTargets = "NO">
-      <MacroExpansion>
-         <BuildableReference
-            BuildableIdentifier = "primary"
-            BlueprintIdentifier = "F30F7BF37FCEBF28A71B09C0"
-            BuildableName = "Garderobe.app"
-            BlueprintName = "Garderobe"
-            ReferencedContainer = "container:Garderobe.xcodeproj">
-         </BuildableReference>
-      </MacroExpansion>
+      shouldAutocreateTestPlan = "YES">
       <Testables>
          <TestableReference
-            skipped = "NO"
-            parallelizable = "NO">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "54A3486AB80203AD810437C7"
-               BuildableName = "GarderobeUITests.xctest"
-               BlueprintName = "GarderobeUITests"
-               ReferencedContainer = "container:Garderobe.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
-         <TestableReference
-            skipped = "NO"
-            parallelizable = "NO">
+            skipped = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "GarderobeKitTests"
                BuildableName = "GarderobeKitTests"
                BlueprintName = "GarderobeKitTests"
-               ReferencedContainer = "container:.">
+               ReferencedContainer = "container:GarderobeKit">
+            </BuildableReference>
+         </TestableReference>
+         <TestableReference
+            skipped = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "5F780FF34BE55266BA5849BB"
+               BuildableName = "GarderobeUITests.xctest"
+               BlueprintName = "GarderobeUITests"
+               ReferencedContainer = "container:Garderobe.xcodeproj">
             </BuildableReference>
          </TestableReference>
       </Testables>
-      <CommandLineArguments>
-      </CommandLineArguments>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"
@@ -94,18 +66,12 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "F30F7BF37FCEBF28A71B09C0"
+            BlueprintIdentifier = "944C9665890975F878E6AF06"
             BuildableName = "Garderobe.app"
             BlueprintName = "Garderobe"
             ReferencedContainer = "container:Garderobe.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
-      <CommandLineArguments>
-         <CommandLineArgument
-            argument = "-GarderobeDemo"
-            isEnabled = "YES">
-         </CommandLineArgument>
-      </CommandLineArguments>
    </LaunchAction>
    <ProfileAction
       buildConfiguration = "Release"
@@ -117,7 +83,7 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "F30F7BF37FCEBF28A71B09C0"
+            BlueprintIdentifier = "944C9665890975F878E6AF06"
             BuildableName = "Garderobe.app"
             BlueprintName = "Garderobe"
             ReferencedContainer = "container:Garderobe.xcodeproj">

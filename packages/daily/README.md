@@ -1,0 +1,207 @@
+# @garderobe/daily
+
+The daily service of Garderobe (specification sections 7 and 9, plus trips and pause/resume):
+mandatory context, outfit validation and composition, boards with immutable revisions, automatic
+repair, the weather skill, Calendar reading and the managed outfit event, the scheduled phases, trip
+packing and pause/resume. Every mutation goes through the shared command service.
+
+## Commands (from `wardrobe/packages/daily`)
+
+| Purpose | Command |
+| --- | --- |
+| Typecheck | `npm run typecheck` |
+| Tests (workerd, real local D1, real owner data) | `npm test` |
+| Check the live external contracts the adapters rely on | `npm run verify:contracts` |
+
+`verify:contracts` needs network access and no credentials. It runs three checks:
+
+- `scripts/verify-open-meteo.ts`: the live Open-Meteo forecast and geocoding endpoints through the real
+  adapter, including the next daylight-saving change inside the forecast range (the adapter's claim
+  that the hourly labels carry one fixed offset).
+- `scripts/verify-google-calendar.ts`: every Google Calendar v3 method, parameter and field the
+  Calendar adapter uses, against Google's published discovery document.
+- `scripts/verify-unauthenticated.ts`: every Calendar operation of the real adapter sent to the real
+  service with a value that is not a token (Google must answer 401 on each exact URL and verb, so
+  nothing can be written), and one WeatherKit request signed with a throwaway key (Apple must answer
+  401). This proves the endpoints, verbs and error contracts, and nothing behind authentication.
+
+Every adapter abandons one request, body included, after `timeoutMs` (15 seconds by default) and
+reports it as a retryable network failure, so a silent provider cannot hold a scheduled phase.
+
+## What is real and what is a stand-in in the tests
+
+- Real: the command service, D1 (local, in workerd), the foundation ledger, the owner's profile and
+  inventory imported through the ordinary commands, validation, composition, repair, the projector,
+  the scheduler.
+- Labelled fakes, only at the adapter boundary: `FakeWeatherProvider` / `FakeGeocoder` (the weather
+  HTTP service), `FakeGoogleCalendar` (the Google Calendar HTTP service), and in two tests a fake
+  composition model (the AI Gateway). The real Open-Meteo adapter is tested against a recorded live
+  response; the Google Calendar and WeatherKit adapters are tested against the documented wire shapes
+  with a scripted `fetch`. Neither has been run against the real service with real credentials.
+
+## Wiring
+
+```ts
+const registry = createFoundationRegistry();
+registerDaily(registry); // commands, version resolvers, in-commit board repair hook
+const deps: DailyDeps = {
+  db, commands: new CommandService({ db, registry }), clock,
+  weather: { provider: createOpenMeteoProvider({ fetch }), geocoder: createOpenMeteoGeocoder({ fetch }) },
+  calendar: { reader, writer },   // createGoogleCalendar({ fetch, getAccessToken }) or null when not connected
+  model: null,                    // a CompositionModel behind the AI Gateway; optional
+  modelFor: (principal) => model, // preferred: a model budgeted to that owner (also used by the scheduled sweep)
+  modelBudgetMs: 120_000,         // wall-clock budget for the model part of one board
+  // budgetClock: { now, after }, // optional: the clock and timer that budget runs on (tests supply their own)
+  comfort: null,                  // reader for dated comfort observations; optional
+  boardBaseUrl: env.APP_ORIGIN,   // the deployment's origin: the Calendar event links to <origin>/board/<date>
+};
+await runDueJobs(deps);           // from the five-minute cron
+```
+
+Route a slot swap through `swapSlot(deps, principal, ...)` rather than sending `board.swap_slot` bare:
+it consults the weather service first when the board's forecast is past its freshness threshold. The
+bare command still uses the newest forecast recorded for the day and, failing that, states the age of
+the forecast it checked against and flags the board for the sweep. For an ad hoc outfit question use
+`decisionContext(deps, principal, { outfit, role })`.
+
+Settings live under `OwnerSettings.extensions.daily` (`DailySettings` in `@garderobe/contracts/ext/daily`):
+phase times, wearing intervals, freshness thresholds, the outfit calendar and its presentation.
+
+## Interpretations recorded here
+
+- The one-neutral limit (profile section 5) counts every piece worn in the outfit: jacket, layers,
+  shirt, trousers, belt, socks and shoes. The composer settles the shoe, then the sock, then the belt,
+  each from pieces that keep the outfit within the limit; when every eligible piece would break it the
+  outfit is still offered and the validator reports the advisory, because the verdict is soft. The
+  jacket is chosen with the shoe in mind: a jacket that would leave only shoes that are a third piece
+  in one neutral is passed over while another jacket leaves a shoe within the limit.
+- The belt line carries an optional flourish on every plan (profile section 9): a scarf for a start
+  at 10 C or colder, otherwise, whenever the top is a shirt, a tie whose season words in the sheet
+  fit the day's peak (the everyday suggestion is category `tie` only, never a bandana or other
+  neckwear; a smart occasion keeps any neckwear that is not a scarf). No collar attribute is
+  recorded on garments, so the shirt category stands for a collared shirt. A packing proposal does not
+  propose the everyday tie (only a scarf for a cold start or a tie for a smart occasion), so the
+  suggestion does not take a place in a bag.
+- A piece named in a request (`lockedGarmentIds`, the brief's `include`) stays on every outfit
+  returned, so a board around one named shirt repeats that shirt. Naming it is also the owner's
+  explicit override of the repeat horizon for that piece in that request only: it is reported as
+  `repeat_at_owner_request` (advisory) instead of refused, and the repeat is stated in the preview's
+  note, as the option's qualification and in the published board's notice. Every other piece still
+  obeys the horizon, and a named piece that is unavailable, restricted or wrong for the forecast is
+  still refused.
+- The repeat exceptions a brief can carry (a named piece, `allowRepeat`) are the owner's override.
+  For an assistant principal `recommend` and `board.publish` honour neither, and a board an assistant
+  publishes stores `allowRepeat: false`. Each revision records whose brief it carries
+  (`context.repeatExceptions`), every later revalidation of that board (repair, swap, sweep) reads it,
+  and a scheduled run inherits it: a piece only an assistant named is given up, not repeated, if the
+  owner wears it before the day. On the owner's own board such a piece stays, and the repair that
+  notices it states the repeat on the board and in the receipt.
+- A swap never falls back to navy (profile section 8 rule 6), whatever the colour of the piece being
+  swapped out: a navy replacement is taken only when nothing else validates.
+- A day inside a trip for which something is packed is answered from the trip by `recommend`:
+  destination forecast, the trip's occasions and only the packed subset, published in `board` mode as
+  that day's trip board. A trip with nothing packed is only a plan and the day is answered from home.
+- Trousers, a jacket, shoes or a belt that the packing proposal plans on more days than it packs
+  units of stay wearable from the suitcase after they were worn on the trip, on the days the proposal
+  plans them and up to the units it packs (the trip's own repeat exception). The proposal read is the
+  newest one recorded no later than the owner's last packing report. Socks and shirts are worn once:
+  a worn pair or shirt is never offered again, however few were packed. A piece he reports dirty
+  after his last packing report is not re-worn either. Anything else worn on the trip awaits care, and unpacking
+  still declares nothing clean.
+- When every clean pair of socks at home is already planned, the packing proposal says so in a note
+  that names socks, and still plans (and packs) the rest of that day without socks; with no clean
+  pair at home at all the day is not planned and the note says socks are the reason. A sock with no
+  clean pair on the ledger is never proposed: the availability estimate does not stand in for a pair.
+- A comfort note that reports pain (`feedback.record` with `result.pain` and `result.garmentIds`) is
+  applied to open boards in the note's own commit: wherever another eligible piece can take the
+  painful one's place it does (as the main piece or as the second shoe), the option keeps its ID, and
+  the receipt names the change. With nothing else eligible, or when the eased outfit would not pass
+  the board's own checks, the option stays as it was, and a piece the owner put on an option himself
+  stays. The note's stated scope is deliberately not used: pain is never outweighed by styling
+  (specification section 10), a scope such as "long walks" cannot be matched to a future day, and
+  easing costs nothing where another eligible piece exists, so every open board is eased.
+- The Calendar event links to `<base>/board/<date>`, where the base is the owner's
+  `calendar.boardBaseUrl` setting when set and otherwise `DailyDeps.boardBaseUrl`. With neither there
+  is no link.
+- When the owner edited the managed outfit text in Calendar, the next projection replaces his edit
+  but keeps what he wrote before or after it: the managed region is located by the lines of the last
+  projection that are still there. If none is left the description is replaced. A description Google
+  returns as HTML (`<br>` or paragraph breaks, links, entities) is read as its plain text first and
+  written back as plain text. A single line directly above the surviving managed lines, when exactly the first managed
+  line is missing, is taken as that line rewritten in place.
+- The Open-Meteo adapter asks for one extra day each side of the range. When the extra day after the
+  range is beyond what the provider forecasts (HTTP 400 naming `end_date`), the request is repeated
+  once without it, so the last forecastable day is still forecast.
+- Every adapter request has a deadline (15 s, body included); Google's access-token lookup has its
+  own deadline of the same length before the request, and a caller's own abort signal still aborts
+  the request.
+- An accessory on an option is optional: when it stops being wearable the option goes without it.
+- A garment temperature note whose basis the inventory sheet did not state is assessed on the basis of
+  the owner's active rule for that role (shirts, trousers and socks on the daytime peak, outerwear on
+  the departure hour). Without such a rule it is not enforced and is reported as unsettled.
+- The research rules that are absent from the profile (cotton-linen from 28 C, pure linen from 30 C,
+  lightweight oxford from 10 C, no outerwear above 24 C, alpaca at 12 C or colder) stay
+  `pending_reconciliation`: they are carried in validation evidence and are not enforced until the
+  owner activates them. Activated rules of that shape are enforced at their boundary.
+- With no forecast, a jacket is only composed over a lightweight oxford, because the 14 to 16 C rule
+  cannot be ruled out; temperature checks are reported as unverified and the board says so. The
+  validator refuses the combination too (`jacket_band_unverified`, blocking) unless the owner named
+  the jacket himself, in which case it is a stated advisory. The rule covers every layer under the
+  jacket: the base shirt and a shirt or knit worn as the mid layer.
+- Watches and jewellery are recognised by the garment attribute `accessoryKind` (set at creation or
+  import), not by name: `watch`, `ring`, `chain`, `bracelet`, `necklace`, `cufflinks` and similar are
+  never part of an outfit. Names are only a backstop for records with no kind, and a generic
+  `accessory` with no kind is never placed on an outfit (`accessory_unclassified`, blocking), by the
+  service or as anyone's explicit pick, until a kind is recorded on it.
+- When the owner reports the healing restriction over, the sneaker and welted format comes into
+  force: every open board keeps its options, their IDs and his selection, and each option gains an
+  eligible welted alternative in the same commit.
+- A board whose options have all become invalid and cannot be replaced is published as an empty
+  revision with a plain notice; it is never left showing invalid outfits. A board flagged for a
+  recheck reads as `limited`, not `current`, until the sweep has checked it.
+- A scheduled run never replaces a board the owner made, changed or chose from while it was
+  composing: it states the board revision it composed over (`expectedBoardRevision`), and a chosen
+  outfit that is still valid is kept; the board is rechecked in place instead.
+- `board.restore` itself clears a delivery suppressed because the event was deleted in Calendar, so
+  the restore holds whatever revision is delivered next.
+- Freshness shown on a board is judged when it is read (pass `nowMs`): a forecast older than twelve
+  hours or a calendar read older than a day no longer reads as fresh.
+- A scheduled phase that fails five times stops; the fifth failure is reported once by the sweep
+  (`detail.gaveUp`) and Today says the board could not be prepared. The phase lease is three model
+  budgets plus a minute, at least five minutes.
+- Season words in the sheet ("Cold", "Warm-weather", ...) and the colour relations used by the
+  deterministic composer are soft ranking preferences. They never reject an outfit and are not a
+  claim about taste.
+- Shirts marked as a layering tier are not offered as the base shirt.
+- A missed morning phase is caught up for three hours after the morning time; later it is not replayed.
+- The 6:50 phase is the final check: a forecast older than `weatherMaxAgeMinutes` (60) or a calendar
+  read older than `calendarMaxAgeMinutes` (30) is read again then and the board revalidated. An ad hoc
+  request reuses a calendar read inside the threshold.
+- Slots affected by weather for a swap: everything except the belt and accessories.
+- An owner's layer-combination rule is a hard style rule `layering.<name>` with
+  `{ basis, minC?, maxC?, pieces: { outer?, top?, mid_layer?, bottom? } }`; none exists in the profile
+  beyond the 14 to 16 C jacket rule.
+- Unpacking returns every packed unit as awaiting care (the ledger's rule), including unworn ones.
+
+## Calendar projection: ours or the owner's, missing or present
+
+- Text without the invisible managed markers counts as ours only when a verified projection exists
+  (`managed_text`), both when merging the description and when a read-back verifies a write. Otherwise
+  even text equal to the new outfit text is the owner's: it is kept and the outfits go first.
+- An "ID taken but no event readable" observation (409 on insert, nothing under the ID) is recorded per
+  calendar and event ID (`duplicate_missing`, migration 0103). It is cleared by any read that sees that
+  event (cleanup reads included) or by a write of ours that lands on it, and every observation is cleared
+  when the outfit calendar changes. Only the same observation seen again at least five minutes later is
+  taken as a deleted event whose ID Google keeps: then the event moves to its replacement ID, or a fence
+  on that ID counts as done. Until then the run is retried.
+- A fence counts only once read back; a fence whose read-back fails or throws is withdrawn.
+- Cleaning up an earlier outfit calendar never stops delivery to the current one and never gives up: any
+  error there other than a lost lease or an abandoned call keeps the entry, and the effect is retried with
+  the capped cleanup backoff (30 minutes doubling to 24 hours).
+- Not changed: one null or cancelled read of a delivered event (with no write of ours outstanding) is
+  still taken as the owner's deletion and suppresses the day until he restores it. No observation
+  record is involved there; confirming it the same way would delay every honest owner deletion by five
+  minutes, and it is left as is.
+- Review findings fixed in the same change, outside those two rules: a cancelled-event fence whose
+  read-back threw stayed marked as fenced; an ordinary (non-API) writer error during earlier-calendar
+  cleanup fell into the bounded retries and could stop the cleanup after the attempt limit.
