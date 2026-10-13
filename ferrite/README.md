@@ -44,7 +44,7 @@ ferrite check --target upstream  # plus upstream Core's manifest keys and SDK su
 ferrite test                     # unit tests and the end-to-end harness tests
 ferrite dev                      # http://127.0.0.1:8787
 
-# from the repository root: the embedded inventory still matches the importer
+# from the repository root: the embedded inventory and profile still match the importer
 node --experimental-strip-types ferrite/scripts/build-seed.mjs --check
 # and the embedded command descriptions still match the Worker's command registry (Node 22.7+)
 node --experimental-transform-types ferrite/scripts/build-command-types.mjs --check
@@ -104,6 +104,8 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `POST /auth/claim`, `/auth/link/complete`, `/auth/recovery/start`, `/auth/recovery/complete`, `POST /v1/identities/link`, `/v1/identities/unlink`, `/v1/recovery-kit`, `/v1/account/delete` | 501 `module_unavailable` with `details.module: "identity"`: they need an identity provider (Cloudflare Access in the TypeScript Worker), which this port does not have. The `/auth/` ones answer before any sign-in; the `/v1/` ones after it. Nothing is written |
 | `GET /v1/recovery` | `RecoveryStatus`: the last published home board for the owner's day (ID, date, revision, publication time) and its Calendar projection, `actions: ["open_today"]` when there is one, and diagnostics (`environment: "ferrite"`, the daily and assistant modules present and media absent, and why there is no board, or the board read's error in at most 200 characters). `pending` is always zero and `connectionIssues` always empty, see Known limits. Nothing is written |
 | `GET /v1/wardrobe/temperature-preview?temperatureC=` | `TemperaturePreview` as `temperaturePreview`: for a temperature from -40 to 50 °C, each owned garment in a top, mid-layer, bottom, outerwear or socks role that its thermal range would exclude, the active hard fabric-class rules that exclude a fabric there, and the outerwear ceiling. It reads the real seed's thermal ranges and rules and writes nothing; a missing or unreadable temperature is `invalid_command` |
+| `GET /v1/style[?date=]` | `StyleContext` as `getStyleContext`: the owner's profile verbatim (document `owner-profile` version 1, its SHA-256 and byte length), the profile's machine rules ordered by key with the passages they quote, his body measurements ordered by key, his size experiences by maker, the contract's precedence statement and `styleRevision` 0. Amendments, standing directions, day briefs and fact conflicts are always empty (no style command is ported). A malformed `date` is `invalid_command`. The owner and a connected assistant read it; nothing is written |
+| `GET /v1/style/conflicts[?status=open\|resolved\|withdrawn\|all][&documentId=]` | `StyleConflictList`, always empty: a conflict is left by saving an edited profile, which is not ported. Any other status is `invalid_command` |
 | `GET /v1/settings` | `SettingsResponse`: the specification's default settings (`DEFAULT_OWNER_SETTINGS`) at version 1, since no settings command is ported; `defaultOptionCount` is the count the recommender uses. `profile` and `inference` are null. Its timezone is what Today, the weather and `garderobe_today` default to; the other dated routes still take the day explicitly |
 | `/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` | the authorization server of the MCP endpoint and of the owner's app, see below |
 
@@ -823,6 +825,11 @@ The inventory is `src/seed/owner-inventory.json`, written by
 `scripts/build-seed.mjs`, which runs the TypeScript importer itself on
 `requirements/wardrobe_inventory_clean.csv` (127 garments, 144 units, CSV
 SHA-256 `ca9a5e06…`). Nothing about the import is re-implemented here.
+The same script writes `src/seed/owner-style.json`: the owner's profile
+(`requirements/chris-wardrobe-profile.md`, refused unless its SHA-256 is
+`e15639d8…`) verbatim, with the 28 rules, 5 body measurements and 6 size
+experiences the importer records from it, each passage located by the
+importer's own `locatePassage`.
 Likewise the command descriptions of `GET /v1/command-types` are
 `src/seed/command-types.json`, written by `scripts/build-command-types.mjs`
 from the Worker's own command registry.
@@ -1014,6 +1021,19 @@ milestone, and outside the lines of the milestone in hand:
   - Earlier proposal revisions are kept but only the latest is readable.
   - A coordinate smaller than 0.000001 in size (other than 0), or 10^21 or
     larger, is refused, since JavaScript writes those in exponent form.
+- **Style.**
+  - No style command is ported: saving an edited profile in My style
+    (`POST /v1/style/preview-save` and `style.save_document`), amendments,
+    standing directions, day briefs, and rule, measurement and size changes.
+    The context is the import as it stands, so `styleRevision` stays 0 and
+    there are never fact conflicts to decide.
+  - Record IDs (`rul_`, `msr_`, `szx_`) are this port's own, derived from
+    the importer's idempotency keys; the TypeScript service draws them at
+    random. Every record's `createdAt`, the document's included, is the
+    profile's date (2026-09-14T00:00:00Z), since this port has no import
+    run time.
+  - The MCP view `garderobe_inventory` `style` and the
+    `garderobe://style/profile` resource are not ported; the REST route is.
 - **Temperature preview.**
   - `temperatureC` must be plain decimal text, optionally with an exponent
     (the iOS client sends `12.0`). TypeScript's `Number()` also accepts an
