@@ -877,6 +877,27 @@ cursor sent without a limit, and decomposed accents in search; later reviews
 raised the two findings above. The last prepared commit, 81ce6e91, is kept
 unlanded, and `/v1/wardrobe` keeps the subset shape above.
 
+Milestone 2, phrase resolution, the bulk-edit selection preview and the
+probabilistic availability estimator (`GET /v1/wardrobe/resolve`,
+`POST /v1/wardrobe/selection`, `GET /v1/availability` and the matching
+`garderobe_inventory` views), is parked unlanded and removed from the tree.
+Its open finding: the estimator counts outfits offered in the last 14 days
+against a garment even when they predate a wash or clean return observed for
+that garment. A single-unit piece offered yesterday and washed today can still
+read as only 15% available. The TypeScript estimator behaves the same way:
+its exposure cutoff comes only from the weekly service-laundry baseline or the
+horizon (`packages/domain/src/queries.ts`, `cutoffDateByChannel`), never from
+a per-garment wash.
+
+What was tried: four exact-patch review rounds. They fixed option sets that
+read a wear's current retraction state instead of its state when the board was
+written, the missing aliases of merged "(pair 2)" sheet rows, incomplete
+Unicode folding (now a generated NFKD table checked against `normalizePhrase`),
+and README selector fields that do not exist. The fourth review raised the
+finding above. The last prepared commit, 4e55facc, is kept unlanded, and its
+full patch is in the project library as "Parked Ferrite milestone 2 patch:
+resolve, selection, availability".
+
 Found by the automatic reviews of the whole port, or recorded with a later
 milestone, and outside the lines of the milestone in hand:
 
