@@ -479,7 +479,7 @@ async fn the_inventory_views_and_resources_are_the_landed_reads_in_the_mcp_envel
     for (view, path, total) in [
         ("laundry", "/v1/laundry", Value::Null),
         ("style", "/v1/style", Value::Null),
-        ("command_types", "/v1/command-types", json!(19)),
+        ("command_types", "/v1/command-types", json!(20)),
         ("trips", "/v1/trips", json!(1)),
         ("returns", "/v1/returns", json!(1)),
         ("orders", "/v1/orders", json!(0)),
@@ -506,7 +506,7 @@ async fn the_inventory_views_and_resources_are_the_landed_reads_in_the_mcp_envel
     assert_eq!((trips["structuredContent"]["data"]["trips"][0]["tripId"].clone(), text(&trips)), (json!("trp_lisbon"), "1 trip(s).".to_string()));
     assert_eq!(text(&call(&mut store, &access, "garderobe_inventory", json!({"view": "returns"})).await), "1 return or exchange case(s).");
     assert_eq!(text(&call(&mut store, &access, "garderobe_inventory", json!({"view": "orders"})).await), "0 order(s).");
-    assert!(text(&call(&mut store, &access, "garderobe_inventory", json!({"view": "command_types"})).await).starts_with("19 command types"));
+    assert!(text(&call(&mut store, &access, "garderobe_inventory", json!({"view": "command_types"})).await).starts_with("20 command types"));
 
     // A command committed between the view's first ledger read and its data read: the view reads
     // again, so its data and wardrobeRevision belong to the same commit (revision 4, two trips).

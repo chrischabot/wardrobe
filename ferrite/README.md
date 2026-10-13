@@ -90,9 +90,14 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `GET /v1/devices`, `POST /v1/devices`, `POST /v1/devices/{deviceId}/remove` (owner only) | Notification devices (`DeviceList`, `Device`, `DeviceRemoved`, as `notifications/service.ts`): registering or refreshing a device's APNs token (a token registered under another device ID moves to this one), listing, and removing. Nothing is delivered, so `deliveryConfigured` is false and `lastDeliveryAt` null; the token is kept for a later dispatcher and never returned. At most 20 devices are kept |
 | `POST /v1/exports`, `GET /v1/exports`, `GET /v1/exports/{id}`, `POST /v1/exports/{id}/ticket` (owner only) | Portable export (`ExportRequest`, `ExportJob`, `ExportList`, `DownloadTicket`, as `export/job.ts`), see "Portable export" |
 | `GET /v1/exports/{id}/download?ticket=` (the ticket alone) | The package (`application/zip`), for a ticket the owner was just given: each ticket works once, for 5 minutes, and is spent before a byte is sent; the sign-in is neither needed nor read |
+| `POST /v1/uploads` (owner only) | `UploadAuthorizationResponse` for an `UploadRequest` (as `routes/media.ts`): a JPEG, PNG or WebP of at most 3 MiB, a garment photograph naming a catalogue garment, a selfie or attachment naming none. HEIC is 415 `unsupported_media_type` (this server cannot remove its location); above 3 MiB is 413. The upload ID is derived from `clientUploadId`, so a retry answers the same upload (`replayed: true`) and a different request under it is 409 `idempotency_key_reuse`. `url` is relative to the origin, `requiredHeaders` empty, `maxBytes` the declared size; the bytes may be sent for 10 minutes. See "Photographs" |
+| `PUT /v1/uploads/{id}/content?token=&offset=` (the URL's token alone) | `UploadContentResponse`: one piece of at most 256 KiB (Ferrite's body cap), appended at `offset` (default 0), which must be the bytes already received; a piece sent again at the same offset is answered as received, any other offset is 409 with `details.receivedBytes`. Above the cap or the declared size is 413; after the 10 minutes 410 `expired`; a wrong token 401. `sha256` is this piece's digest |
+| `GET /v1/uploads/{id}` (owner only) | `UploadStatus`: `authorized`, `finalized`, `rejected` (with its reason), or `expired` once an unfinished upload is past its finalization hour |
+| `POST /v1/uploads/{id}/complete` (owner only) | `UploadCompleteResponse`: the command `media.finalize_upload` through `POST /v1/commands` (key `finalize:<uploadId>`, so asking again answers the same receipt). Before every declared byte has arrived it is a retryable 409 `precondition_failed` that records nothing. Then what the bytes are decides: not an image, not the declared type, animated, no image data, under 64 or over 8192 pixels a side (or 25 megapixels), or a structure that cannot be walked is a committed rejection with its reason; otherwise the asset is stored, `active` at once. `jobId` is null (nothing more is done to it) |
+| `GET /v1/items/{id}/image[?width=]` (owner only) | the garment's newest photograph without its metadata (with an `etag`; `if-none-match` answers 304), or 404 `not_found` with `details.missingImageNote: "No photo yet"`; a placeholder is never served. `width` must be 160, 320, 640 or 1280 and the stored picture is served at every width |
 | `POST /mcp` (OAuth) | the MCP server of `apps/worker/src/mcp`, see below |
-| `GET /v1/meta` | `MetaResponse`: API and contract versions, mounted modules (media is reported as not mounted), server time, the MCP endpoint and its protocol versions. Without a valid `WARDROBE_PUBLIC_ORIGIN` it is refused by that secret's name |
-| `GET /v1/command-types` | `CommandTypeList`, as `describeCommandTypes`: the nineteen command types this port executes, each with the class, required scope and payload JSON Schema the TypeScript registry gives it (`src/seed/command-types.json`, written by `scripts/build-command-types.mjs`), narrowed to this port: only the payload fields its handler accepts, with `additionalProperties: false` (so `board.publish` has no `requestFingerprint`), only the `owner_tap` and `owner_statement` authorizations (a publication by schedule is not ported), and `consequential` from the port's own connected-assistant rule, under which none of the nineteen waits for the owner. A field whose other values the port always refuses is published as the value it accepts: `board.publish` `scope` `"home"`, `"home:evening"`, `trip:<tripId>` or `trip:<tripId>:evening`, `brief` the default brief (its `segment` `day` or `evening`), `weatherSnapshotId` and `calendarSnapshotId` null only; `board.swap_slot` `weatherSnapshotId` is left out (no value is accepted); `return.open_case` `orderId` and `lineId` null only, `garmentId` a garment ID (never null) and `timezone` `Europe/London` or `UTC`. Size bounds (list and text lengths) are not restated; the command names them when it refuses |
+| `GET /v1/meta` | `MetaResponse`: API and contract versions, mounted modules (media is reported as not mounted: uploads and the garment's photograph are here, but media review, photos-needed, renditions and Studio previews are not), server time, the MCP endpoint and its protocol versions. Without a valid `WARDROBE_PUBLIC_ORIGIN` it is refused by that secret's name |
+| `GET /v1/command-types` | `CommandTypeList`, as `describeCommandTypes`: the twenty command types this port executes, each with the class, required scope and payload JSON Schema the TypeScript registry gives it (`src/seed/command-types.json`, written by `scripts/build-command-types.mjs`), narrowed to this port: only the payload fields its handler accepts, with `additionalProperties: false` (so `board.publish` has no `requestFingerprint`), only the `owner_tap` and `owner_statement` authorizations (a publication by schedule is not ported), and `consequential` from the port's own connected-assistant rule, under which none of the twenty waits for the owner. A field whose other values the port always refuses is published as the value it accepts: `board.publish` `scope` `"home"`, `"home:evening"`, `trip:<tripId>` or `trip:<tripId>:evening`, `brief` the default brief (its `segment` `day` or `evening`), `weatherSnapshotId` and `calendarSnapshotId` null only; `board.swap_slot` `weatherSnapshotId` is left out (no value is accepted); `return.open_case` `orderId` and `lineId` null only, `garmentId` a garment ID (never null) and `timezone` `Europe/London` or `UTC`. Size bounds (list and text lengths) are not restated; the command names them when it refuses |
 | `POST /v1/commands/batch` | the phone's offline replay (`CommandBatchResponse`): 1 to 50 envelopes in order, each run as `POST /v1/commands` runs it, independent of the others, with `retryable` from the error code as `isRetryable` decides it. Once commands have run, a failed final read still answers their results |
 | `POST /v1/recommendations` | `RecommendResponse`. `preview` (default): the recommender's validated options, nothing published. `board`: those options published through `board.publish` as the day's home board, or, for a day of a planned trip with something packed, as that trip's day board (`trip:<tripId>`, composed from the suitcase; see "Trip-day boards"), under the key `board-compose:{caller}:{clientRequestId}` (the caller is `owner` or `assistant`, so the two never meet on one publication), answered with the board. A retransmission answers from the saved run and the publication's receipt. `date` is required (no owner timezone); `lockedGarmentIds` and `occasionOnly: true` are refused as not ported |
 | `POST /v1/boards/{id}/swap` | `SwapSlotResponse`: `board.swap_slot` under the key `board-swap:{caller}:{clientRequestId}`, `expectedRevision` sent as the board's expected version, answered with the receipt and the board as it now stands. No fresher forecast is fetched first (weather is not ported) |
@@ -124,7 +129,7 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 
 Commands: `care.mark_dirty`, `care.washed`, `board.publish`, `board.select`,
 `board.swap_slot`, `feedback.record`, `feedback.retract`, `laundry.collect`, `laundry.return`,
-`trip.create`, `trip.update`, `trip.cancel`, `trip.record_packing_proposal`, `return.open_case`, `return.update_case`, `wear.record` and `command.undo`. Each applies at once and
+`trip.create`, `trip.update`, `trip.cancel`, `trip.record_packing_proposal`, `return.open_case`, `return.update_case`, `wear.record`, `media.finalize_upload` and `command.undo`. Each applies at once and
 answers with the receipt of `CommandReceipt` (contract 1.1.0): summary built
 from the ledger, affected entity versions, repairs, result, undo
 availability, wardrobe revision, actor and channel. The same idempotency key
@@ -1082,12 +1087,112 @@ as TypeScript's `staleVersions: "conflict"` does.
 - `availability` is the estimator's `GarmentAvailability` for the owner's day now, exactly what
   `GET /v1/availability` gives the garment (see "Availability").
 - `media` is `null` with `mediaAvailable: false` and `knownCombinations` is empty (no media module, no
-  stored combinations); `measurements` is empty (none are ported).
+  stored combinations); `measurements` is empty (none are ported). A stored photograph is read at
+  `GET /v1/items/{id}/image`, not described here (see Known limits).
+
+## Photographs
+
+The media core of `packages/media` and `routes/media.ts`, first part
+(`src/media.rs`, `src/image.rs`): the owner's photographs are stored in the
+app's own private storage and read back through the owner's routes. This
+part serves the garment's photograph; renditions, signed links, assets and
+photographs in the export follow in later parts.
+
+- **Uploads in pieces.** Ferrite refuses a request body above 256 KiB, so the
+  content route takes a photograph in pieces of at most 256 KiB, each at
+  `?offset=` the bytes already received. A photograph may be at most 3 MiB
+  (a reply carries about 4 MiB), in at most 64 pieces. The upload record is
+  its own commit guard, and each piece is stored with it in 128 KiB parts in
+  the same guarded commit, so a piece is either recorded whole or not at all.
+  The content URL's token is an HMAC keyed with the owner token: nothing
+  secret is stored, and rotating the owner token ends every outstanding
+  upload URL.
+- **Finalization is a command.** `media.finalize_upload` runs through the
+  command service like every other change (receipt, idempotency, the
+  ledger's guarded commit) and is the owner's alone. It reads what the bytes
+  are from their structure (JPEG markers, PNG chunks, RIFF chunks), never
+  from what the client declared. Completing before every declared byte has
+  arrived is a retryable `precondition_failed` that records nothing. That
+  rule also keeps finalization (written under the ledger's guard) and the
+  content route (under the upload record's guard) apart: once every byte is
+  recorded no piece can commit. An extended WebP's frame header must parse
+  and fill its canvas. Its undo is not offered: this server cannot delete a
+  photograph yet. `GET /v1/command-types` lists it for a connected
+  assistant too (the list is the same for both callers), and the command
+  refuses anyone but the owner.
+- **No location leaves.** Nothing is decoded, re-encoded, resized or cut
+  out. Every read serves a copy without metadata, rebuilt from an allowlist
+  in which every kept field must fill its segment or chunk exactly, so
+  nothing can ride after it. JPEG keeps JFIF and the Adobe colour transform
+  (each rebuilt from its fixed fields alone, without the JFIF thumbnail),
+  the quantization, Huffman and arithmetic-coding tables, the restart
+  interval, the line count, the frame and the scans; a table or header with
+  bytes after its fields means the file is not walked. Exif (with any GPS
+  block), XMP, IPTC, the ICC colour profile, comments and everything after
+  the end of the image (where an iPhone JPEG appends further images, each
+  with its own Exif) are dropped, and only the Exif orientation is carried
+  over, in a new block holding nothing else. PNG keeps the critical chunks,
+  transparency and the fixed-size colour and display chunks (`cHRM`,
+  `gAMA`, `sBIT`, `sRGB`, `cICP`, `mDCV`, `cLLI`, `bKGD`, `pHYs`), each
+  rebuilt with its CRC computed here; one of the wrong length is dropped, a
+  critical chunk of the wrong length or an unknown one refuses the file, and
+  every other chunk (Exif, text, time, XMP, `iCCP`, C2PA provenance,
+  animation, private chunks) is dropped. WebP keeps the frame, its alpha and
+  the extended header, rebuilt from exactly its ten bytes with only the
+  alpha flag; `ICCP`, Exif, XMP, animation and unknown chunks are dropped. A
+  still WebP holds exactly one `VP8 `/`VP8L` frame, and a simple one nothing
+  else that matters beside it. The file as supplied is kept (each asset
+  records `hadLocationMetadata`) but no route here serves it.
+- **Limits, stated rather than hidden.** HEIC is refused (this server cannot
+  clean it; the app converts to JPEG). One rendition per asset, the
+  original: a requested `width` is checked against 160, 320, 640 and 1280 and
+  the stored picture is served at every width (no thumbnails). No background
+  removal. No deletion of a photograph, no selfie retention window
+  (`retainOriginalUntil` is null), no sweep of unfinished uploads or of a
+  rejected upload's bytes, and at most 500 photographs. Every image reply
+  carries `cache-control: no-store` (added to every reply by `src/lib.rs`).
+
+`tests/media.rs` covers authorization and its replay, pieces in and out of
+order, the token, completion before the last byte, the owner-only command
+and its receipt, rejections with their reasons, the garment's photograph
+without GPS or comment, and the export's honest media component.
 
 ## Known limits
 
 Recorded rather than fixed, under the owner's P0/P1 direction. Each is either minor or outside
 the lines of the milestone it was found in.
+
+- Photographs (`src/media.rs`, `src/image.rs`):
+  - Only the garment's photograph is served. `GET /v1/media/renditions/{id}`,
+    its signed links and `GET /v1/media/assets/{id}` are not routed yet
+    (404), and the export does not package photographs (its media component
+    says so). The item page's `media` stays null and the inventory page
+    names no image; the app asks `GET /v1/items/{id}/image` for each garment.
+  - The unchanged iOS client sends a photograph in one `PUT`, so against
+    this server it can upload only photographs of at most 256 KiB until it
+    sends pieces at `?offset=` (an iOS follow-up).
+  - Real camera JPEGs have not been run through `image::strip`; the tests
+    use synthetic files with the same structure, and no independent decoder
+    has checked that a stripped copy still displays, progressive JPEGs
+    included.
+  - The ICC colour profile is dropped (a profile can carry any bytes), so a
+    wide-gamut photograph is shown in sRGB colours, slightly duller than
+    taken. The compressed picture data itself (JPEG scans, PNG `IDAT`, WebP
+    frames and alpha) is copied as supplied: nothing is decoded, so bytes a
+    hand-made file hides inside it are not removed. Cameras do not write
+    location there.
+  - Kept JPEG tables are checked for length and field ranges only, not for
+    whether a decoder can use them; each quantized scan's tables must be
+    defined before it.
+  - An upload completed before every byte arrived is a retryable
+    `precondition_failed` until the finalization grace period ends, even
+    after its content window has closed and sending the rest would be
+    refused as expired; the client must then authorize a new upload.
+  - A PNG's critical chunks are not checked for order or count (one header,
+    the palette before the image data, consecutive image data, an empty
+    end chunk), so a malformed PNG with only allowlisted chunks can be
+    finalized and served as it is. It cannot carry metadata past the
+    allowlist.
 
 - Portable export (`src/exports.rs`):
   - The package is built inside the request that asks for it (the owner's
@@ -1118,10 +1223,12 @@ the lines of the milestone it was found in.
   - No passphrase encryption: a request with a passphrase is refused with
     501 `module_unavailable` (`details.module: "export-encryption"`), never
     answered with an unencrypted package.
-  - This server stores no photographs and no conversation, so those
-    components are complete with no records and say why; `includeLocation`
-    is recorded on the job (the owner only). Location stripping arrives with
-    the media routes.
+  - Photographs are stored (see "Photographs") but not yet packaged: with
+    any stored, the media component is `incomplete`, holds no file and no
+    location data, and its note gives how many are stored; with none it is
+    complete with no records. This server stores no conversation, so that
+    component is complete with no records and says why. `includeLocation`
+    is recorded on the job (the owner only).
   - Receipts are the commands the exported records name, the newest 200
     (the ledger's recent list) and the undo links between them; once the
     recent list is full the component is reported incomplete, since an
@@ -1459,8 +1566,8 @@ From `docs/building-on-upstream-core.md` in `iGentAI/ferrite-labs`.
 | Limit | Where it bites | How the port handles it |
 |---|---|---|
 | 8 s request deadline (api routes); a late reply is a `504` while the effect still happens | Conversation turns, recommendation runs, research and Calendar sync wait on models or outside services | Slice: a command is a few APE reads and one guarded write; receipt lists are capped at 200 reads (default 50). Later: anything that waits on a model or an outside call runs from a queue and the route answers with a run ID to poll or stream, which the TypeScript API already has as resumable runs. Idempotency keys make a request that timed out safe to send again |
-| 256 KiB request body; chunked bodies refused | Offline replay `POST /v1/commands/batch` (4 MB in TypeScript), photo uploads, portable import | Slice: payload lists are capped at 200 items. Later: the app sends batches in parts under 256 KiB; photos and import packages upload in numbered parts into blob storage and are assembled server-side |
-| Reply about 4 MiB (the reply envelope, not the body) | Portable export, media downloads | Later: export and media are served in parts from blob storage |
+| 256 KiB request body; chunked bodies refused | Offline replay `POST /v1/commands/batch` (4 MB in TypeScript), photo uploads, portable import | Slice: payload lists are capped at 200 items; a photograph arrives in pieces of at most 256 KiB at `?offset=` (see "Photographs"). Later: the app sends batches in parts under 256 KiB; import packages upload in numbered parts |
+| Reply about 4 MiB (the reply envelope, not the body) | Portable export, media downloads | Slice: a photograph is at most 3 MiB and an export package at most 3 MiB. Later: export and media are served in parts from blob storage |
 | One `set-cookie` per reply | Web sign-in that needs a session cookie and a CSRF cookie | Slice: bearer tokens, no cookies; the OAuth consent page needs none (the owner token in the form is the proof, so a cross-site form cannot forge it). Later: the `packages/auth` pattern, one cookie whose value changes phase, and the CSRF token in the body or a header |
 | No `Host` header reaches the app (`host` is refused in `forward_headers`) | OAuth issuer, metadata URLs, `WWW-Authenticate` challenges | The public origin is the deploy secret `WARDROBE_PUBLIC_ORIGIN`; the OAuth and MCP routes refuse to answer without it |
 | Stream routes get no headers; no session affinity | MCP Streamable HTTP's optional SSE stream and `Mcp-Session-Id` | The MCP endpoint is stateless with JSON responses: tools answer within one request, and `GET /mcp` is 405 |
@@ -1510,16 +1617,14 @@ small change of its own, and passes `ferrite check`, `ferrite test` and
 4. **Conversation actor.** The Durable Object conversation authority as APE
    state plus queue-driven turns, model calls through Ferrite's AI gateway
    egress (only the project's allowed model), streamed over SSE with a ticket.
-5. **Media.** Private photos in blob storage, uploads in parts, HEIC cleaning
-   and composites in Rust. Cloudflare Images, AI Search and the Cache API have
-   no Ferrite equivalent; search over the wardrobe becomes an index the app
-   keeps in its own store. Parked: the media core (chunked uploads, the
-   finalize command, item images, renditions, signed links and photographs
-   in the export) failed four exact-patch reviews and is not in this tree.
-   It is kept as `wardrobe/.fabric-parked/ferrite-7b.patch`, outside this
-   directory, with the last review's finding (a still WebP must hold exactly
-   one `VP8 `/`VP8L` chunk) fixed in the patch but unreviewed. Until it
-   lands, photographs are not served.
+5. **Media.** Started: uploads in pieces, finalization as a command and the
+   garment's photograph without location, see "Photographs". Next, from
+   `wardrobe/.fabric-parked/ferrite-7b.patch` in small reviewed patches:
+   renditions, signed links and assets, then photographs in the export.
+   After that: media review, photos-needed, deletion and selfie retention,
+   then HEIC cleaning, thumbnails and composites in Rust. Cloudflare Images,
+   AI Search and the Cache API have no Ferrite equivalent; search over the
+   wardrobe becomes an index the app keeps in its own store.
 6. **Parity and acceptance.** The journey, adversarial and simulation suites
    pointed at this app, and the live deploy.
 

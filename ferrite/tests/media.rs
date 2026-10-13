@@ -1,0 +1,312 @@
+//! Photographs, the media core, as the app's capture and wardrobe screens use it: authorize an
+//! upload, send its bytes in pieces within Ferrite's 256 KiB body cap, finalize it through the
+//! command service (a receipt like every other change), then read the garment's photograph, which
+//! never carries location.
+//!
+//! Test doubles: the store is an in-memory double of the APE binding (the same guarded-commit
+//! semantics), and the image files are synthetic, built byte by byte with the structure of a JPEG
+//! or PNG (they are not real photographs). The garments are the real seed.
+
+use std::collections::BTreeMap;
+use std::io;
+
+use ferrite_app::serde_json::{self, json, Value};
+use ferrite_app::IngressRequest;
+use wardrobe::api::{self, Store, Tokens};
+use wardrobe::image::{has_location, probe};
+use wardrobe::media::{FINALIZE_GRACE_MS, MAX_CHUNK_BYTES, MAX_UPLOAD_BYTES, NO_PHOTO, UPLOAD_TTL_MS};
+use wardrobe::time::parse_instant;
+
+const ORIGIN: &str = "http://127.0.0.1:8787";
+const OWNER: &str = "owner-token-for-tests";
+const ASSISTANT: &str = "assistant-token-for-tests";
+const OXFORD_BLUE: &str = "gmt_3894b6a6295908d5e687af4f";
+
+#[derive(Default, Clone)]
+struct MemStore {
+    data: BTreeMap<Vec<u8>, Vec<u8>>,
+}
+
+impl Store for MemStore {
+    async fn get(&mut self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        Ok(self.data.get(key).cloned())
+    }
+    async fn commit_n_if(&mut self, guard: &[u8], expected: Option<&[u8]>, entries: &[(&[u8], &[u8])]) -> io::Result<Result<(), Option<Vec<u8>>>> {
+        let current = self.data.get(guard).cloned();
+        if current.as_deref() != expected {
+            return Ok(Err(current));
+        }
+        for (k, v) in entries {
+            self.data.insert(k.to_vec(), v.to_vec());
+        }
+        Ok(Ok(()))
+    }
+}
+
+struct Answer {
+    status: u16,
+    json: Value,
+    content_type: String,
+    bytes: Vec<u8>,
+    headers: Vec<(String, String)>,
+}
+
+impl Answer {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+    }
+    fn code(&self) -> Option<&str> {
+        self.json["error"]["code"].as_str()
+    }
+}
+
+async fn send(store: &mut MemStore, now: u64, method: &str, path: &str, auth: Option<&str>, headers: &[(&str, &str)], body: Vec<u8>) -> Answer {
+    let mut req = IngressRequest::new(method, path, body);
+    req.correlation_id = "corr-media".into();
+    if let Some(a) = auth {
+        req.headers.push(("authorization".into(), format!("Bearer {a}")));
+    }
+    req.headers.extend(headers.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+    let tokens = Tokens { owner: Some(OWNER.into()), assistant: Some(ASSISTANT.into()), public_origin: Some(ORIGIN.into()), app_client_id: None, app_redirect_uri: None };
+    let reply = api::handle(store, &tokens, now, &req).await;
+    let (content_type, bytes) = reply.content();
+    Answer { status: reply.status, json: serde_json::from_slice(&bytes).unwrap_or(Value::Null), content_type, bytes, headers: reply.headers }
+}
+
+async fn owner(store: &mut MemStore, now: u64, method: &str, path: &str, body: Value) -> Answer {
+    let bytes = if body.is_null() { Vec::new() } else { body.to_string().into_bytes() };
+    send(store, now, method, path, Some(OWNER), &[], bytes).await
+}
+
+async fn put(store: &mut MemStore, now: u64, url: &str, offset: usize, piece: &[u8]) -> Answer {
+    send(store, now, "PUT", &format!("{url}&offset={offset}"), None, &[], piece.to_vec()).await
+}
+
+fn at(text: &str) -> u64 {
+    parse_instant(text).unwrap()
+}
+
+// ─────────────────────────── synthetic image files ───────────────────────────
+
+fn segment(marker: u8, payload: &[u8]) -> Vec<u8> {
+    let mut out = vec![0xFF, marker];
+    out.extend_from_slice(&((payload.len() + 2) as u16).to_be_bytes());
+    out.extend_from_slice(payload);
+    out
+}
+
+/// A big-endian Exif block with an orientation of 6 and a GPS directory holding a latitude.
+fn exif_with_gps() -> Vec<u8> {
+    let mut t = b"Exif\0\0MM\0\x2a".to_vec();
+    t.extend_from_slice(&8u32.to_be_bytes());
+    t.extend_from_slice(&2u16.to_be_bytes());
+    t.extend_from_slice(&[0x01, 0x12, 0x00, 0x03, 0, 0, 0, 1, 0, 6, 0, 0]);
+    t.extend_from_slice(&[0x88, 0x25, 0x00, 0x04, 0, 0, 0, 1, 0, 0, 0, 38]);
+    t.extend_from_slice(&0u32.to_be_bytes());
+    t.extend_from_slice(b"GPS 51 30 26 N 0 7 39 W");
+    t
+}
+
+/// A structurally complete JPEG of `w`×`h` with GPS metadata, a comment, and `pad` scan bytes.
+fn jpeg(w: u16, h: u16, pad: usize) -> Vec<u8> {
+    let mut b = vec![0xFF, 0xD8];
+    b.extend(segment(0xE0, b"JFIF\0\x01\x01\0\0\x01\0\x01\0\0"));
+    b.extend(segment(0xE1, &exif_with_gps()));
+    b.extend(segment(0xFE, b"taken at home"));
+    b.extend(segment(0xDB, &[0u8; 65]));
+    let mut sof = vec![8];
+    sof.extend_from_slice(&h.to_be_bytes());
+    sof.extend_from_slice(&w.to_be_bytes());
+    sof.extend_from_slice(&[1, 1, 0x11, 0]);
+    b.extend(segment(0xC0, &sof));
+    b.extend(segment(0xC4, &[0u8; 17]));
+    b.extend(segment(0xDA, &[1, 1, 0, 0, 0x3F, 0]));
+    b.extend(std::iter::repeat(0x11).take(pad));
+    b.extend_from_slice(&[0x12, 0xFF, 0x00, 0x34, 0x56, 0xFF, 0xD9]);
+    b
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+fn upload_request(client: &str, intent: &str, content_type: &str, bytes: usize, garment: Option<&str>) -> Value {
+    json!({"clientUploadId": client, "intent": intent, "contentType": content_type, "byteLength": bytes, "garmentId": garment})
+}
+
+/// Authorize, send in pieces of `piece` bytes, and complete: the completion's answer.
+async fn upload(store: &mut MemStore, now: u64, client: &str, content_type: &str, file: &[u8], garment: Option<&str>) -> Answer {
+    let intent = if garment.is_some() { "garment_photo" } else { "attachment" };
+    let auth = owner(store, now, "POST", "/v1/uploads", upload_request(client, intent, content_type, file.len(), garment)).await;
+    assert_eq!(auth.status, 200, "{}", auth.json);
+    let url = auth.json["url"].as_str().unwrap().to_string();
+    let mut offset = 0;
+    for piece in file.chunks(MAX_CHUNK_BYTES) {
+        let r = put(store, now + 1_000, &url, offset, piece).await;
+        assert_eq!(r.status, 200, "{}", r.json);
+        offset += piece.len();
+    }
+    let id = auth.json["uploadId"].as_str().unwrap();
+    owner(store, now + 2_000, "POST", &format!("/v1/uploads/{id}/complete"), Value::Null).await
+}
+
+#[tokio::test]
+async fn a_garment_photo_arrives_in_pieces_gets_a_receipt_and_is_never_served_with_its_location() {
+    let mut store = MemStore::default();
+    let now = at("2026-10-13T08:00:00Z");
+    let file = jpeg(1200, 1600, 400_000);
+    assert!(file.len() > MAX_CHUNK_BYTES && has_location(&file), "a photograph larger than one request, with GPS");
+
+    // Before any photograph, the garment's image is an honest 404 with the app's note.
+    let none = owner(&mut store, now, "GET", &format!("/v1/items/{OXFORD_BLUE}/image"), Value::Null).await;
+    assert_eq!((none.status, none.json["error"]["details"]["missingImageNote"].as_str()), (404, Some(NO_PHOTO)), "{}", none.json);
+
+    // Authorization: retried, it answers the same upload; a different upload under its ID is refused.
+    let request = upload_request("capture-0001", "garment_photo", "image/jpeg", file.len(), Some(OXFORD_BLUE));
+    let auth = owner(&mut store, now, "POST", "/v1/uploads", request.clone()).await;
+    assert_eq!(auth.status, 200, "{}", auth.json);
+    let (id, url) = (auth.json["uploadId"].as_str().unwrap().to_string(), auth.json["url"].as_str().unwrap().to_string());
+    assert!(url.starts_with(&format!("/v1/uploads/{id}/content?token=")), "{url}");
+    assert_eq!((auth.json["method"].as_str(), auth.json["maxBytes"].as_u64(), auth.json["replayed"].as_bool()), (Some("PUT"), Some(file.len() as u64), Some(false)));
+    let again = owner(&mut store, now + 500, "POST", "/v1/uploads", request).await;
+    assert_eq!((again.json["url"].as_str(), again.json["replayed"].as_bool()), (Some(url.as_str()), Some(true)));
+    let reuse = owner(&mut store, now + 500, "POST", "/v1/uploads", upload_request("capture-0001", "garment_photo", "image/jpeg", file.len() + 1, Some(OXFORD_BLUE))).await;
+    assert_eq!((reuse.status, reuse.code()), (409, Some("idempotency_key_reuse")));
+
+    // The bytes, in order, authorized by the URL alone.
+    let (first, rest) = file.split_at(200_000);
+    let r = put(&mut store, now + 1_000, &url, 0, first).await;
+    assert_eq!((r.status, r.json["receivedBytes"].as_u64()), (200, Some(200_000)), "{}", r.json);
+    let early = put(&mut store, now + 1_000, &url, 300_000, &rest[100_000..]).await;
+    assert_eq!((early.status, early.json["error"]["details"]["receivedBytes"].as_u64()), (409, Some(200_000)), "out of order: {}", early.json);
+    let resent = put(&mut store, now + 1_100, &url, 0, first).await;
+    assert_eq!((resent.status, resent.json["receivedBytes"].as_u64()), (200, Some(200_000)), "a piece sent again is answered as received");
+    let big = put(&mut store, now + 1_100, &url, 200_000, &vec![0x11; MAX_CHUNK_BYTES + 1]).await;
+    assert_eq!((big.status, big.code()), (413, Some("payload_too_large")));
+    let forged = url.replace("token=", "token=0");
+    let r = put(&mut store, now + 1_100, &forged, 200_000, rest).await;
+    assert_eq!((r.status, r.code()), (401, Some("unauthenticated")), "{}", r.json);
+    let status = owner(&mut store, now + 1_200, "GET", &format!("/v1/uploads/{id}"), Value::Null).await;
+    assert_eq!(status.json["state"], "authorized", "{}", status.json);
+    // Completing between pieces waits for the rest and records nothing.
+    let early = owner(&mut store, now + 1_200, "POST", &format!("/v1/uploads/{id}/complete"), Value::Null).await;
+    assert_eq!((early.status, early.code(), early.json["error"]["details"]["receivedBytes"].as_u64()), (409, Some("precondition_failed"), Some(200_000)), "{}", early.json);
+    let status = owner(&mut store, now + 1_200, "GET", &format!("/v1/uploads/{id}"), Value::Null).await;
+    assert_eq!((status.json["state"].as_str(), status.json["rejectionReason"].is_null()), (Some("authorized"), true), "{}", status.json);
+    let r = put(&mut store, now + 1_300, &url, 200_000, rest).await;
+    assert_eq!((r.status, r.json["receivedBytes"].as_u64()), (200, Some(file.len() as u64)), "{}", r.json);
+
+    // Only the owner finalizes; the owner's completion is a command with a receipt.
+    let path = format!("/v1/uploads/{id}/complete");
+    let refused = send(&mut store, now + 2_000, "POST", &path, Some(ASSISTANT), &[], Vec::new()).await;
+    assert_eq!(refused.status, 403, "{}", refused.json);
+    let done = owner(&mut store, now + 2_000, "POST", &path, Value::Null).await;
+    assert_eq!(done.status, 200, "{}", done.json);
+    assert_eq!((done.json["state"].as_str(), done.json["rejectionReason"].is_null()), (Some("finalized"), true), "{}", done.json);
+    let asset = done.json["asset"].clone();
+    assert_eq!((asset["kind"].as_str(), asset["garmentId"].as_str(), asset["hadLocationMetadata"].as_bool(), asset["status"].as_str()), (Some("owner_photo"), Some(OXFORD_BLUE), Some(true), Some("active")));
+    assert_eq!((asset["renditions"][0]["width"].as_u64(), asset["renditions"][0]["height"].as_u64()), (Some(1200), Some(1600)));
+    let receipt = done.json["receipt"].clone();
+    assert_eq!(receipt["result"]["finalized"], true, "{receipt}");
+    let replay = owner(&mut store, now + 3_000, "POST", &path, Value::Null).await;
+    assert_eq!(replay.json["receipt"]["commandId"], receipt["commandId"], "completing again answers the same receipt");
+    let listed = owner(&mut store, now + 3_000, "GET", "/v1/commands", Value::Null).await;
+    assert!(listed.json.to_string().contains("media.finalize_upload"), "{}", listed.json);
+    let late = put(&mut store, now + 3_000, &url, file.len(), b"more").await;
+    assert_eq!(late.status, 409, "a finalized upload takes no more bytes: {}", late.json);
+
+    // The garment's photograph: the same picture, without its metadata, and only for the owner.
+    let image = owner(&mut store, now + 4_000, "GET", &format!("/v1/items/{OXFORD_BLUE}/image?width=320"), Value::Null).await;
+    assert_eq!((image.status, image.content_type.as_str()), (200, "image/jpeg"), "{}", image.json);
+    assert!(!has_location(&image.bytes) && !find(&image.bytes, b"taken at home"), "no GPS, no comment");
+    let (p, q) = (probe(&image.bytes).unwrap(), probe(&file).unwrap());
+    assert_eq!(p, q, "the same picture");
+    assert_eq!(image.header("x-content-type-options"), Some("nosniff"));
+    let etag = image.header("etag").unwrap().to_string();
+    let cached = send(&mut store, now + 4_000, "GET", &format!("/v1/items/{OXFORD_BLUE}/image"), Some(OWNER), &[("if-none-match", &etag)], Vec::new()).await;
+    assert_eq!((cached.status, cached.bytes.len()), (304, 0));
+    let theirs = send(&mut store, now + 4_000, "GET", &format!("/v1/items/{OXFORD_BLUE}/image"), Some(ASSISTANT), &[], Vec::new()).await;
+    assert_eq!(theirs.status, 403);
+    let bad_width = owner(&mut store, now + 4_000, "GET", &format!("/v1/items/{OXFORD_BLUE}/image?width=999"), Value::Null).await;
+    assert_eq!(bad_width.status, 400);
+    let unsigned = send(&mut store, now + 4_000, "GET", &format!("/v1/items/{OXFORD_BLUE}/image"), None, &[], Vec::new()).await;
+    assert_eq!(unsigned.status, 401, "the garment's photograph needs the sign-in");
+    // Nothing else serves a photograph yet: renditions, signed links and assets are not routed.
+    let rendition_id = asset["renditions"][0]["renditionId"].as_str().unwrap().to_string();
+    let asset_id = asset["assetId"].as_str().unwrap().to_string();
+    for path in [format!("/v1/media/renditions/{rendition_id}"), format!("/v1/media/assets/{asset_id}?variant=original&withLocation=true")] {
+        let r = owner(&mut store, now + 5_000, "GET", &path, Value::Null).await;
+        assert_eq!(r.status, 404, "{path}: {}", r.json);
+    }
+}
+
+#[tokio::test]
+async fn uploads_are_refused_for_what_they_are_and_rejections_are_recorded_with_their_reason() {
+    let mut store = MemStore::default();
+    let now = at("2026-10-13T08:00:00Z");
+    let photo = jpeg(640, 480, 1_000);
+
+    // Refused at authorization: HEIC, too large, a garment photograph without a garment or of an
+    // unknown one, a selfie naming a garment, and anyone but the owner.
+    for (request, status) in [
+        (upload_request("capture-heic", "garment_photo", "image/heic", 1_000, Some(OXFORD_BLUE)), 415),
+        (upload_request("capture-huge", "garment_photo", "image/jpeg", MAX_UPLOAD_BYTES as usize + 1, Some(OXFORD_BLUE)), 413),
+        (upload_request("capture-none", "garment_photo", "image/jpeg", 1_000, None), 400),
+        (upload_request("capture-ghost", "garment_photo", "image/jpeg", 1_000, Some("gmt_000000000000000000000000")), 404),
+        (upload_request("capture-selfie", "selfie", "image/jpeg", 1_000, Some(OXFORD_BLUE)), 400),
+    ] {
+        let r = owner(&mut store, now, "POST", "/v1/uploads", request.clone()).await;
+        assert_eq!(r.status, status, "{request}: {}", r.json);
+    }
+    let r = send(&mut store, now, "POST", "/v1/uploads", Some(ASSISTANT), &[], upload_request("capture-them", "attachment", "image/jpeg", 1_000, None).to_string().into_bytes()).await;
+    assert_eq!(r.status, 403);
+    assert!(store.data.is_empty(), "nothing was stored");
+
+    // Nothing received yet: completion waits for the bytes and records nothing.
+    let auth = owner(&mut store, now, "POST", "/v1/uploads", upload_request("capture-empty", "attachment", "image/jpeg", photo.len(), None)).await;
+    let id = auth.json["uploadId"].as_str().unwrap().to_string();
+    let r = owner(&mut store, now, "POST", &format!("/v1/uploads/{id}/complete"), Value::Null).await;
+    assert_eq!((r.status, r.code()), (409, Some("precondition_failed")), "{}", r.json);
+    // The time to send the bytes passes.
+    let url = auth.json["url"].as_str().unwrap().to_string();
+    let r = put(&mut store, now + UPLOAD_TTL_MS, &url, 0, &photo).await;
+    assert_eq!((r.status, r.code()), (410, Some("expired")), "{}", r.json);
+    // Completed after its finalization hour with its bytes missing: refused, and nothing recorded.
+    let before = store.data.clone();
+    let late = now + UPLOAD_TTL_MS + FINALIZE_GRACE_MS + 1;
+    let r = owner(&mut store, late, "POST", &format!("/v1/uploads/{id}/complete"), Value::Null).await;
+    assert_eq!((r.status, r.code(), r.json["error"]["details"]["retryable"].as_bool()), (409, Some("precondition_failed"), Some(false)), "{}", r.json);
+    assert_eq!(store.data, before, "no receipt, no rejection");
+    let status = owner(&mut store, late, "GET", &format!("/v1/uploads/{id}"), Value::Null).await;
+    assert_eq!(status.json["state"], "expired");
+
+    // What the bytes are decides: a JPEG declared as PNG, a picture too small, and a file that is
+    // not an image are each recorded as rejected, with the reason, and add no photograph.
+    for (client, content_type, file, reason) in [
+        ("capture-png", "image/png", photo.clone(), "the file is image/jpeg but image/png was declared"),
+        ("capture-tiny", "image/jpeg", jpeg(32, 32, 10), "the image is only 32x32 pixels"),
+        ("capture-text", "image/jpeg", b"<html>not a photograph</html>".to_vec(), "the file is not a recognised image"),
+    ] {
+        let done = upload(&mut store, now, client, content_type, &file, None).await;
+        assert_eq!(done.status, 200, "{}", done.json);
+        assert_eq!((done.json["state"].as_str(), done.json["rejectionReason"].as_str(), done.json["asset"].is_null()), (Some("rejected"), Some(reason), true), "{}", done.json);
+        assert_eq!(done.json["receipt"]["result"]["finalized"], false);
+        let id = done.json["uploadId"].as_str().unwrap();
+        let status = owner(&mut store, now + 3_000, "GET", &format!("/v1/uploads/{id}"), Value::Null).await;
+        assert_eq!((status.json["state"].as_str(), status.json["rejectionReason"].as_str()), (Some("rejected"), Some(reason)));
+    }
+    assert!(!store.data.contains_key(b"media-index".as_slice()), "no photograph was added");
+
+    // A garment photograph that is a real image becomes the garment's photograph.
+    let done = upload(&mut store, now, "capture-good", "image/jpeg", &photo, Some(OXFORD_BLUE)).await;
+    assert_eq!(done.json["state"], "finalized", "{}", done.json);
+    let image = owner(&mut store, now + 4_000, "GET", &format!("/v1/items/{OXFORD_BLUE}/image"), Value::Null).await;
+    assert_eq!(image.status, 200);
+
+    // The export does not package photographs yet, and says so rather than claim the component complete.
+    let job = owner(&mut store, now + 10_000, "POST", "/v1/exports", json!({"clientRequestId": "export-photos"})).await;
+    assert_eq!((job.status, job.json["complete"].as_bool()), (200, Some(false)), "{}", job.json);
+    let media = job.json["components"].as_array().unwrap().iter().find(|c| c["name"] == "media").unwrap().clone();
+    assert_eq!((media["state"].as_str(), media["records"].as_u64()), (Some("incomplete"), Some(0)), "{media}");
+    assert!(media["note"].as_str().unwrap().starts_with("1 photographs are stored on this server"), "{media}");
+}

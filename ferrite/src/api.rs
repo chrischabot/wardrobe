@@ -10,7 +10,9 @@
 //!   `trip/<id>`  a trip (`crate::trips::Trip`), written with the ledger;
 //!   `tp/<id>/<n>` revision n of a trip's packing proposal, written with the ledger;
 //!   `ret/<id>`   a return or exchange case (`crate::returns::Case`), written with the ledger;
-//!   `i/<sha256>` an idempotency key → command ID and request hash.
+//!   `i/<sha256>` an idempotency key → command ID and request hash;
+//!   `mu/`, `mc/`, `ma/`, `media-index`  photographs (`crate::media`): uploads and their bytes,
+//!                assets and their index (the asset and index written with the ledger).
 //! Every command rewrites `ledger`, and the receipt and marker are committed
 //! in the same guarded write, so two requests that read the same ledger can
 //! never both commit: the loser re-reads, and finds the winner's receipt if it
@@ -143,7 +145,7 @@ fn error_status(code: &str) -> u16 {
     }
 }
 
-fn error_reply(e: CmdError) -> Reply {
+pub(crate) fn error_reply(e: CmdError) -> Reply {
     Reply::json(error_status(e.code), json!({"error": {"code": e.code, "message": e.message, "details": e.details}}))
 }
 
@@ -329,10 +331,18 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
             return crate::exports::download(store, now_ms, id, ticket).await.unwrap_or_else(error_reply);
         }
     }
+    // A photograph's upload target is authorized by its URL alone.
+    if let Some(reply) = crate::media::public_route(store, tokens, now_ms, req, path, &query).await {
+        return reply;
+    }
     let principal = match authenticate(store, req, tokens, app.as_ref(), now_ms).await {
         Ok(p) => p,
         Err(e) => return error_reply(e),
     };
+    // Photographs: the owner's alone (`media::route` refuses anyone else).
+    if let Some(reply) = crate::media::route(store, tokens, principal, now_ms, req, path, &query).await {
+        return reply;
+    }
     let result = match (req.method.as_str(), path) {
         ("GET", "/v1/wardrobe") => match crate::inventory::parse_query(req.path.split_once('?').map_or("", |(_, q)| q)) {
             Ok(q) => crate::inventory::page(store, now_ms, &q).await,
@@ -946,6 +956,7 @@ pub fn validate_record(bytes: &[u8], command_id: &str) -> Option<Record> {
                 return None;
             }
         }
+        (Value::Null, "media.finalize_upload") if crate::media::finalize_result_ok(rc["outcome"].as_str(), result) => {}
         _ => return None,
     }
     // Exactly one of: undo data (offered by the receipt), or the reason the
@@ -976,9 +987,11 @@ pub fn validate_record(bytes: &[u8], command_id: &str) -> Option<Record> {
         ("trip.update" | "trip.cancel" | "trip.record_packing_proposal", Err(_)) => {}
         // Opening a return is undone by cancelling it, and an update by putting the case back.
         ("return.open_case" | "return.update_case", Ok(_)) if rc["outcome"] == "committed" => {}
+        // Storing a photograph, or refusing one, is not undone (photographs cannot be deleted here yet).
+        ("media.finalize_upload", Err(_)) => {}
         _ => return None,
     }
-    if rc["outcome"] == "noop" && !kind.starts_with("laundry.") && !kind.starts_with("feedback.") && kind != "care.washed" && kind != "trip.cancel" && kind != "stock.unpack" {
+    if rc["outcome"] == "noop" && !kind.starts_with("laundry.") && !kind.starts_with("feedback.") && kind != "care.washed" && kind != "trip.cancel" && kind != "stock.unpack" && kind != "media.finalize_upload" {
         return None;
     }
     if rc["outcome"] == "merged" && kind != "wear.record" {
@@ -1643,6 +1656,10 @@ async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envel
             let b = load_board(store, &id).await?;
             let day = board_day(store, ctx.cat, current, b.as_ref()).await?;
             Ok(Planned::board(board::swap(ctx, &day, b.as_ref(), &env.payload)?))
+        }
+        ("media.finalize_upload", _) => {
+            let (plan, docs) = crate::media::plan_finalize(store, principal, ctx, &env.payload).await?;
+            Ok(Planned { plan, board: None, original: None, docs })
         }
         ("command.undo", Some(target)) => {
             let record = load_command(store, target).await?;

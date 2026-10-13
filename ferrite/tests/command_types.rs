@@ -82,7 +82,7 @@ async fn the_list_names_exactly_the_ported_commands_as_the_typescript_registry_d
     for kind in ["care.mark_dirty", "care.washed", "feedback.record", "feedback.retract", "laundry.collect", "laundry.return", "stock.pack", "stock.unpack", "wear.record"] {
         assert_eq!(type_of(&list, kind)["class"], "observation", "{kind}");
     }
-    for kind in ["board.select", "board.swap_slot", "command.undo", "return.open_case", "return.update_case", "trip.cancel", "trip.create", "trip.update"] {
+    for kind in ["board.select", "board.swap_slot", "command.undo", "media.finalize_upload", "return.open_case", "return.update_case", "trip.cancel", "trip.create", "trip.update"] {
         assert_eq!(type_of(&list, kind)["class"], "edit", "{kind}");
     }
     let wear = type_of(&list, "wear.record");
@@ -270,6 +270,24 @@ fn with(base: &Value, key: &str, value: Value) -> Value {
     p
 }
 
+/// A synthetic, structurally complete 64×64 JPEG (not a real photograph).
+fn small_jpeg() -> Vec<u8> {
+    let segment = |marker: u8, payload: &[u8]| {
+        let mut out = vec![0xFF, marker];
+        out.extend_from_slice(&((payload.len() + 2) as u16).to_be_bytes());
+        out.extend_from_slice(payload);
+        out
+    };
+    let mut b = vec![0xFF, 0xD8];
+    b.extend(segment(0xE0, b"JFIF\0\x01\x01\0\0\x01\0\x01\0\0"));
+    b.extend(segment(0xDB, &[0u8; 65]));
+    b.extend(segment(0xC0, &[8, 0, 64, 0, 64, 1, 1, 0x11, 0]));
+    b.extend(segment(0xC4, &[0u8; 17]));
+    b.extend(segment(0xDA, &[1, 1, 0, 0, 0x3F, 0]));
+    b.extend_from_slice(&[0x12, 0x34, 0x56, 0xFF, 0xD9]);
+    b
+}
+
 #[tokio::test]
 async fn payloads_the_published_schemas_accept_run_and_the_values_they_refuse_are_refused() {
     let mut store = MemStore::default();
@@ -398,6 +416,18 @@ async fn payloads_the_published_schemas_accept_run_and_the_values_they_refuse_ar
     run.accepted("return.update_case", update).await;
     // A correction to the refund received may be negative.
     run.accepted("return.update_case", json!({"caseId": "ret_command_types", "refundReceivedMinor": -500})).await;
+
+    // A photograph, authorized and sent through the upload routes, then finalized by its command.
+    let photo = small_jpeg();
+    let (status, auth) = send(&mut run.store, Some(OWNER), "POST", "/v1/uploads", json!({"clientUploadId": "command-types-photo", "intent": "attachment", "contentType": "image/jpeg", "byteLength": photo.len()})).await;
+    assert_eq!(status, 200, "{auth}");
+    let put = IngressRequest::new("PUT", auth["url"].as_str().unwrap(), photo);
+    let tokens = Tokens { owner: Some(OWNER.into()), assistant: Some(ASSISTANT.into()), public_origin: Some("http://127.0.0.1:8787".into()), ..Default::default() };
+    assert_eq!(api::handle(&mut run.store, &tokens, T0, &put).await.status, 200);
+    let finalize = json!({"uploadId": auth["uploadId"]});
+    run.refused("media.finalize_upload", with(&finalize, "notPublished", json!(true)), "notPublished: not a field of this command").await;
+    let stored = run.accepted("media.finalize_upload", finalize).await;
+    assert_eq!(stored["result"]["finalized"], true, "{stored}");
 
     // Together the accepted payloads used every published field of every type.
     for t in run.list["types"].as_array().unwrap() {

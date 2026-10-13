@@ -18,6 +18,8 @@ pub mod devices;
 pub mod exports;
 pub mod feedback;
 mod fold_table;
+pub mod image;
+pub mod media;
 pub mod trips;
 pub mod ledger;
 pub mod mcp;

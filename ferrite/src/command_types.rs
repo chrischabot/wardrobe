@@ -36,6 +36,7 @@ pub fn accepted_fields(kind: &str) -> Option<&'static [&'static str]> {
         "feedback.retract" => feedback::RETRACT_FIELDS,
         "laundry.collect" => laundry::COLLECT_FIELDS,
         "laundry.return" => laundry::RETURN_FIELDS,
+        "media.finalize_upload" => crate::media::FINALIZE_FIELDS,
         "return.open_case" => returns::OPEN_FIELDS,
         "return.update_case" => returns::UPDATE_FIELDS,
         "stock.pack" => packing::PACK_FIELDS,

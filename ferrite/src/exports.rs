@@ -680,7 +680,20 @@ async fn collect<S: Store>(store: &mut S, now_ms: u64, l: &Ledger) -> Result<Col
 
     let none = |name: &'static str, title: &'static str, note: &str| Part { name, title, state: "complete", records: 0, note: Some(note.to_string()), value: json!({"note": note}) };
     parts.push(none("conversation", "Conversation messages", "this server stores no conversation (the conversation is not ported to it), so there are no messages to include"));
-    parts.push(none("media", "Photographs and derived images", "this server stores no photographs yet, so the package holds none and no location data"));
+    // Photographs are stored (`src/media.rs`) but not yet packaged: say so rather than claim the
+    // component complete.
+    let media_title = "Photographs and derived images";
+    parts.push(match crate::media::stored_count(store).await {
+        Ok(0) => none("media", media_title, "no photographs are stored, so the package holds none and no location data"),
+        Ok(n) => {
+            let note = format!("{n} photographs are stored on this server, but this export does not package photographs yet, so none of them, and no location data, is in this package");
+            Part { name: "media", title: media_title, state: "incomplete", records: 0, value: json!({"note": note, "storedPhotographs": n}), note: Some(note) }
+        }
+        Err(_) => {
+            let note = "the list of photographs could not be read, so none is in this package".to_string();
+            Part { name: "media", title: media_title, state: "incomplete", records: 0, value: json!({"note": note}), note: Some(note) }
+        }
+    });
 
     Ok(Collected { ledger: l.clone(), parts, last_command_at })
 }

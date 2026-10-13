@@ -31,7 +31,7 @@ pub const MAX_QUANTITY: u64 = 999;
 pub const RECENT_LIMIT: usize = 200;
 
 /// The command types this port executes. Anything else is `unknown_command`.
-pub const COMMAND_TYPES: &[&str] = &["care.mark_dirty", "care.washed", "command.undo", "board.publish", "board.select", "board.swap_slot", "feedback.record", "feedback.retract", "laundry.collect", "laundry.return", "return.open_case", "return.update_case", "stock.pack", "stock.unpack", "trip.cancel", "trip.create", "trip.record_packing_proposal", "trip.update", "wear.record"];
+pub const COMMAND_TYPES: &[&str] = &["care.mark_dirty", "care.washed", "command.undo", "board.publish", "board.select", "board.swap_slot", "feedback.record", "feedback.retract", "laundry.collect", "laundry.return", "media.finalize_upload", "return.open_case", "return.update_case", "stock.pack", "stock.unpack", "trip.cancel", "trip.create", "trip.record_packing_proposal", "trip.update", "wear.record"];
 /// Laundry batches kept in the ledger; the oldest closed ones make room.
 pub const MAX_BATCHES: usize = 60;
 
