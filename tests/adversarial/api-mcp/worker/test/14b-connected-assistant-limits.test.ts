@@ -46,7 +46,7 @@ afterAll(async () => {
 });
 
 describe("B. the cap on undecided requests, under load", () => {
-  defect("M14-8", "a burst of concurrent requests on one connection leaves more than 40 undecided requests", async () => {
+  it("[fixed M14-8] a burst of concurrent requests on one connection leaves more than 40 undecided requests", async () => {
     const owner = world.synthetic;
     const connection = await connectMcp(owner, { write: true, clientName: "SYNTHETIC assistant sending a burst" });
     expect(await pendingProposals(owner)).toEqual([]);
