@@ -952,6 +952,8 @@ pub async fn route<S: Store>(store: &mut S, tokens: &Tokens, principal: Principa
         Sign(&'p str),
         Asset(&'p str),
         ItemImage(&'p str),
+        PhotosNeeded,
+        Review,
     }
     let route = match req.method.as_str() {
         "POST" if path == "/v1/uploads" => Route::Authorize,
@@ -961,6 +963,8 @@ pub async fn route<S: Store>(store: &mut S, tokens: &Tokens, principal: Principa
         "GET" if target(path, "/v1/media/renditions/", "").is_some() => Route::Rendition(target(path, "/v1/media/renditions/", "")?),
         "GET" if target(path, "/v1/media/assets/", "").is_some() => Route::Asset(target(path, "/v1/media/assets/", "")?),
         "GET" if target(path, "/v1/items/", "/image").is_some() => Route::ItemImage(target(path, "/v1/items/", "/image")?),
+        "GET" if path == "/v1/media/photos-needed" => Route::PhotosNeeded,
+        "GET" if path == "/v1/media/review" => Route::Review,
         _ => return None,
     };
     if let Err(e) = owner_only(principal) {
@@ -974,6 +978,12 @@ pub async fn route<S: Store>(store: &mut S, tokens: &Tokens, principal: Principa
         Route::Rendition(id) => raw_reply(rendition(store, id, query, inm).await),
         Route::Asset(id) => raw_reply(asset(store, id, query, inm).await),
         Route::ItemImage(id) => raw_reply(item_image(store, id, query, inm).await),
+        // `listPhotosNeeded` and `listMediaReview` (packages/media/src/reads.ts) list what image discovery
+        // left for the owner: garments its research could not find a picture for (`photos_needed`), and
+        // candidate images it could not settle (`needs_review`). Discovery is not ported, so nothing ever
+        // enters either state, and both lists are the whole and empty answer.
+        Route::PhotosNeeded => Reply::json(200, json!({"items": []})),
+        Route::Review => Reply::json(200, json!({"items": [], "total": 0})),
     })
 }
 

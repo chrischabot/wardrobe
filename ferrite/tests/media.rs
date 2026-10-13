@@ -363,6 +363,25 @@ async fn uploads_are_refused_for_what_they_are_and_rejections_are_recorded_with_
 }
 
 #[tokio::test]
+async fn settings_reads_media_review_and_photos_needed_as_empty_lists_for_the_owner_alone() {
+    let mut store = MemStore::default();
+    let now = at("2026-10-13T08:00:00Z");
+    // A stored photograph changes neither list: both are fed by image discovery, which is not ported.
+    let done = upload(&mut store, now, "capture-review", "image/jpeg", &jpeg(640, 480, 1_000), Some(OXFORD_BLUE)).await;
+    assert_eq!(done.json["state"], "finalized", "{}", done.json);
+    let before = store.data.clone();
+    for (path, body) in [("/v1/media/photos-needed", json!({"items": []})), ("/v1/media/review", json!({"items": [], "total": 0}))] {
+        let r = owner(&mut store, now + 5_000, "GET", path, Value::Null).await;
+        assert_eq!((r.status, r.json.clone()), (200, body), "{path}");
+        let theirs = send(&mut store, now + 5_000, "GET", path, Some(ASSISTANT), &[], Vec::new()).await;
+        assert_eq!(theirs.status, 403, "{path}");
+        let unsigned = send(&mut store, now + 5_000, "GET", path, None, &[], Vec::new()).await;
+        assert_eq!(unsigned.status, 401, "{path}");
+    }
+    assert_eq!(store.data, before, "nothing was written");
+}
+
+#[tokio::test]
 async fn the_export_carries_photographs_without_location_unless_the_owner_asks_for_it() {
     let mut store = MemStore::default();
     let now = at("2026-10-13T08:00:00Z");
