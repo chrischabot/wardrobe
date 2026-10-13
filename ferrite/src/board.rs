@@ -492,6 +492,29 @@ impl<'a> Day<'a> {
                 }
             }
             let reported_dirty: BTreeSet<&str> = ledger.events.iter().filter(|e| e.kind == "dirty" && e.voided_by.is_none() && e.seq > plan.packed_seq).map(|e| e.garment_id.as_str()).collect();
+            // Units the trip's wears turned from clean to worn that are still in this suitcase: only
+            // those are reused. A unit packed while already awaiting care is in the same worn count but
+            // was never worn on the trip, so the proposal's reuse does not make it wearable (a
+            // deliberate difference: TypeScript's `worn` balance counts it too). The balance is walked
+            // in replay order; every unit that leaves the suitcase (an unpack, a pack for another trip,
+            // a wear at home or a wash report taking it) is assumed to be a worn one, so the balance
+            // can only under-count, and a unit worn, washed, repacked and worn again counts once.
+            let mut worn_units: BTreeMap<&str, u32> = BTreeMap::new();
+            let mut ordered: Vec<&crate::ledger::Event> = ledger.events.iter().filter(|e| e.voided_by.is_none()).collect();
+            ordered.sort_by_key(|e| (e.at_ms, e.seq));
+            for e in ordered {
+                let n = all.tripped.get(&e.id).and_then(|m| m.get(trip_id)).copied().unwrap_or(0);
+                if n == 0 {
+                    continue;
+                }
+                let ours = e.trip_id.as_deref() == Some(trip_id);
+                let w = worn_units.entry(e.garment_id.as_str()).or_default();
+                match e.kind.as_str() {
+                    "wear" | "extra_unit" if ours => *w += n,
+                    "pack" if ours => {}
+                    _ => *w = w.saturating_sub(n),
+                }
+            }
             for (id, (dates, units)) in &plan.reuse {
                 let budget_left = dates.len().saturating_sub(days_before.get(id.as_str()).map_or(0, BTreeSet::len));
                 if budget_left == 0 || !worn_on_trip.contains(id.as_str()) || reported_dirty.contains(id.as_str()) {
@@ -499,8 +522,9 @@ impl<'a> Day<'a> {
                 }
                 if let Some(st) = stock.stock.get_mut(id) {
                     // The proposal's units are the allowance for the piece on the trip, clean units
-                    // still in the suitcase included: a worn unit is re-offered only up to it.
-                    let rewearable = st.dirty.min(units.saturating_sub(st.clean));
+                    // still in the suitcase included: a worn unit is re-offered only up to it, and only
+                    // a unit worn on the trip.
+                    let rewearable = st.dirty.min(units.saturating_sub(st.clean)).min(worn_units.get(id.as_str()).copied().unwrap_or(0));
                     st.clean += rewearable;
                     st.dirty -= rewearable;
                 }

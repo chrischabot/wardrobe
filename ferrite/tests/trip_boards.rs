@@ -316,6 +316,48 @@ async fn planned_reuse_never_offers_more_units_than_the_proposal_packs() {
 }
 
 #[tokio::test]
+async fn a_unit_packed_while_awaiting_care_is_never_made_wearable_by_planned_reuse() {
+    const WALNUT: &str = "gmt_ff25dfaf5876e58a551fe11d"; // two units
+    let mut store = MemStore::default();
+    ok(&mut store, BEFORE, "trip-0001", "trip.create", lisbon()).await;
+    // One pair goes in the hamper at home, and both pairs are packed: one clean, one not.
+    ok(&mut store, "2026-10-12T08:00:00Z", "dirty-0001", "care.mark_dirty", json!({"items": [{"garmentId": WALNUT}]})).await;
+    ok(&mut store, BEFORE, "pack-0001", "stock.pack", json!({"tripId": "trp_lisbon", "items": [{"garmentId": WALNUT, "quantity": 2}]})).await;
+    ok(&mut store, "2026-10-20T20:00:00Z", "wear-trip-1", "wear.record", json!({"wearingDate": "2026-10-20", "garmentIds": [WALNUT], "tripId": "trp_lisbon"})).await;
+    let ledger = Ledger::from_json(&serde_json::from_slice(&store.data[b"ledger".as_slice()]).unwrap()).unwrap();
+    let packed_seq = ledger.events.iter().find(|e| e.kind == "pack").unwrap().seq;
+    let day = |date: &str| json!({"localDate": date, "slots": [{"role": "bottom", "garmentId": WALNUT}]});
+    let proposal = json!({"items": [{"garmentId": WALNUT, "quantity": 2}], "days": [day("2026-10-20"), day("2026-10-21")]});
+    let plan = TripPlan::from_proposal("2026-10-20", Some(&proposal), packed_seq);
+    // Both are in the worn count, but only the pair worn on the trip is offered again.
+    assert_eq!(Day::for_trip(catalogue(), &ledger, "trp_lisbon", "2026-10-21", None).stock.of(WALNUT), Stock { clean: 0, dirty: 2 });
+    assert_eq!(Day::for_trip(catalogue(), &ledger, "trp_lisbon", "2026-10-21", Some(&plan)).stock.of(WALNUT), Stock { clean: 1, dirty: 1 });
+}
+
+#[tokio::test]
+async fn a_unit_worn_unpacked_and_packed_again_is_counted_once_by_planned_reuse() {
+    const WALNUT: &str = "gmt_ff25dfaf5876e58a551fe11d"; // two units
+    let mut store = MemStore::default();
+    ok(&mut store, BEFORE, "trip-0001", "trip.create", lisbon()).await;
+    // One pair is packed and worn on the trip, then unpacked into the hamper at home.
+    ok(&mut store, BEFORE, "pack-0001", "stock.pack", json!({"tripId": "trp_lisbon", "items": [{"garmentId": WALNUT}]})).await;
+    ok(&mut store, "2026-10-20T20:00:00Z", "wear-trip-1", "wear.record", json!({"wearingDate": "2026-10-20", "garmentIds": [WALNUT], "tripId": "trp_lisbon"})).await;
+    ok(&mut store, "2026-10-20T21:00:00Z", "unpack-0001", "stock.unpack", json!({"tripId": "trp_lisbon"})).await;
+    // Both pairs go back in: the clean one and the worn one, which travels not clean. The clean pair
+    // is worn on the 21st, so two pairs are worn in the suitcase but only one was worn there.
+    ok(&mut store, "2026-10-20T22:00:00Z", "pack-0002", "stock.pack", json!({"tripId": "trp_lisbon", "items": [{"garmentId": WALNUT, "quantity": 2}]})).await;
+    ok(&mut store, "2026-10-21T20:00:00Z", "wear-trip-2", "wear.record", json!({"wearingDate": "2026-10-21", "garmentIds": [WALNUT], "tripId": "trp_lisbon"})).await;
+    let ledger = Ledger::from_json(&serde_json::from_slice(&store.data[b"ledger".as_slice()]).unwrap()).unwrap();
+    let packed_seq = ledger.events.iter().filter(|e| e.kind == "pack").map(|e| e.seq).max().unwrap();
+    let day = |date: &str| json!({"localDate": date, "slots": [{"role": "bottom", "garmentId": WALNUT}]});
+    let proposal = json!({"items": [{"garmentId": WALNUT, "quantity": 2}], "days": [day("2026-10-20"), day("2026-10-21"), day("2026-10-22")]});
+    let plan = TripPlan::from_proposal("2026-10-20", Some(&proposal), packed_seq);
+    assert_eq!(Day::for_trip(catalogue(), &ledger, "trp_lisbon", "2026-10-22", None).stock.of(WALNUT), Stock { clean: 0, dirty: 2 });
+    // The first wear's unit left the suitcase: only the pair worn on the 21st is offered again.
+    assert_eq!(Day::for_trip(catalogue(), &ledger, "trp_lisbon", "2026-10-22", Some(&plan)).stock.of(WALNUT), Stock { clean: 1, dirty: 1 });
+}
+
+#[tokio::test]
 async fn a_swap_on_a_trip_board_picks_from_the_suitcase() {
     let mut store = MemStore::default();
     packed_trip(&mut store, BEFORE, &[OXFORD_BLUE, OXFORD_PINK, AKITA_CREAM, SOCK_GREY, NB_GREY]).await;

@@ -493,7 +493,13 @@ instants; one recorded after packing changes nothing), and a piece it plans in
 a top, bottom, outer, footwear or belt slot on several days is wearable again
 from the suitcase after a wear on the trip while the days it was worn before
 the board's day are fewer than the days planned, up to the units the proposal
-packs, unless the owner reported it dirty after packing. A wear counts when
+packs, unless the owner reported it dirty after packing. Only units the trip's
+wears turned from clean to worn are reused: a unit packed while awaiting care
+is never made wearable this way (another deliberate difference: TypeScript's
+worn balance counts it too). The count is kept in ledger order and every unit
+that leaves the suitcase is assumed to be a worn one, so it can only
+under-count: a unit worn, unpacked, washed, packed again and worn again counts
+once. A wear counts when
 its stock event names the trip. Socks are never reused this way. A clean unit
 still in the suitcase counts against the proposal's units, so a worn unit is
 re-offered only while clean and re-offered units together stay within them (a

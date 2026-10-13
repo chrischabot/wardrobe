@@ -64,7 +64,7 @@ async fn a_device_registers_refreshes_moves_its_token_and_is_removed_and_its_tok
     assert_eq!((status, empty), (200, json!({"deliveryConfigured": false, "devices": []})));
 
     let (status, device) = send(&mut store, AT, OWNER, "POST", "/v1/devices", registration("device-0000-aaaa", TOKEN)).await;
-    assert_eq!((status, device), (200, json!({"deviceId": "device-0000-aaaa", "environment": "development", "status": "active", "updatedAt": AT})));
+    assert_eq!((status, device), (200, json!({"deviceId": "device-0000-aaaa", "environment": "development", "status": "active", "disabledReason": null, "updatedAt": AT, "lastDeliveryAt": null})));
     let (_, listed) = send(&mut store, AT, OWNER, "GET", "/v1/devices", Value::Null).await;
     assert_eq!(listed["devices"], json!([{"deviceId": "device-0000-aaaa", "environment": "development", "status": "active", "disabledReason": null, "updatedAt": AT, "lastDeliveryAt": null}]));
     assert!(!listed.to_string().to_ascii_lowercase().contains(&TOKEN.to_ascii_lowercase()), "the token is never returned: {listed}");

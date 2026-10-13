@@ -31,10 +31,20 @@ struct MemStore {
     /// another request committed these records between this request's read
     /// and write.
     interleave: Option<(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>)>,
+    /// After this many reads of the ledger, these records replace the store's, as if another request
+    /// committed between two of this request's reads.
+    swap_after_ledger_reads: Option<(usize, BTreeMap<Vec<u8>, Vec<u8>>)>,
 }
 
 impl Store for MemStore {
     async fn get(&mut self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        if key == b"ledger" {
+            match self.swap_after_ledger_reads.take() {
+                Some((0, records)) => self.data = records,
+                Some((n, records)) => self.swap_after_ledger_reads = Some((n - 1, records)),
+                None => {}
+            }
+        }
         Ok(self.data.get(key).cloned())
     }
     async fn commit_n_if(&mut self, guard: &[u8], expected: Option<&[u8]>, entries: &[(&[u8], &[u8])]) -> io::Result<Result<(), Option<Vec<u8>>>> {
@@ -484,6 +494,23 @@ async fn the_inventory_views_and_resources_are_the_landed_reads_in_the_mcp_envel
     assert_eq!(text(&call(&mut store, &access, "garderobe_inventory", json!({"view": "returns"})).await), "1 return or exchange case(s).");
     assert_eq!(text(&call(&mut store, &access, "garderobe_inventory", json!({"view": "orders"})).await), "0 order(s).");
     assert!(text(&call(&mut store, &access, "garderobe_inventory", json!({"view": "command_types"})).await).starts_with("19 command types"));
+
+    // A command committed between the view's first ledger read and its data read: the view reads
+    // again, so its data and wardrobeRevision belong to the same commit (revision 4, two trips).
+    let before = store.data.clone();
+    let second = json!({
+        "tripId": "trp_porto", "name": "Porto", "departsOn": "2026-11-02", "returnsOn": "2026-11-04",
+        "destinations": [{"label": "Porto", "latitude": 41.15, "longitude": -8.61, "timezone": "Europe/Lisbon", "from": "2026-11-02", "to": "2026-11-04"}],
+        "source": {"kind": "owner_statement"},
+    });
+    let envelope = json!({"type": "trip.create", "payload": second, "idempotencyKey": "mcp-views-trip-2", "authorization": "owner_tap", "source": {"channel": "ios"}});
+    assert_eq!(send(&mut store, now, "POST", "/v1/commands", Some(&owner), envelope.to_string().into_bytes()).await.status, 200);
+    let committed = std::mem::replace(&mut store.data, before);
+    store.swap_after_ledger_reads = Some((1, committed));
+    let raced = call(&mut store, &access, "garderobe_inventory", json!({"view": "trips"})).await;
+    assert!(store.swap_after_ledger_reads.is_none(), "the commit landed between the view's reads");
+    let s = &raced["structuredContent"];
+    assert_eq!((s["wardrobeRevision"].clone(), s["total"].clone(), s["data"]["trips"].as_array().unwrap().len()), (json!(4), json!(2), 2), "{s}");
 
     // Arguments that belong to other views are refused, and so is a malformed day.
     for (args, words) in [

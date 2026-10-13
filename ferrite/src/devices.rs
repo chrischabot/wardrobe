@@ -144,7 +144,8 @@ pub async fn register<S: Store>(store: &mut S, now_ms: u64, body: &[u8]) -> Resu
         }
         devices.push(Device { device_id: device_id.clone(), environment: environment.clone(), token: token.clone(), updated_at: updated_at.clone() });
         if write(store, old.as_deref(), &devices).await? {
-            return Ok(json!({"deviceId": device_id, "environment": environment, "status": "active", "updatedAt": updated_at}));
+            // The same `Device` the list shows.
+            return Ok(devices.last().map(Device::view).unwrap_or(Value::Null));
         }
     }
     Err(CmdError::with("conflict", "the notification devices kept changing; try again", json!({"retryable": true})))
