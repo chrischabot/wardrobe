@@ -304,7 +304,7 @@ describe("credentials said in conversation", () => {
   it("nothing the victim's conversation holds contains a planted credential: transcript, recall, run records, event streams", async () => {
     const messages = await transcript(victim);
     expect(leaked(JSON.stringify(messages)), "transcript").toEqual([]);
-    expect(JSON.stringify(messages)).toContain("REDACTED"); // the search result's key-bearing URL arrived redacted
+    expect(JSON.stringify(messages)).toMatch(/api_key=(?:REDACTED|\[secret removed\])/); // the search result's key-bearing URL arrived redacted
 
     // Recall takes its search words as `text` (RecallQuery: at most 1,000 characters). Every query here is an
     // ordinary one well inside that limit (none is meant to be invalid), so every one must be answered.
@@ -355,6 +355,7 @@ describe("credentials said in conversation", () => {
     const searched = requests.flatMap((r) => r.toolResults).filter((r) => r.toolName === "web_search");
     expect(searched.length).toBeGreaterThan(0);
     expect(JSON.stringify(searched)).toContain("Shetland crewneck");
+    expect(JSON.stringify(searched)).toContain("[secret removed]");
     expect(JSON.stringify(searched)).toContain("SYNTHETIC snippet");
     // The tool list offered to the model has no tool that reads a credential.
     for (const request of requests) expect(request.toolNames.filter((n) => /credential|secret|token|password/i.test(n))).toEqual([]);
