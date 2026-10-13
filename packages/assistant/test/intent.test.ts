@@ -4,8 +4,20 @@
  * for the signed-in owner to confirm in the app.
  */
 import { describe, expect, it } from "vitest";
-import { ownerRequests, numbersIn, type IntentInput } from "../src/policy/intent.ts";
-import { NAMING_STOP, tokensOf, type GarmentWords } from "../src/policy/naming.ts";
+import {
+  ownerRequests,
+  endedCovers,
+  statesConditionEnded,
+  targetIdsOf,
+  grantCoversTargets,
+  classifyChange,
+  jobFailure,
+  ConnectionError,
+  type IntentInput,
+} from "../src/index.ts";
+import { numbersIn } from "../src/policy/intent.ts";
+import { NAMING_STOP, namedInText, tokensOf, type GarmentWords } from "../src/policy/naming.ts";
+import { reportDateOf, reportsIn } from "../src/policy/report.ts";
 
 const piece = (garmentId: string, name: string, category: string): GarmentWords => ({
   garmentId,
@@ -177,5 +189,71 @@ describe("intent allow-list: one test per allow-listed sentence form, and unlist
 
   it("numbersIn parses digits, number words, hyphenated compounds and 'and a half'", () => {
     expect(numbersIn("forty-two and a half inches or 1,250")).toEqual([42.5, 1250]);
+  });
+});
+
+describe("report dates, ended statements, grants and naming", () => {
+  it("a huge 'N days ago' gives no date and never throws", () => {
+    expect(() => reportDateOf("I wore it 999999999999 days ago.", LOCAL)).not.toThrow();
+    expect(reportDateOf("I wore it 999999999999 days ago.", LOCAL)).toBeNull();
+    expect(reportDateOf("I wore it three days ago.", LOCAL)).toBe("2026-09-12");
+  });
+  it("a statement taken back later in the message ends nothing", () => {
+    expect(statesConditionEnded(["My feet have healed."])).not.toBeNull();
+    expect(statesConditionEnded(["My feet have healed. That was a joke."])).toBeNull();
+    expect(statesConditionEnded(["My feet have healed. Just kidding."])).toBeNull();
+  });
+  it("an ended statement speaks only to a restriction about that condition", () => {
+    expect(endedCovers({ kind: "footwear", reason: "Sneakers only until the owner says his feet have healed" })).toBe(false);
+    expect(endedCovers({ kind: "storage_hold", reason: "Keep the summer linen in storage until May" })).toBe(false);
+    expect(endedCovers({ kind: "medical", reason: "Back injury: no heavy coats until recovered" })).toBe(false);
+    expect(endedCovers({ kind: "medical", reason: "Doctor's orders after the knee injury" })).toBe(false);
+    expect(endedCovers({ kind: "healing", reason: "Sneakers only until the owner says his feet have healed" })).toBe(true);
+    expect(endedCovers({ kind: "other", reason: "Keep feet dry while it rains" })).toBe(false);
+  });
+  it("a grant covers only the records it was recorded for", () => {
+    expect(targetIdsOf({ restrictionId: "rst_a", scope: { garmentIds: ["g2", "g1"] } })).toEqual(["g1", "g2", "rst_a"]);
+    expect(grantCoversTargets({ targets: ["rst_a"] }, { restrictionId: "rst_a" })).toBe(true);
+    expect(grantCoversTargets({ targets: ["rst_a"] }, { restrictionId: "rst_b" })).toBe(false);
+    expect(grantCoversTargets({}, { restrictionId: "rst_a" })).toBe(false);
+  });
+  it("a wear correction's pieces are its targets, so a grant for one piece does not cover another", () => {
+    const amend = { wearingDate: "2026-09-14", remove: ["gmt_synth_coat"], add: ["gmt_synth_boots"] };
+    expect(targetIdsOf(amend, "wear.amend")).toEqual(["gmt_synth_boots", "gmt_synth_coat"]);
+    expect(grantCoversTargets({ targets: ["gmt_synth_coat"] }, amend, "wear.amend")).toBe(false);
+    expect(grantCoversTargets({ targets: ["gmt_synth_boots", "gmt_synth_coat"] }, amend, "wear.amend")).toBe(true);
+  });
+  it("importing a profile document is a rewrite of it, and a command reaching more pieces than the cap waits for the owner", () => {
+    expect(classifyChange("style.import_document", {})).toBe("confirm");
+    expect(classifyChange("lifecycle.record_event", { projectId: "lcp_x", kind: "discarded", moveStock: true, garmentIds: [] }, "ios", 21)).toBe("confirm");
+    expect(classifyChange("lifecycle.record_event", { projectId: "lcp_x", kind: "discarded", moveStock: true, garmentIds: [] }, "ios", 3)).toBe("direction");
+  });
+  it("a failed job records a reason trusted code wrote, says when the failure was temporary, and logs no error text", () => {
+    const leaky = new Error("GET https://api.example/v1?key=SYNTHETIC-SECRET failed");
+    const internal = jobFailure(leaky);
+    expect(internal.reason).not.toContain("SYNTHETIC-SECRET");
+    expect(JSON.stringify(internal.diagnostic)).not.toContain("SYNTHETIC-SECRET");
+    expect(internal.transient).toBe(false);
+    const slow = jobFailure(new ConnectionError("timeout", "timed out calling https://api.example/v1?key=SYNTHETIC-SECRET"));
+    expect(slow).toMatchObject({ transient: true, diagnostic: { code: "timeout" } });
+    expect(slow.reason).toContain("temporarily unavailable");
+    expect(slow.reason).not.toContain("SYNTHETIC-SECRET");
+    expect(jobFailure(new ConnectionError("auth", "401")).reason).toContain("sign in again");
+  });
+  it("a verb of having outside the report's wording is not a connecting word, and a second clause's report does not leak into the first (review of 8445a1e9)", () => {
+    const coat = piece("gmt_synth_gcoat", "SYNTHETIC Grandfather Coat", "outerwear");
+    const oxford = piece("gmt_synth_oxford", "SYNTHETIC navy Pima oxford", "shirt");
+    const mixed = reportsIn([coat, oxford], ["I wore the Grandfather Coat today and have the navy Pima oxford at home."], LOCAL);
+    expect(mixed).toEqual([]);
+    const split = reportsIn([coat, oxford], ["I wore the Grandfather Coat today and the navy Pima oxford is in the wash."], LOCAL);
+    const worn = split.filter((r) => r.kind === "wear").flatMap((r) => [...r.garments.keys()]);
+    expect(worn).toEqual(["gmt_synth_gcoat"]);
+    expect(worn).not.toContain("gmt_synth_oxford");
+  });
+  it("an alias spanning a separator names one piece; a sibling's shorter alias inside it names nothing more (review of 8445a1e9)", () => {
+    const twoTone = { ...piece("gmt_synth_twotone", "SYNTHETIC chelsea boot", "footwear"), aliases: ["black and tan boots"] };
+    const tan = { ...piece("gmt_synth_tan", "SYNTHETIC suede boot", "footwear"), aliases: ["tan boots"] };
+    expect([...namedInText([twoTone, tan], "I wore the black and tan boots today").keys()]).toEqual(["gmt_synth_twotone"]);
+    expect([...namedInText([twoTone, tan], "I wore the tan boots today").keys()]).toEqual(["gmt_synth_tan"]);
   });
 });

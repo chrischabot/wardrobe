@@ -50,7 +50,7 @@ import { PROFILE_SPECS, TASK_SPECS, type ProfileSpec } from "../inference/regist
 import { ownerAuthoredText } from "../policy/voice.ts";
 import { redactDeep, redactSecrets } from "../policy/secrets.ts";
 import { tombstonedIds } from "../queries.ts";
-import { ERASED_REASON } from "../client.ts";
+import { ERASED_REASON } from "../constants.ts";
 import { indexMessages, indexWatermark, markIndexCurrent, recall, staleIndexEntries, type CanonicalMessage, type RecallInput } from "../recall/index.ts";
 import { extractProductRecord, wrapUntrusted } from "../research/index.ts";
 import { buildReadTools } from "../tools/read.ts";
@@ -129,6 +129,12 @@ interface TurnMeta {
   ownerText?: string;
   /** Private images the owner attached: references only; bytes are read from private media at inference time. */
   images?: { assetId: string; role: string }[];
+  /** The ID of the choice the owner tapped to answer the assistant's question (for a piece: its garment ID). */
+  chosenId?: string;
+  /** When this message answers the assistant's question: the turn that question was asked in. */
+  answersTurnId?: string;
+  /** References the owner attached in the app. */
+  attachedRefs?: string[];
   forgotten?: boolean;
 }
 
@@ -441,11 +447,13 @@ export abstract class GarderobeAssistantBase extends Think<any> {
       readOnly,
       now: () => this.now(),
       localDate: context.localDate,
+      timezone: context.timezone,
       ownerTexts: await this.ownerTexts(message),
       currentOwnerText: ownText === FORGOTTEN_TEXT ? "" : ownText,
       ...(askedMessageId ? { askedMessageId } : {}),
       attachedRefs,
       hasImages: (meta.images ?? []).length > 0,
+      ...(meta.chosenId ? { chosenGarmentIds: [meta.chosenId] } : {}),
       restrictedGarmentIds: context.restrictedGarmentIds,
       requestText: row.kind === "research" ? ((message.parts as { type: string; text?: string }[]).find((x) => x.type === "text")?.text ?? "") : (await this.ownerTexts(message)).map((t) => ownerAuthoredText(t)).join("\n"),
       conversationId: userId,
@@ -787,7 +795,7 @@ export abstract class GarderobeAssistantBase extends Think<any> {
   /* RPC surface (called only by trusted Worker code through client.ts)   */
   /* ------------------------------------------------------------------ */
 
-  private async accept(grantInput: unknown, input: unknown, kind: "conversation" | "research", answersTurnId?: string, notOwnerWords = false): Promise<{ row: TurnRow; accepted: boolean; message: UIMessage }> {
+  private async accept(grantInput: unknown, input: unknown, kind: "conversation" | "research", answersTurnId?: string, notOwnerWords = false, chosenId?: string): Promise<{ row: TurnRow; accepted: boolean; message: UIMessage }> {
     const grant = TurnGrant.parse(grantInput);
     const parsed = TurnInput.parse(input);
     // Rejects an unknown or disabled owner before anything is stored.
@@ -825,7 +833,7 @@ export abstract class GarderobeAssistantBase extends Think<any> {
         // Everything that is not the owner's own words travels as delimited, explicitly untrusted data.
         ...attachments.map((a) => ({ type: "text" as const, text: wrapUntrusted(kindMap[a.kind] ?? "document", `${a.kind}${a.source ? `: ${a.source}` : ""}`, a.text) })),
       ],
-      metadata: { garderobe: { turnId: row.turn_id, channel: grant.channel, authoredAt: toInstant(nowMs), kind: "owner", ownerText: kind === "research" || notOwnerWords ? "" : text, attachedRefs: parsed.attachedRefs, ...(images.length > 0 ? { images } : {}), ...(answersTurnId ? { answersTurnId } : {}) } },
+      metadata: { garderobe: { turnId: row.turn_id, channel: grant.channel, authoredAt: toInstant(nowMs), kind: "owner", ownerText: kind === "research" || notOwnerWords ? "" : text, attachedRefs: parsed.attachedRefs, ...(images.length > 0 ? { images } : {}), ...(answersTurnId ? { answersTurnId } : {}), ...(chosenId ? { chosenId } : {}) } },
     };
     return { row, accepted, message };
   }
@@ -970,8 +978,10 @@ export abstract class GarderobeAssistantBase extends Think<any> {
       if (!text) throw new RequestError("invalid_request", "the answer names no choice and has no text");
       await updateTurn(this.db, this.userId, turnId, { status: "completed" }, this.now());
       // A choice label was written by the model. Tapping it tells the assistant which one was meant; it is
-      // never the owner's own words: it names no garment and reports nothing (third review, finding A).
-      const { row: answerRow, accepted, message } = await this.accept(grant, { submissionId: `clarify:${answer.inputId}`, text, attachedRefs: [] }, "conversation", turnId, answer.text === undefined);
+      // never the owner's own words: it names no garment and reports nothing (third review, finding A). The
+      // tapped choice's ID is kept so that a change the owner's earlier words asked for can point at the piece
+      // the owner picked (policy/intent.ts); it never makes a wear or wash report.
+      const { row: answerRow, accepted, message } = await this.accept(grant, { submissionId: `clarify:${answer.inputId}`, text, attachedRefs: [] }, "conversation", turnId, answer.text === undefined, answer.text === undefined ? choice?.id : undefined);
       if (answerRow.status === "accepted") await this.execute(answerRow.turn_id, message);
       return toTurnRecord((await findTurn(this.db, this.userId, answerRow.turn_id))!, accepted);
     });
@@ -1077,8 +1087,9 @@ export abstract class GarderobeAssistantBase extends Think<any> {
   private async toTranscriptMessage(row: ReturnType<GarderobeAssistantBase["ledgerRows"]>[number], forgotten: Set<string>): Promise<TranscriptMessage> {
     const m = await this.session.getMessage(row.message_id);
     const gone = forgotten.has(row.message_id) || !m;
-    const parts = gone ? [] : (m!.parts as unknown as Record<string, unknown>[]).filter((p) => p["type"] !== "reasoning");
-    return { messageId: row.message_id, role: row.role as "user" | "assistant", authoredAt: row.authored_at, channel: row.channel, turnId: row.turn_id, text: gone ? "" : textOf(parts as { type: string; text?: string }[]), parts: redactDeep(parts), forgotten: gone };
+    const rawParts = gone ? [] : (m!.parts as unknown as Record<string, unknown>[]).filter((p) => p["type"] !== "reasoning");
+    const parts = redactDeep(rawParts);
+    return { messageId: row.message_id, role: row.role as "user" | "assistant", authoredAt: row.authored_at, channel: row.channel, turnId: row.turn_id, text: gone ? "" : redactSecrets(textOf(parts as { type: string; text?: string }[])).text, parts, forgotten: gone };
   }
 
   /** Original messages (never compaction overlays), paged by stable message ID. */
