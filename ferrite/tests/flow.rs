@@ -59,7 +59,7 @@ async fn inventory_receipt_replay_and_undo() {
     assert_eq!(page["source"]["sha256"], "ca9a5e06edbb2646ad91f102cb242a81b1776bd39e86e99300c0eb387254c946");
     assert_eq!(page["wardrobeRevision"], 0);
     let (a, b) = two_shirts(&page);
-    assert_eq!(item(&page, &a)["balances"], json!({"clean": 1, "dirty": 0, "service": 0}));
+    assert_eq!(item(&page, &a)["balances"], json!({"clean": 1, "dirty": 0, "service": 0, "trip": 0}));
 
     // "Both are in the wash", relayed by the connected assistant: applied at once.
     let dirty = command("care.mark_dirty", json!({"items": [{"garmentId": a}, {"garmentId": b}]}), "mcp-dirty-0001", "owner_statement", "mcp");
@@ -82,7 +82,7 @@ async fn inventory_receipt_replay_and_undo() {
     assert_eq!((status, reuse["error"]["code"].clone()), (409, json!("idempotency_key_reuse")));
 
     let (_, page) = call(&env, OWNER, "GET", "/v1/wardrobe", None).await;
-    assert_eq!(item(&page, &a)["balances"], json!({"clean": 0, "dirty": 1, "service": 0}));
+    assert_eq!(item(&page, &a)["balances"], json!({"clean": 0, "dirty": 1, "service": 0, "trip": 0}));
     assert_eq!(item(&page, &a)["version"], 2);
     assert_eq!(page["wardrobeRevision"], 1);
 
@@ -100,8 +100,8 @@ async fn inventory_receipt_replay_and_undo() {
     assert_eq!(undone["result"]["undoneCommandId"], dirty_id.as_str());
 
     let (_, page) = call(&env, OWNER, "GET", "/v1/wardrobe", None).await;
-    assert_eq!(item(&page, &a)["balances"], json!({"clean": 1, "dirty": 0, "service": 0}));
-    assert_eq!(item(&page, &b)["balances"], json!({"clean": 1, "dirty": 0, "service": 0}));
+    assert_eq!(item(&page, &a)["balances"], json!({"clean": 1, "dirty": 0, "service": 0, "trip": 0}));
+    assert_eq!(item(&page, &b)["balances"], json!({"clean": 1, "dirty": 0, "service": 0, "trip": 0}));
 
     // The original receipt now says its undo was used, and a second undo is refused.
     let (status, original) = call(&env, OWNER, "GET", &format!("/v1/commands/{dirty_id}"), None).await;

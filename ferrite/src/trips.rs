@@ -3,8 +3,8 @@
 //! the trip as `GET /v1/trips` reads it, and the planner behind `POST /v1/trips/{id}/packing-proposal`.
 //!
 //! A packing proposal is only a proposal: what is physically packed is what the owner's `stock.pack`
-//! observations say. `stock.pack` and `stock.unpack` are not ported, so every trip's `packed` list is
-//! empty here and nothing is ever packed by this module.
+//! observations say (`crate::packing`), read back from the stock ledger into each trip's `packed`
+//! list. Nothing is ever packed by this module.
 //!
 //! Each trip is its own record (`trip/<tripId>`) and each proposal revision its own
 //! (`tp/<tripId>/<revision>`), written in the ledger's guarded commit. The ledger keeps every trip's
@@ -484,13 +484,12 @@ impl Trip {
         same.then_some(trip)
     }
 
-    /// The trip as `GET /v1/trips` reads it (`Trip`). Nothing is ever packed here (`stock.pack` is
-    /// not ported), so `packed` is empty.
-    pub fn view(&self, proposal: Option<Value>) -> Value {
+    /// The trip as `GET /v1/trips` reads it (`Trip`), with what is packed for it (`packing::packed`).
+    pub fn view(&self, proposal: Option<Value>, packed: Vec<Value>) -> Value {
         json!({
             "tripId": self.trip_id, "version": self.version, "name": self.name, "departsOn": self.departs_on, "returnsOn": self.returns_on,
             "destinations": self.destinations, "occasions": self.occasions, "luggage": self.luggage, "laundry": self.laundry,
-            "status": self.status, "packed": [], "proposal": proposal,
+            "status": self.status, "packed": packed, "proposal": proposal,
         })
     }
 
@@ -605,12 +604,15 @@ pub fn undo_target_trip(data: &Value) -> Option<&str> {
     data.get("tripId").and_then(Value::as_str).filter(|s| !s.is_empty())
 }
 
-/// `command.undo` of `trip.create`: the trip is cancelled (`planUndo`). Nothing can be packed in this
-/// port, so the refusal for packed pieces never applies.
-pub fn undo_create(ctx: &Ctx<'_>, ledger: &mut Ledger, trip: Option<&Trip>, original_summary: &str, target: &str) -> Result<(Plan, Trip), CmdError> {
+/// `command.undo` of `trip.create`: the trip is cancelled (`planUndo`), unless pieces are packed for
+/// it (`packed` units, worn or not): those are unpacked first.
+pub fn undo_create(ctx: &Ctx<'_>, ledger: &mut Ledger, trip: Option<&Trip>, packed: u32, original_summary: &str, target: &str) -> Result<(Plan, Trip), CmdError> {
     let Some(trip) = trip.filter(|t| t.command_id == target) else {
         return Err(CmdError::with("internal", "the trip that action recorded cannot be read; nothing was written", json!({"retryable": false, "commandId": target})));
     };
+    if packed > 0 {
+        return Err(CmdError::with("not_undoable", "pieces are packed for this trip; unpack them first", json!({"commandId": target, "tripId": trip.trip_id})));
+    }
     let next = Trip { status: "cancelled".into(), version: trip.version + 1, updated_at: instant(ctx.now_ms), ..trip.clone() };
     ledger.trips.insert(next.trip_id.clone(), next.version);
     let plan = Plan {
@@ -656,8 +658,9 @@ pub fn update(ctx: &Ctx<'_>, ledger: &mut Ledger, trip: Option<&Trip>, input: Up
     Ok((plan, next))
 }
 
-/// `trip.cancel`: a cancelled trip is a noop. It has no undo; the owner creates the trip again.
-pub fn cancel(ctx: &Ctx<'_>, ledger: &mut Ledger, trip_id: &str, trip: Option<&Trip>) -> Result<(Plan, Option<Trip>), CmdError> {
+/// `trip.cancel`: a cancelled trip is a noop. It has no undo; the owner creates the trip again. What
+/// is packed for it (`still_packed` units) stays recorded as packed until he unpacks it.
+pub fn cancel(ctx: &Ctx<'_>, ledger: &mut Ledger, trip_id: &str, trip: Option<&Trip>, still_packed: u32) -> Result<(Plan, Option<Trip>), CmdError> {
     let Some(current) = trip else {
         return Err(CmdError::with("not_found", format!("no trip '{trip_id}'"), json!({"tripId": trip_id})));
     };
@@ -669,11 +672,10 @@ pub fn cancel(ctx: &Ctx<'_>, ledger: &mut Ledger, trip_id: &str, trip: Option<&T
     ledger.trips.insert(next.trip_id.clone(), next.version);
     let plan = Plan {
         outcome: "committed",
-        summary: format!("Trip \u{201c}{}\u{201d} cancelled", next.name),
+        summary: format!("Trip \u{201c}{}\u{201d} cancelled{}", next.name, if still_packed > 0 { "; its packed pieces stay recorded as packed until you unpack them" } else { "" }),
         affected: vec![affected(&next)],
         repairs: vec![],
-        // Nothing can be packed in this port, so nothing is still packed.
-        result: json!({"tripId": next.trip_id, "stillPacked": 0}),
+        result: json!({"tripId": next.trip_id, "stillPacked": still_packed}),
         undo: Err(CANCEL_NO_UNDO.into()),
     };
     Ok((plan, Some(next)))
@@ -732,9 +734,9 @@ pub fn record_proposal(ctx: &Ctx<'_>, trip: Option<&Trip>, input: ProposalInput)
 }
 
 /// `GET /v1/trips`: every trip, by departure date then ID (`ORDER BY departs_on, trip_id`).
-pub fn listing(mut trips: Vec<(Trip, Option<Value>)>) -> Value {
+pub fn listing(mut trips: Vec<(Trip, Option<Value>, Vec<Value>)>) -> Value {
     trips.sort_by(|a, b| a.0.departs_on.cmp(&b.0.departs_on).then_with(|| a.0.trip_id.cmp(&b.0.trip_id)));
-    json!({"trips": trips.into_iter().map(|(t, p)| t.view(p)).collect::<Vec<_>>()})
+    json!({"trips": trips.into_iter().map(|(t, p, packed)| t.view(p, packed)).collect::<Vec<_>>()})
 }
 
 // ─────────────────────────────── the planner ───────────────────────────────

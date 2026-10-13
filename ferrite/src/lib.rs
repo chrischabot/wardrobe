@@ -16,6 +16,7 @@ pub mod trips;
 pub mod ledger;
 pub mod mcp;
 pub mod oauth;
+pub mod packing;
 pub mod random;
 pub mod recommend;
 pub mod returns;

@@ -245,6 +245,9 @@ pub fn availability(day: &Day<'_>, ledger: &Ledger, g: &Garment) -> Availability
         if let Some(batches) = day.stock.service.get(&g.id).filter(|m| m.values().any(|h| h.quantity > 0)) {
             reasons.push(if batches.values().any(|h| h.quantity > 0 && h.held) { "laundry_exception" } else { "in_service_batch" });
         }
+        if day.stock.on_trips(&g.id) > 0 {
+            reasons.push("on_trip");
+        }
     }
     if !reasons.is_empty() {
         return Availability { status: "unavailable", hard_excluded: true, reasons };

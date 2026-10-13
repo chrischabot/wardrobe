@@ -526,13 +526,18 @@ async fn trip_with_proposal<S: Store>(store: &mut S, trip: Trip) -> Result<(Trip
     Ok((trip, Some(proposal)))
 }
 
-/// `GET /v1/trips` (`TripList`): every trip, by departure date then ID.
+/// `GET /v1/trips` (`TripList`): every trip, by departure date then ID, each with what is packed for it.
 pub async fn read_trips<S: Store>(store: &mut S) -> Result<Value, CmdError> {
     let (_, l) = read_ledger(store).await?;
+    let stock = ledger::replay(catalogue(), &l.events);
     let mut out = Vec::with_capacity(l.trips.len());
     for id in l.trips.keys() {
         match load_trip(store, id).await? {
-            Some(t) => out.push(trip_with_proposal(store, t).await?),
+            Some(t) => {
+                let (t, proposal) = trip_with_proposal(store, t).await?;
+                let packed = crate::packing::packed(catalogue(), &stock, &t.trip_id);
+                out.push((t, proposal, packed));
+            }
             None => return Err(CmdError::with("internal", "a trip is listed but its record is missing", json!({"retryable": false, "tripId": id}))),
         }
     }
@@ -541,10 +546,12 @@ pub async fn read_trips<S: Store>(store: &mut S) -> Result<Value, CmdError> {
 
 /// `GET /v1/trips/{id}` (`Trip`).
 pub async fn read_trip<S: Store>(store: &mut S, id: &str) -> Result<Value, CmdError> {
+    let (_, l) = read_ledger(store).await?;
     match load_trip(store, id).await? {
         Some(t) => {
             let (t, proposal) = trip_with_proposal(store, t).await?;
-            Ok(t.view(proposal))
+            let packed = crate::packing::packed(catalogue(), &ledger::replay(catalogue(), &l.events), &t.trip_id);
+            Ok(t.view(proposal, packed))
         }
         None => Err(CmdError::new("not_found", "that trip was not found")),
     }
@@ -759,6 +766,19 @@ pub fn validate_record(bytes: &[u8], command_id: &str) -> Option<Record> {
                 return None;
             }
         }
+        (Value::Null, k @ ("stock.pack" | "stock.unpack")) => {
+            // The trip and how many items the report named: at least one for a committed report; a
+            // report that unpacked nothing is a noop with an empty result.
+            let count = if k == "stock.pack" { "packed" } else { "unpacked" };
+            let ok = match rc["outcome"].as_str() {
+                Some("committed") => result.len() == 2 && result.get("tripId").and_then(Value::as_str).map_or(false, |s| !s.is_empty()) && result.get(count).and_then(Value::as_u64).map_or(false, |n| n >= 1),
+                Some("noop") => k == "stock.unpack" && result.is_empty(),
+                _ => false,
+            };
+            if !ok {
+                return None;
+            }
+        }
         (Value::Null, k @ ("trip.create" | "trip.update" | "trip.cancel" | "trip.record_packing_proposal")) => {
             let id = result.get("tripId").and_then(Value::as_str).map_or(false, |s| !s.is_empty());
             let n = |key: &str, min: u64| result.get(key).and_then(Value::as_u64).map_or(false, |v| v >= min);
@@ -811,6 +831,9 @@ pub fn validate_record(bytes: &[u8], command_id: &str) -> Option<Record> {
         ("laundry.collect" | "laundry.return" | "care.washed", Ok(_)) if rc["outcome"] == "committed" => {}
         ("laundry.collect" | "laundry.return" | "care.washed", Err(_)) if rc["outcome"] == "noop" => {}
         ("wear.record", Ok(_)) if rc["outcome"] == "committed" || rc["outcome"] == "merged" => {}
+        // Packing and unpacking are undone by voiding their events; an unpacking that unpacked nothing changed nothing.
+        ("stock.pack" | "stock.unpack", Ok(_)) if rc["outcome"] == "committed" => {}
+        ("stock.unpack", Err(_)) if rc["outcome"] == "noop" => {}
         // A comfort note can be withdrawn by undo; a repeat changed nothing, and a withdrawal is not undone.
         ("feedback.record", Ok(_)) if rc["outcome"] == "committed" => {}
         ("feedback.record", Err(_)) if rc["outcome"] == "noop" => {}
@@ -822,7 +845,7 @@ pub fn validate_record(bytes: &[u8], command_id: &str) -> Option<Record> {
         ("return.open_case" | "return.update_case", Ok(_)) if rc["outcome"] == "committed" => {}
         _ => return None,
     }
-    if rc["outcome"] == "noop" && !kind.starts_with("laundry.") && !kind.starts_with("feedback.") && kind != "care.washed" && kind != "trip.cancel" {
+    if rc["outcome"] == "noop" && !kind.starts_with("laundry.") && !kind.starts_with("feedback.") && kind != "care.washed" && kind != "trip.cancel" && kind != "stock.unpack" {
         return None;
     }
     if rc["outcome"] == "merged" && kind != "wear.record" {
@@ -902,7 +925,7 @@ fn undo_data_ok(kind: &str, data: &Value) -> bool {
     let id = |k: &str| d.get(k).and_then(Value::as_str).map_or(false, |s| !s.is_empty());
     let event_ids = |d: &ferrite_app::serde_json::Map<String, Value>| d.get("stockEventIds").and_then(Value::as_array).map_or(false, |ids| !ids.is_empty() && ids.iter().all(|x| x.as_str().map_or(false, |s| !s.is_empty())));
     match kind {
-        "care.mark_dirty" | "care.washed" => keys(&["stockEventIds"]) && event_ids(d),
+        "care.mark_dirty" | "care.washed" | "stock.pack" | "stock.unpack" => keys(&["stockEventIds"]) && event_ids(d),
         "feedback.record" => keys(&["feedbackId"]) && id("feedbackId"),
         "trip.create" => keys(&["tripId"]) && id("tripId"),
         "return.open_case" => keys(&["caseId", "version"]) && id("caseId") && d["version"] == 1,
@@ -1330,6 +1353,16 @@ async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envel
         ("laundry.collect", _) => Ok(Planned::stock(laundry::collect(ctx, next, &env.payload)?)),
         ("laundry.return", _) => Ok(Planned::stock(laundry::return_batch(ctx, next, &env.payload)?)),
         ("wear.record", _) => Ok(Planned::stock(wear::record(ctx, next, &env.payload, principal.channel, env.occurred_at.is_some())?)),
+        ("stock.pack", _) => {
+            let input = crate::packing::parse_pack(&env.payload)?;
+            let trip = load_trip(store, &input.trip_id).await?;
+            Ok(Planned::stock(crate::packing::pack(ctx, next, trip.as_ref(), input)?))
+        }
+        ("stock.unpack", _) => {
+            let input = crate::packing::parse_unpack(&env.payload)?;
+            let trip = load_trip(store, &input.trip_id).await?;
+            Ok(Planned::stock(crate::packing::unpack(ctx, next, trip.as_ref(), input)?))
+        }
         ("feedback.record", _) => {
             let input = feedback::parse_record(&env.payload)?;
             // The final ID is settled before anything is read, so a generated ID never lands on a
@@ -1359,7 +1392,8 @@ async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envel
         ("trip.cancel", _) => {
             let id = trips::parse_cancel(&env.payload)?;
             let trip = load_trip(store, &id).await?;
-            let (plan, trip) = trips::cancel(ctx, next, &id, trip.as_ref())?;
+            let still_packed = ledger::replay(ctx.cat, &next.events).packed_for(&id);
+            let (plan, trip) = trips::cancel(ctx, next, &id, trip.as_ref(), still_packed)?;
             Ok(Planned::trip(plan, trip))
         }
         ("trip.record_packing_proposal", _) => {
@@ -1408,7 +1442,7 @@ async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envel
             let Some(record) = record else { return Err(CmdError::new("not_found", "there is no such action to undo")) };
             let summary = record.command.summary.clone();
             let mut planned = match record.command.kind.as_str() {
-                "care.mark_dirty" | "care.washed" => Planned::stock(ledger::command_undo(ctx, next, Some(&record.command), target)?),
+                "care.mark_dirty" | "care.washed" | "stock.pack" | "stock.unpack" => Planned::stock(ledger::command_undo(ctx, next, Some(&record.command), target)?),
                 "laundry.collect" => Planned::stock(laundry::undo_collect(ctx, next, &record.command, &data, target)?),
                 "laundry.return" => Planned::stock(laundry::undo_return(ctx, next, &record.command, &data, target)?),
                 "wear.record" => Planned::stock(wear::undo_record(ctx, next, &record.command, &data, target)?),
@@ -1417,8 +1451,10 @@ async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envel
                     Planned::note(feedback::undo_record(next, existing.as_ref(), &summary, target)?)
                 }
                 "trip.create" => {
-                    let trip = load_trip(store, trips::undo_target_trip(&data).unwrap_or_default()).await?;
-                    let (plan, trip) = trips::undo_create(ctx, next, trip.as_ref(), &summary, target)?;
+                    let id = trips::undo_target_trip(&data).unwrap_or_default().to_string();
+                    let trip = load_trip(store, &id).await?;
+                    let packed = ledger::replay(ctx.cat, &next.events).packed_for(&id);
+                    let (plan, trip) = trips::undo_create(ctx, next, trip.as_ref(), packed, &summary, target)?;
                     Planned::trip(plan, Some(trip))
                 }
                 kind @ ("return.open_case" | "return.update_case") => {

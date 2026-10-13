@@ -19,7 +19,7 @@ use ferrite_app::serde_json::{self, json, Map, Value};
 
 use crate::api::{self, CONTRACT_VERSION};
 use crate::ledger::{self, CmdError};
-use crate::{board, feedback, laundry, returns, trips, wear};
+use crate::{board, feedback, laundry, packing, returns, trips, wear};
 
 const GENERATED: &str = include_str!("seed/command-types.json");
 
@@ -38,6 +38,8 @@ pub fn accepted_fields(kind: &str) -> Option<&'static [&'static str]> {
         "laundry.return" => laundry::RETURN_FIELDS,
         "return.open_case" => returns::OPEN_FIELDS,
         "return.update_case" => returns::UPDATE_FIELDS,
+        "stock.pack" => packing::PACK_FIELDS,
+        "stock.unpack" => packing::UNPACK_FIELDS,
         "trip.create" => trips::CREATE_FIELDS,
         "trip.update" => trips::UPDATE_FIELDS,
         "trip.cancel" => trips::CANCEL_FIELDS,
@@ -53,8 +55,6 @@ pub fn accepted_fields(kind: &str) -> Option<&'static [&'static str]> {
 fn narrowed_field(kind: &str, field: &str) -> Option<Option<Value>> {
     let null_only = || Some(json!({"type": "null", "default": null}));
     match (kind, field) {
-        // wear.rs `parse`: wear on a trip (from packed stock) is not ported, so any trip is refused.
-        ("wear.record", "tripId") => Some(null_only()),
         // board.rs `publish_input`: only the home board, the default day brief, and no snapshot (weather
         // and Calendar are not read, so a named snapshot is never found).
         ("board.publish", "scope") => Some(Some(json!({"const": "home", "default": "home"}))),

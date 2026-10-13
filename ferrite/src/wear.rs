@@ -9,9 +9,10 @@
 //! (`additionalUnits`, a second pair of socks) are a total for the garment and day, so the same report
 //! again consumes nothing further.
 //!
-//! Not ported: trips (`tripId` is refused), laundry exceptions a wear settles, the option sets of the
-//! day's board a wear resolves (the board keeps no exposure sets yet), `wear.amend`, and the owner's
-//! timezone (see `wear_time`).
+//! Not ported: laundry exceptions a wear settles, the option sets of the day's board a wear resolves
+//! (the board keeps no exposure sets yet), `wear.amend`, and the owner's timezone (see `wear_time`).
+//! A wear on a trip (`tripId`) uses the units packed for it first (`ledger::replay`); the trip is not
+//! looked up, as in the TypeScript service, so a trip with nothing packed is a wear at home.
 
 use std::collections::BTreeSet;
 
@@ -43,6 +44,8 @@ pub struct WearInput {
     pub timezone: Option<String>,
     pub segment: Option<String>,
     pub additional: Vec<(String, u32)>,
+    /// The trip the wear was on, if any: its packed units are used first.
+    pub trip_id: Option<String>,
     pub note: Option<String>,
 }
 
@@ -96,10 +99,13 @@ pub fn parse(payload: &Value) -> Result<WearInput, CmdError> {
         }
         _ => return Err(invalid(T, format!("additionalUnits: expected an array of at most {MAX_ITEMS} entries"))),
     }
-    match payload.get("tripId") {
-        None | Some(Value::Null) => {}
-        _ => return Err(invalid(T, "tripId: wear on a trip (from packed stock) is not ported to this server yet; record the wear without it")),
-    }
+    // An empty trip ID names no trip, as `tripId ? ... : ...` reads it in the TypeScript replay.
+    let trip_id = match payload.get("tripId") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) if s.is_empty() => None,
+        Some(Value::String(s)) if s.chars().count() <= crate::packing::MAX_TRIP_ID => Some(s.clone()),
+        _ => return Err(invalid(T, format!("tripId: expected a trip ID of at most {} characters, or null", crate::packing::MAX_TRIP_ID))),
+    };
     // A further unit is of a garment worn that day: it must be reported as worn too, so the day's
     // record and history account for every unit the report uses.
     if let Some(i) = additional.iter().position(|(g, _)| !garment_ids.contains(g)) {
@@ -112,6 +118,7 @@ pub fn parse(payload: &Value) -> Result<WearInput, CmdError> {
         timezone: text(payload, "timezone", 64)?,
         segment: text(payload, "segment", 200)?,
         additional,
+        trip_id,
         note: text(payload, "note", MAX_TEXT)?,
     })
 }
@@ -208,6 +215,7 @@ pub fn record(ctx: &Ctx<'_>, ledger: &mut Ledger, payload: &Value, channel: &str
         let event = journal(&wctx, ledger, g, "wear", None, 1, 0);
         if let Some(e) = ledger.events.last_mut() {
             e.wearing_date = Some(date.clone());
+            e.trip_id = input.trip_id.clone();
         }
         match ledger.wears.iter_mut().find(|w| w.garment_id == *g && w.wearing_date == date) {
             Some(w) => {
@@ -244,6 +252,7 @@ pub fn record(ctx: &Ctx<'_>, ledger: &mut Ledger, payload: &Value, channel: &str
         let event = journal(&wctx, ledger, g, "extra_unit", None, further, 0);
         if let Some(e) = ledger.events.last_mut() {
             e.wearing_date = Some(date.clone());
+            e.trip_id = input.trip_id.clone();
         }
         extra_ids.push(event);
     }

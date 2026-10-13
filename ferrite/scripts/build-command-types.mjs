@@ -26,7 +26,7 @@ const { registerAssistant } = await import(path.join(repo, "packages/assistant/s
 const { z } = await import(createRequire(path.join(repo, "apps/worker/package.json")).resolve("zod"));
 
 // `ledger::COMMAND_TYPES` in src/ledger.rs; tests/command_types.rs holds the two lists equal.
-const PORTED = ["care.mark_dirty", "care.washed", "command.undo", "board.publish", "board.select", "board.swap_slot", "feedback.record", "feedback.retract", "laundry.collect", "laundry.return", "return.open_case", "return.update_case", "trip.cancel", "trip.create", "trip.record_packing_proposal", "trip.update", "wear.record"];
+const PORTED = ["care.mark_dirty", "care.washed", "command.undo", "board.publish", "board.select", "board.swap_slot", "feedback.record", "feedback.retract", "laundry.collect", "laundry.return", "return.open_case", "return.update_case", "stock.pack", "stock.unpack", "trip.cancel", "trip.create", "trip.record_packing_proposal", "trip.update", "wear.record"];
 
 const registry = createFoundationRegistry();
 registerDaily(registry);

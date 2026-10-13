@@ -31,7 +31,7 @@ pub const MAX_QUANTITY: u64 = 999;
 pub const RECENT_LIMIT: usize = 200;
 
 /// The command types this port executes. Anything else is `unknown_command`.
-pub const COMMAND_TYPES: &[&str] = &["care.mark_dirty", "care.washed", "command.undo", "board.publish", "board.select", "board.swap_slot", "feedback.record", "feedback.retract", "laundry.collect", "laundry.return", "return.open_case", "return.update_case", "trip.cancel", "trip.create", "trip.record_packing_proposal", "trip.update", "wear.record"];
+pub const COMMAND_TYPES: &[&str] = &["care.mark_dirty", "care.washed", "command.undo", "board.publish", "board.select", "board.swap_slot", "feedback.record", "feedback.retract", "laundry.collect", "laundry.return", "return.open_case", "return.update_case", "stock.pack", "stock.unpack", "trip.cancel", "trip.create", "trip.record_packing_proposal", "trip.update", "wear.record"];
 /// Laundry batches kept in the ledger; the oldest closed ones make room.
 pub const MAX_BATCHES: usize = 60;
 
@@ -58,15 +58,18 @@ impl CmdError {
 /// One journaled stock event of a garment (`stock_events` in TypeScript):
 /// `dirty` (an owner's wash report), `pickup` and `return` of a service
 /// laundry batch, `wash` (back clean without a recorded pickup), `washed` (the
-/// owner's report that he washed it, `care.washed`), and `wear` and
-/// `extra_unit` (a recorded wear, and a further unit used that day).
+/// owner's report that he washed it, `care.washed`), `wear` and
+/// `extra_unit` (a recorded wear, and a further unit used that day), and
+/// `pack` and `unpack` (the owner's report that a unit went into, or came out
+/// of, a trip's suitcase, `stock.pack` and `stock.unpack`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Event {
     pub id: String,
     pub garment_id: String,
     pub kind: String,
     pub batch_id: Option<String>,
-    /// For `washed`, 0 when the owner gave no count.
+    /// For `washed`, 0 when the owner gave no count; for `unpack`, 0 when he named no count (every
+    /// unit of the garment packed for the trip).
     pub quantity: u32,
     /// Units a return names as still away (`return`); for `washed`, 1 when a report without a count
     /// may speak for units reported still away (`releaseAway` in TypeScript), else 0.
@@ -77,9 +80,12 @@ pub struct Event {
     pub voided_by: Option<String>,
     /// The wearing date of a `wear` or `extra_unit` (only those).
     pub wearing_date: Option<String>,
+    /// The trip of a `pack` or `unpack` (always), or of a `wear` or `extra_unit` on a trip (from the
+    /// packed units).
+    pub trip_id: Option<String>,
 }
 
-pub const EVENT_KINDS: &[&str] = &["dirty", "pickup", "return", "wash", "washed", "wear", "extra_unit"];
+pub const EVENT_KINDS: &[&str] = &["dirty", "pickup", "return", "wash", "washed", "wear", "extra_unit", "pack", "unpack"];
 
 /// The counted wear of one garment on one wearing date (`daily_wears`): at most one per pair, however
 /// many reports there are. `stock_event_id` is the `wear` event that consumed the unit.
@@ -194,6 +200,9 @@ impl Ledger {
                 if let Some(d) = &e.wearing_date {
                     x["wearingDate"] = json!(d);
                 }
+                if let Some(t) = &e.trip_id {
+                    x["tripId"] = json!(t);
+                }
                 x
             }).collect::<Vec<_>>(),
             "versions": self.versions,
@@ -262,6 +271,16 @@ impl Ledger {
                 return None;
             }
             let quantity = u32::try_from(u(e, "quantity")?).ok()?;
+            // A trip names a suitcase: always for packing and unpacking, optionally for a wear, never otherwise.
+            let trip_id = opt_st(e, "tripId")?;
+            let trip_ok = match kind.as_str() {
+                "pack" | "unpack" => trip_id.as_deref().map_or(false, |t| !t.is_empty()),
+                "wear" | "extra_unit" => trip_id.as_deref().map_or(true, |t| !t.is_empty()),
+                _ => trip_id.is_none(),
+            };
+            if !trip_ok || (kind == "pack" && quantity == 0) {
+                return None;
+            }
             let still_away = u32::try_from(opt_u(e, "stillAway")?.unwrap_or(0)).ok()?;
             // A wash report's flag is 0 or 1, and only a report without a count carries it.
             if kind == "washed" && (still_away > 1 || (still_away == 1 && quantity != 0)) {
@@ -279,6 +298,7 @@ impl Ledger {
                 command_id: st(e, "commandId")?,
                 voided_by,
                 wearing_date,
+                trip_id,
             });
         }
         let mut versions = BTreeMap::new();
@@ -451,10 +471,15 @@ pub struct Replay {
     pub stock: BTreeMap<String, Stock>,
     /// What each garment's batches hold, by batch ID.
     pub service: BTreeMap<String, BTreeMap<String, Holding>>,
+    /// What each garment has packed for each trip (`clean`, and `dirty`: already worn or packed while
+    /// awaiting care), in the order the trips were first packed for (`state.trip` in TypeScript).
+    pub trips: BTreeMap<String, Vec<(String, Stock)>>,
     /// Units each event moved.
     pub moved: BTreeMap<String, u32>,
     /// Units a wash report took back from the laundry, by the batch each came from.
     pub pulled: BTreeMap<String, BTreeMap<String, u32>>,
+    /// Units each event moved into, out of or within a trip's suitcase, by trip.
+    pub tripped: BTreeMap<String, BTreeMap<String, u32>>,
     /// Repairs by the event that needed them, in replay order.
     pub repairs: Vec<(String, String)>,
 }
@@ -462,6 +487,21 @@ pub struct Replay {
 impl Replay {
     pub fn of(&self, garment_id: &str) -> Stock {
         self.stock.get(garment_id).cloned().unwrap_or_default()
+    }
+
+    /// Units of a garment packed for any trip, worn or not.
+    pub fn on_trips(&self, garment_id: &str) -> u32 {
+        self.trips.get(garment_id).map_or(0, |l| l.iter().map(|(_, s)| s.clean + s.dirty).sum())
+    }
+
+    /// What a garment has packed for one trip.
+    pub fn in_trip(&self, garment_id: &str, trip_id: &str) -> Stock {
+        self.trips.get(garment_id).and_then(|l| l.iter().find(|(t, _)| t == trip_id)).map_or_else(Stock::default, |(_, s)| s.clone())
+    }
+
+    /// Units packed for one trip, every garment together.
+    pub fn packed_for(&self, trip_id: &str) -> u32 {
+        self.trips.values().flat_map(|l| l.iter()).filter(|(t, _)| t == trip_id).map(|(_, s)| s.clean + s.dirty).sum()
     }
 
     /// Units of a garment at the laundry service, in every batch.
@@ -509,7 +549,16 @@ pub fn replay_until(cat: &Catalogue, events: &[Event], at_ms: u64) -> Replay {
 ///   reported still away come back too (`releaseAway`);
 /// - `wear` moves one clean unit to the hamper (`extra_unit` one per unit used); a laundered garment
 ///   with none clean but one in the hamper stays as it is (repair), one with none at home is pulled
-///   back from the laundry (the owner wore it). A never-laundered garment moves nothing.
+///   back from the laundry, or else from a trip's suitcase (the owner wore it). A never-laundered
+///   garment moves nothing, unless none is at home and one is packed: that one is back home.
+///   A wear on a trip uses the packed units first: a clean packed unit becomes a worn one in the
+///   suitcase; one already worn stays so (repair); with nothing packed it is a wear at home;
+/// - `pack` moves clean units into the trip's suitcase, then units awaiting care (they travel not
+///   clean, repair), then a unit the ledger had at the laundry or packed for another trip (repair);
+///   never one already in this suitcase, so packing again does not make a worn unit clean;
+/// - `unpack` moves the trip's units home (worn ones first): a laundered garment's into the hamper,
+///   never declared clean; a never-laundered garment's back clean;
+/// - `dirty` (a wash report) takes the units it lacks at home from the laundry, then from a suitcase.
 pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
     let mut out = Replay::default();
     for g in &cat.garments {
@@ -520,7 +569,69 @@ pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
     for e in ordered {
         let (Some(g), Some(st)) = (cat.get(&e.garment_id), out.stock.get_mut(&e.garment_id)) else { continue };
         let held = out.service.entry(e.garment_id.clone()).or_default();
+        let trips = out.trips.entry(e.garment_id.clone()).or_default();
+        let laundered = g.care_channel != "none";
         let moved = match e.kind.as_str() {
+            "pack" => {
+                let trip = e.trip_id.clone().unwrap_or_default();
+                let want = e.quantity;
+                let mut t = trip_take(trips, &trip);
+                let c = want.min(st.clean);
+                st.clean -= c;
+                t.clean += c;
+                let d = (want - c).min(st.dirty);
+                st.dirty -= d;
+                t.dirty += d;
+                if d > 0 {
+                    out.repairs.push((e.id.clone(), format!("{}: packed a unit the ledger shows as awaiting care; it travels as not clean", g.name)));
+                }
+                let mut moved = c + d;
+                while moved < want {
+                    // Never from the suitcase being packed: a piece already in it, worn or not, stays as it is.
+                    if let Some(batch) = pull_one_unheld_first(held) {
+                        *out.pulled.entry(e.id.clone()).or_default().entry(batch).or_default() += 1;
+                        out.repairs.push((e.id.clone(), format!("{}: the ledger had this item at the laundry; packing establishes it is in the suitcase", g.name)));
+                        t.clean += 1;
+                    } else if let Some((other, clean)) = trip_pull_one(trips, Some(&trip)) {
+                        *out.tripped.entry(e.id.clone()).or_default().entry(other).or_default() += 1;
+                        out.repairs.push((e.id.clone(), format!("{}: the ledger had this item packed for another trip; packing establishes it is in this suitcase", g.name)));
+                        // A unit already worn on the other trip travels on as worn: packing is not washing.
+                        if clean {
+                            t.clean += 1;
+                        } else {
+                            t.dirty += 1;
+                        }
+                    } else {
+                        break;
+                    }
+                    moved += 1;
+                }
+                if moved > 0 {
+                    *out.tripped.entry(e.id.clone()).or_default().entry(trip.clone()).or_default() += moved;
+                }
+                trip_put(trips, trip, t);
+                moved
+            }
+            "unpack" => {
+                let trip = e.trip_id.clone().unwrap_or_default();
+                let mut t = trip_take(trips, &trip);
+                let want = if e.quantity == 0 { t.clean + t.dirty } else { e.quantity };
+                let d = want.min(t.dirty);
+                let c = (want - d).min(t.clean);
+                t.dirty -= d;
+                t.clean -= c;
+                // Unpacking brings units home without declaring them clean.
+                if laundered {
+                    st.dirty += c + d;
+                } else {
+                    st.clean += c + d;
+                }
+                if c + d > 0 {
+                    *out.tripped.entry(e.id.clone()).or_default().entry(trip.clone()).or_default() += c + d;
+                }
+                trip_put(trips, trip, t);
+                c + d
+            }
             "pickup" => {
                 let q = e.quantity.min(st.dirty);
                 st.dirty -= q;
@@ -587,9 +698,38 @@ pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
                 let units = if e.kind == "wear" { 1 } else { e.quantity };
                 let mut moved = 0;
                 for _ in 0..units {
+                    // On a trip the packed units are used first.
+                    if let Some(trip) = &e.trip_id {
+                        if let Some((_, t)) = trips.iter_mut().find(|(id, _)| id == trip) {
+                            if t.clean + t.dirty > 0 {
+                                // The wear relies on this suitcase even when no count changes (a
+                                // never-laundered piece, or one already worn there), so an undo of
+                                // the packing it relied on sees the difference.
+                                let used = out.tripped.entry(e.id.clone()).or_default().entry(trip.clone()).or_default();
+                                if t.clean > 0 {
+                                    if laundered {
+                                        t.clean -= 1;
+                                        t.dirty += 1;
+                                        moved += 1;
+                                        *used += 1;
+                                    }
+                                } else if laundered {
+                                    out.repairs.push((e.id.clone(), format!("{}: worn again on the trip; the packed unit stays in the suitcase, already worn", g.name)));
+                                }
+                                continue;
+                            }
+                        }
+                    }
                     if g.care_channel == "none" {
                         if st.clean == 0 {
-                            out.repairs.push((e.id.clone(), format!("{}: wear recorded for an item with no owned units on record; no quantity was created", g.name)));
+                            if let Some((trip, _)) = trip_pull_one(trips, None) {
+                                *out.tripped.entry(e.id.clone()).or_default().entry(trip).or_default() += 1;
+                                st.clean += 1;
+                                moved += 1;
+                                out.repairs.push((e.id.clone(), format!("{}: the ledger had this item packed for a trip; the recorded wear establishes it is with the owner", g.name)));
+                            } else {
+                                out.repairs.push((e.id.clone(), format!("{}: wear recorded for an item with no owned units on record; no quantity was created", g.name)));
+                            }
                         }
                     } else if st.clean > 0 {
                         st.clean -= 1;
@@ -605,6 +745,11 @@ pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
                         st.dirty += 1;
                         moved += 1;
                         out.repairs.push((e.id.clone(), format!("{}: the ledger had this item at the laundry; the recorded wear establishes it is with the owner", g.name)));
+                    } else if let Some((trip, _)) = trip_pull_one(trips, None) {
+                        *out.tripped.entry(e.id.clone()).or_default().entry(trip).or_default() += 1;
+                        st.dirty += 1;
+                        moved += 1;
+                        out.repairs.push((e.id.clone(), format!("{}: the ledger had this item packed for a trip; the recorded wear establishes it is with the owner", g.name)));
                     } else {
                         out.repairs.push((e.id.clone(), format!("{}: wear recorded for an item with no owned units on record; no quantity was created", g.name)));
                     }
@@ -615,13 +760,19 @@ pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
                 let mut q = e.quantity.min(st.clean);
                 st.clean -= q;
                 st.dirty += q;
-                // The owner has it in the hamper: a unit the ledger had at the laundry is with him.
+                // The owner has it in the hamper: a unit the ledger had at the laundry, or packed, is with him.
                 while q < e.quantity {
-                    let Some(batch) = pull_one(held) else { break };
-                    *out.pulled.entry(e.id.clone()).or_default().entry(batch).or_default() += 1;
+                    if let Some(batch) = pull_one(held) {
+                        *out.pulled.entry(e.id.clone()).or_default().entry(batch).or_default() += 1;
+                        out.repairs.push((e.id.clone(), format!("{}: the ledger had this item at the laundry; the wash report establishes it is with the owner", g.name)));
+                    } else if let Some((trip, _)) = trip_pull_one(trips, None) {
+                        *out.tripped.entry(e.id.clone()).or_default().entry(trip).or_default() += 1;
+                        out.repairs.push((e.id.clone(), format!("{}: the ledger had this item packed for a trip; the wash report establishes it is with the owner", g.name)));
+                    } else {
+                        break;
+                    }
                     st.dirty += 1;
                     q += 1;
-                    out.repairs.push((e.id.clone(), format!("{}: the ledger had this item at the laundry; the wash report establishes it is with the owner", g.name)));
                 }
                 if q < e.quantity {
                     out.repairs.push((e.id.clone(), format!("{}: no clean unit was left to put in the wash; the count stays at what is owned", g.name)));
@@ -632,7 +783,45 @@ pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
         out.moved.insert(e.id.clone(), moved);
     }
     out.service.retain(|_, m| !m.is_empty());
+    out.trips.retain(|_, l| !l.is_empty());
     out
+}
+
+/// Take a trip's holding of the garment out of the list (empty when it holds none), to be put back
+/// with [`trip_put`] in the same place.
+fn trip_take(trips: &mut [(String, Stock)], trip: &str) -> Stock {
+    trips.iter_mut().find(|(t, _)| t == trip).map_or_else(Stock::default, |(_, s)| std::mem::take(s))
+}
+
+/// Put a trip's holding back: a trip holding nothing leaves the list, and one packed for the first
+/// time joins its end (a JavaScript `Map`'s insertion order, which `takeFromTrip` walks).
+fn trip_put(trips: &mut Vec<(String, Stock)>, trip: String, s: Stock) {
+    match trips.iter().position(|(t, _)| *t == trip) {
+        Some(i) if s.clean + s.dirty == 0 => {
+            trips.remove(i);
+        }
+        Some(i) => trips[i].1 = s,
+        None if s.clean + s.dirty > 0 => trips.push((trip, s)),
+        None => {}
+    }
+}
+
+/// Take one unit out of the first trip (but `except`) that holds one, a clean one first
+/// (`takeFromTrip(1)`); the trip it came from, and whether the unit was clean (not yet worn there).
+fn trip_pull_one(trips: &mut Vec<(String, Stock)>, except: Option<&str>) -> Option<(String, bool)> {
+    let i = trips.iter().position(|(t, s)| Some(t.as_str()) != except && s.clean + s.dirty > 0)?;
+    let s = &mut trips[i].1;
+    let clean = s.clean > 0;
+    if clean {
+        s.clean -= 1;
+    } else {
+        s.dirty -= 1;
+    }
+    let trip = trips[i].0.clone();
+    if trips[i].1.clean + trips[i].1.dirty == 0 {
+        trips.remove(i);
+    }
+    Some((trip, clean))
 }
 
 /// Take one unit back from the garment's oldest batch that holds one; the batch it came from.
@@ -699,7 +888,7 @@ pub(crate) fn only_keys(payload: &Value, command: &str, allowed: &[&str]) -> Res
 }
 
 /// `items: [{garmentId, quantity = 1}]`, 1 to [`MAX_ITEMS`] entries.
-fn items(payload: &Value, command: &str) -> Result<Vec<(String, u32)>, CmdError> {
+pub(crate) fn items(payload: &Value, command: &str) -> Result<Vec<(String, u32)>, CmdError> {
     let list = match payload.get("items") {
         Some(Value::Array(a)) if a.is_empty() => return Err(invalid(command, "items: at least one item is required")),
         Some(Value::Array(a)) if a.len() <= MAX_ITEMS => a,
@@ -772,6 +961,7 @@ pub(crate) fn journal(ctx: &Ctx<'_>, ledger: &mut Ledger, garment_id: &str, kind
         command_id: ctx.command_id.to_string(),
         voided_by: None,
         wearing_date: None,
+        trip_id: None,
     });
     ledger.next_seq += 1;
     id
@@ -950,13 +1140,13 @@ pub fn undo_precheck(original: Option<&StoredCommand>, target: &str) -> Result<V
     }
 }
 
-/// `command.undo` of a wash report (`care.mark_dirty`) or of the owner's report that he washed it
-/// (`care.washed`): a compensating command. The original is
-/// never deleted; `crate::api` links the two in the same commit.
+/// `command.undo` of a wash report (`care.mark_dirty`), of the owner's report that he washed it
+/// (`care.washed`), or of his report that he packed or unpacked (`stock.pack`, `stock.unpack`): a
+/// compensating command. The original is never deleted; `crate::api` links the two in the same commit.
 pub fn command_undo(ctx: &Ctx<'_>, ledger: &mut Ledger, original: Option<&StoredCommand>, target: &str) -> Result<Plan, CmdError> {
     let data = undo_precheck(original, target)?;
     let Some(original) = original else { return Err(CmdError::new("not_found", "there is no such action to undo")) };
-    if original.kind != "care.mark_dirty" && original.kind != "care.washed" {
+    if !["care.mark_dirty", "care.washed", "stock.pack", "stock.unpack"].contains(&original.kind.as_str()) {
         return Err(CmdError::with("not_undoable", "this action has no automatic undo", json!({"commandId": target, "type": original.kind})));
     }
     let voided = void_events(ctx, ledger, &data, target)?;
@@ -1025,10 +1215,11 @@ pub fn void_events(ctx: &Ctx<'_>, ledger: &mut Ledger, data: &Value, target: &st
 }
 
 /// Whether one event's effect differs between two replays: what it moved, which laundry batch any
-/// units it took back came from, and the repairs it needed.
+/// units it took back came from, which trip's suitcase it moved units into, out of or within, and
+/// the repairs it needed.
 fn effect_changed(id: &str, before: &Replay, after: &Replay) -> bool {
     let ids = [id.to_string()];
-    before.moved.get(id) != after.moved.get(id) || before.pulled.get(id) != after.pulled.get(id) || before.repairs_of(&ids) != after.repairs_of(&ids)
+    before.moved.get(id) != after.moved.get(id) || before.pulled.get(id) != after.pulled.get(id) || before.tripped.get(id) != after.tripped.get(id) || before.repairs_of(&ids) != after.repairs_of(&ids)
 }
 
 /// Batches record what their pickups and returns moved. An observation dated earlier must not change
@@ -1127,7 +1318,7 @@ pub fn inventory(cat: &Catalogue, ledger: &Ledger, category: Option<&str>) -> Ve
             item.insert("acquisition".into(), json!(g.acquisition));
             item.insert("quantity".into(), json!(g.quantity));
             item.insert("version".into(), json!(ledger.garment_version(&g.id)));
-            item.insert("balances".into(), json!({"clean": st.clean, "dirty": st.dirty, "service": r.at_service(&g.id)}));
+            item.insert("balances".into(), json!({"clean": st.clean, "dirty": st.dirty, "service": r.at_service(&g.id), "trip": r.on_trips(&g.id)}));
             item.insert("sourceRows".into(), json!(g.source_rows));
             Value::Object(item)
         })

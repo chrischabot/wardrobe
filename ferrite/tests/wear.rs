@@ -411,7 +411,7 @@ async fn wear_refusals_write_nothing() {
     let now = T0 + 10 * HOUR;
     let cases: Vec<(Value, Option<u64>, &str)> = vec![
         (json!({"wearingDate": "2026-09-12", "garmentIds": [OXFORD_BLUE]}), None, "invalid_command"),
-        (json!({"wearingDate": YESTERDAY, "garmentIds": [OXFORD_BLUE], "tripId": "trip_1"}), None, "invalid_command"),
+        (json!({"wearingDate": YESTERDAY, "garmentIds": [OXFORD_BLUE], "tripId": 7}), None, "invalid_command"),
         (json!({"wearingDate": YESTERDAY, "garmentIds": []}), None, "invalid_command"),
         (json!({"wearingDate": "2026-02-30", "garmentIds": [OXFORD_BLUE]}), None, "invalid_command"),
         (json!({"wearingDate": YESTERDAY, "garmentIds": [OXFORD_BLUE], "colour": "blue"}), None, "invalid_command"),

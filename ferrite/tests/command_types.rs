@@ -79,7 +79,7 @@ async fn the_list_names_exactly_the_ported_commands_as_the_typescript_registry_d
     }
     // The owner's reports are observations; a choice, a swap and an undo are edits (handlers in
     // packages/domain and packages/daily).
-    for kind in ["care.mark_dirty", "care.washed", "feedback.record", "feedback.retract", "laundry.collect", "laundry.return", "wear.record"] {
+    for kind in ["care.mark_dirty", "care.washed", "feedback.record", "feedback.retract", "laundry.collect", "laundry.return", "stock.pack", "stock.unpack", "wear.record"] {
         assert_eq!(type_of(&list, kind)["class"], "observation", "{kind}");
     }
     for kind in ["board.select", "board.swap_slot", "command.undo", "return.open_case", "return.update_case", "trip.cancel", "trip.create", "trip.update"] {
@@ -104,9 +104,13 @@ async fn the_list_names_exactly_the_ported_commands_as_the_typescript_registry_d
     assert_eq!(proposal["authorizations"], json!(["owner_tap", "owner_statement"]));
     assert_eq!(type_of(&list, "trip.create")["payloadSchema"]["required"], json!(["name", "departsOn", "returnsOn", "destinations", "source"]));
     assert_eq!(type_of(&list, "board.select")["payloadSchema"]["required"], json!(["boardId", "optionId"]));
-    // What the port categorically refuses is narrowed: no trips, only the home board and the default
-    // brief, no weather or Calendar snapshot.
-    assert_eq!(wear["payloadSchema"]["properties"]["tripId"], json!({"type": "null", "default": null}));
+    // A wear may name the trip it was worn on; packing names a trip and what went into the suitcase,
+    // unpacking a trip and, optionally, which pieces came home.
+    assert_eq!(wear["payloadSchema"]["properties"]["tripId"], json!({"default": null, "type": ["string", "null"]}));
+    assert_eq!(type_of(&list, "stock.pack")["payloadSchema"]["required"], json!(["tripId", "items"]));
+    assert_eq!(type_of(&list, "stock.unpack")["payloadSchema"]["required"], json!(["tripId"]));
+    // What the port categorically refuses is narrowed: only the home board and the default brief, no
+    // weather or Calendar snapshot.
     assert_eq!(publish["payloadSchema"]["properties"]["scope"]["const"], "home");
     assert_eq!(publish["payloadSchema"]["properties"]["weatherSnapshotId"]["type"], "null");
     assert!(type_of(&list, "board.swap_slot")["payloadSchema"]["properties"].get("weatherSnapshotId").is_none());
@@ -306,7 +310,7 @@ async fn payloads_the_published_schemas_accept_run_and_the_values_they_refuse_ar
     run.accepted("command.undo", undo).await;
 
     let wear = json!({"wearingDate": "2026-09-09", "garmentIds": [OXFORD_PINK], "timezone": "Europe/London", "segment": "day", "additionalUnits": [], "tripId": null, "note": "Worn to the office"});
-    run.refused("wear.record", with(&wear, "tripId", json!("trp_1")), "wear on a trip (from packed stock) is not ported").await;
+    run.refused("wear.record", with(&wear, "tripId", json!(7)), "tripId: expected a trip ID").await;
     run.accepted("wear.record", wear).await;
 
     let dirty = json!({"items": [{"garmentId": GREY_CHINO, "quantity": 1}]});
@@ -358,6 +362,12 @@ async fn payloads_the_published_schemas_accept_run_and_the_values_they_refuse_ar
     });
     run.refused("trip.record_packing_proposal", with(&proposal, "notPublished", json!(true)), "notPublished: not a field of this command").await;
     run.accepted("trip.record_packing_proposal", proposal).await;
+    let pack = json!({"tripId": "trp_command_types", "items": [{"garmentId": OXFORD_BLUE, "quantity": 1}]});
+    run.refused("stock.pack", with(&pack, "items", json!([])), "items: at least one item is required").await;
+    run.accepted("stock.pack", pack).await;
+    let unpack = json!({"tripId": "trp_command_types", "items": [{"garmentId": OXFORD_BLUE, "quantity": 1}]});
+    run.refused("stock.unpack", with(&unpack, "tripId", json!("")), "tripId: expected a trip ID").await;
+    run.accepted("stock.unpack", unpack).await;
     let cancel = json!({"tripId": "trp_command_types"});
     run.refused("trip.cancel", with(&cancel, "notPublished", json!(true)), "notPublished: not a field of this command").await;
     run.accepted("trip.cancel", cancel).await;
