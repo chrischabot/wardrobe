@@ -18,10 +18,12 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, "../..");
 const { buildInventoryImportPlan } = await import(path.join(repo, "packages/domain/src/import/inventory.ts"));
+const { normalizePhrase } = await import(path.join(repo, "packages/domain/src/util.ts"));
 const {
   PROFILE_RULES,
   PROFILE_MEASUREMENTS,
   PROFILE_SIZE_EXPERIENCES,
+  HEALING_RESTRICTION,
   HEALING_RESTRICTION_ID,
   OWNER_PROFILE_SHA256,
   OWNER_PROFILE_TITLE,
@@ -32,6 +34,25 @@ const {
 const csvPath = path.join(repo, "requirements/wardrobe_inventory_clean.csv");
 const csvText = readFileSync(csvPath, "utf8");
 const plan = await buildInventoryImportPlan(csvText);
+
+// Alias and fact IDs derive from the importer's idempotency key of the garment's creation
+// (`import:<sha16>:garment:<id>`, packages/domain/src/import/apply.ts); the TypeScript service draws them
+// at random, so they are this port's own.
+const c16 = plan.sourceSha256.slice(0, 16);
+const garmentRecordId = (prefix, garmentId, key) => `${prefix}_${createHash("sha256").update(`import:${c16}:garment:${garmentId}:${key}`, "utf8").digest("hex").slice(0, 24)}`;
+// The aliases `garment.create` records (packages/domain/src/handlers/garments.ts): the name as the
+// owner's own, then the importer's, skipping any whose normalized phrase is already recorded.
+const aliasesOf = (garmentId, p) => {
+  const seen = new Set();
+  const out = [];
+  for (const a of [{ phrase: p.name, kind: "owner_name" }, ...(p.aliases ?? [])]) {
+    const n = normalizePhrase(a.phrase);
+    if (!n || seen.has(n)) continue;
+    seen.add(n);
+    out.push({ aliasId: garmentRecordId("als", garmentId, `alias:${out.length}`), phrase: a.phrase, kind: a.kind });
+  }
+  return out;
+};
 
 const garments = plan.garments.map((g) => {
   const p = g.payload;
@@ -52,6 +73,16 @@ const garments = plan.garments.map((g) => {
     seasonNote: p.seasonNote ?? null,
     thermal: p.thermal ?? null,
     sourceRows: g.sourceRows,
+    // What the item page shows of the record (`Garment` in packages/contracts), as `garment.create` stores it.
+    maker: p.maker ?? null,
+    product: p.product ?? null,
+    fabric: p.fabric ?? null,
+    pattern: p.pattern ?? null,
+    size: p.size ?? null,
+    planningReason: p.planningReason ?? null,
+    condition: p.condition ?? null,
+    aliases: aliasesOf(g.garmentId, p),
+    facts: (p.facts ?? []).map((f, i) => ({ factId: garmentRecordId("fct", g.garmentId, `fact:${i}`), attribute: f.attribute, value: f.value ?? null, source: f.source, scope: f.scope ?? null })),
   };
 });
 
@@ -69,6 +100,30 @@ const header = {
   unitCount: plan.totals.units,
   healingRestrictionId: HEALING_RESTRICTION_ID,
 };
+
+// The profile's healing restriction as the importer records it (`restriction.add`, apply.ts step 5), at the
+// profile's date, with the line of its passage.
+const profileShaForRestriction = createHash("sha256").update(readFileSync(path.join(repo, "requirements/chris-wardrobe-profile.md"), "utf8"), "utf8").digest("hex");
+const { quote: restrictionQuote, ...restrictionFields } = HEALING_RESTRICTION;
+const healingRestriction = {
+  restrictionId: restrictionFields.restrictionId,
+  kind: restrictionFields.kind,
+  scope: restrictionFields.scope,
+  reason: restrictionFields.reason,
+  startsAt: `${OWNER_PROFILE_DATE}T00:00:00Z`,
+  expectedEnd: restrictionFields.expectedEnd ?? null,
+  requiredEvidence: restrictionFields.requiredEvidence,
+  status: "active",
+  resolvedAt: null,
+  source: {
+    kind: "profile_passage",
+    ref: `chris-wardrobe-profile.md@sha256:${profileShaForRestriction}`,
+    observedAt: `${OWNER_PROFILE_DATE}T00:00:00Z`,
+    note: `profile section 8.2, line ${locatePassage(readFileSync(path.join(repo, "requirements/chris-wardrobe-profile.md"), "utf8"), profileShaForRestriction, restrictionQuote).lineStart}`,
+  },
+};
+header.importedAt = `${OWNER_PROFILE_DATE}T00:00:00Z`;
+header.healingRestriction = healingRestriction;
 // One garment per line keeps reviews of a changed inventory readable.
 const text =
   "{\n" +

@@ -482,6 +482,27 @@ pub struct Replay {
     pub tripped: BTreeMap<String, BTreeMap<String, u32>>,
     /// Repairs by the event that needed them, in replay order.
     pub repairs: Vec<(String, String)>,
+    /// What each event moved, from where to where, in replay order (`ReplayMovement` in
+    /// `stock/replay.ts`): one entry per move the TypeScript replay records.
+    pub movements: Vec<Movement>,
+}
+
+/// One quantity movement of one event (`ReplayMovement`): `from` and `to` are buckets (`clean`,
+/// `dirty`, `service`, `trip`); the note says why when the move is not the event's ordinary one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Movement {
+    pub event_id: String,
+    pub garment_id: String,
+    pub from: &'static str,
+    pub to: &'static str,
+    pub quantity: u32,
+    pub note: Option<&'static str>,
+}
+
+fn mv(list: &mut Vec<Movement>, e: &Event, from: &'static str, to: &'static str, quantity: u32, note: Option<&'static str>) {
+    if quantity > 0 {
+        list.push(Movement { event_id: e.id.clone(), garment_id: e.garment_id.clone(), from, to, quantity, note });
+    }
 }
 
 impl Replay {
@@ -579,9 +600,11 @@ pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
                 let c = want.min(st.clean);
                 st.clean -= c;
                 t.clean += c;
+                mv(&mut out.movements, e, "clean", "trip", c, None);
                 let d = (want - c).min(st.dirty);
                 st.dirty -= d;
                 t.dirty += d;
+                mv(&mut out.movements, e, "dirty", "trip", d, Some("packed while awaiting care"));
                 if d > 0 {
                     out.repairs.push((e.id.clone(), format!("{}: packed a unit the ledger shows as awaiting care; it travels as not clean", g.name)));
                 }
@@ -591,10 +614,12 @@ pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
                     if let Some(batch) = pull_one_unheld_first(held) {
                         *out.pulled.entry(e.id.clone()).or_default().entry(batch).or_default() += 1;
                         out.repairs.push((e.id.clone(), format!("{}: the ledger had this item at the laundry; packing establishes it is in the suitcase", g.name)));
+                        mv(&mut out.movements, e, "service", "trip", 1, Some("owner statement: packed"));
                         t.clean += 1;
                     } else if let Some((other, clean)) = trip_pull_one(trips, Some(&trip)) {
                         *out.tripped.entry(e.id.clone()).or_default().entry(other).or_default() += 1;
                         out.repairs.push((e.id.clone(), format!("{}: the ledger had this item packed for another trip; packing establishes it is in this suitcase", g.name)));
+                        mv(&mut out.movements, e, "trip", "trip", 1, Some("owner statement: packed"));
                         // A unit already worn on the other trip travels on as worn: packing is not washing.
                         if clean {
                             t.clean += 1;
@@ -623,8 +648,10 @@ pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
                 // Unpacking brings units home without declaring them clean.
                 if laundered {
                     st.dirty += c + d;
+                    mv(&mut out.movements, e, "trip", "dirty", c + d, Some("unpacked; cleanliness not asserted"));
                 } else {
                     st.clean += c + d;
+                    mv(&mut out.movements, e, "trip", "clean", c + d, None);
                 }
                 if c + d > 0 {
                     *out.tripped.entry(e.id.clone()).or_default().entry(trip.clone()).or_default() += c + d;
@@ -635,6 +662,7 @@ pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
             "pickup" => {
                 let q = e.quantity.min(st.dirty);
                 st.dirty -= q;
+                mv(&mut out.movements, e, "dirty", "service", q, None);
                 if q > 0 {
                     let h = held.entry(e.batch_id.clone().unwrap_or_default()).or_insert(Holding { quantity: 0, held: false, picked_up_at_ms: e.at_ms });
                     h.quantity += q;
@@ -649,6 +677,7 @@ pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
                         let q = e.quantity.min(h.quantity);
                         h.quantity -= q;
                         st.clean += q;
+                        mv(&mut out.movements, e, "service", "clean", q, None);
                         if h.quantity == 0 {
                             held.remove(&batch);
                         } else if e.still_away > 0 {
@@ -662,6 +691,7 @@ pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
                 let q = e.quantity.min(st.dirty);
                 st.dirty -= q;
                 st.clean += q;
+                mv(&mut out.movements, e, "dirty", "clean", q, None);
                 q
             }
             "washed" => {
@@ -670,6 +700,7 @@ pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
                 let q = want.min(st.dirty);
                 st.dirty -= q;
                 st.clean += q;
+                mv(&mut out.movements, e, "dirty", "clean", q, None);
                 let mut moved = q;
                 let mut remaining = want - q;
                 // The owner says it is washed: a unit the ledger believed was away is evidently back.
@@ -679,6 +710,7 @@ pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
                     st.clean += 1;
                     moved += 1;
                     remaining -= 1;
+                    mv(&mut out.movements, e, "service", "clean", 1, Some("owner observation: washed, so it is back and clean"));
                     out.repairs.push((e.id.clone(), format!("{}: the ledger had this item away at the laundry; the wash report establishes it is back and clean", g.name)));
                 }
                 if e.still_away == 1 && q == 0 {
@@ -690,6 +722,7 @@ pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
                         *out.pulled.entry(e.id.clone()).or_default().entry(b).or_default() += n;
                         st.clean += n;
                         moved += n;
+                        mv(&mut out.movements, e, "service", "clean", n, Some("owner observation: washed, so the unit reported away is back and clean"));
                     }
                 }
                 moved
@@ -712,6 +745,7 @@ pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
                                         t.dirty += 1;
                                         moved += 1;
                                         *used += 1;
+                                        mv(&mut out.movements, e, "trip", "trip", 1, Some("worn from the packed subset"));
                                     }
                                 } else if laundered {
                                     out.repairs.push((e.id.clone(), format!("{}: worn again on the trip; the packed unit stays in the suitcase, already worn", g.name)));
@@ -726,6 +760,7 @@ pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
                                 *out.tripped.entry(e.id.clone()).or_default().entry(trip).or_default() += 1;
                                 st.clean += 1;
                                 moved += 1;
+                                mv(&mut out.movements, e, "trip", "clean", 1, Some("owner observation: worn, so it is with the owner"));
                                 out.repairs.push((e.id.clone(), format!("{}: the ledger had this item packed for a trip; the recorded wear establishes it is with the owner", g.name)));
                             } else {
                                 out.repairs.push((e.id.clone(), format!("{}: wear recorded for an item with no owned units on record; no quantity was created", g.name)));
@@ -735,6 +770,7 @@ pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
                         st.clean -= 1;
                         st.dirty += 1;
                         moved += 1;
+                        mv(&mut out.movements, e, "clean", "dirty", 1, None);
                     } else if st.dirty > 0 && (e.kind == "wear" || held.values().all(|h| h.quantity == 0)) {
                         // A wear with none clean reused a unit awaiting care. A further unit is a
                         // different unit from the day's wear (which may be that one in the hamper),
@@ -744,11 +780,13 @@ pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
                         *out.pulled.entry(e.id.clone()).or_default().entry(batch).or_default() += 1;
                         st.dirty += 1;
                         moved += 1;
+                        mv(&mut out.movements, e, "service", "dirty", 1, Some("owner observation: worn, so it is with the owner"));
                         out.repairs.push((e.id.clone(), format!("{}: the ledger had this item at the laundry; the recorded wear establishes it is with the owner", g.name)));
                     } else if let Some((trip, _)) = trip_pull_one(trips, None) {
                         *out.tripped.entry(e.id.clone()).or_default().entry(trip).or_default() += 1;
                         st.dirty += 1;
                         moved += 1;
+                        mv(&mut out.movements, e, "trip", "dirty", 1, Some("owner observation: worn, so it is with the owner"));
                         out.repairs.push((e.id.clone(), format!("{}: the ledger had this item packed for a trip; the recorded wear establishes it is with the owner", g.name)));
                     } else {
                         out.repairs.push((e.id.clone(), format!("{}: wear recorded for an item with no owned units on record; no quantity was created", g.name)));
@@ -760,13 +798,16 @@ pub fn replay(cat: &Catalogue, events: &[Event]) -> Replay {
                 let mut q = e.quantity.min(st.clean);
                 st.clean -= q;
                 st.dirty += q;
+                mv(&mut out.movements, e, "clean", "dirty", q, None);
                 // The owner has it in the hamper: a unit the ledger had at the laundry, or packed, is with him.
                 while q < e.quantity {
                     if let Some(batch) = pull_one(held) {
                         *out.pulled.entry(e.id.clone()).or_default().entry(batch).or_default() += 1;
+                        mv(&mut out.movements, e, "service", "dirty", 1, Some("owner observation: marked dirty, so it is with the owner"));
                         out.repairs.push((e.id.clone(), format!("{}: the ledger had this item at the laundry; the wash report establishes it is with the owner", g.name)));
                     } else if let Some((trip, _)) = trip_pull_one(trips, None) {
                         *out.tripped.entry(e.id.clone()).or_default().entry(trip).or_default() += 1;
+                        mv(&mut out.movements, e, "trip", "dirty", 1, Some("owner observation: marked dirty, so it is with the owner"));
                         out.repairs.push((e.id.clone(), format!("{}: the ledger had this item packed for a trip; the wash report establishes it is with the owner", g.name)));
                     } else {
                         break;

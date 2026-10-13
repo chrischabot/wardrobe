@@ -30,6 +30,18 @@ pub struct Garment {
     pub season_note: Option<String>,
     /// The temperature bounds the importer read from the sheet (`{minC?, maxC?, basis, source}`), or none.
     pub thermal: Option<Value>,
+    /// The record's text fields the item page shows (`Garment` in packages/contracts), as imported.
+    pub maker: Option<String>,
+    pub product: Option<String>,
+    pub fabric: Option<String>,
+    pub pattern: Option<String>,
+    pub size: Option<String>,
+    pub planning_reason: Option<String>,
+    pub condition: Option<String>,
+    /// The aliases `garment.create` records (`{aliasId, phrase, kind}`), the owner's name first.
+    pub aliases: Vec<Value>,
+    /// The facts the importer records (`{factId, attribute, value, source, scope}`), in import order.
+    pub facts: Vec<Value>,
 }
 
 impl Garment {
@@ -82,6 +94,14 @@ fn text(v: &Value, key: &str) -> String {
     v.get(key).and_then(Value::as_str).unwrap_or_default().to_string()
 }
 
+fn opt_text(v: &Value, key: &str) -> Option<String> {
+    v.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+fn list(v: &Value, key: &str) -> Vec<Value> {
+    v.get(key).and_then(Value::as_array).cloned().unwrap_or_default()
+}
+
 fn parse(seed: &str) -> Catalogue {
     // The seed is generated and checked; a malformed one is a build defect,
     // so it fails loudly at first use rather than serving a partial wardrobe.
@@ -118,6 +138,15 @@ fn parse(seed: &str) -> Catalogue {
                 attributes: g.get("attributes").and_then(Value::as_object).cloned().unwrap_or_default(),
                 season_note: g.get("seasonNote").and_then(Value::as_str).map(str::to_string),
                 thermal: g.get("thermal").filter(|t| t.is_object()).cloned(),
+                maker: opt_text(g, "maker"),
+                product: opt_text(g, "product"),
+                fabric: opt_text(g, "fabric"),
+                pattern: opt_text(g, "pattern"),
+                size: opt_text(g, "size"),
+                planning_reason: opt_text(g, "planningReason"),
+                condition: opt_text(g, "condition"),
+                aliases: list(g, "aliases"),
+                facts: list(g, "facts"),
             }
         })
         .collect();
@@ -147,6 +176,29 @@ pub fn catalogue() -> &'static Catalogue {
 /// The seed document exactly as generated (the import's garments, rules and provenance).
 pub fn source() -> &'static str {
     SEED
+}
+
+/// The profile's healing restriction as the importer records it (`Restriction` in packages/contracts:
+/// `restriction.add` in packages/domain/src/import/apply.ts, at the profile's date). Nothing in this
+/// port can resolve it, so it is always active.
+pub fn healing_restriction() -> &'static Value {
+    static RESTRICTION: OnceLock<Value> = OnceLock::new();
+    RESTRICTION.get_or_init(|| {
+        let r = document().get("healingRestriction").filter(|r| r.is_object()).cloned().expect("seed has the healing restriction");
+        assert_eq!(r["restrictionId"], document()["healingRestrictionId"], "the restriction is the one the seed names");
+        r
+    })
+}
+
+/// When the import's records are dated: the importer runs at one import time this port does not
+/// have, so its records carry the profile's own date (`OWNER_PROFILE_DATE`), as the style records do.
+pub fn imported_at() -> &'static str {
+    document().get("importedAt").and_then(Value::as_str).expect("seed has its import date")
+}
+
+fn document() -> &'static Value {
+    static DOC: OnceLock<Value> = OnceLock::new();
+    DOC.get_or_init(|| serde_json::from_str(SEED).expect("seed/owner-inventory.json is valid JSON"))
 }
 
 #[cfg(test)]

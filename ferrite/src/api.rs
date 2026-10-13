@@ -379,6 +379,7 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
             let raw = query.iter().find(|(k, _)| k == "temperatureC").map(|(_, v)| v.as_str());
             crate::temperature::parse_temperature(raw).map(|t| crate::temperature::preview(catalogue(), t))
         }
+        ("GET", p) if crate::item::target(p).is_some() => crate::item::read(store, now_ms, crate::item::target(p).unwrap_or_default()).await,
         ("GET", "/v1/style") => crate::style::context(query.iter().find(|(k, _)| k == "date").map(|(_, v)| v.as_str())),
         ("GET", "/v1/style/conflicts") => {
             let q = |name: &str| query.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());

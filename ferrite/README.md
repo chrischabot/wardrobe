@@ -76,6 +76,7 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 |---|---|
 | `GET /health` (public) | service status |
 | `GET /v1/wardrobe[?category=]` | the inventory: every imported garment with its balances (clean, dirty, at the laundry service, packed for trips) and version. A subset of `listInventory`: no availability estimate, aliases, colours or wear counts yet |
+| `GET /v1/items/{garmentId}` | `ItemResponse` as `readItem`: the item page, see "Item page". An unknown garment is `not_found` ("no garment '<id>' in this wardrobe"); nothing is written |
 | `POST /v1/commands` | the command envelope of `packages/contracts` (`type`, `payload`, `idempotencyKey`, `authorization`, `source.channel`, optional `occurredAt`, `expectedVersions`) |
 | `GET /v1/today[?date=YYYY-MM-DD][&scope=home\|trip:<tripId>]` | `TodayResponse` as `readToday`: the board of the scope (the home board, or a trip's day board, see "Trip-day boards") for the day, or none, with the garments recorded worn that day. Without a date it is the owner's day now in his timezone (Europe/London, the default setting, with British Summer Time), whatever the scope. `status` is `ready` or `none`; the source freshness list gives the board and wardrobe revisions, style, and then weather as `unavailable` and Calendar as `not_connected`; `runId` is null (nothing composes in the background) and `wardrobeRevision` is the current revision. An evening scope (`home:evening`, `trip:<tripId>:evening`) is refused, since evening boards are not ported |
 | `GET /v1/weather[?date=YYYY-MM-DD]` | `WeatherSnapshot`, for the owner's day now when no date is named: what the TypeScript service answers for an owner with no home city (no settings command is ported, so `homeLocation` is null). There is no forecast: `freshness` is `unavailable`, every window and condition value is null (never zero, dry or calm), the line is "Weather unavailable" and the limitation is "No home city is set, so no forecast was requested." The snapshot is answered and not recorded (`weather.record_snapshot` is not ported) |
@@ -980,6 +981,37 @@ report), which are rebased, as in the TypeScript service. Packing and
 unpacking are observations too, but a stale version is refused (`conflict`),
 as TypeScript's `staleVersions: "conflict"` does.
 
+## Item page
+
+`GET /v1/items/{garmentId}` (`src/item.rs`) answers `ItemResponse` as `readItem` and
+`getGarmentDetail` do, for the owner and a connected assistant alike:
+
+- `detail.garment` is the record as the importer planned it from the owner's CSV (name, category,
+  roles, maker, product, fabric, colour, size, care channel, planning policy and reason, condition,
+  season text, thermal bounds, attributes), carried into `src/seed/owner-inventory.json` by
+  `scripts/build-seed.mjs`, never retyped. `version` is the ledger's garment version.
+- `aliases` are the ones `garment.create` records (the name as the owner's own first, then the
+  importer's, without repeating a normalized phrase); `facts` are the importer's, each with its
+  provenance (`import`, the sheet's line). Their IDs are this port's own, derived from the importer's
+  idempotency key (TypeScript draws them at random).
+- `restrictions` lists the profile's healing restriction (`rst_profile_sneakers_only`) where its scope
+  covers the garment, exactly where Studio and the boards exclude the shoe.
+- `balances` and `movements` come from the ledger's replay: the import's opening stock (`receive`,
+  basis `import`), then each move of the garment's reports (`mark_dirty`, `wash`, `pickup`, `return`,
+  `wear`, `extra_unit`, `pack`, `unpack`) with its buckets, quantity and note, basis `observed`;
+  an undone report's moves are gone, as they are from the balances.
+- `recordedWearCount`, `lastRecordedWear` and `recentWears` (newest first, at most 60) are the counted
+  wears, an undone one listed as `retracted`, with the caveat that zero means not logged.
+- `availability` is the contract's `GarmentAvailability` only where its probability is exact without
+  the estimator: a hard-excluded garment (`pAvailable` 0) and a never-laundered one (1), as
+  `estimateGarment` computes them, with Studio's status and reasons. For a laundered garment that is
+  not excluded the estimator is not ported, so `availability` is `null` rather than a guessed
+  probability (the iOS item page shows `pAvailable` as a percentage), and the extra field
+  `availabilityEstimate` always says which: `state` `exact` or `not_estimated`, with Studio's status
+  and reasons and, when not estimated, a sentence saying so.
+- `media` is `null` with `mediaAvailable: false` and `knownCombinations` is empty (no media module, no
+  stored combinations); `measurements` is empty (none are ported).
+
 ## Known limits
 
 Recorded rather than fixed, under the owner's P0/P1 direction. Each is either minor or outside
@@ -1047,8 +1079,24 @@ the lines of the milestone it was found in.
     so connection capabilities, Calendar and Gmail order import have nothing
     to act on.
 
-Milestone C, the Wardrobe tab in the contract shape (`GET /v1/wardrobe` as
-`InventoryPage`, `GET /v1/items/{id}` as `ItemResponse`), is parked unlanded.
+- Item page (`src/item.rs`):
+  - A laundered garment that is not excluded has no availability probability
+    (`availability: null`, `availabilityEstimate.state: "not_estimated"`): the
+    estimator's unreported-wear model and the import's cleanliness prior are
+    not ported (milestone 2, parked).
+  - The import's records (`createdAt`, `updatedAt`, facts' `recordedAt`, the
+    opening `receive` movement) carry the profile's date, 2026-09-14, since the
+    port has no import time; `updatedAt` stays that date after a report
+    changes the garment's version, since the port does not store when a
+    version changed.
+  - The opening movement's `eventId` (`import:<importRunId>:<garmentId>`)
+    names no stored event: the import journals none in this port.
+  - Every report's movement is basis `observed`; a no-pickup laundry return
+    (`wash`) is the owner's report too. Weekly resets (basis `inferred`) are
+    not ported.
+
+Milestone C's first half, the Wardrobe tab in the contract shape (`GET /v1/wardrobe` as
+`InventoryPage`), is parked unlanded; the item page landed on its own ("Item page").
 Its open findings:
 
 - `availability` would be `null`, with availability filters refused, instead
@@ -1394,18 +1442,37 @@ small change of its own, and passes `ferrite check`, `ferrite test` and
 
 ## Deploying
 
-Not done. `ferrite deploy` needs a Ferrite account: a credential document
-(endpoint, account ID and token) imported with
-`ferrite login --credentials-file`, which only the owner can supply. Before the
-first deploy, set the secrets with `ferrite secrets set <name>` (values on
-stdin, never in source): `WARDROBE_OWNER_TOKEN`, `WARDROBE_ASSISTANT_TOKEN`
-(the deploy tooling generates both), `WARDROBE_PUBLIC_ORIGIN` (the hosted
-origin, known after the first deploy; deploy again once it is set) and, for
-the assistant's tools, `WARDROBE_AI_GATEWAY` (see "The assistant"; without
-it those two tools refuse by name and everything else works). For the iOS
-app to sign in, also set `WARDROBE_APP_CLIENT_ID` and
-`WARDROBE_APP_REDIRECT_URI` to the build's `GARDEROBE_OAUTH_CLIENT_ID` and
-`GARDEROBE_OAUTH_REDIRECT_URL` (see "Signing in the owner's app").
+Deployed to a hosted Ferrite preview, `https://0ldnjvqe9q4auks8.ferrite.cloud`,
+with `ferrite login --credentials-stdin` (endpoint, account ID and token from
+the project's secrets, never printed) and
+`ferrite deploy --target upstream --detach --json`, then
+`ferrite deploy wait --attempt <id> --json`. Its secrets are set with
+`ferrite secrets set <name>` (values on stdin, never in source):
+`WARDROBE_OWNER_TOKEN` and `WARDROBE_ASSISTANT_TOKEN` (generated for the
+deploy, kept only in the operator's private copy, and rotated by setting them
+again and deploying), and `WARDROBE_PUBLIC_ORIGIN` (the origin above, set after
+the first deploy, then deployed again). With the account bearer, `/health`
+answers 200, the OAuth metadata's issuer is the origin and `/v1` answers the
+app's own 401.
+
+Open:
+
+- **The preview edge gate.** Every request to the hosted origin that does
+  not carry a Ferrite account bearer (or a `ferrite_preview` token) is
+  redirected (302) to Ferrite's own sign-in,
+  `login.ferrite.cloud/edge/start`, before it reaches the app, and the app
+  reads only the first `Authorization` header, which the gate needs for the
+  account bearer. The iOS client, a connected assistant and an owner-token
+  request therefore cannot reach this deployment until the platform lets the
+  app's routes through.
+- **`WARDROBE_APP_CLIENT_ID` and `WARDROBE_APP_REDIRECT_URI`** are not set:
+  the iOS build's `GARDEROBE_OAUTH_CLIENT_ID` and
+  `GARDEROBE_OAUTH_REDIRECT_URL` are blank, so there is no value to set yet.
+  Without them the app's own sign-in is refused (see "Signing in the owner's
+  app"); the owner token and the recovery code still work.
+- **`WARDROBE_AI_GATEWAY`** is not set (no working provider key), so
+  `garderobe_ask` and `garderobe_research` refuse by that secret's name and
+  everything else works (see "The assistant").
 
 `AGENTS.md` is the Ferrite CLI's brief for coding agents; `vendor/` is the
 CLI's local SDK twin, which a deploy never submits (the platform compiles

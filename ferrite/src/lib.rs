@@ -8,6 +8,7 @@ pub mod app_routes;
 pub mod assistant;
 pub mod board;
 pub mod inference;
+pub mod item;
 pub mod laundry;
 pub mod canonical;
 pub mod command_types;
