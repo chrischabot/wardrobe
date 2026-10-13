@@ -144,6 +144,11 @@ pub fn catalogue() -> &'static Catalogue {
     CATALOGUE.get_or_init(|| parse(SEED))
 }
 
+/// The seed document exactly as generated (the import's garments, rules and provenance).
+pub fn source() -> &'static str {
+    SEED
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

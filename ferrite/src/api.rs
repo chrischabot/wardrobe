@@ -133,6 +133,10 @@ fn error_status(code: &str) -> u16 {
         "forbidden" => 403,
         "not_found" => 404,
         "conflict" | "idempotency_key_reuse" | "precondition_failed" | "not_undoable" | "ambiguous_target" => 409,
+        "expired" => 410,
+        "payload_too_large" => 413,
+        "unsupported_media_type" => 415,
+        "rate_limited" => 429,
         "module_unavailable" => 501,
         _ => 500,
     }
@@ -279,6 +283,14 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
             _ => error_reply(CmdError::new("not_found", "no such route")),
         };
     }
+    // A portable export's download is authorized by its single-use ticket alone, so the sign-in is
+    // neither required nor read (APIClient.download sends none).
+    if req.method == "GET" {
+        if let Some(id) = crate::exports::download_target(path) {
+            let ticket = query.iter().find(|(k, _)| k == "ticket").map(|(_, v)| v.as_str());
+            return crate::exports::download(store, now_ms, id, ticket).await.unwrap_or_else(error_reply);
+        }
+    }
     let principal = match authenticate(store, req, tokens, app.as_ref(), now_ms).await {
         Ok(p) => p,
         Err(e) => return error_reply(e),
@@ -391,6 +403,11 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
         ("GET", "/v1/devices") => crate::devices::list(store).await,
         ("POST", "/v1/devices") => crate::devices::register(store, now_ms, &req.body).await,
         ("POST", p) if crate::devices::remove_target(p).is_some() => crate::devices::remove(store, crate::devices::remove_target(p).unwrap_or_default()).await,
+        // Portable export: the owner's alone (each function refuses anyone else).
+        ("POST", "/v1/exports") => crate::exports::start(store, principal, now_ms, &req.body).await,
+        ("GET", "/v1/exports") => crate::exports::list(store, principal, now_ms).await,
+        ("POST", p) if crate::exports::ticket_target(p).is_some() => crate::exports::ticket(store, principal, now_ms, crate::exports::ticket_target(p).unwrap_or_default()).await,
+        ("GET", p) if crate::exports::job_target(p).is_some() => crate::exports::get(store, principal, now_ms, crate::exports::job_target(p).unwrap_or_default()).await,
         _ => Err(CmdError::new("not_found", "no such route")),
     };
     match result {
@@ -439,11 +456,11 @@ pub(crate) async fn read_ledger<S: Store>(store: &mut S) -> Result<(Option<Vec<u
     Ok((bytes, ledger))
 }
 
-fn command_key(id: &str) -> Vec<u8> {
+pub(crate) fn command_key(id: &str) -> Vec<u8> {
     format!("c/{id}").into_bytes()
 }
 
-fn board_key(id: &str) -> Vec<u8> {
+pub(crate) fn board_key(id: &str) -> Vec<u8> {
     format!("b/{id}").into_bytes()
 }
 

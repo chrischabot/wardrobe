@@ -84,6 +84,8 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `GET /v1/assistants`, `POST /v1/assistants/{grantId}/disconnect` (owner only) | Settings › Connected assistants (`AssistantGrantList`, `AssistantGrant`, as `listGrants` and `disconnectGrant` in `mcp/grants.ts`): the OAuth grants of connected assistants, active ones first, then newest first, and disconnecting one, effective on its next request. An unknown grant, or one of the app's own sign-ins, is `not_found` |
 | `GET /v1/connections`, `POST /v1/connections`, `/v1/connections/{id}/…` (owner only) | Outbound tool connections (Google Workspace, owner-added MCP services) cannot be registered on this server: the list is `{"connections": [], "readAt"}`, registering one answers 501 `module_unavailable` with `details.module: "connections"`, and every route naming a connection (capabilities, disconnect, reconnect, calendars, outfit calendar) is `not_found` |
 | `GET /v1/devices`, `POST /v1/devices`, `POST /v1/devices/{deviceId}/remove` (owner only) | Notification devices (`DeviceList`, `Device`, `DeviceRemoved`, as `notifications/service.ts`): registering or refreshing a device's APNs token (a token registered under another device ID moves to this one), listing, and removing. Nothing is delivered, so `deliveryConfigured` is false and `lastDeliveryAt` null; the token is kept for a later dispatcher and never returned. At most 20 devices are kept |
+| `POST /v1/exports`, `GET /v1/exports`, `GET /v1/exports/{id}`, `POST /v1/exports/{id}/ticket` (owner only) | Portable export (`ExportRequest`, `ExportJob`, `ExportList`, `DownloadTicket`, as `export/job.ts`), see "Portable export" |
+| `GET /v1/exports/{id}/download?ticket=` (the ticket alone) | The package (`application/zip`), for a ticket the owner was just given: each ticket works once, for 5 minutes, and is spent before a byte is sent; the sign-in is neither needed nor read |
 | `POST /mcp` (OAuth) | the MCP server of `apps/worker/src/mcp`, see below |
 | `GET /v1/meta` | `MetaResponse`: API and contract versions, mounted modules (media is reported as not mounted), server time, the MCP endpoint and its protocol versions. Without a valid `WARDROBE_PUBLIC_ORIGIN` it is refused by that secret's name |
 | `GET /v1/command-types` | `CommandTypeList`, as `describeCommandTypes`: the nineteen command types this port executes, each with the class, required scope and payload JSON Schema the TypeScript registry gives it (`src/seed/command-types.json`, written by `scripts/build-command-types.mjs`), narrowed to this port: only the payload fields its handler accepts, with `additionalProperties: false` (so `board.publish` has no `requestFingerprint`), only the `owner_tap` and `owner_statement` authorizations (a publication by schedule is not ported), and `consequential` from the port's own connected-assistant rule, under which none of the nineteen waits for the owner. A field whose other values the port always refuses is published as the value it accepts: `board.publish` `scope` `"home"` or `trip:<tripId>` (no evening boards), `brief` the default day brief, `weatherSnapshotId` and `calendarSnapshotId` null only; `board.swap_slot` `weatherSnapshotId` is left out (no value is accepted); `return.open_case` `orderId` and `lineId` null only, `garmentId` a garment ID (never null) and `timezone` `Europe/London` or `UTC`. Size bounds (list and text lengths) are not restated; the command names them when it refuses |
@@ -948,6 +950,50 @@ as TypeScript's `staleVersions: "conflict"` does.
 
 Recorded rather than fixed, under the owner's P0/P1 direction. Each is either minor or outside
 the lines of the milestone it was found in.
+
+- Portable export (`src/exports.rs`):
+  - The package is built inside the request that asks for it (the owner's
+    records are a few hundred kilobytes; the request deadline is 8 s), so a
+    job is answered `completed` or `completed_incomplete`, never `queued` or
+    `running`. It is a ZIP archive written without compression: `README.md`,
+    `manifest.json` (components, files, what is never exported),
+    `checksums.sha256`, `records/<component>.json` (inventory as imported
+    with current versions, the ledger, boards, trips with their packing
+    proposals, returns, comfort notes, command receipts, the profile with its
+    rules and measurements, the account summary) and `views/` (inventory and
+    wear history as CSV, the profile document byte for byte, a summary).
+    The format is this server's own, `garderobe-export/ferrite-1`, not the
+    D1 table dump of `garderobe-export/1`, and nothing imports it.
+  - Never in a package: the owner and assistant tokens, sessions, OAuth
+    clients, codes, grants and token hashes (assistants are listed by name,
+    scopes and dates), device tokens (devices by ID, environment and date),
+    tickets, idempotency markers, run records, and each command's request
+    hash and internal undo data. The export test signs the app in and
+    connects an assistant, then scans the downloaded bytes for the owner,
+    assistant, app-session and assistant OAuth tokens, the device token, an
+    unspent ticket, and every hash, PKCE challenge and request hash the
+    server's stored records hold (OAuth codes and tokens, export tickets,
+    commands and runs).
+  - The hourly limit is checked again against the freshly read index in
+    every guarded commit, so concurrent requests cannot pass it together; a
+    ticket expires no later than its package.
+  - No passphrase encryption: a request with a passphrase is refused with
+    501 `module_unavailable` (`details.module: "export-encryption"`), never
+    answered with an unencrypted package.
+  - This server stores no photographs and no conversation, so those
+    components are complete with no records and say why; `includeLocation`
+    is recorded on the job (the owner only). Location stripping arrives with
+    the media routes.
+  - Receipts are the commands the exported records name, the newest 200
+    (the ledger's recent list) and the undo links between them; once the
+    recent list is full the component is reported incomplete, since an
+    older command that left no trace in another record cannot be found.
+  - A package is at most 3 MiB (a reply carries about 4 MiB) and is stored
+    in 192 KiB parts; it can be downloaded for 24 hours, and its parts are
+    emptied by the next export request after that. At most 12 exports an
+    hour and 20 kept. The job's `runId` names no run in `GET /v1/runs/{id}`,
+    and no audit record is written (TypeScript audits `export.requested` and
+    `export.ticket`).
 
 - Settings routes (devices, connected assistants, connections):
   - No push is delivered: the APNs dispatcher and the notification effects it
