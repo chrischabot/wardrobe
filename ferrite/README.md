@@ -96,6 +96,7 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `GET /v1/orders` | `OrderList`, always empty: orders come from purchase import (`purchase.import_order`), which is not ported |
 | `GET /v1/studio[?mode=for_today\|explore][&date=]` | `StudioResponse`: Studio's selectors and opening outfit for the day (the owner's day now when none is named), see "Studio". `combinations` and `dayPlans` are always empty (the Studio commands are not ported) |
 | `POST /v1/studio/validate` | `StudioValidation` for a `StudioOutfitRequest`: the daily validator's verdict on the outfit for the day, with Studio's shopping-candidate rule, see "Studio" |
+| `POST /v1/studio/suggest` | `{suggestions: StudioSuggestion[]}` for a `StudioOutfitRequest`: up to `limit` (default 5) valid outfits composed around the locked slots, see "Studio" |
 | `POST /v1/studio/compose` | `Composition`: the deterministic layout of the outfit's garments (`buildManifest`) and its hash, with every garment a labelled text tile (no media) and the preview `none` |
 | `GET /v1/studio/compositions/{hash}[/preview]` | 404 `not_found`: a composition is kept only when a preview is requested, which this server does not do |
 | `GET /v1/service` | `ServiceState`: never paused (pause and resume are not ported) |
@@ -272,8 +273,8 @@ board's `validateCandidate`).
   a laundered garment no wash or return has been reported for since the
   import, as the estimator's import prior makes it. Garments are listed by
   category, name and ID, as `listInventory` lists them; `image` is null.
-- **Opening outfit.** The recommender's first option for the day, kept to
-  its top, bottom, footwear and socks as Studio's suggestion keeps it, and
+- **Opening outfit.** Studio's first suggestion for the day with nothing
+  locked (see "Suggestions" below), so its top, bottom, footwear and socks,
   offered only when it validates for today; otherwise none.
 - **Validation** (`POST /v1/studio/validate`). Every slot holds exactly one
   garment or one shopping candidate; a garment that is not the owner's is
@@ -286,6 +287,25 @@ board's `validateCandidate`).
   Explore; an outfit with no owned garment is `incomplete_outfit` for today.
   `validator` is `daily-service`, `wearableOn` the day for today and null in
   Explore. Without a forecast, temperature rules are reported as not checked.
+- **Suggestions** (`POST /v1/studio/suggest`), as `suggestStudioOutfits` over
+  the daily service's `suggestOutfits`. The request is the same as for
+  validation, with `limit` 1 to 10 (default 5). The slots marked `locked` that
+  hold a garment are kept, each in its role: the deterministic composer
+  (`composeBoard` with `locked`) pairs a locked top or bottom with every
+  candidate, so it may appear in every suggestion, and builds the rest of
+  each outfit around the locked pieces, every one of which outside top,
+  bottom and outer counts towards the neutral limit first. The locked
+  garments are named explicitly to the composer. A suggestion always keeps
+  only the open roles (the roles of the unlocked slots, plus top, bottom and
+  footwear, less the locked roles), the locked roles and socks, even when
+  every role is locked; suggestions that then coincide are one. A suggestion that dropped a
+  locked piece or holds another piece in a locked role is discarded, and
+  each is validated as `studio/validate` validates and offered only when
+  valid. In Explore, "not wearable today" findings neither keep a piece out
+  of the composition nor invalidate it. As in TypeScript, Studio's own
+  validation names no piece explicitly, so for today an occasional or
+  indoor-only locked piece gets no suggestion. `tests/studio_suggest.rs`
+  covers these.
 - **Composition** (`POST /v1/studio/compose`). The deterministic manifest of
   `compose/manifest.ts` (template, frames, category scale, layering order,
   caption) and its hash, the SHA-256 of the canonical manifest JSON. The
@@ -1018,9 +1038,19 @@ milestone, and outside the lines of the milestone in hand:
   - There is no media: every garment is a text tile, previews
     (`POST /v1/studio/previews`) are not ported and no composition is kept,
     so a composition read by its hash is always `not_found`.
-  - Suggestions around locked pieces (`POST /v1/studio/suggest`) and the
-    Studio commands (saving a combination, planning a day) are not ported, so
-    the saved combinations and day plans are always empty.
+  - The Studio commands (saving a combination, planning a day) are not
+    ported, so the saved combinations and day plans are always empty.
+    Suggestions are composed without a forecast (the TypeScript lane fetches
+    one for the day) and never for a trip's suitcase (`tripId`, which the
+    Studio route does not send either).
+  - Suggestions differ from TypeScript in two deliberate ways. TypeScript
+    keeps the whole composed outfit when no role is open (every role
+    locked), so an unlocked outer, belt or neckwear the owner did not ask
+    for stays and otherwise identical suggestions stay distinct; this port
+    always trims. TypeScript reserves the neutral allowance only for locked
+    footwear, belt, socks and mid layer; this port reserves it for every
+    locked piece outside top, bottom and outer, so a locked tie or
+    accessory counts too.
   - The opening outfit comes from this port's recommender, not the
     TypeScript composer.
   - Two slots in the same role are ordered as TypeScript's `localeCompare`

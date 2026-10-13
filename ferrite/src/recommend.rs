@@ -170,17 +170,23 @@ impl<'a> Composer<'a> {
         seeded_unit(&[seed, id])
     }
 
-    /// `chooseOuter` with an unknown outdoor temperature.
-    fn choose_outer(&self, pools: &Pools<'a>, top: &Pg<'_>, bottom: &Pg<'_>, usage: &Usage, seed: &str) -> Option<&'a Pg<'a>> {
+    /// `chooseOuter` with an unknown outdoor temperature. `fixed` are the pieces the owner locked that
+    /// count towards the neutral limit first; `shoes` and `socks` are the pools still to choose from (empty
+    /// when that piece is locked).
+    #[allow(clippy::too_many_arguments)]
+    fn choose_outer<'s>(&self, pools: &Pools<'a>, top: &'s Pg<'s>, bottom: &'s Pg<'s>, usage: &Usage, seed: &str, fixed: &[Option<&'s Pg<'s>>], shoes: &[&'a Pg<'a>], socks: &[&'a Pg<'a>]) -> Option<&'a Pg<'a>>
+    where
+        'a: 's,
+    {
         // The 14-16 C band cannot be ruled out without a forecast: a jacket goes over the required shirt only.
         if let Some(required) = &self.jacket_fabric {
             if top.g.attr_str("fabricClass") != required {
                 return None;
             }
         }
-        let (shoes, socks) = (&pools.footwear, &pools.socks);
-        let within = self.within(&pools.outers, &[Some(top), Some(bottom)]);
-        let leaves_shoe: Vec<&'a Pg<'a>> = if shoes.is_empty() { within.clone() } else { within.iter().copied().filter(|o| shoes.iter().any(|f| !self.exceeds(f, &[Some(o), Some(top), Some(bottom)]))).collect() };
+        let settled = |head: &[Option<&'s Pg<'s>>]| -> Vec<Option<&'s Pg<'s>>> { head.iter().copied().chain(fixed.iter().copied()).collect() };
+        let within = self.within(&pools.outers, &settled(&[Some(top), Some(bottom)]));
+        let leaves_shoe: Vec<&'a Pg<'a>> = if shoes.is_empty() { within.clone() } else { within.iter().copied().filter(|o| shoes.iter().any(|f| !self.exceeds(f, &settled(&[Some(*o), Some(top), Some(bottom)])))).collect() };
         let leaves_both: Vec<&'a Pg<'a>> = if socks.is_empty() {
             leaves_shoe.clone()
         } else {
@@ -188,9 +194,13 @@ impl<'a> Composer<'a> {
                 .iter()
                 .copied()
                 .filter(|o| {
-                    let base = [Some(*o), Some(top), Some(bottom)];
-                    let choices: Vec<Option<&Pg<'_>>> = if shoes.is_empty() { vec![None] } else { shoes.iter().filter(|f| !self.exceeds(f, &base)).map(|f| Some(*f)).collect() };
-                    choices.iter().any(|f| socks.iter().any(|s| !self.exceeds(s, &[Some(*o), Some(top), Some(bottom), *f])))
+                    let base = settled(&[Some(*o), Some(top), Some(bottom)]);
+                    let choices: Vec<Option<&'s Pg<'s>>> = if shoes.is_empty() { vec![None] } else { shoes.iter().filter(|f| !self.exceeds(f, &base)).map(|f| Some(*f as &'s Pg<'s>)).collect() };
+                    choices.iter().any(|f| {
+                        let mut with_shoe = base.clone();
+                        with_shoe.push(*f);
+                        socks.iter().any(|s| !self.exceeds(s, &with_shoe))
+                    })
                 })
                 .collect()
         };
@@ -207,13 +217,29 @@ impl<'a> Composer<'a> {
         })
     }
 
-    /// `buildOutfit` around a top and a bottom (no locked pieces, no occasion, no paired-shoe format).
-    fn build(&self, pools: &Pools<'a>, top: &'a Pg<'a>, bottom: &'a Pg<'a>, usage: &Usage) -> Option<(Vec<Slot>, Vec<String>)> {
+    /// `buildOutfit` around a top and a bottom, keeping every locked piece in its role (no occasion, no
+    /// paired-shoe format). `locked` is in the order the pieces were locked (a `Map` in TypeScript).
+    fn build(&self, pools: &Pools<'a>, top: &'a Pg<'a>, bottom: &'a Pg<'a>, usage: &Usage, locked: &[(String, &'a Pg<'a>)]) -> Option<(Vec<Slot>, Vec<String>)> {
         let seed = format!("{OWNER_SEED}|{}|{}|{}", self.date, top.id(), bottom.id());
         let slot = |role: &str, g: &Pg<'_>| Slot { role: role.into(), garment_id: g.id().into() };
+        let lk = |role: &str| locked.iter().find(|(r, _)| r == role).map(|(_, g)| *g);
         let mut slots = Vec::new();
+        // Pieces the owner fixed count towards the neutral limit before anything is chosen around them:
+        // every locked piece but the pair and the outer layer (TypeScript reserves only the locked
+        // footwear, belt, socks and mid layer; a locked tie or accessory is reserved here too).
+        let fixed: Vec<Option<&'a Pg<'a>>> = locked.iter().filter(|(r, _)| !matches!(r.as_str(), "top" | "bottom" | "outer")).map(|(_, g)| Some(*g)).collect();
+        let fixed_dyn: Vec<Option<&Pg<'_>>> = fixed.iter().map(|f| f.map(|g| g as &Pg<'_>)).collect();
+        let none: Vec<&'a Pg<'a>> = Vec::new();
         // `jacketWanted` with an unknown start: some options carry a layer that can come off.
-        let outer = if usage.index % 2 == 0 { self.choose_outer(pools, top, bottom, usage, &seed) } else { None };
+        let outer = lk("outer").or_else(|| {
+            if usage.index % 2 == 0 {
+                let shoes = if lk("footwear").is_some() { &none[..] } else { &pools.footwear[..] };
+                let socks = if lk("socks").is_some() { &none[..] } else { &pools.socks[..] };
+                self.choose_outer(pools, top, bottom, usage, &seed, &fixed_dyn, shoes, socks)
+            } else {
+                None
+            }
+        });
         if let Some(o) = outer {
             slots.push(slot("outer", o));
         }
@@ -225,48 +251,77 @@ impl<'a> Composer<'a> {
         }
         // The belt line's flourish: no scarf without a cold start; a tie whenever the top is a shirt.
         let ties: Vec<&'a Pg<'a>> = pools.neckwear.iter().copied().filter(|g| g.g.category != "scarf" && top.g.category == "shirt" && g.g.category == "tie").collect();
-        let flourish = pick(&ties, |g| SEASON_FIT + if g.family != top.family { 0.5 } else { 0.0 } + if outer.map_or(false, |o| g.family == o.family) { -0.3 } else { 0.0 } + self.seeded(&seed, g.id()) * 0.5);
+        let flourish = lk("neckwear").or_else(|| pick(&ties, |g| SEASON_FIT + if g.family != top.family { 0.5 } else { 0.0 } + if outer.map_or(false, |o| g.family == o.family) { -0.3 } else { 0.0 } + self.seeded(&seed, g.id()) * 0.5));
         let takes_sock_echo = |g: &Pg<'_>| NEUTRAL.contains(&g.family) && upper.contains(&g.family);
         let footwear_score = |g: &Pg<'_>| {
             g.rotation - used(&usage.footwear, g.id()) * 1.5 + if takes_sock_echo(g) { -0.6 } else if upper.contains(&g.family) { 0.8 } else { 0.0 } - if g.family == bottom.family { 0.3 } else { 0.0 }
                 + if truthy(g.g.attributes.get("breakingIn")) { -0.5 } else { 0.0 }
                 + self.seeded(&seed, g.id()) * 0.6
         };
-        let worn: [Option<&Pg<'_>>; 3] = [outer, Some(top), Some(bottom)];
-        let with = |extra: &[Option<&'a Pg<'a>>]| -> Vec<Option<&Pg<'_>>> { worn.iter().copied().chain(extra.iter().map(|x| x.map(|g| g as &Pg<'_>))).collect() };
+        let worn: Vec<Option<&Pg<'_>>> = [outer.map(|o| o as &Pg<'_>), Some(top as &Pg<'_>), Some(bottom as &Pg<'_>)].into_iter().chain(fixed_dyn.iter().copied()).collect();
+        // The settled pieces plus the ones just chosen; a chosen piece that is already settled (a locked
+        // shoe or sock is in `worn` through `fixed`) is not added again. `exceeds` counts each garment
+        // once as well, so a piece is never counted twice towards the neutral limit.
+        let with = |extra: &[Option<&'a Pg<'a>>]| -> Vec<Option<&Pg<'_>>> {
+            let mut list = worn.clone();
+            for g in extra.iter().flatten() {
+                if !list.iter().flatten().any(|w| w.id() == g.id()) {
+                    list.push(Some(*g as &Pg<'_>));
+                }
+            }
+            list
+        };
         let leaves_sock_echo = |shoe: &'a Pg<'a>| {
             pools.socks.iter().any(|s| {
                 self.sock_class.as_deref().map_or(true, |c| s.g.attr_str("fabricClass") == c) && s.family != "unknown" && upper.contains(&s.family) && s.family != bottom.family && !self.exceeds(s, &with(&[Some(shoe)]))
             })
         };
-        let shoes = self.within(&pools.footwear, &worn);
-        let leaving: Vec<&'a Pg<'a>> = shoes.iter().copied().filter(|shoe| pools.socks.iter().any(|s| !self.exceeds(s, &with(&[Some(*shoe)])))).collect();
-        let base = if leaving.is_empty() { shoes } else { leaving };
-        let kept: Vec<&'a Pg<'a>> = base.iter().copied().filter(|s| leaves_sock_echo(s)).collect();
-        let footwear = pick(if kept.is_empty() { &base } else { &kept }, footwear_score)?;
+        let footwear = match lk("footwear") {
+            Some(f) => f,
+            None => {
+                let shoes = self.within(&pools.footwear, &worn);
+                // `keepingSockEcho`, unless the socks are locked.
+                let candidates = if lk("socks").is_some() {
+                    shoes
+                } else {
+                    let leaving: Vec<&'a Pg<'a>> = shoes.iter().copied().filter(|shoe| pools.socks.iter().any(|s| !self.exceeds(s, &with(&[Some(*shoe)])))).collect();
+                    let base = if leaving.is_empty() { shoes } else { leaving };
+                    let kept: Vec<&'a Pg<'a>> = base.iter().copied().filter(|s| leaves_sock_echo(s)).collect();
+                    if kept.is_empty() { base } else { kept }
+                };
+                pick(&candidates, footwear_score)?
+            }
+        };
         // The sock as the quiet rhyme or the single flash: echo a colour from higher up, not the trouser.
         let calm = !SATURATED.contains(&top.family) && !outer.map_or(false, |o| SATURATED.contains(&o.family));
-        let sock_pool = self.within(&pools.socks, &with(&[Some(footwear)]));
-        let socks = pick(&sock_pool, |g| {
-            let mut s = 2.0 + SEASON_FIT - used(&usage.socks, g.id()) * if g.clean > 1 { 0.4 } else { 1.5 } + self.seeded(&seed, g.id()) * 0.5;
-            if self.sock_class.as_deref().map_or(false, |c| g.g.attr_str("fabricClass") == c) {
-                s += 2.0;
+        let socks = match lk("socks") {
+            Some(s) => s,
+            None => {
+                let sock_pool = self.within(&pools.socks, &with(&[Some(footwear)]));
+                pick(&sock_pool, |g| {
+                    let mut s = 2.0 + SEASON_FIT - used(&usage.socks, g.id()) * if g.clean > 1 { 0.4 } else { 1.5 } + self.seeded(&seed, g.id()) * 0.5;
+                    if self.sock_class.as_deref().map_or(false, |c| g.g.attr_str("fabricClass") == c) {
+                        s += 2.0;
+                    }
+                    if upper.contains(&g.family) && g.family != bottom.family {
+                        s += 2.0;
+                    }
+                    if g.family == bottom.family {
+                        s -= 1.0;
+                    }
+                    if calm && SATURATED.contains(&g.family) {
+                        s += 0.9;
+                    }
+                    s
+                })?
             }
-            if upper.contains(&g.family) && g.family != bottom.family {
-                s += 2.0;
-            }
-            if g.family == bottom.family {
-                s -= 1.0;
-            }
-            if calm && SATURATED.contains(&g.family) {
-                s += 0.9;
-            }
-            s
-        })?;
-        let belt_pool = self.within(&pools.belts, &with(&[Some(footwear), Some(socks)]));
-        let belt = pick(&belt_pool, |g| {
-            (if g.family == "brown" { 0.5 } else { 0.0 }) + (if upper.contains(&g.family) { 0.8 } else { 0.0 }) + (if g.family == "black" && (bottom.family == "grey" || bottom.family == "black") { 1.2 } else { 0.0 })
-                + self.seeded(&seed, g.id()) * 0.2
+        };
+        let belt = lk("belt").or_else(|| {
+            let belt_pool = self.within(&pools.belts, &with(&[Some(footwear), Some(socks)]));
+            pick(&belt_pool, |g| {
+                (if g.family == "brown" { 0.5 } else { 0.0 }) + (if upper.contains(&g.family) { 0.8 } else { 0.0 }) + (if g.family == "black" && (bottom.family == "grey" || bottom.family == "black") { 1.2 } else { 0.0 })
+                    + self.seeded(&seed, g.id()) * 0.2
+            })
         });
         if let Some(b) = belt {
             slots.push(slot("belt", b));
@@ -276,6 +331,12 @@ impl<'a> Composer<'a> {
         }
         slots.push(slot("socks", socks));
         slots.push(slot("footwear", footwear));
+        // A locked piece in a role the composer does not fill (a mid layer, an accessory) is kept as given.
+        for (role, g) in locked {
+            if !slots.iter().any(|s| &s.role == role) {
+                slots.push(slot(role, g));
+            }
+        }
         Some((slots, Vec::new()))
     }
 }
@@ -307,9 +368,32 @@ fn key_of(slots: &[Slot]) -> String {
     k.join("|")
 }
 
+/// What a composition is built around (`ComposeOptions.locked` and `validate` in compose.ts): pieces the
+/// owner locked in their roles, garments named explicitly (they let occasional and indoor-only pieces
+/// through, never absent stock), and Explore, where "not wearable today" findings are advisory.
+#[derive(Default)]
+pub struct ComposeOpts<'s> {
+    pub locked: &'s [Slot],
+    pub explicit: &'s [String],
+    pub explore: bool,
+}
+
+/// Whether a finding keeps a piece or an outfit out (`EXPLORE_ADVISORY` in validate.ts).
+pub fn blocks(v: &board::Violation, explore: bool) -> bool {
+    v.blocking && !(explore && crate::studio::EXPLORE_ADVISORY.contains(&v.code))
+}
+
 /// `composeBoard`'s deterministic part for `day` (which must carry its date): `requested` options and
 /// up to `reserve_count` reserves, every one validated, never the same shirt twice.
 pub fn compose(day: &Day<'_>, local_date: &str, requested: usize, reserve_count: usize) -> Composition {
+    compose_with(day, local_date, requested, reserve_count, &ComposeOpts::default())
+}
+
+/// [`compose`] around locked pieces (Studio's suggestions): a locked top or bottom is the only one
+/// paired, so it may appear in every option; each other locked piece takes its role in every outfit.
+/// The caller has checked that every locked garment is the owner's (`studio::resolve`); one that is not
+/// is left out rather than invented.
+pub fn compose_with(day: &Day<'_>, local_date: &str, requested: usize, reserve_count: usize, opts: &ComposeOpts<'_>) -> Composition {
     let cat: &Catalogue = day.cat;
     let date = parse_local_date(local_date);
     let fortnight = cat.active_rule("variety.nothing_repeats_inside_a_fortnight").and_then(|r| r.params["days"].as_i64()).unwrap_or(14);
@@ -327,7 +411,7 @@ pub fn compose(day: &Day<'_>, local_date: &str, requested: usize, reserve_count:
         .collect();
     let mut sorted: Vec<&Pg<'_>> = pool.iter().collect();
     sorted.sort_by(|a, b| a.id().cmp(b.id()));
-    let eligible = |role: &str| -> Vec<&Pg<'_>> { sorted.iter().copied().filter(|p| role_accepts(p.g, role) && garment_violations(day, p.id(), role, &[]).iter().all(|v| !v.blocking)).collect() };
+    let eligible = |role: &str| -> Vec<&Pg<'_>> { sorted.iter().copied().filter(|p| role_accepts(p.g, role) && garment_violations(day, p.id(), role, opts.explicit).iter().all(|v| !blocks(v, opts.explore))).collect() };
     let pools = Pools {
         tops: eligible("top"),
         bottoms: eligible("bottom"),
@@ -343,10 +427,25 @@ pub fn compose(day: &Day<'_>, local_date: &str, requested: usize, reserve_count:
         jacket_fabric: cat.active_rule("thermal.jacket_14_16_lightweight_oxford_only").and_then(|r| r.params["requiredShirtFabricClass"].as_str()).map(str::to_string),
         sock_class: cat.active_rule("socks.required").and_then(|r| r.params["defaultFabricClass"].as_str()).map(str::to_string),
     };
+    // Locked pieces in the order they were given; a role locked twice keeps its first place and its
+    // last piece (`Map.set`).
+    let mut locked: Vec<(String, &Pg<'_>)> = Vec::new();
+    for s in opts.locked {
+        let Some(p) = sorted.iter().copied().find(|p| p.id() == s.garment_id) else { continue };
+        match locked.iter_mut().find(|(r, _)| *r == s.role) {
+            Some(entry) => entry.1 = p,
+            None => locked.push((s.role.clone(), p)),
+        }
+    }
+    let lk = |role: &str| locked.iter().find(|(r, _)| r == role).map(|(_, g)| *g);
+    let (top_locked, bottom_locked) = (lk("top"), lk("bottom"));
+    let tops: Vec<&Pg<'_>> = top_locked.map_or_else(|| pools.tops.clone(), |t| vec![t]);
+    let bottoms: Vec<&Pg<'_>> = bottom_locked.map_or_else(|| pools.bottoms.clone(), |b| vec![b]);
+    let valid = |v: &Validation| v.violations.iter().all(|x| !blocks(x, opts.explore));
     let mut pairs: Vec<(&Pg<'_>, &Pg<'_>, f64)> = Vec::new();
-    for top in &pools.tops {
+    for top in &tops {
         let top_score = top.rotation + SEASON_FIT * 1.5;
-        for bottom in &pools.bottoms {
+        for bottom in &bottoms {
             let score = top_score + bottom.rotation + SEASON_FIT * 1.5 + pair_score(top, bottom) + seeded_unit(&[OWNER_SEED, local_date, top.id(), bottom.id()]) * 1.2;
             pairs.push((top, bottom, score));
         }
@@ -364,21 +463,21 @@ pub fn compose(day: &Day<'_>, local_date: &str, requested: usize, reserve_count:
             if chosen.len() >= target {
                 return;
             }
-            if used_tops.contains(top.id()) || (distinct && used_bottoms.contains(bottom.id())) {
+            if (top_locked.is_none() && used_tops.contains(top.id())) || (bottom_locked.is_none() && distinct && used_bottoms.contains(bottom.id())) {
                 continue;
             }
-            let Some((mut slots, alternatives)) = composer.build(&pools, top, bottom, &usage) else { continue };
+            let Some((mut slots, alternatives)) = composer.build(&pools, top, bottom, &usage, &locked) else { continue };
             let key = key_of(&slots);
             if seen.contains(&key) {
                 continue;
             }
-            let mut validation = validate(day, &slots, &alternatives, &[]);
-            if !validation.valid() && slots.iter().any(|s| s.role == "outer") {
+            let mut validation = validate(day, &slots, &alternatives, opts.explicit);
+            if !valid(&validation) && slots.iter().any(|s| s.role == "outer") && lk("outer").is_none() {
                 // A layer that does not survive the combination check is dropped rather than the outfit.
                 slots.retain(|s| s.role != "outer");
-                validation = validate(day, &slots, &alternatives, &[]);
+                validation = validate(day, &slots, &alternatives, opts.explicit);
             }
-            if !validation.valid() {
+            if !valid(&validation) {
                 continue;
             }
             seen.insert(key);
@@ -402,16 +501,21 @@ pub fn compose(day: &Day<'_>, local_date: &str, requested: usize, reserve_count:
     let reserves = chosen.split_off(requested.min(chosen.len()));
     let options = chosen;
     let notice = (options.len() < requested).then(|| {
-        let counts = [("shirts", pools.tops.len()), ("trousers", pools.bottoms.len()), ("pairs of shoes", pools.footwear.len()), ("pairs of socks", pools.socks.len())];
+        let counts = [("shirts", tops.len()), ("trousers", bottoms.len()), ("pairs of shoes", pools.footwear.len()), ("pairs of socks", pools.socks.len())];
         let word = if options.len() == 1 { "outfit" } else { "outfits" };
         let count = NUMBER_WORDS.get(options.len()).map_or_else(|| options.len().to_string(), |w| w.to_string());
         if options.is_empty() {
+            // A piece that was asked for by name and cannot be worn that day is the reason, and is said so.
+            let blocker = locked.iter().find_map(|(role, g)| garment_violations(day, g.id(), role, opts.explicit).into_iter().find(|v| blocks(v, opts.explore)));
+            if let Some(v) = blocker {
+                return format!("No outfit can be built around what was asked for: {}.", v.message);
+            }
             match counts.iter().find(|c| c.1 == 0) {
                 Some((what, n)) => format!("No complete outfit is available for this day: {n} eligible {what}."),
                 None => "No complete outfit is available for this day: no eligible combination passes every rule.".to_string(),
             }
-        } else if pools.tops.len() <= options.len() {
-            format!("{count} valid {word} today instead of {requested}: only {} eligible shirts.", pools.tops.len())
+        } else if tops.len() <= options.len() {
+            format!("{count} valid {word} today instead of {requested}: only {} eligible shirts.", tops.len())
         } else {
             format!("{count} valid {word} today instead of {requested}: no further combination of eligible pieces passes every rule.")
         }

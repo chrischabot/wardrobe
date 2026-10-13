@@ -1,7 +1,9 @@
 //! Studio's reads, ported from packages/media/src/studio/reads.ts and shared.ts: the selectors and
 //! opening outfit Studio browses (`GET /v1/studio`), the authoritative check of a finished combination
-//! (`POST /v1/studio/validate`) and the deterministic composition of an outfit
-//! (`POST /v1/studio/compose`, packages/media/src/compose/manifest.ts). None of them writes anything.
+//! (`POST /v1/studio/validate`), suggestions around the pieces the owner locked (`POST
+//! /v1/studio/suggest`, with the daily service's `suggestOutfits`) and the deterministic composition of
+//! an outfit (`POST /v1/studio/compose`, packages/media/src/compose/manifest.ts). None of them writes
+//! anything.
 //!
 //! Studio never decides eligibility or rules itself: validation is the daily service's validator
 //! (`board::validate`, the port of `validateCandidate`), with the one rule that is Studio's own (a
@@ -11,10 +13,10 @@
 //! What this port leaves out (see README.md, "Studio"): there is no media, so every garment is a
 //! labelled text tile (`missing`) and no preview is ever rendered or stored; the Studio commands
 //! (saving a combination, planning a day, requesting a preview) are not ported, so the saved
-//! combinations and day plans are always empty; suggestions around locked pieces are not ported.
+//! combinations and day plans are always empty.
 
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ferrite_app::serde_json::{self, json, Map, Value};
 
@@ -30,7 +32,7 @@ const SELECTOR_ROLES: &[&str] = &["top", "bottom", "footwear", "outer", "mid_lay
 const PRIMARY_ROLES: &[&str] = &["top", "bottom", "footwear", "outer"];
 /// Codes that describe "not wearable today" rather than "not an outfit"; advisory in Explore
 /// (`EXPLORE_ADVISORY` in packages/daily/src/validate.ts).
-const EXPLORE_ADVISORY: &[&str] = &[
+pub(crate) const EXPLORE_ADVISORY: &[&str] = &[
     "unavailable", "restricted", "not_packed", "conditional_not_requested", "thermal_too_warm", "thermal_too_cold", "fabric_rule",
     "jacket_band_requires_lightweight_oxford", "jacket_band_unverified", "too_warm_together", "outerwear_ceiling", "repeat_within_horizon", "footwear_restricted", "paired_footwear_required",
 ];
@@ -269,22 +271,60 @@ pub fn availability(day: &Day<'_>, ledger: &Ledger, g: &Garment) -> Availability
     Availability { status, hard_excluded: false, reasons }
 }
 
-/// The opening outfit: the recommender's first option for the day, as Studio's suggestion keeps it
-/// (top, bottom, footwear and socks), offered only when it validates for today; otherwise none.
+/// The opening outfit: Studio's first suggestion for the day with nothing locked (top, bottom, footwear
+/// and socks), offered only when it validates for today; otherwise none.
 fn opening(day: &Day<'_>, for_date: &str, wardrobe_revision: u64, now_ms: u64) -> Vec<Value> {
-    let composed = crate::recommend::compose(day, for_date, 1, 0);
-    let Some(first) = composed.options.first() else { return Vec::new() };
-    let slots: Vec<StudioSlot> = first
-        .slots
-        .iter()
-        .filter(|s| matches!(s.role.as_str(), "top" | "bottom" | "footwear" | "socks"))
-        .map(|s| StudioSlot { role: s.role.clone(), garment_id: Some(s.garment_id.clone()), candidate: None, locked: false })
-        .collect();
-    let Ok(resolved) = resolve(day.cat, &slots) else { return Vec::new() };
-    if validation(day, &resolved, Mode::ForToday, for_date, wardrobe_revision, now_ms)["valid"] != true {
-        return Vec::new();
+    suggestions(day, &[], Mode::ForToday, for_date, 1, wardrobe_revision, now_ms).first().and_then(|s| s["slots"].as_array().cloned()).unwrap_or_default()
+}
+
+/// `suggestStudioOutfits` over the daily service's `suggestOutfits`: up to `limit` outfits composed
+/// around the locked garment slots, each keeping every locked piece in its role and nothing else in a
+/// locked role. A suggestion keeps only the open roles (the roles of the unlocked slots, and top,
+/// bottom and footwear, less the locked roles), the locked ones and socks, even when every role is
+/// locked (TypeScript then keeps the whole composed outfit); suggestions that then coincide are one.
+/// Each is validated as `POST /v1/studio/validate` validates, and only a valid one is offered. Locked
+/// pieces are named explicitly to the composer, so an occasional or indoor-only piece can be built
+/// around (it is still validated like any other piece).
+pub fn suggestions(day: &Day<'_>, slots: &[StudioSlot], mode: Mode, for_date: &str, limit: usize, wardrobe_revision: u64, now_ms: u64) -> Vec<Value> {
+    let locked: Vec<Slot> = slots.iter().filter(|s| s.locked).filter_map(|s| s.garment_id.as_ref().map(|id| Slot { role: s.role.clone(), garment_id: id.clone() })).collect();
+    let locked_roles: Vec<&str> = locked.iter().map(|s| s.role.as_str()).collect();
+    let mut open: Vec<&str> = Vec::new();
+    for role in slots.iter().filter(|s| !s.locked).map(|s| s.role.as_str()).chain(["top", "bottom", "footwear"]) {
+        if !open.contains(&role) {
+            open.push(role);
+        }
     }
-    slots.iter().map(StudioSlot::to_json).collect()
+    open.retain(|r| !locked_roles.contains(r));
+    let explicit: Vec<String> = locked.iter().map(|s| s.garment_id.clone()).collect();
+    let opts = crate::recommend::ComposeOpts { locked: &locked, explicit: &explicit, explore: mode == Mode::Explore };
+    let composed = crate::recommend::compose_with(day, for_date, limit, 0, &opts);
+    let is_locked = |s: &Slot| locked.iter().any(|l| l.role == s.role && l.garment_id == s.garment_id);
+    let holds = |list: &[Slot]| locked.iter().all(|l| list.iter().any(|s| s.role == l.role && s.garment_id == l.garment_id));
+    let keep = |role: &str| matches!(role, "top" | "bottom" | "footwear" | "socks") || locked_roles.contains(&role) || open.contains(&role);
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut out = Vec::new();
+    for o in &composed.options {
+        if !holds(&o.slots) {
+            continue;
+        }
+        let kept: Vec<Slot> = o.slots.iter().filter(|s| keep(&s.role)).cloned().collect();
+        let mut key: Vec<String> = kept.iter().map(|s| format!("{}:{}", s.role, s.garment_id)).collect();
+        key.sort();
+        if !seen.insert(key.join("|")) {
+            continue;
+        }
+        // Studio's own check: every locked piece in its role, and no other piece in a locked role.
+        if !holds(&kept) || kept.iter().any(|s| locked_roles.contains(&s.role.as_str()) && !is_locked(s)) {
+            continue;
+        }
+        let studio_slots: Vec<StudioSlot> = kept.iter().map(|s| StudioSlot { role: s.role.clone(), garment_id: Some(s.garment_id.clone()), candidate: None, locked: is_locked(s) }).collect();
+        let Ok(resolved) = resolve(day.cat, &studio_slots) else { continue };
+        let verdict = validation(day, &resolved, mode, for_date, wardrobe_revision, now_ms);
+        if verdict["valid"] == true {
+            out.push(json!({"slots": studio_slots.iter().map(StudioSlot::to_json).collect::<Vec<_>>(), "reason": o.reason, "validation": verdict}));
+        }
+    }
+    out
 }
 
 /// `StudioResponse` for one day: the selectors, the opening outfit, and the saved combinations and
@@ -352,11 +392,9 @@ fn body_object(body: &[u8]) -> Result<Map<String, Value>, CmdError> {
     }
 }
 
-/// `POST /v1/studio/validate` (`StudioOutfitRequest` → `StudioValidation`): the authoritative check of
-/// a finished combination for the day (the owner's day now when none is named). Nothing is saved,
-/// planned or worn.
-pub async fn validate<S: Store>(store: &mut S, now_ms: u64, body: &[u8]) -> Result<Value, CmdError> {
-    let o = body_object(body)?;
+/// The fields of a `StudioOutfitRequest` other than its slots: the mode, the day if named, and the
+/// number of suggestions asked for (1 to 10).
+fn outfit_request(o: &Map<String, Value>) -> Result<(Mode, Option<&str>, Option<usize>), CmdError> {
     let mode = match o.get("mode") {
         None => Mode::ForToday,
         Some(Value::String(m)) => Mode::parse(Some(m))?,
@@ -367,11 +405,22 @@ pub async fn validate<S: Store>(store: &mut S, now_ms: u64, body: &[u8]) -> Resu
         Some(Value::String(d)) => Some(d.as_str()),
         Some(_) => return Err(invalid("date: expected the day as YYYY-MM-DD")),
     };
-    if let Some(limit) = o.get("limit") {
-        if !matches!(crate::canonical::whole(limit), Some(1..=10)) {
-            return Err(invalid("limit: expected a whole number from 1 to 10"));
-        }
-    }
+    let limit = match o.get("limit") {
+        None => None,
+        Some(limit) => match crate::canonical::whole(limit) {
+            Some(n @ 1..=10) => Some(n as usize),
+            _ => return Err(invalid("limit: expected a whole number from 1 to 10")),
+        },
+    };
+    Ok((mode, date, limit))
+}
+
+/// `POST /v1/studio/validate` (`StudioOutfitRequest` → `StudioValidation`): the authoritative check of
+/// a finished combination for the day (the owner's day now when none is named). Nothing is saved,
+/// planned or worn.
+pub async fn validate<S: Store>(store: &mut S, now_ms: u64, body: &[u8]) -> Result<Value, CmdError> {
+    let o = body_object(body)?;
+    let (mode, date, _) = outfit_request(&o)?;
     let slots = parse_slots(o.get("slots"))?;
     let for_date = day_or_today(date, now_ms)?;
     let cat = catalogue();
@@ -379,6 +428,21 @@ pub async fn validate<S: Store>(store: &mut S, now_ms: u64, body: &[u8]) -> Resu
     let (_, ledger) = read_ledger(store).await?;
     let day = Day::of(cat, &ledger, &for_date);
     Ok(validation(&day, &resolved, mode, &for_date, ledger.revision, now_ms))
+}
+
+/// `POST /v1/studio/suggest` (`StudioOutfitRequest` → `{suggestions: StudioSuggestion[]}`): "find
+/// something that works with this", for the day (the owner's day now when none is named), five by
+/// default. Locked slots come back exactly as given. Nothing is saved, planned or worn.
+pub async fn suggest<S: Store>(store: &mut S, now_ms: u64, body: &[u8]) -> Result<Value, CmdError> {
+    let o = body_object(body)?;
+    let (mode, date, limit) = outfit_request(&o)?;
+    let slots = parse_slots(o.get("slots"))?;
+    let for_date = day_or_today(date, now_ms)?;
+    let cat = catalogue();
+    resolve(cat, &slots)?;
+    let (_, ledger) = read_ledger(store).await?;
+    let day = Day::of(cat, &ledger, &for_date);
+    Ok(json!({"suggestions": suggestions(&day, &slots, mode, &for_date, limit.unwrap_or(5), ledger.revision, now_ms)}))
 }
 
 // ───────────────────────────── composition ─────────────────────────────
