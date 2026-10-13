@@ -243,8 +243,12 @@ export function buildMcpServer(app: App, caller: McpCaller): McpServer {
             return ok(envelope(selection as unknown as Record<string, unknown>, { total: selection.count }), `${selection.count} garment(s) match. A bulk correction must state expectedCount ${selection.count} and is refused if the selection has changed.`);
           }
           case "receipts": {
-            const receipts = await listReceipts(app, principal, { ...(args.garmentId ? { entity: `garment:${args.garmentId}` } : {}), limit: Math.min(args.limit ?? 50, 200) });
-            return ok(envelope(receipts, { total: receipts.receipts.length }), `${receipts.receipts.length} receipt(s), newest first.`);
+            const limit = Math.min(args.limit ?? 50, 200);
+            const page = await listReceipts(app, principal, { ...(args.garmentId ? { entity: `garment:${args.garmentId}` } : {}), limit: limit + 1 });
+            // One more than asked is read to tell a full page from the whole history; the response says which.
+            const truncated = page.receipts.length > limit;
+            const receipts = { receipts: page.receipts.slice(0, limit) };
+            return ok(envelope(receipts, { total: truncated ? null : receipts.receipts.length, complete: !truncated }), truncated ? `The newest ${limit} receipt(s); older ones exist and are not shown (this view has no continuation; the Garderobe app's receipt history shows them).` : `${receipts.receipts.length} receipt(s), newest first.`);
           }
           case "command_types": {
             const types = describeCommandTypes(app.registry);

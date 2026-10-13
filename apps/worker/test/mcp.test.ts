@@ -66,6 +66,46 @@ describe("tools", () => {
     expect(page.data.nextCursor).toBeTruthy();
     expect(page.data.total).toBe(api.total);
   });
+
+  it("says in words that more pages follow only while a cursor is returned, and the pages together are the whole inventory", async () => {
+    const api = await owner.api.json("GET", "/v1/wardrobe");
+    const textOf = (result: { content?: unknown }): string => (result.content as { type: string; text?: string }[]).find((c) => c.type === "text")?.text ?? "";
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let pages = 0; pages < 20; pages++) {
+      const raw = await reader.client.callTool({ name: "garderobe_inventory", arguments: { view: "items", limit: 40, ...(cursor ? { cursor } : {}) } });
+      const page = toolResult(raw);
+      expect(page.ok).toBe(true);
+      seen.push(...(page.data.data.items as { garment: { garmentId: string } }[]).map((i) => i.garment.garmentId));
+      cursor = page.data.nextCursor;
+      if (cursor) expect(textOf(raw)).toContain("more pages: pass nextCursor");
+      else {
+        expect(textOf(raw)).not.toMatch(/more pages/);
+        expect(textOf(raw)).toContain("last page");
+        break;
+      }
+    }
+    expect(cursor).toBeNull();
+    expect(new Set(seen).size).toBe(api.total);
+    expect(seen).toHaveLength(api.total);
+  });
+
+  it("reports whether the receipts view is complete or truncated at the requested limit", async () => {
+    const textOf = (result: { content?: unknown }): string => (result.content as { type: string; text?: string }[]).find((c) => c.type === "text")?.text ?? "";
+    const truncated = await reader.client.callTool({ name: "garderobe_inventory", arguments: { view: "receipts", limit: 1 } });
+    const truncatedOut = toolResult(truncated);
+    expect(truncatedOut.ok).toBe(true);
+    expect(truncatedOut.data.complete).toBe(false);
+    expect(truncatedOut.data.total).toBeNull();
+    expect(truncatedOut.data.data.receipts).toHaveLength(1);
+    expect(textOf(truncated)).toContain("older ones exist and are not shown");
+
+    const full = await reader.client.callTool({ name: "garderobe_inventory", arguments: { view: "receipts", limit: 200 } });
+    const fullOut = toolResult(full);
+    expect(fullOut.ok).toBe(true);
+    expect(fullOut.data.complete).toBe(true);
+    expect(fullOut.data.total).toBe(fullOut.data.data.receipts.length);
+  });
 });
 
 describe("commands over MCP", () => {
