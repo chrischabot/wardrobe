@@ -372,10 +372,7 @@ describe("claiming and linking under abuse", () => {
     expect(statuses).toContain(429);
   });
 
-  defect(
-    "R09-3",
-    "never leaves an account with no sign-in and no recovery kit, even when both sign-ins are unlinked at the same moment",
-    async () => {
+  it("[fixed R09-3] never leaves an account with no sign-in and no recovery kit, even when both sign-ins are unlinked at the same moment", async () => {
     const owner = await syntheticOwner("Synthetic owner (parallel unlink fixture)");
     const second = fresh("adv-unlink-second");
     const ticket = await owner.api.json("POST", "/v1/identities/link", {});
@@ -393,9 +390,7 @@ describe("claiming and linking under abuse", () => {
     expect(y.status).toBeLessThan(500);
     const remaining = await linkedIdentities(owner.userId);
     expect(remaining.length, "an account with no linked sign-in and no recovery kit can never be reached again").toBeGreaterThanOrEqual(1);
-    },
-    { intermittent: true }, // a race: observed in two of three runs
-  );
+  });
 });
 
 describe("signing out everywhere", () => {
