@@ -190,6 +190,68 @@ describe("intent allow-list: one test per allow-listed sentence form, and unlist
   it("numbersIn parses digits, number words, hyphenated compounds and 'and a half'", () => {
     expect(numbersIn("forty-two and a half inches or 1,250")).toEqual([42.5, 1250]);
   });
+
+  it("(1) garment.retire rejects imperative disposal requests ('Sell the red coat', 'Give the red coat away', 'Donate the red coat') as proposals", () => {
+    const sold = { garmentId: COAT.garmentId, disposition: "sold" };
+    const donated = { garmentId: COAT.garmentId, disposition: "donated" };
+    const discarded = { garmentId: COAT.garmentId, disposition: "discarded" };
+    expect(asks("garment.retire", sold, "Sell the red wool coat.")).toBe(false);
+    expect(asks("garment.retire", sold, "Please sell the red coat on eBay.")).toBe(false);
+    expect(asks("garment.retire", donated, "Give the red coat away to a charity shop.")).toBe(false);
+    expect(asks("garment.retire", donated, "Donate the red coat to a charity shop.")).toBe(false);
+    expect(asks("garment.retire", discarded, "Throw away the red coat.")).toBe(false);
+    expect(asks("garment.retire", discarded, "Retire the red coat.")).toBe(false);
+  });
+
+  it("(2) return.update_case is outside the 8-form allow-list and never binds across clauses to auto-apply", () => {
+    const record = { garmentId: COAT.garmentId, words: ["red wool coat", "Acme"] };
+    expect(asks("return.update_case", { caseId: "ret_1", state: "posted" }, "The red wool coat is clean, and I posted the blue suede boot back.", { record })).toBe(false);
+    expect(asks("return.update_case", { caseId: "ret_1", state: "retailer_received" }, "I received the red wool coat today.", { record })).toBe(false);
+  });
+
+  it("(3) refund requests or rejections ('ask for a refund', 'rejected my refund') never auto-apply a refund completion", () => {
+    const record = { garmentId: COAT.garmentId, words: ["red wool coat", "Acme"] };
+    expect(asks("return.update_case", { caseId: "ret_1", state: "refunded", refundReceivedMinor: 12000 }, "Ask Acme for a refund on the red wool coat.", { record })).toBe(false);
+    expect(asks("return.update_case", { caseId: "ret_1", state: "refunded", refundReceivedMinor: 12000 }, "Acme rejected my refund for the red wool coat.", { record })).toBe(false);
+    expect(asks("purchase.record_event", { orderId: "ord_1", event: { kind: "refund", amountMinor: 12000 } }, "Please request a refund from Acme.", { record })).toBe(false);
+  });
+
+  it("(4) negated or cross-clause preference statements ('I don't like wool', 'Wool is not itchy, cotton is itchy') never auto-apply positive rules, amendments or memories", () => {
+    expect(asks("style.add_direction", { text: "Always prefer wool" }, "I don't like wool.")).toBe(false);
+    expect(asks("style.add_direction", { text: "Always prefer not wearing wool" }, "Always prefer not wearing wool.")).toBe(false);
+    expect(asks("style.add_amendment", { text: "I like wool", kind: "taste" }, "I don't like wool.")).toBe(false);
+    expect(asks("style.add_amendment", { text: "Cotton is not itchy", kind: "fabric" }, "Wool is not itchy, cotton is itchy.")).toBe(false);
+    expect(asks("memory.record_conclusion", { text: "Likes wool" }, "I don't like wool.")).toBe(false);
+  });
+
+  it("(5) purchase.record_event is outside the 8-form allow-list (always a proposal), and allow-listed date checks use the owner's localDate in Europe/London rather than UTC", () => {
+    const record = { words: ["Acme", "ORD-1"] };
+    expect(
+      asks(
+        "purchase.record_event",
+        { orderId: "ord_1", event: { kind: "dispatch", occurredAt: "2026-06-01T23:30:00Z" } },
+        "Acme dispatched order ORD-1 today.",
+        { localDate: "2026-06-02", timezone: "Europe/London", record },
+      ),
+    ).toBe(false);
+    // Arrival and measurement date checks compare against input.localDate (2026-06-02 in Europe/London at 2026-06-01T23:30:00Z BST), rejecting the UTC date 2026-06-01.
+    expect(
+      asks(
+        "assistant.report_arrival",
+        { garmentId: SCARF.garmentId, deliveredOn: "2026-06-01" },
+        "The navy lambswool scarf arrived today.",
+        { localDate: "2026-06-02", timezone: "Europe/London" },
+      ),
+    ).toBe(false);
+    expect(
+      asks(
+        "assistant.report_arrival",
+        { garmentId: SCARF.garmentId, deliveredOn: "2026-06-02" },
+        "The navy lambswool scarf arrived today.",
+        { localDate: "2026-06-02", timezone: "Europe/London" },
+      ),
+    ).toBe(true);
+  });
 });
 
 describe("report dates, ended statements, grants and naming", () => {
