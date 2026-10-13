@@ -49,6 +49,11 @@ export interface Env {
    * ENVIRONMENT is `local` or `test` (local run mode and tests sign assertions with a generated key).
    */
   ACCESS_JWKS_JSON?: string;
+  /**
+   * The exact JWKS endpoint of the assertion issuer, when it is not the Access team's
+   * `/cdn-cgi/access/certs`. Must be https and on the same origin as ACCESS_TEAM_DOMAIN.
+   */
+  ACCESS_CERTS_URL?: string;
 
   /** Secret: base64 of 32 random bytes; AES-256-GCM key for third-party credentials at rest. */
   CREDENTIAL_KEY: string;
@@ -89,6 +94,26 @@ export interface Config {
   mcpResource: string;
   accessIssuer: string;
   accessAudiences: string[];
+  /** Where the issuer's signing keys are read. */
+  accessCertsUrl: string;
+}
+
+/**
+ * The issuer's JWKS endpoint: ACCESS_CERTS_URL when set (https only, on the team domain's own origin, so
+ * keys are never taken from another host), otherwise the Access team's certificate endpoint.
+ */
+function accessCertsUrlOf(env: Env): string {
+  const issuer = env.ACCESS_TEAM_DOMAIN.replace(/\/+$/, "");
+  if (!env.ACCESS_CERTS_URL) return `${issuer}/cdn-cgi/access/certs`;
+  let url: URL;
+  try {
+    url = new URL(env.ACCESS_CERTS_URL);
+  } catch {
+    throw new Error("configuration error: ACCESS_CERTS_URL is not a URL");
+  }
+  if (url.protocol !== "https:") throw new Error("configuration error: ACCESS_CERTS_URL must be https");
+  if (url.origin !== new URL(issuer).origin) throw new Error("configuration error: ACCESS_CERTS_URL must be on the same origin as ACCESS_TEAM_DOMAIN");
+  return url.toString();
 }
 
 function origin(value: string, name: string): string {
@@ -121,6 +146,7 @@ export function configOf(env: Env): Config {
     mcpResource: `${mcpOrigin}/mcp`,
     accessIssuer: env.ACCESS_TEAM_DOMAIN.replace(/\/+$/, ""),
     accessAudiences: env.ACCESS_AUD.split(",").map((s) => s.trim()).filter(Boolean),
+    accessCertsUrl: accessCertsUrlOf(env),
   };
   configs.set(env, config);
   return config;

@@ -22,6 +22,8 @@ export interface VerifiedIdentity {
   /** Where the assertion was read from. A cookie means a browser session. */
   via: "header" | "cookie";
   hasCookie: boolean;
+  /** Session or assertion identifier from the issuer (`app_session_hash`, `sid`, or `jti`), when present. */
+  sessionId?: string | null;
 }
 
 const keySets = new WeakMap<object, JWTVerifyGetKey>();
@@ -35,7 +37,7 @@ function keySetFor(env: Env): JWTVerifyGetKey {
     // configOf() already refused this outside local/test environments.
     getKey = createLocalJWKSet(JSON.parse(env.ACCESS_JWKS_JSON));
   } else {
-    getKey = createRemoteJWKSet(new URL(`${config.accessIssuer}/cdn-cgi/access/certs`), { cooldownDuration: 30_000, cacheMaxAge: 600_000 });
+    getKey = createRemoteJWKSet(new URL(config.accessCertsUrl), { cooldownDuration: 30_000, cacheMaxAge: 600_000 });
   }
   keySets.set(env, getKey);
   return getKey;
@@ -80,6 +82,14 @@ export async function verifyAccessAssertion(request: Request, env: Env): Promise
   const subject = typeof payload.sub === "string" ? payload.sub : "";
   // Service tokens and other non-identity assertions carry no subject: they are not a person.
   if (!subject) throw new ApiException("unauthenticated", "sign in to continue", { reason: "not_an_identity" });
+  const sessionId =
+    typeof payload.app_session_hash === "string" && payload.app_session_hash
+      ? payload.app_session_hash
+      : typeof payload.sid === "string" && payload.sid
+        ? payload.sid
+        : typeof payload.jti === "string" && payload.jti
+          ? payload.jti
+          : null;
   return {
     issuer: String(payload.iss),
     subject,
@@ -88,5 +98,6 @@ export async function verifyAccessAssertion(request: Request, env: Env): Promise
     expiresAtMs: Number(payload.exp) * 1000,
     via: header || bearer ? "header" : "cookie",
     hasCookie: cookie !== null,
+    sessionId,
   };
 }

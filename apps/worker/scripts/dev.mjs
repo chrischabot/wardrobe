@@ -47,6 +47,7 @@ async function setup() {
   const seed = runSeed(state);
   writeState({ ...readState(), userId: seed.userId, ...(seed.invitationCode ? { invitationCode: seed.invitationCode } : {}) });
   console.log(`owner ${seed.userId}: ${seed.garments} garments from the real inventory${seed.importedNow ? " (imported now)" : ""}${seed.alreadyClaimed ? "" : "; the local sign-in claims the account on first use"}`);
+  if (seed.openConflicts > 0) console.log(`the import is NOT reconciled: ${seed.openConflicts} profile-versus-inventory conflict(s) are open for the owner to decide in the app`);
 }
 
 if (command === "reset") {

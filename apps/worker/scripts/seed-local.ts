@@ -49,6 +49,9 @@ try {
     imported = JSON.parse(JSON.stringify(result, (_k, v) => (typeof v === "string" && v.length > 200 ? `${v.slice(0, 200)}...` : v)));
   }
   const garments = await first<{ n: number }>(db, "SELECT COUNT(*) AS n FROM garments WHERE user_id = ?", userId);
+  // Profile-versus-inventory conflicts are left open for the owner to decide in the app; while any is open the
+  // import is not reconciled, and the output says so instead of reporting a finished import.
+  const openConflicts = (await first<{ n: number }>(db, "SELECT COUNT(*) AS n FROM migration_issues WHERE user_id = ? AND kind = 'profile_inventory_conflict' AND status = 'open'", userId))?.n ?? 0;
   const linked = await first<{ n: number }>(db, "SELECT COUNT(*) AS n FROM auth_identities WHERE user_id = ? AND unlinked_at IS NULL", userId);
   let invitationCode: string | null = null;
   if ((linked?.n ?? 0) === 0) {
@@ -60,7 +63,7 @@ try {
       .bind(`inv_${toBase64Url(randomBytes(9))}`, userId, await codeHash(stateSigningKey, "invitation", invitationCode), now.toISOString(), new Date(now.getTime() + 14 * 86_400_000).toISOString())
       .run();
   }
-  console.log(JSON.stringify({ userId, garments: garments?.n ?? 0, alreadyClaimed: (linked?.n ?? 0) > 0, invitationCode, importedNow: imported !== null }));
+  console.log(JSON.stringify({ userId, garments: garments?.n ?? 0, alreadyClaimed: (linked?.n ?? 0) > 0, invitationCode, importedNow: imported !== null, openConflicts, reconciled: openConflicts === 0 }));
 } finally {
   await proxy.dispose();
 }

@@ -2,7 +2,7 @@ import type { MeResponse, RecoveryKit } from "@garderobe/contracts/ext/api";
 import { all, first, prepare, stmt, toInstant, type Db, type Stmt } from "@garderobe/domain";
 import type { z } from "zod";
 import type { VerifiedIdentity } from "../auth/access.ts";
-import { auditStatement, findIdentity, identityHash, rateLimit, type OwnerSession } from "../auth/session.ts";
+import { auditStatement, findIdentity, identityHash, rateLimit, sessionExemptionHash, type OwnerSession } from "../auth/session.ts";
 import { RECOVERY_KDF, codeHash, randomBytes, randomToken, recoveryVerifier, timingSafeEqual, toBase32, toBase64Url } from "../crypto.ts";
 import type { Env } from "../env.ts";
 import type { App } from "../app.ts";
@@ -43,6 +43,14 @@ async function runGuarded(db: Db, statements: Stmt[], onGuardFailure: () => ApiE
 }
 
 const guardId = () => `acct_${toBase64Url(randomBytes(9))}`;
+
+/**
+ * Checked inside the guarded batch itself: the target account is still active and the presented identity
+ * belongs to no other account. Without this, a concurrent deletion or a concurrent link of the same identity
+ * to another account would let the link UPSERT silently do nothing while the credential is still consumed.
+ */
+const ACCOUNT_AND_IDENTITY_SQL = "(SELECT status FROM users WHERE user_id = ?) = 'active' AND NOT EXISTS (SELECT 1 FROM auth_identities WHERE issuer = ? AND subject = ? AND user_id != ?)";
+const accountAndIdentityParams = (userId: string, identity: VerifiedIdentity): unknown[] => [userId, identity.issuer, identity.subject, userId];
 
 /** Insert or re-activate an identity link for a user. The (issuer, subject) key maps to exactly one user. */
 function linkStatement(userId: string, identity: VerifiedIdentity, now: string): Stmt {
@@ -230,7 +238,7 @@ export async function claimAccount(db: Db, env: Env, identity: VerifiedIdentity,
   await runGuarded(
     db,
     [
-      guard(id, "invitation unclaimed", "(SELECT claimed_at IS NULL AND expires_at > ? FROM owner_invitations WHERE invitation_id = ?) = 1", [now, invitation.invitation_id]),
+      guard(id, "invitation unclaimed", `(SELECT claimed_at IS NULL AND expires_at > ? FROM owner_invitations WHERE invitation_id = ?) = 1 AND ${ACCOUNT_AND_IDENTITY_SQL}`, [now, invitation.invitation_id, ...accountAndIdentityParams(invitation.user_id, identity)]),
       stmt("UPDATE owner_invitations SET claimed_at = ?, claimed_issuer = ?, claimed_subject = ? WHERE invitation_id = ?", now, identity.issuer, subjectKey, invitation.invitation_id),
       linkStatement(invitation.user_id, identity, now),
       ...kit.statements,
@@ -281,7 +289,7 @@ export async function completeLink(db: Db, env: Env, identity: VerifiedIdentity,
   await runGuarded(
     db,
     [
-      guard(id, "link ticket unused", "(SELECT used_at IS NULL AND expires_at > ? FROM identity_link_tickets WHERE ticket_id = ?) = 1", [now, ticket.ticket_id]),
+      guard(id, "link ticket unused", `(SELECT used_at IS NULL AND expires_at > ? FROM identity_link_tickets WHERE ticket_id = ?) = 1 AND ${ACCOUNT_AND_IDENTITY_SQL}`, [now, ticket.ticket_id, ...accountAndIdentityParams(ticket.user_id, identity)]),
       stmt("UPDATE identity_link_tickets SET used_at = ? WHERE ticket_id = ?", now, ticket.ticket_id),
       linkStatement(ticket.user_id, identity, now),
       audit.statement,
@@ -306,8 +314,24 @@ export async function unlinkIdentityById(db: Db, session: OwnerSession, identity
     if (!kit) throw new ApiException("precondition_failed", "this is the only sign-in and there is no recovery kit; unlinking it would lose the account", { reason: "last_identity_without_recovery" });
   }
   const audit = await auditStatement({ userId: session.userId, kind: "identity.unlink", outcome: "ok", identity: session.identity, channel: session.principal.channel, detail: { identity: identityId }, nowMs });
-  await db.batch(
-    [stmt("UPDATE auth_identities SET unlinked_at = ? WHERE user_id = ? AND issuer = ? AND subject = ?", toInstant(nowMs), session.userId, target.issuer, target.subject), audit.statement].map((s) => prepare(db, s)),
+  // The check above is advisory; this guard decides. Two unlinks (or an unlink and a recovery-kit
+  // change) that run at once each saw room, so the batch itself requires that the target is still linked
+  // and that another sign-in or a recovery kit remains after it, or writes nothing.
+  const id = guardId();
+  await runGuarded(
+    db,
+    [
+      guard(
+        id,
+        "another sign-in or a recovery kit remains",
+        "EXISTS (SELECT 1 FROM auth_identities WHERE user_id = ? AND issuer = ? AND subject = ? AND unlinked_at IS NULL) AND (EXISTS (SELECT 1 FROM auth_identities WHERE user_id = ? AND unlinked_at IS NULL AND NOT (issuer = ? AND subject = ?)) OR EXISTS (SELECT 1 FROM recovery_credentials WHERE user_id = ? AND status = 'active'))",
+        [session.userId, target.issuer, target.subject, session.userId, target.issuer, target.subject, session.userId],
+      ),
+      stmt("UPDATE auth_identities SET unlinked_at = ? WHERE user_id = ? AND issuer = ? AND subject = ?", toInstant(nowMs), session.userId, target.issuer, target.subject),
+      audit.statement,
+      guardCleanup(id),
+    ],
+    () => new ApiException("precondition_failed", "this is the only sign-in and there is no recovery kit; unlinking it would lose the account", { reason: "last_identity_without_recovery" }),
   );
 }
 
@@ -318,7 +342,8 @@ export async function unlinkIdentityById(db: Db, session: OwnerSession, identity
 function floorStatement(userId: string, notBeforeMs: number, reason: string, exempt: { hash: string; notBeforeMs: number } | null, nowMs: number): Stmt {
   return stmt(
     `INSERT INTO auth_session_floors (user_id, not_before, reason, exempt_identity_hash, exempt_not_before, updated_at) VALUES (?, ?, ?, ?, ?, ?)
-     ON CONFLICT (user_id) DO UPDATE SET not_before = excluded.not_before, reason = excluded.reason, exempt_identity_hash = excluded.exempt_identity_hash, exempt_not_before = excluded.exempt_not_before, updated_at = excluded.updated_at`,
+     ON CONFLICT (user_id) DO UPDATE SET not_before = excluded.not_before, reason = excluded.reason, exempt_identity_hash = excluded.exempt_identity_hash, exempt_not_before = excluded.exempt_not_before, updated_at = excluded.updated_at
+     WHERE excluded.not_before >= auth_session_floors.not_before`,
     userId,
     toInstant(notBeforeMs),
     reason,
@@ -330,7 +355,7 @@ function floorStatement(userId: string, notBeforeMs: number, reason: string, exe
 
 /** Sign out everywhere: every session authenticated before now is refused, except the one doing this. */
 export async function revokeSessions(db: Db, session: OwnerSession, nowMs: number): Promise<{ sessionsRevokedBefore: string; receiptId: string }> {
-  const hash = await identityHash(session.identity.issuer, session.identity.subject);
+  const hash = await sessionExemptionHash(session.identity);
   const audit = await auditStatement({ userId: session.userId, kind: "sessions.revoke", outcome: "ok", identity: session.identity, channel: session.principal.channel, nowMs });
   await db.batch([floorStatement(session.userId, nowMs, "owner_sign_out_everywhere", { hash, notBeforeMs: session.identity.issuedAtMs }, nowMs), audit.statement].map((s) => prepare(db, s)));
   return { sessionsRevokedBefore: toInstant(nowMs), receiptId: audit.auditId };
@@ -408,84 +433,154 @@ export async function completeRecovery(
     throw new ApiException("expired", "that recovery attempt has expired; start again");
   }
 
+  const parsed = parseRecoveryCode(input.recoveryCode);
+  if (parsed) await rateLimit(db, `recovery-kit:${parsed.kitId}`, 10, 3600, nowMs);
+
+  // Reserve one attempt slot before anything is compared, in one statement: guesses that arrive at the same
+  // moment each take one of the remaining slots, and once none remain nothing more is compared.
+  const claimed = await first<{ attempts: number; max_attempts: number }>(
+    db,
+    "UPDATE recovery_transactions SET attempts = attempts + 1 WHERE transaction_id = ? AND status = 'open' AND attempts < max_attempts RETURNING attempts, max_attempts",
+    input.transactionId,
+  );
+  if (!claimed) throw new ApiException("unrecoverable", "the recovery credential was not accepted and no attempts remain. Without a linked sign-in or a valid recovery code this account cannot be recovered through this route.", { attemptsRemaining: 0 });
+
+  // Count of completed refused attempts for this transaction in account_audit (including the batch's own insert).
+  // Closing the transaction only when completed failures reach max_attempts ensures that concurrent incorrect
+  // requests cannot mark the transaction failed while an already-admitted valid attempt is still verifying.
+  const completedRefusalsSql = "(SELECT COUNT(*) FROM account_audit WHERE kind = 'recovery.complete' AND outcome = 'refused' AND json_extract(detail_json, '$.transactionId') = ?)";
+
+  let settled = false;
+  const releaseReservation = async (): Promise<void> => {
+    await prepare(
+      db,
+      stmt(
+        `UPDATE recovery_transactions SET attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END, status = CASE WHEN ${completedRefusalsSql} >= max_attempts THEN 'failed' ELSE status END WHERE transaction_id = ? AND status = 'open'`,
+        input.transactionId,
+        input.transactionId,
+      ),
+    ).run();
+  };
+
   const fail = async (reason: string, kitId: string | null): Promise<never> => {
     const audit = await auditStatement({ userId: null, kind: "recovery.complete", outcome: "refused", identity, channel: "web", detail: { reason, kitId, transactionId: input.transactionId }, nowMs });
     await db.batch(
       [
-        stmt("UPDATE recovery_transactions SET attempts = attempts + 1, status = CASE WHEN attempts + 1 >= max_attempts THEN 'failed' ELSE status END WHERE transaction_id = ? AND status = 'open'", input.transactionId),
         audit.statement,
+        stmt(
+          `UPDATE recovery_transactions SET status = CASE WHEN ${completedRefusalsSql} >= max_attempts THEN 'failed' ELSE status END WHERE transaction_id = ? AND status = 'open'`,
+          input.transactionId,
+          input.transactionId,
+        ),
       ].map((s) => prepare(db, s)),
     );
-    const remaining = Math.max(0, tx.max_attempts - tx.attempts - 1);
+    settled = true;
+    const remaining = Math.max(0, claimed.max_attempts - claimed.attempts);
     if (remaining === 0) {
       throw new ApiException("unrecoverable", "the recovery credential was not accepted and no attempts remain. Without a linked sign-in or a valid recovery code this account cannot be recovered through this route.", { attemptsRemaining: 0 });
     }
     throw new ApiException("forbidden", "the recovery credential was not accepted", { reason: "recovery_credential_not_accepted", attemptsRemaining: remaining });
   };
 
-  const parsed = parseRecoveryCode(input.recoveryCode);
-  if (!parsed) return fail("malformed", null);
-  await rateLimit(db, `recovery-kit:${parsed.kitId}`, 10, 3600, nowMs);
-  const credential = await first<{ user_id: string; verifier: string; salt: string; status: string; display_name: string; user_status: string }>(
-    db,
-    "SELECT c.user_id, c.verifier, c.salt, c.status, u.display_name, u.status AS user_status FROM recovery_credentials c JOIN users u ON u.user_id = c.user_id WHERE c.kit_id = ?",
-    parsed.kitId,
-  );
-  // Always derive, so an unknown kit costs the same as a wrong secret.
-  const derived = await recoveryVerifier(parsed.normalized, credential?.salt ?? "AAAAAAAAAAAAAAAAAAAAAA");
-  if (!credential || !timingSafeEqual(derived, credential.verifier)) return fail("mismatch", parsed.kitId);
-  if (credential.status !== "active") return fail(`credential_${credential.status}`, parsed.kitId);
-  if (credential.user_status !== "active") return fail("account_disabled", parsed.kitId);
+  let userId = "";
+  let kit: Awaited<ReturnType<typeof newRecoveryKit>> | null = null;
+  let auditId = "";
+  try {
+    if (!parsed) return await fail("malformed", null);
+    const credential = await first<{ user_id: string; verifier: string; salt: string; status: string; display_name: string; user_status: string }>(
+      db,
+      "SELECT c.user_id, c.verifier, c.salt, c.status, u.display_name, u.status AS user_status FROM recovery_credentials c JOIN users u ON u.user_id = c.user_id WHERE c.kit_id = ?",
+      parsed.kitId,
+    );
+    // Always derive, so an unknown kit costs the same as a wrong secret.
+    const derived = await recoveryVerifier(parsed.normalized, credential?.salt ?? "AAAAAAAAAAAAAAAAAAAAAA");
+    if (!credential || !timingSafeEqual(derived, credential.verifier)) return await fail("mismatch", parsed.kitId);
+    if (credential.status !== "active") return await fail(`credential_${credential.status}`, parsed.kitId);
+    if (credential.user_status !== "active") return await fail("account_disabled", parsed.kitId);
 
-  const userId = credential.user_id;
-  await assertIdentityFree(db, identity, userId);
+    userId = credential.user_id;
+    await assertIdentityFree(db, identity, userId);
 
-  const previous = await all<{ issuer: string; subject: string }>(db, "SELECT issuer, subject FROM auth_identities WHERE user_id = ? AND unlinked_at IS NULL", userId);
-  const toUnlink = input.unlinkPreviousIdentities ? previous.filter((p) => !(p.issuer === identity.issuer && p.subject === identity.subject)) : [];
-  const grants = await all<{ grant_id: string }>(db, "SELECT grant_id FROM mcp_grants WHERE user_id = ? AND status = 'active'", userId);
-  const kit = await newRecoveryKit(userId, credential.display_name, nowMs);
-  const id = guardId();
-  const audit = await auditStatement({
-    userId,
-    kind: "recovery.complete",
-    outcome: "ok",
-    identity,
-    channel: "web",
-    detail: { usedKitId: parsed.kitId, replacementKitId: kit.kit.kitId, grantsRevoked: grants.length, identitiesUnlinked: toUnlink.length, transactionId: input.transactionId },
-    nowMs,
-  });
-  await runGuarded(
-    db,
-    [
-      guard(
-        id,
-        "recovery credential unused and transaction open",
-        "(SELECT status FROM recovery_credentials WHERE kit_id = ?) = 'active' AND (SELECT status FROM recovery_transactions WHERE transaction_id = ?) = 'open'",
-        [parsed.kitId, input.transactionId],
-      ),
-      stmt("UPDATE recovery_credentials SET status = 'used', retired_at = ? WHERE user_id = ? AND kit_id = ?", now, userId, parsed.kitId),
-      stmt("UPDATE recovery_transactions SET status = 'completed', user_id = ?, completed_at = ?, attempts = attempts + 1 WHERE transaction_id = ?", userId, now, input.transactionId),
-      linkStatement(userId, identity, now),
-      ...toUnlink.map((p) => stmt("UPDATE auth_identities SET unlinked_at = ? WHERE user_id = ? AND issuer = ? AND subject = ?", now, userId, p.issuer, p.subject)),
-      floorStatement(userId, nowMs, "account_recovery", { hash: subjectKey, notBeforeMs: identity.issuedAtMs }, nowMs),
-      ...revokeAllGrantStatements(userId, "account_recovery", now),
-      // newRecoveryKit's first statement retires any other active credential; the used one is already 'used'.
-      ...kit.statements,
-      audit.statement,
-      guardCleanup(id),
-    ],
-    () => new ApiException("expired", "that recovery credential has already been used", { reason: "credential_used" }),
-  );
-  // Provider-side records (KV) are cleaned up after the authoritative D1 decision; D1 alone already blocks the grants.
-  await revokeProviderGrants(env, userId);
+    kit = await newRecoveryKit(userId, credential.display_name, nowMs);
+    const id = guardId();
+    const exemptHash = await sessionExemptionHash(identity);
+    const audit = await auditStatement({
+      userId,
+      kind: "recovery.complete",
+      outcome: "ok",
+      identity,
+      channel: "web",
+      detail: { usedKitId: parsed.kitId, replacementKitId: kit.kit.kitId, grantsRevoked: 0, identitiesUnlinked: 0, transactionId: input.transactionId },
+      nowMs,
+    });
+    auditId = audit.auditId;
+    try {
+      await runGuarded(
+        db,
+        [
+          guard(
+            id,
+            "recovery credential unused and transaction open",
+            `(SELECT status FROM recovery_credentials WHERE kit_id = ?) = 'active' AND (SELECT status IN ('open', 'failed') AND expires_at > ? FROM recovery_transactions WHERE transaction_id = ?) = 1 AND ${ACCOUNT_AND_IDENTITY_SQL}`,
+            [parsed.kitId, now, input.transactionId, ...accountAndIdentityParams(userId, identity)],
+          ),
+          stmt("UPDATE recovery_credentials SET status = 'used', retired_at = ? WHERE user_id = ? AND kit_id = ?", now, userId, parsed.kitId),
+          stmt("UPDATE recovery_transactions SET status = 'completed', user_id = ?, completed_at = ? WHERE transaction_id = ?", userId, now, input.transactionId),
+          // Record the exact in-batch counts of active other sign-ins and active grants before the statements below
+          // update them, so the audit row and the response match what the batch actually unlinked and revoked.
+          stmt(
+            `INSERT INTO account_audit (audit_id, user_id, kind, outcome, at, actor_issuer, actor_subject_hash, channel, detail_json)
+             VALUES (?, ?, 'recovery.complete', 'ok', ?, ?, ?, 'web', json_set(?, '$.identitiesUnlinked', CASE WHEN ? THEN (SELECT COUNT(*) FROM auth_identities WHERE user_id = ? AND unlinked_at IS NULL AND NOT (issuer = ? AND subject = ?)) ELSE 0 END, '$.grantsRevoked', (SELECT COUNT(*) FROM mcp_grants WHERE user_id = ? AND status = 'active')))`,
+            audit.auditId,
+            userId,
+            now,
+            identity.issuer,
+            subjectKey,
+            JSON.stringify({ usedKitId: parsed.kitId, replacementKitId: kit.kit.kitId, grantsRevoked: 0, identitiesUnlinked: 0, transactionId: input.transactionId }),
+            input.unlinkPreviousIdentities ? 1 : 0,
+            userId,
+            identity.issuer,
+            identity.subject,
+            userId,
+          ),
+          linkStatement(userId, identity, now),
+          // Set-based: every other active sign-in is unlinked, including one linked after the read above.
+          ...(input.unlinkPreviousIdentities ? [stmt("UPDATE auth_identities SET unlinked_at = ? WHERE user_id = ? AND unlinked_at IS NULL AND NOT (issuer = ? AND subject = ?)", now, userId, identity.issuer, identity.subject)] : []),
+          floorStatement(userId, nowMs, "account_recovery", { hash: exemptHash, notBeforeMs: identity.issuedAtMs }, nowMs),
+          ...revokeAllGrantStatements(userId, "account_recovery", now),
+          // newRecoveryKit's first statement retires any other active credential; the used one is already 'used'.
+          ...kit.statements,
+          guardCleanup(id),
+        ],
+        () => new ApiException("expired", "that recovery credential has already been used", { reason: "credential_used" }),
+      );
+      settled = true;
+    } catch (error) {
+      const txNow = await first<{ status: string; expires_at: string }>(db, "SELECT status, expires_at FROM recovery_transactions WHERE transaction_id = ?", input.transactionId);
+      if (txNow && (txNow.status === "completed" || txNow.status === "expired" || Date.parse(txNow.expires_at) <= nowMs)) {
+        throw new ApiException("expired", "that recovery attempt is finished; start again", { status: txNow.status });
+      }
+      await assertIdentityFree(db, identity, userId);
+      throw error;
+    }
+  } finally {
+    if (!settled) {
+      await releaseReservation().catch((e) => console.warn("recovery attempt reservation release failed", String((e as Error)?.message ?? e)));
+    }
+  }
+  const recordedAudit = await first<{ detail_json: string }>(db, "SELECT detail_json FROM account_audit WHERE audit_id = ?", auditId);
+  const recordedCounts = recordedAudit ? (JSON.parse(recordedAudit.detail_json) as { grantsRevoked?: number; identitiesUnlinked?: number }) : {};
+  // Provider-side records (KV) are cleaned up after the authoritative D1 decision; D1 alone already blocks the
+  // grants. A cleanup failure must not cost the owner the replacement kit, which this response carries once.
+  await revokeProviderGrants(env, userId).catch((error) => console.error("provider grant cleanup after recovery failed; D1 already blocks them", String((error as Error)?.message ?? error)));
   return {
     userId,
     identityLinked: true,
     sessionsRevokedBefore: now,
-    assistantGrantsRevoked: grants.length,
-    previousIdentitiesUnlinked: toUnlink.length,
-    replacementKit: kit.kit,
-    receiptId: audit.auditId,
+    assistantGrantsRevoked: recordedCounts.grantsRevoked ?? 0,
+    previousIdentitiesUnlinked: recordedCounts.identitiesUnlinked ?? 0,
+    replacementKit: kit!.kit,
+    receiptId: auditId,
     connectionsUnchanged: true,
   };
 }
@@ -533,7 +628,9 @@ export async function requestAccountDeletion(
   await runGuarded(
     db,
     [
-      guard(id, "deletion unconfirmed", "(SELECT confirmed_at IS NULL FROM account_deletions WHERE user_id = ?) = 1", [session.userId]),
+      // The presented token must still be the current, unexpired, unconfirmed one when the batch runs: a token
+      // replaced by a newer deletion request meanwhile is refused.
+      guard(id, "deletion unconfirmed", "(SELECT confirmed_at IS NULL AND token_hash = ? AND expires_at > ? FROM account_deletions WHERE user_id = ?) = 1", [presented, now, session.userId]),
       stmt("UPDATE account_deletions SET confirmed_at = ? WHERE user_id = ?", now, session.userId),
       stmt("UPDATE users SET status = 'disabled' WHERE user_id = ?", session.userId),
       floorStatement(session.userId, nowMs + 1000, "account_deletion", null, nowMs),

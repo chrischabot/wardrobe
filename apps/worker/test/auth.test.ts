@@ -132,4 +132,32 @@ describe("two owners", () => {
     // The other owner is unaffected.
     expect((await other.api.with({ issuedAgoSeconds: 600 }).get("/v1/me")).status).toBe(200);
   });
+
+  it("exempts only the session that signed out: another session of the same sign-in that began after it is refused", async () => {
+    const fresh = await provisionOwner();
+    const phone = fresh.api.with({ issuedAgoSeconds: 7200, expiresInSeconds: 86_400 });
+    const elsewhere = fresh.api.with({ issuedAgoSeconds: 600 });
+    expect((await elsewhere.get("/v1/me")).status).toBe(200);
+    expect((await phone.post("/v1/sessions/revoke", {})).status).toBe(200);
+    // The session that asked keeps working, on later requests too.
+    expect((await phone.get("/v1/me")).status).toBe(200);
+    const refused = await elsewhere.get("/v1/me");
+    expect(refused.status).toBe(401);
+    expect((await errorOf(refused)).code).toBe("session_revoked");
+    // A sign-in after the sign-out works.
+    expect((await fresh.api.get("/v1/me")).status).toBe(200);
+
+    // When the issuer supplies a session identifier (jti), another session of the same sign-in issued in the
+    // exact same second is also refused.
+    const secondOwner = await provisionOwner();
+    const sameSecond = Math.floor(Date.now() / 1000) - 300;
+    const revokingSession = secondOwner.api.with({ issuedAtSeconds: sameSecond, sessionId: "ses_revoking", expiresInSeconds: 86_400 });
+    const siblingSameSecond = secondOwner.api.with({ issuedAtSeconds: sameSecond, sessionId: "ses_sibling", expiresInSeconds: 86_400 });
+    expect((await siblingSameSecond.get("/v1/me")).status).toBe(200);
+    expect((await revokingSession.post("/v1/sessions/revoke", {})).status).toBe(200);
+    expect((await revokingSession.get("/v1/me")).status).toBe(200);
+    const siblingRefused = await siblingSameSecond.get("/v1/me");
+    expect(siblingRefused.status).toBe(401);
+    expect((await errorOf(siblingRefused)).code).toBe("session_revoked");
+  });
 });

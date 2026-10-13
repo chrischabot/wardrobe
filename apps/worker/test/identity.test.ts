@@ -94,6 +94,28 @@ describe("linking and unlinking a second sign-in", () => {
     expect(response.status).toBe(409);
     expect((await owner.api.get("/v1/me")).status).toBe(200);
   });
+
+  it("R09-3: two sign-ins that unlink each other at the same moment never leave the account without a sign-in when there is no recovery kit", async () => {
+    const app = await testApp();
+    for (let round = 0; round < 6; round++) {
+      const owner = await provisionOwner();
+      await app.db.prepare("UPDATE recovery_credentials SET status = 'replaced' WHERE user_id = ?").bind(owner.userId).run();
+      const second = new ApiClient(newIdentity(`r09-3-${round}`));
+      const ticket = await owner.api.json("POST", "/v1/identities/link", {});
+      expect((await second.json("POST", "/auth/link/complete", { linkCode: ticket.linkCode })).identities).toHaveLength(2);
+      const me = await owner.api.json("GET", "/v1/me");
+      const ownersOwn = me.identities.find((i: any) => i.current).identityId;
+      const secondsOwn = me.identities.find((i: any) => !i.current).identityId;
+      // Each removes the other at once; each request alone sees two sign-ins and room to unlink one.
+      // Exactly one unlink succeeds, and exactly one active identity remains.
+      const [a, b] = await Promise.all([owner.api.post("/v1/identities/unlink", { identityId: secondsOwn }), second.post("/v1/identities/unlink", { identityId: ownersOwn })]);
+      const statuses = [a.status, b.status];
+      expect(statuses.filter((s) => s === 200).length, `round ${round}: ${statuses}`).toBe(1);
+      const linked = await app.db.prepare("SELECT COUNT(*) AS n FROM auth_identities WHERE user_id = ? AND unlinked_at IS NULL").bind(owner.userId).first<{ n: number }>();
+      expect(linked!.n, `round ${round}: ${statuses}`).toBe(1);
+      for (const r of [a, b]) if (r.status !== 200) expect([403, 404, 409]).toContain(r.status);
+    }
+  });
 });
 
 describe("recovering after losing the sign-in", () => {
@@ -204,6 +226,23 @@ describe("recovering after losing the sign-in", () => {
     expect((await owner.api.get("/v1/me")).status).toBe(200);
     // No route offers a way around the credential.
     for (const path of ["/auth/recovery/override", "/auth/recovery/email", "/auth/recovery/support", "/v1/admin/recover"]) expect((await SELF.fetch(`${APP_ORIGIN}${path}`, { method: "POST", headers: await visitor.headers() })).status).toBe(404);
+  });
+
+  it("lets an admitted valid recovery attempt finish even when concurrent wrong attempts fill the remaining attempt slots", async () => {
+    const owner = await provisionOwner();
+    const visitor = new ApiClient(newIdentity("concurrent-recovery"));
+    const tx = await visitor.json("POST", "/auth/recovery/start", {});
+    const attempts = await Promise.all([
+      visitor.post("/auth/recovery/complete", { transactionId: tx.transactionId, recoveryCode: owner.recoveryKit.recoveryCode }),
+      ...[1, 2, 3, 4].map((i) =>
+        visitor.post("/auth/recovery/complete", { transactionId: tx.transactionId, recoveryCode: `GRD1-RKAAAAAAAAAA-${"0000-".repeat(12)}000${i}` }),
+      ),
+    ]);
+    expect(attempts[0]!.status).toBe(200);
+    const body = (await attempts[0]!.json()) as any;
+    expect(body.userId).toBe(owner.userId);
+    expect(body.identityLinked).toBe(true);
+    for (const wrong of attempts.slice(1)) expect([403, 410]).toContain(wrong.status);
   });
 
   it("rotating the kit retires the previous code", async () => {

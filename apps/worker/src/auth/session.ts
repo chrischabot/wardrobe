@@ -20,6 +20,18 @@ export async function identityHash(issuer: string, subject: string): Promise<str
 }
 
 /**
+ * Non-reversible handle for the sign-out floor exemption: includes the issuer's session/assertion claim
+ * (`app_session_hash`, `sid`, or `jti`) when present, and falls back to `(issuer, subject)` when the
+ * assertion carries no session identifier (in which case whole-second `iat` resolution cannot distinguish
+ * two assertions of the same identity issued within the same second).
+ */
+export async function sessionExemptionHash(identity: Pick<VerifiedIdentity, "issuer" | "subject" | "sessionId">): Promise<string> {
+  return identity.sessionId
+    ? (await sha256Hex(`session\u0000${identity.issuer}\u0000${identity.subject}\u0000${identity.sessionId}`)).slice(0, 32)
+    : identityHash(identity.issuer, identity.subject);
+}
+
+/**
  * Browser requests that change state must come from the app's own origin. A native client sends no
  * Origin header; a cross-site page always does.
  */
@@ -73,10 +85,19 @@ export async function authenticateOwner(request: Request, env: Env, db: Db): Pro
     row.user_id,
   );
   if (floor) {
-    const exempt = floor.exempt_identity_hash !== null && floor.exempt_identity_hash === (await identityHash(identity.issuer, identity.subject));
-    const notBefore = Date.parse(exempt && floor.exempt_not_before ? floor.exempt_not_before : floor.not_before);
+    // The sign-out exemption covers the revoking session's assertion: matched by `(issuer, subject, sessionId)`
+    // when the issuer provides a session claim (`app_session_hash`, `sid`, or `jti`) plus whole-second `iat`.
+    // When the assertion carries no session identifier, `(issuer, subject)` plus whole-second `iat` is used,
+    // which has whole-second granularity (two assertions of the same identity issued in that same second without
+    // a session claim share the exemption; assertions issued in any other second before the sign-out are revoked).
+    const exempt =
+      floor.exempt_identity_hash !== null &&
+      floor.exempt_not_before !== null &&
+      floor.exempt_identity_hash === (await sessionExemptionHash(identity)) &&
+      Math.floor(identity.issuedAtMs / 1000) === Math.floor(Date.parse(floor.exempt_not_before) / 1000);
+    const notBefore = Date.parse(floor.not_before);
     // Assertions carry second resolution; compare on whole seconds so the revoking session itself is not cut off.
-    if (Math.floor(identity.issuedAtMs / 1000) < Math.floor(notBefore / 1000)) {
+    if (!exempt && Math.floor(identity.issuedAtMs / 1000) < Math.floor(notBefore / 1000)) {
       throw new ApiException("session_revoked", "this session was signed out; sign in again");
     }
   }

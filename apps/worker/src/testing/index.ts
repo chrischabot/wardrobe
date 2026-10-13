@@ -55,6 +55,14 @@ export function newIdentity(label = "owner"): TestIdentity {
 export interface AssertionOptions {
   /** Seconds in the past the session was authenticated (default 0). */
   issuedAgoSeconds?: number;
+  /**
+   * The session's fixed authentication time (Unix seconds). An `ApiClient` given `issuedAgoSeconds` pins it
+   * when the client is made, so every request of that client is the same session (the same assertion time),
+   * as a real device's session is. Without either, every request is a session authenticated just now.
+   */
+  issuedAtSeconds?: number;
+  /** Optional session or assertion identifier (`jti`) carried by the signed assertion. */
+  sessionId?: string;
   expiresInSeconds?: number;
   audience?: string;
   issuer?: string;
@@ -72,8 +80,8 @@ export async function accessAssertion(identity: TestIdentity, options: Assertion
   const jwk = JSON.parse(options.untrusted ? b.TEST_UNTRUSTED_PRIVATE_JWK : b.TEST_ACCESS_PRIVATE_JWK);
   const key = await importJWK(jwk, "RS256");
   const now = Math.floor(Date.now() / 1000);
-  const iat = now - (options.issuedAgoSeconds ?? 0);
-  const jwt = new SignJWT({ ...(identity.email ? { email: identity.email } : {}), type: "app" })
+  const iat = options.issuedAtSeconds ?? now - (options.issuedAgoSeconds ?? 0);
+  const jwt = new SignJWT({ ...(identity.email ? { email: identity.email } : {}), ...(options.sessionId ? { jti: options.sessionId } : {}), type: "app" })
     .setProtectedHeader({ alg: "RS256", kid: jwk.kid })
     .setIssuer(options.issuer ?? b.ACCESS_TEAM_DOMAIN)
     .setAudience(options.audience ?? b.ACCESS_AUD)
@@ -91,13 +99,18 @@ export interface ApiOptions extends AssertionOptions {
 
 /** A signed-in client of the HTTP API for one identity. */
 export class ApiClient {
+  readonly options: ApiOptions;
   constructor(
     readonly identity: TestIdentity,
-    readonly options: ApiOptions = {},
-  ) {}
+    options: ApiOptions = {},
+  ) {
+    this.options = options.issuedAgoSeconds !== undefined && options.issuedAtSeconds === undefined ? { ...options, issuedAtSeconds: Math.floor(Date.now() / 1000) - options.issuedAgoSeconds } : options;
+  }
 
   with(options: ApiOptions): ApiClient {
-    return new ApiClient(this.identity, { ...this.options, ...options });
+    // A new `issuedAgoSeconds` is a different session: the inherited pinned time is not kept.
+    const inherited = options.issuedAgoSeconds !== undefined && options.issuedAtSeconds === undefined ? (({ issuedAtSeconds: _pinned, ...rest }) => rest)(this.options) : this.options;
+    return new ApiClient(this.identity, { ...inherited, ...options });
   }
 
   async headers(extra: Record<string, string> = {}): Promise<Record<string, string>> {
@@ -389,9 +402,10 @@ export function toolResult<T = any>(result: { isError?: boolean; structuredConte
 /* ------------------------------------------------------------------ */
 
 export { fakeModelFor, resetFakeModels, type FakeModel } from "@garderobe/assistant/testing";
+import { TASK_SPECS } from "@garderobe/assistant";
 
-/** The conversation profile the FAKE MODEL stands in for. */
-export const FAKE_MODEL_PROFILE = "deepseek-v41-flash";
+/** The conversation profile the FAKE MODEL stands in for: the assistant registry's primary profile. */
+export const FAKE_MODEL_PROFILE: string = TASK_SPECS.conversation.candidates[0]!;
 
 /**
  * Make the conversation route selectable for an owner in a test: records the capability probes the
