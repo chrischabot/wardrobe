@@ -60,7 +60,12 @@ export async function connectedDisposition(registry: CommandRegistry, db: Db, us
   if (type === "command.undo" && registry.has(type)) {
     // Undoing is the same change in the other direction, so it is treated as the change it undoes.
     if (typeof payload.commandId !== "string") return "direct"; // refused by the command's own schema
-    const target = await first<{ type: string; payload_json: string }>(db, "SELECT type, payload_json FROM commands WHERE user_id = ? AND command_id = ?", userId, payload.commandId);
+    const target = await first<{ type: string; payload_json: string; actor: string; authorization_basis: string; undone_by_command_id: string | null }>(
+      db,
+      "SELECT type, payload_json, actor, authorization_basis, undone_by_command_id FROM commands WHERE user_id = ? AND command_id = ?",
+      userId,
+      payload.commandId,
+    );
     if (!target) return "direct"; // the command service answers not_found
     let targetPayload: Record<string, unknown> = {};
     try {
@@ -70,6 +75,11 @@ export async function connectedDisposition(registry: CommandRegistry, db: Db, us
     }
     if (forbiddenForConnectedAssistant(type, payload, { type: target.type })) return "lift";
     const undone = connectedDispositionOfType(registry, target.type, targetPayload);
+    // Coordinator ruling (M14-2, 2026-10-12): a connected assistant may directly undo only its own explicit
+    // observation report; undoing an observation the owner recorded by their own tap in the app waits for the owner.
+    if (undone === "direct" && target.undone_by_command_id === null && classifyChange(target.type, targetPayload, "mcp") === "observation" && (target.actor === "owner" || target.authorization_basis === "owner_tap")) {
+      return "owner";
+    }
     // An undo is never more permissive than the change it undoes: internal stays internal, a lift stays a lift.
     return undone;
   }

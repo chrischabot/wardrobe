@@ -658,7 +658,7 @@ describe("A. wash reports, jobs and undo shaped to slip past the class boundary"
    * own explicit report; undoing a record the owner made by their own tap waits for the owner. This is narrower
    * than section 4 of the 2026-10-05 contract; the ruling is the newer instruction and this test follows it.
    */
-  defect("M14-2", "a connected assistant undoes a wear the owner recorded by their own tap in the app, with no owner action", async () => {
+  it("[fixed M14-2] a connected assistant undoes a wear the owner recorded by their own tap in the app, with no owner action", async () => {
     // The owner's own record, made in the app (owner_tap), for a labelled synthetic garment.
     const date = await day(-3);
     const own = await submit(owner, "wear.record", { wearingDate: date, garmentIds: [ownerSynthetic] });
