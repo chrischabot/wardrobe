@@ -102,6 +102,8 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `GET /v1/me` | `MeResponse` for the one owner this port serves (`userId: "owner"`), with the caller's channel (`ios` for the owner token and the app's sign-in) and scopes (`read`, `write`, `admin` for the owner; `read`, `write` for the assistant token); no linked identities and no recovery kit (identity, linking and recovery are not ported) |
 | `POST /v1/sessions/revoke` (owner only) | `SignOutEverywhereResponse`: sign out everywhere. Every sign-in of the owner's app ends now (its access and refresh tokens stop working); connected assistants and the owner token are untouched. `sessionsRevokedBefore` is the moment of the request |
 | `POST /auth/claim`, `/auth/link/complete`, `/auth/recovery/start`, `/auth/recovery/complete`, `POST /v1/identities/link`, `/v1/identities/unlink`, `/v1/recovery-kit`, `/v1/account/delete` | 501 `module_unavailable` with `details.module: "identity"`: they need an identity provider (Cloudflare Access in the TypeScript Worker), which this port does not have. The `/auth/` ones answer before any sign-in; the `/v1/` ones after it. Nothing is written |
+| `GET /v1/recovery` | `RecoveryStatus`: the last published home board for the owner's day (ID, date, revision, publication time) and its Calendar projection, `actions: ["open_today"]` when there is one, and diagnostics (`environment: "ferrite"`, the daily and assistant modules present and media absent, and why there is no board, or the board read's error in at most 200 characters). `pending` is always zero and `connectionIssues` always empty, see Known limits. Nothing is written |
+| `GET /v1/wardrobe/temperature-preview?temperatureC=` | `TemperaturePreview` as `temperaturePreview`: for a temperature from -40 to 50 °C, each owned garment in a top, mid-layer, bottom, outerwear or socks role that its thermal range would exclude, the active hard fabric-class rules that exclude a fabric there, and the outerwear ceiling. It reads the real seed's thermal ranges and rules and writes nothing; a missing or unreadable temperature is `invalid_command` |
 | `GET /v1/settings` | `SettingsResponse`: the specification's default settings (`DEFAULT_OWNER_SETTINGS`) at version 1, since no settings command is ported; `defaultOptionCount` is the count the recommender uses. `profile` and `inference` are null. Its timezone is what Today, the weather and `garderobe_today` default to; the other dated routes still take the day explicitly |
 | `/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server`, `/oauth/register`, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` | the authorization server of the MCP endpoint and of the owner's app, see below |
 
@@ -934,8 +936,11 @@ milestone, and outside the lines of the milestone in hand:
     `preparing`, and a trip scope is refused.
 - **Identity and sign-in.**
   - There is no identity provider, so claiming, linking identities, recovery
-    kits and recovery, and account deletion answer 501, and
-    `GET /v1/recovery` (the recovery status screen) is not ported.
+    kits and recovery, and account deletion answer 501.
+  - The recovery status (`GET /v1/recovery`) always reports no pending
+    effects, no runs waiting for input and no connection issues: effects,
+    owner-added connections and run input are not ported, so there is
+    nothing to count.
   - Sign out everywhere does not end the owner token itself, which stands in
     for the owner's sign-in; rotate it with `ferrite secrets set
     WARDROBE_OWNER_TOKEN` and a deploy. Its `receiptId` names no stored
@@ -1009,6 +1014,17 @@ milestone, and outside the lines of the milestone in hand:
   - Earlier proposal revisions are kept but only the latest is readable.
   - A coordinate smaller than 0.000001 in size (other than 0), or 10^21 or
     larger, is refused, since JavaScript writes those in exponent form.
+- **Temperature preview.**
+  - `temperatureC` must be plain decimal text, optionally with an exponent
+    (the iOS client sends `12.0`). TypeScript's `Number()` also accepts an
+    empty value (as 0) and hexadecimal (`0x10` as 16), which the port
+    refuses. A non-zero value smaller than 0.000001 in size (say `0.0000001`
+    or `1e-7`) is refused too, since JavaScript writes it in exponent form
+    and the preview's label writes the temperature as JavaScript does.
+  - There is no storage bucket, so `inStorage` is always false.
+  - The research temperature thresholds and the outerwear ceiling stay off,
+    as the owner left them, so only garment thermal ranges and the
+    profile's fabric rules exclude anything.
 - **Returns.**
   - Orders are not ported (`purchase.import_order` and the order lines a
     case can name), so a case is opened for a garment only, `GET /v1/orders`

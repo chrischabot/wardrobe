@@ -23,6 +23,7 @@ pub mod runs;
 pub mod seed;
 pub mod sha256;
 pub mod studio;
+pub mod temperature;
 pub mod time;
 pub mod weather;
 pub mod wear;

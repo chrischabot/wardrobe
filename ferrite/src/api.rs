@@ -326,6 +326,11 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
         ("GET", "/v1/me") => Ok(crate::app_routes::me(principal)),
         ("GET", "/v1/service") => Ok(crate::app_routes::service()),
         ("GET", "/v1/settings") => Ok(crate::app_routes::settings(now_ms)),
+        ("GET", "/v1/recovery") => Ok(crate::app_routes::recovery(store, now_ms).await),
+        ("GET", "/v1/wardrobe/temperature-preview") => {
+            let raw = query.iter().find(|(k, _)| k == "temperatureC").map(|(_, v)| v.as_str());
+            crate::temperature::parse_temperature(raw).map(|t| crate::temperature::preview(catalogue(), t))
+        }
         ("POST", "/v1/sessions/revoke") => sign_out_everywhere(store, principal, now_ms).await,
         ("POST", "/v1/identities/link" | "/v1/identities/unlink" | "/v1/recovery-kit" | "/v1/account/delete") => Err(identity_unavailable()),
         ("GET", "/v1/laundry") => crate::app_routes::laundry(store, now_ms).await,

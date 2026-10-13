@@ -26,6 +26,10 @@ pub struct Garment {
     pub colour: Option<String>,
     /// The imported attributes (`fabricClass`, `footwearKind`, `model`, `jacketLike`, ...).
     pub attributes: Map<String, Value>,
+    /// The inventory sheet's season text, as imported.
+    pub season_note: Option<String>,
+    /// The temperature bounds the importer read from the sheet (`{minC?, maxC?, basis, source}`), or none.
+    pub thermal: Option<Value>,
 }
 
 impl Garment {
@@ -45,6 +49,8 @@ impl Garment {
 #[derive(Debug, Clone)]
 pub struct Rule {
     pub key: String,
+    /// `hard` or `soft`.
+    pub kind: String,
     pub status: String,
     pub params: Value,
 }
@@ -110,6 +116,8 @@ fn parse(seed: &str) -> Catalogue {
                     .collect(),
                 colour: g.get("colour").and_then(Value::as_str).map(str::to_string),
                 attributes: g.get("attributes").and_then(Value::as_object).cloned().unwrap_or_default(),
+                season_note: g.get("seasonNote").and_then(Value::as_str).map(str::to_string),
+                thermal: g.get("thermal").filter(|t| t.is_object()).cloned(),
             }
         })
         .collect();
@@ -118,7 +126,7 @@ fn parse(seed: &str) -> Catalogue {
         .and_then(Value::as_array)
         .expect("seed has a rules array")
         .iter()
-        .map(|r| Rule { key: text(r, "key"), status: text(r, "status"), params: r.get("params").cloned().unwrap_or(Value::Null) })
+        .map(|r| Rule { key: text(r, "key"), kind: text(r, "kind"), status: text(r, "status"), params: r.get("params").cloned().unwrap_or(Value::Null) })
         .collect();
     Catalogue {
         garments,

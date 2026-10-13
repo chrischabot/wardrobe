@@ -5,7 +5,8 @@
 //! * `POST /v1/commands/batch`: the phone's offline replay, each command independent;
 //! * `POST /v1/recommendations`: options in `preview` mode, or a published board in `board` mode;
 //! * `POST /v1/boards/{id}/swap`: one slot of one option, through `board.swap_slot`;
-//! * `POST /v1/trips/{id}/packing-proposal`: a packing proposal, through `trip.record_packing_proposal`.
+//! * `POST /v1/trips/{id}/packing-proposal`: a packing proposal, through `trip.record_packing_proposal`;
+//! * `GET /v1/recovery`: the recovery screen's state.
 //!
 //! Nothing here is a second implementation of a command: every change goes through
 //! [`api::execute`] with its receipt and undo, exactly as `POST /v1/commands` runs it.
@@ -19,6 +20,42 @@ use crate::time::instant;
 
 /// Most commands one offline replay may carry (`MAX_BATCH_COMMANDS` in routes/core.ts).
 pub const MAX_BATCH_COMMANDS: usize = 50;
+
+/// `GET /v1/recovery` (`RecoveryStatus`, as the route in apps/worker/src/routes/identity.ts): concrete
+/// state for the recovery screen instead of a generic error. The board is the home board of the
+/// owner's day now, read as Today reads it; a failed read is reported in the diagnostics and never
+/// stops the answer. This port has no effects queue, no run that waits for the owner's input and no
+/// outbound connections, so nothing is pending and there are no connection issues.
+pub async fn recovery<S: Store>(store: &mut S, now_ms: u64) -> Value {
+    let mut diagnostics = Map::new();
+    diagnostics.insert("environment".into(), json!("ferrite"));
+    diagnostics.insert("modules".into(), json!({"daily": true, "assistant": true, "media": false}));
+    let (mut last_board, mut projection) = (Value::Null, Value::Null);
+    match api::read_today(store, now_ms, None).await {
+        Ok(today) => {
+            let b = &today["board"];
+            if b.is_object() {
+                last_board = json!({"boardId": b["boardId"], "localDate": b["localDate"], "revision": b["revision"], "publishedAt": b["publishedAt"]});
+                projection = b["calendarProjection"].clone();
+            } else {
+                diagnostics.insert("noBoardReason".into(), today["emptyReason"].clone());
+            }
+        }
+        Err(e) => {
+            diagnostics.insert("boardReadError".into(), json!(e.message.chars().take(200).collect::<String>()));
+        }
+    }
+    let actions = if last_board.is_null() { json!([]) } else { json!(["open_today"]) };
+    json!({
+        "lastBoard": last_board,
+        "lastCalendarProjection": projection,
+        "pending": {"effects": 0, "runsNeedingInput": 0},
+        "connectionIssues": [],
+        "actions": actions,
+        "diagnostics": Value::Object(diagnostics),
+        "readAt": instant(now_ms),
+    })
+}
 
 fn invalid(message: impl Into<String>) -> CmdError {
     CmdError::new("invalid_command", message)

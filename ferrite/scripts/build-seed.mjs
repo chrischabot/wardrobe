@@ -34,13 +34,17 @@ const garments = plan.garments.map((g) => {
     roles: p.roles,
     colour: p.colour ?? null,
     attributes: p.attributes ?? {},
+    // The sheet's season text and the temperature bounds the importer reads from it (basis unsettled);
+    // the temperature preview checks them.
+    seasonNote: p.seasonNote ?? null,
+    thermal: p.thermal ?? null,
     sourceRows: g.sourceRows,
   };
 });
 
-// The profile's rules as the importer records them (key, status, params): the board validator reads the
+// The profile's rules as the importer records them (key, kind, status, params): the board validator reads the
 // ones it enforces from here, so their parameters are never retyped in Rust.
-const rules = PROFILE_RULES.map((r) => ({ key: r.key, status: r.status, params: r.params }));
+const rules = PROFILE_RULES.map((r) => ({ key: r.key, kind: r.kind, status: r.status, params: r.params }));
 
 const header = {
   generatedBy: "ferrite/scripts/build-seed.mjs from packages/domain/src/import/inventory.ts",
