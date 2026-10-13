@@ -101,11 +101,22 @@ describe("the limit on requests waiting for the owner (finding D)", () => {
     // Reading is not affected.
     expect(toolResult(await mcp.client.callTool({ name: "garderobe_inventory", arguments: { view: "snapshot" } })).ok).toBe(true);
 
-    // The owner decides one; the connection may ask again.
-    const [one] = await proposals(o);
-    expect((await decide(o, one.proposalId, "reject")).status).toBe(200);
+    // The owner decides one: a typed request fits again, but a turn needs room for everything one turn can
+    // leave (adversarial defect M14-7), so it is still refused until the owner has decided that many.
+    const waitingNow = await proposals(o);
+    expect((await decide(o, waitingNow[0].proposalId, "reject")).status).toBe(200);
+    expect((await relayed(mcp, 8, "one-free")).error).toMatchObject({ code: "rate_limited", details: { reason: "too_many_requests_waiting" } });
+    for (const p of waitingNow.slice(1, WAITING_LIMITS.perRelayedTurn)) expect((await decide(o, p.proposalId, "reject")).status).toBe(200);
+    // With exactly one turn's room free (32 waiting of 40), two concurrent garderobe_ask turns cannot both pass:
+    // only one is admitted and the other is rate-limited.
     model.script({ text: "Nothing to do." });
-    expect(toolResult(await mcp.client.callTool({ name: "garderobe_ask", arguments: { message: "what is clean?", clientTurnId: `turn-${crypto.randomUUID()}`, mode: "wait" } })).ok).toBe(true);
+    model.script({ text: "Nothing to do." });
+    const concurrent = await Promise.all([
+      mcp.client.callTool({ name: "garderobe_ask", arguments: { message: "what is clean?", clientTurnId: `turn-${crypto.randomUUID()}`, mode: "wait" } }).then(toolResult),
+      mcp.client.callTool({ name: "garderobe_ask", arguments: { message: "what is dirty?", clientTurnId: `turn-${crypto.randomUUID()}`, mode: "wait" } }).then(toolResult),
+    ]);
+    expect(concurrent.filter((r) => r.ok)).toHaveLength(1);
+    expect(concurrent.filter((r) => !r.ok && r.error?.code === "rate_limited")).toHaveLength(1);
     // What the owner asked for in the app himself is never limited by what connections left, and an added
     // garment applies at once with a receipt (contract of 2026-10-05).
     const own = await say(o, { text: "Add my synthetic test cardigan." }, [{ toolName: "add_garment", input: { name: "Synthetic test cardigan", category: "knitwear", quantity: 1, state: "owned" } }]);

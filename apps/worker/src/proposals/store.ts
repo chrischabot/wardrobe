@@ -5,7 +5,7 @@
  * `service.ts`. It has no dependency on the composed application, so the command registry guards can
  * use it.
  */
-import { describeChange, expectedVersionsFor, MAX_SHOWN_VALUE, MAX_SUMMARY } from "@garderobe/assistant";
+import { describeChange, expectedVersionsFor, MAX_PROPOSALS_PER_TURN, MAX_SHOWN_VALUE, MAX_SUMMARY } from "@garderobe/assistant";
 import { CommandError, all, canonicalJson, first, isCommandError, json as parseJson, prepare, stmt, toInstant, type Db } from "@garderobe/domain";
 import { sha256Hex } from "../crypto.ts";
 
@@ -64,21 +64,141 @@ export const PROPOSAL_LIFETIME_MS = 14 * 86_400_000;
  * only the owner can take something off it, so opening a second connection or asking through
  * `garderobe_ask` instead of a typed command gives no further room.
  */
-export const WAITING_LIMITS = { perConnection: 40, perOwner: 80, perRelayedTurn: 12 } as const;
+export const WAITING_LIMITS = { perConnection: 40, perOwner: 80, perRelayedTurn: MAX_PROPOSALS_PER_TURN } as const;
 
 export interface WaitingRequests {
-  /** Everything connected assistants have waiting for this owner. */
+  /** Everything connected assistants have waiting for this owner, including unconsumed slots of unfinished relayed turns. */
   total: number;
   byGrant: Map<string, number>;
   byTurn: Map<string, number>;
+  reservedByTurn: Map<string, number>;
 }
+
+/**
+ * Shared SQL CTE computing the owner's and the connection's current waiting + reserved request counts in a
+ * single statement snapshot (`?1` = userId, `?2` = sinceSeconds, `?3` = grantId, `?4` = perRelayedTurn).
+ */
+const WAITING_COUNTS_CTE = `
+WITH same_client_grants AS (
+  SELECT ?3 AS grant_id WHERE ?3 IS NOT NULL
+  UNION
+  SELECT g2.grant_id
+    FROM mcp_grants g1
+    JOIN mcp_grants g2 ON g2.user_id = g1.user_id AND g2.client_id = g1.client_id
+   WHERE g1.user_id = ?1 AND g1.grant_id = ?3
+),
+undecided_submitted AS (
+  SELECT COALESCE(p.grant_id, CASE WHEN t.auth_ref LIKE 'mcp:%' THEN substr(t.auth_ref, 5) END) AS grant_id,
+         p.turn_id AS turn_id,
+         COUNT(*) AS n
+    FROM submitted_proposals p
+    LEFT JOIN assistant_turns t ON t.user_id = p.user_id AND t.turn_id = p.turn_id
+   WHERE p.user_id = ?1 AND unixepoch(p.created_at) > ?2
+     AND NOT EXISTS (SELECT 1 FROM proposal_decisions d WHERE d.user_id = p.user_id AND d.proposal_id = p.proposal_id)
+   GROUP BY 1, 2
+),
+turn_usage AS (
+  SELECT substr(t.auth_ref, 5) AS grant_id,
+         t.turn_id AS turn_id,
+         MAX(0, json_array_length(t.proposals_json) - (
+           SELECT COUNT(*) FROM proposal_decisions d
+            WHERE d.user_id = t.user_id AND d.turn_id = t.turn_id
+              AND NOT EXISTS (SELECT 1 FROM submitted_proposals s WHERE s.user_id = d.user_id AND s.proposal_id = d.proposal_id)
+         )) AS recorded,
+         COALESCE((SELECT SUM(u.n) FROM undecided_submitted u WHERE u.turn_id = t.turn_id), 0) AS submitted_n,
+         CASE WHEN t.kind = 'conversation' AND t.status NOT IN ('completed', 'failed', 'cancelled') THEN 1 ELSE 0 END AS active_conv
+    FROM assistant_turns t
+   WHERE t.user_id = ?1 AND t.auth_ref LIKE 'mcp:%' AND unixepoch(t.created_at) > ?2
+     AND (t.proposals_json != '[]' OR (t.kind = 'conversation' AND t.status NOT IN ('completed', 'failed', 'cancelled')))
+),
+unpersisted_admissions AS (
+  SELECT a.grant_id AS grant_id, a.submission_id AS submission_id
+    FROM relayed_turn_admissions a
+   WHERE a.user_id = ?1 AND unixepoch(a.created_at) > ?2
+     AND NOT EXISTS (SELECT 1 FROM assistant_turns t WHERE t.user_id = a.user_id AND t.submission_id = a.submission_id)
+   GROUP BY a.grant_id, a.submission_id
+),
+all_entries AS (
+  SELECT grant_id, n AS count FROM undecided_submitted
+  UNION ALL
+  SELECT grant_id,
+         recorded + CASE WHEN active_conv = 1 THEN MAX(0, ?4 - (submitted_n + recorded)) ELSE 0 END AS count
+    FROM turn_usage
+  UNION ALL
+  SELECT grant_id, ?4 AS count FROM unpersisted_admissions
+),
+totals AS (
+  SELECT COALESCE(SUM(count), 0) AS owner_total,
+         COALESCE(SUM(CASE WHEN grant_id IN (SELECT grant_id FROM same_client_grants) THEN count ELSE 0 END), 0) AS grant_total
+    FROM all_entries
+)`;
 
 /** What connected assistants have waiting for the owner's decision right now, per connection (grant) and in all. */
 export async function waitingRequests(db: Db, userId: string, nowMs: number): Promise<WaitingRequests> {
   const sinceSeconds = Math.floor((nowMs - PROPOSAL_LIFETIME_MS) / 1000);
-  const out: WaitingRequests = { total: 0, byGrant: new Map(), byTurn: new Map() };
-  const grants = await all<{ grant_id: string; client_id: string }>(db, "SELECT grant_id, client_id FROM mcp_grants WHERE user_id = ?", userId);
-  const clientOfGrant = new Map(grants.map((g) => [g.grant_id, g.client_id]));
+  const out: WaitingRequests = { total: 0, byGrant: new Map(), byTurn: new Map(), reservedByTurn: new Map() };
+  // Read grants, undecided submitted proposals, assistant turns, and unpersisted turn admissions in a single
+  // SQL statement so a turn transitioning from admission to assistant_turns is never missed or double-counted.
+  const rows = await all<{
+    kind: "grant" | "submitted" | "turn" | "admission";
+    grant_id: string | null;
+    client_id: string | null;
+    turn_id: string | null;
+    n: number;
+    reserved: number;
+  }>(
+    db,
+    `SELECT 'grant' AS kind, g.grant_id AS grant_id, g.client_id AS client_id, NULL AS turn_id, 0 AS n, 0 AS reserved
+       FROM mcp_grants g
+      WHERE g.user_id = ?1
+     UNION ALL
+     SELECT 'submitted' AS kind,
+            COALESCE(p.grant_id, CASE WHEN t.auth_ref LIKE 'mcp:%' THEN substr(t.auth_ref, 5) END) AS grant_id,
+            NULL AS client_id,
+            p.turn_id AS turn_id,
+            COUNT(*) AS n,
+            0 AS reserved
+       FROM submitted_proposals p
+       LEFT JOIN assistant_turns t ON t.user_id = p.user_id AND t.turn_id = p.turn_id
+      WHERE p.user_id = ?1 AND unixepoch(p.created_at) > ?2
+        AND NOT EXISTS (SELECT 1 FROM proposal_decisions d WHERE d.user_id = p.user_id AND d.proposal_id = p.proposal_id)
+      GROUP BY 2, 4
+     UNION ALL
+     SELECT 'turn' AS kind,
+            substr(t.auth_ref, 5) AS grant_id,
+            NULL AS client_id,
+            t.turn_id AS turn_id,
+            MAX(0, json_array_length(t.proposals_json) - (
+              SELECT COUNT(*) FROM proposal_decisions d
+               WHERE d.user_id = t.user_id AND d.turn_id = t.turn_id
+                 AND NOT EXISTS (SELECT 1 FROM submitted_proposals s WHERE s.user_id = d.user_id AND s.proposal_id = d.proposal_id)
+            )) AS n,
+            CASE WHEN t.kind = 'conversation' AND t.status NOT IN ('completed', 'failed', 'cancelled') THEN 1 ELSE 0 END AS reserved
+       FROM assistant_turns t
+      WHERE t.user_id = ?1 AND t.auth_ref LIKE 'mcp:%' AND unixepoch(t.created_at) > ?2
+        AND (t.proposals_json != '[]' OR (t.kind = 'conversation' AND t.status NOT IN ('completed', 'failed', 'cancelled')))
+     UNION ALL
+     SELECT 'admission' AS kind,
+            a.grant_id AS grant_id,
+            NULL AS client_id,
+            NULL AS turn_id,
+            0 AS n,
+            1 AS reserved
+       FROM relayed_turn_admissions a
+      WHERE a.user_id = ?1 AND unixepoch(a.created_at) > ?2
+        AND NOT EXISTS (SELECT 1 FROM assistant_turns t WHERE t.user_id = a.user_id AND t.submission_id = a.submission_id)
+      GROUP BY a.grant_id, a.submission_id`,
+    userId,
+    sinceSeconds,
+  );
+  const grants: { grant_id: string; client_id: string }[] = [];
+  const clientOfGrant = new Map<string, string>();
+  for (const row of rows) {
+    if (row.kind === "grant" && row.grant_id && row.client_id) {
+      grants.push({ grant_id: row.grant_id, client_id: row.client_id });
+      clientOfGrant.set(row.grant_id, row.client_id);
+    }
+  }
   const byClient = new Map<string, number>();
   const add = (grant: string | null, n: number) => {
     if (n <= 0) return;
@@ -89,31 +209,23 @@ export async function waitingRequests(db: Db, userId: string, nowMs: number): Pr
       if (clientId) byClient.set(clientId, (byClient.get(clientId) ?? 0) + n);
     }
   };
-  const submitted = await all<{ grant: string | null; turn_id: string | null; n: number }>(
-    db,
-    `SELECT COALESCE(p.grant_id, CASE WHEN t.auth_ref LIKE 'mcp:%' THEN substr(t.auth_ref, 5) END) AS grant, p.turn_id AS turn_id, COUNT(*) AS n
-       FROM submitted_proposals p LEFT JOIN assistant_turns t ON t.user_id = p.user_id AND t.turn_id = p.turn_id
-      WHERE p.user_id = ? AND unixepoch(p.created_at) > ?
-        AND NOT EXISTS (SELECT 1 FROM proposal_decisions d WHERE d.user_id = p.user_id AND d.proposal_id = p.proposal_id)
-      GROUP BY 1, 2`,
-    userId, sinceSeconds,
-  );
-  for (const row of submitted) {
-    add(row.grant, row.n);
+  for (const row of rows) {
+    if (row.kind !== "submitted") continue;
+    add(row.grant_id, row.n);
     if (row.turn_id) out.byTurn.set(row.turn_id, (out.byTurn.get(row.turn_id) ?? 0) + row.n);
   }
-  // What the assistant itself recorded on turns a connection started. A decision on one of them is stored
-  // under the turn; decisions on that turn's `submitted_proposals` rows were counted above and are left out.
-  const turns = await all<{ grant: string; proposed: number; decided: number }>(
-    db,
-    `SELECT substr(t.auth_ref, 5) AS grant, json_array_length(t.proposals_json) AS proposed,
-            (SELECT COUNT(*) FROM proposal_decisions d WHERE d.user_id = t.user_id AND d.turn_id = t.turn_id
-                AND NOT EXISTS (SELECT 1 FROM submitted_proposals s WHERE s.user_id = d.user_id AND s.proposal_id = d.proposal_id)) AS decided
-       FROM assistant_turns t
-      WHERE t.user_id = ? AND t.auth_ref LIKE 'mcp:%' AND t.proposals_json != '[]' AND unixepoch(t.created_at) > ?`,
-    userId, sinceSeconds,
-  );
-  for (const row of turns) add(row.grant, row.proposed - row.decided);
+  for (const row of rows) {
+    if (row.kind !== "turn") continue;
+    const recorded = Math.max(0, row.n);
+    if (recorded > 0 && row.turn_id) out.byTurn.set(row.turn_id, (out.byTurn.get(row.turn_id) ?? 0) + recorded);
+    const unconsumed = row.reserved === 1 && row.turn_id ? Math.max(0, WAITING_LIMITS.perRelayedTurn - (out.byTurn.get(row.turn_id) ?? 0)) : 0;
+    if (unconsumed > 0 && row.turn_id) out.reservedByTurn.set(row.turn_id, unconsumed);
+    add(row.grant_id, recorded + unconsumed);
+  }
+  for (const row of rows) {
+    if (row.kind !== "admission") continue;
+    add(row.grant_id, WAITING_LIMITS.perRelayedTurn);
+  }
   // All grants of the same registered OAuth client share its 40-request allowance, so re-approving the same
   // client gives it no second quota of waiting requests.
   for (const { grant_id, client_id } of grants) {
@@ -123,10 +235,70 @@ export async function waitingRequests(db: Db, userId: string, nowMs: number): Pr
   return out;
 }
 
+/**
+ * Atomically check and reserve per-turn proposal capacity (`WAITING_LIMITS.perRelayedTurn`) in D1 for a
+ * relayed `garderobe_ask` turn before dispatching to the assistant. Each call inserts its own `admission_id`
+ * row in a single statement conditional on the owner and connection limits, and removes that row in `finally`.
+ */
+export async function beginRelayedTurn(
+  db: Db,
+  userId: string,
+  submissionId: string,
+  grantId: string,
+  nowMs: number,
+): Promise<{ ok: boolean; release: () => Promise<void> }> {
+  const sinceSeconds = Math.floor((nowMs - PROPOSAL_LIFETIME_MS) / 1000);
+  const admissionId = crypto.randomUUID();
+  const res = await prepare(
+    db,
+    stmt(
+      `${WAITING_COUNTS_CTE}
+       INSERT INTO relayed_turn_admissions (user_id, submission_id, admission_id, grant_id, created_at)
+       SELECT ?1, ?5, ?6, ?3, ?7
+         FROM totals
+        WHERE EXISTS (SELECT 1 FROM assistant_turns t WHERE t.user_id = ?1 AND t.submission_id = ?5)
+           OR EXISTS (SELECT 1 FROM relayed_turn_admissions a WHERE a.user_id = ?1 AND a.submission_id = ?5 AND unixepoch(a.created_at) > ?2)
+           OR (totals.owner_total + ?4 <= ?8 AND (?3 IS NULL OR totals.grant_total + ?4 <= ?9))`,
+      userId,
+      sinceSeconds,
+      grantId,
+      WAITING_LIMITS.perRelayedTurn,
+      submissionId,
+      admissionId,
+      toInstant(nowMs),
+      WAITING_LIMITS.perOwner,
+      WAITING_LIMITS.perConnection,
+    ),
+  ).run();
+  if ((res.meta?.changes ?? 0) === 0) {
+    return { ok: false, release: async () => {} };
+  }
+  return {
+    ok: true,
+    release: async () => {
+      await prepare(
+        db,
+        stmt("DELETE FROM relayed_turn_admissions WHERE user_id = ? AND submission_id = ? AND admission_id = ?", userId, submissionId, admissionId),
+      )
+        .run()
+        .catch(() => {});
+    },
+  };
+}
+
 /** Whether a connection may leave one more request for the owner: neither it nor all connections together are at their limit. */
 export function hasRoomToWait(waiting: WaitingRequests, grantId: string | null): boolean {
-  if (waiting.total >= WAITING_LIMITS.perOwner) return false;
-  return !grantId || (waiting.byGrant.get(grantId) ?? 0) < WAITING_LIMITS.perConnection;
+  return hasRoomFor(waiting, grantId, 1);
+}
+
+/**
+ * Whether `count` more requests fit: within the owner's limit and the connection's. A relayed turn asks for
+ * room for everything one turn can leave (the assistant's per-turn bound), checked before the turn starts,
+ * because what the assistant records on the turn is not checked request by request (adversarial defect M14-7).
+ */
+export function hasRoomFor(waiting: WaitingRequests, grantId: string | null, count: number): boolean {
+  if (waiting.total + count > WAITING_LIMITS.perOwner) return false;
+  return !grantId || (waiting.byGrant.get(grantId) ?? 0) + count <= WAITING_LIMITS.perConnection;
 }
 
 /**
@@ -150,19 +322,55 @@ export async function recordSubmittedProposal(db: Db, input: SubmittedProposalIn
   const proposalId = await submittedProposalIdOf({ ...input, expectedVersions: effectiveVersions });
   // The connection a relayed turn belongs to is read from the turn; a typed command names its grant.
   const grantId = input.grantId ?? (input.turnId ? grantOfAuthRef((await first<{ auth_ref: string }>(db, "SELECT auth_ref FROM assistant_turns WHERE user_id = ? AND turn_id = ?", input.userId, input.turnId))?.auth_ref) : null);
-  const waiting = await waitingRequests(db, input.userId, input.nowMs);
-  if (!hasRoomToWait(waiting, grantId)) return { limited: true };
-  if (input.origin === "relayed_turn" && (waiting.byTurn.get(input.sourceRef) ?? 0) >= WAITING_LIMITS.perRelayedTurn) return { limited: true };
-  await prepare(
+  const sinceSeconds = Math.floor((input.nowMs - PROPOSAL_LIFETIME_MS) / 1000);
+  const res = await prepare(
     db,
     stmt(
-      "INSERT INTO submitted_proposals (user_id, proposal_id, origin, source_ref, grant_id, turn_id, idempotency_key, request_hash, command_type, payload_json, expected_versions_json, occurred_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
-      input.userId, proposalId, input.origin, input.sourceRef, input.grantId, input.turnId, input.idempotencyKey, requestHash, input.type, JSON.stringify(input.payload), JSON.stringify(effectiveVersions), input.occurredAt, toInstant(input.nowMs),
+      `${WAITING_COUNTS_CTE}
+       INSERT INTO submitted_proposals (user_id, proposal_id, origin, source_ref, grant_id, turn_id, idempotency_key, request_hash, command_type, payload_json, expected_versions_json, occurred_at, created_at)
+       SELECT ?1, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18
+         FROM totals
+        WHERE (?8 != 'relayed_turn' OR (
+                COALESCE((SELECT SUM(u.n) FROM undecided_submitted u WHERE u.turn_id = ?9), 0)
+                + COALESCE((SELECT SUM(tu.recorded) FROM turn_usage tu WHERE tu.turn_id = ?9), 0)
+              ) < ?4)
+          AND (totals.owner_total + CASE
+                WHEN ?8 = 'relayed_turn' AND ?11 IS NOT NULL AND EXISTS (
+                  SELECT 1 FROM turn_usage tu WHERE tu.turn_id = ?11 AND tu.active_conv = 1 AND (tu.submitted_n + tu.recorded) < ?4
+                ) THEN 0
+                ELSE 1
+              END) <= ?5
+          AND (?3 IS NULL OR (totals.grant_total + CASE
+                WHEN ?8 = 'relayed_turn' AND ?11 IS NOT NULL AND EXISTS (
+                  SELECT 1 FROM turn_usage tu WHERE tu.turn_id = ?11 AND tu.active_conv = 1 AND (tu.submitted_n + tu.recorded) < ?4
+                ) THEN 0
+                ELSE 1
+              END) <= ?6)
+       ON CONFLICT DO NOTHING`,
+      input.userId,
+      sinceSeconds,
+      grantId,
+      WAITING_LIMITS.perRelayedTurn,
+      WAITING_LIMITS.perOwner,
+      WAITING_LIMITS.perConnection,
+      proposalId,
+      input.origin,
+      input.sourceRef,
+      input.grantId,
+      input.turnId,
+      input.idempotencyKey,
+      requestHash,
+      input.type,
+      JSON.stringify(input.payload),
+      JSON.stringify(effectiveVersions),
+      input.occurredAt,
+      toInstant(input.nowMs),
     ),
   ).run();
+  const inserted = (res.meta?.changes ?? 0) > 0;
   const row = await find();
-  if (!row) throw new Error("the proposal could not be stored");
-  return row.request_hash === requestHash ? { row, created: true } : { conflict: true };
+  if (!row) return { limited: true };
+  return row.request_hash === requestHash ? { row, created: inserted } : { conflict: true };
 }
 
 /** The grant a turn was started under, when a connected assistant started it. */

@@ -2256,7 +2256,7 @@ describe("B. the cap on undecided requests", () => {
     for (const connection of connections) await connection.close();
   });
 
-  defect("M14-7", "one garderobe_ask turn leaves more requests for the owner than the connection has room for (45 undecided with a limit of 40)", async () => {
+  it("[fixed M14-7] one garderobe_ask turn leaves more requests for the owner than the connection has room for (45 undecided with a limit of 40)", async () => {
     const turnOwner = await provisionOwner({ displayName: "SYNTHETIC turn-cap owner (adversarial test fixture)" });
     await enableFakeModel(turnOwner);
     const connection = await connectMcp(turnOwner, { write: true, clientName: "SYNTHETIC assistant near its limit" });

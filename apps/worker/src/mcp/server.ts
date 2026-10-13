@@ -30,7 +30,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import type { z } from "zod";
 import { requireAssistant, requireDaily, type App } from "../app.ts";
 import { submittedProposalState } from "../proposals/service.ts";
-import { hasRoomToWait, MAX_SUMMARY_CHARS, MAX_VALUE_CHARS, recordSubmittedProposal, waitingRequests } from "../proposals/store.ts";
+import { beginRelayedTurn, MAX_SUMMARY_CHARS, MAX_VALUE_CHARS, recordSubmittedProposal } from "../proposals/store.ts";
 import { ApiException, normalizeError } from "../errors.ts";
 import type { ApiRun } from "../ports.ts";
 import { startResearch, submitTurn, toSubmission } from "../routes/conversation.ts";
@@ -354,22 +354,28 @@ export function buildMcpServer(app: App, caller: McpCaller): McpServer {
     async (args) => {
       try {
         const assistant = requireAssistant(app, "the assistant");
-        // A turn can leave requests for the owner, and those count against the same limits as typed requests:
-        // a connection that already has its share waiting gets no new turn until the owner has decided some.
-        if (!hasRoomToWait(await waitingRequests(app.db, principal.userId, app.now()), caller.grantId)) {
-          throw new ApiException("rate_limited", "nothing was sent to Garderobe's assistant: connected assistants already have many requests waiting for the owner's decision. Ask the owner to decide those in the Garderobe app first; reading (garderobe_today, garderobe_inventory, garderobe_recommend) still works.", { reason: "too_many_requests_waiting" });
-        }
         // Natural language is not an authorization bypass: the turn runs under this connection's principal and scopes.
         const submission = toSubmission({ clientTurnId: `mcp:${caller.grantId}:${args.clientTurnId}`, text: args.message, attachmentIds: [], attachedRefs: args.attachedRefs, intent: "chat", ...(args.pastedText ? { pastedText: args.pastedText } : {}) });
-        if (args.mode === "start") {
-          const accepted = await submitTurn(app, principal, submission);
-          const run = await getRun(app, principal, accepted.runId);
-          return ok(askOutput(run), `Accepted as run ${run.runId} (${run.state}). Use garderobe_run to follow it.`);
+        // A turn can leave up to WAITING_LIMITS.perRelayedTurn requests for the owner, and those count against the
+        // same limits as typed requests: a connection without room for a full turn gets no new turn until the owner
+        // has decided some. Repeating an already-accepted turn under the same clientTurnId returns that turn's result.
+        const admission = await beginRelayedTurn(app.db, principal.userId, submission.submissionId, caller.grantId, app.now());
+        if (!admission.ok) {
+          throw new ApiException("rate_limited", "nothing was sent to Garderobe's assistant: connected assistants already have many requests waiting for the owner's decision. Ask the owner to decide those in the Garderobe app first; reading (garderobe_today, garderobe_inventory, garderobe_recommend) still works.", { reason: "too_many_requests_waiting" });
         }
-        const run = await assistant.runTurn(principal, submission);
-        await registerAssistantRun(app.db, principal, { runId: run.runId, kind: "conversation_turn", state: run.state, clientRequestId: submission.submissionId }, app.now());
-        const out = askOutput({ ...run, kind: "conversation_turn" });
-        return ok(out, out.answer ?? (out.pendingInput ? `Garderobe needs an answer: ${out.pendingInput.question} (use garderobe_run with action respond)` : `Run ${out.runId} is ${out.state}.`));
+        try {
+          if (args.mode === "start") {
+            const accepted = await submitTurn(app, principal, submission);
+            const run = await getRun(app, principal, accepted.runId);
+            return ok(askOutput(run), `Accepted as run ${run.runId} (${run.state}). Use garderobe_run to follow it.`);
+          }
+          const run = await assistant.runTurn(principal, submission);
+          await registerAssistantRun(app.db, principal, { runId: run.runId, kind: "conversation_turn", state: run.state, clientRequestId: submission.submissionId }, app.now());
+          const out = askOutput({ ...run, kind: "conversation_turn" });
+          return ok(out, out.answer ?? (out.pendingInput ? `Garderobe needs an answer: ${out.pendingInput.question} (use garderobe_run with action respond)` : `Run ${out.runId} is ${out.state}.`));
+        } finally {
+          await admission.release();
+        }
       } catch (error) {
         return failure(error);
       }
