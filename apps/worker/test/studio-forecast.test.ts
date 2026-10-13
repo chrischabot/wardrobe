@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { weatherCacheKey } from "@garderobe/daily";
+import { seedForecastCache } from "@garderobe/daily/testing";
 import { createPrincipal, getOwnerState, toInstant, zonedToUtcMs } from "@garderobe/domain";
 import { createStudioValidator } from "../src/lanes/studio-validator.ts";
 import { ownerDay, provisionOwner, publishBoard, testApp, type TestOwner } from "../src/testing/index.ts";
@@ -12,7 +12,8 @@ import { ownerDay, provisionOwner, publishBoard, testApp, type TestOwner } from 
  * REAL owner fixture (supplied profile and the real inventory). Stand-ins: test-signed Access
  * assertions, and the weather. Outbound network is disabled in this suite (the Open-Meteo request is
  * answered 503), so forecasts are SEEDED into the daily service's shared forecast cache in the provider
- * adapter's shape, under the daily package's own cache key, for a fictional test place; the daily
+ * adapter's shape, through the daily package's own test seeding helper (its real cache key and row), for a
+ * fictional test place; the daily
  * service's real cache read, assessment and validation run on them. The provider request itself is
  * exercised by the journey suite. Some cases wrap the daily service's forecast read in a labelled TEST
  * DOUBLE, to count the reads, to make one fail or answer "unavailable", or to move the clock.
@@ -35,12 +36,18 @@ let jacketOverClark: { role: string; garmentId: string }[];
 
 /**
  * What looking at an outfit must leave unchanged: the weather snapshots recorded for the days looked at,
- * and the owner's commands. Board, weather and calendar commands are left out of the command count: an
- * earlier command's background follow-up (topping up boards) may still be recording those for other days.
+ * and the owner's commands, including any weather command that names one of those days. Board and
+ * calendar commands, and weather commands for other days, are left out of the command count: an earlier
+ * command's background follow-up (topping up boards) may still be recording those.
  */
 async function counts(days: string[]): Promise<{ commands: number; snapshots: number }> {
   const app = await testApp();
-  const commands = await app.db.prepare("SELECT COUNT(*) AS n FROM commands WHERE user_id = ? AND type NOT LIKE 'board.%' AND type NOT LIKE 'weather.%' AND type NOT LIKE 'calendar.%'").bind(owner.userId).first<{ n: number }>();
+  const commands = await app.db
+    .prepare(
+      "SELECT COUNT(*) AS n FROM commands WHERE user_id = ? AND type NOT LIKE 'board.%' AND type NOT LIKE 'calendar.%' AND (type NOT LIKE 'weather.%' OR EXISTS (SELECT 1 FROM json_each(?) AS d WHERE instr(commands.payload_json, d.value) > 0))",
+    )
+    .bind(owner.userId, JSON.stringify(days))
+    .first<{ n: number }>();
   const snapshots = await app.db.prepare("SELECT COUNT(*) AS n FROM weather_snapshots WHERE user_id = ? AND local_date IN (SELECT value FROM json_each(?))").bind(owner.userId, JSON.stringify(days)).first<{ n: number }>();
   return { commands: commands!.n, snapshots: snapshots!.n };
 }
@@ -56,10 +63,7 @@ async function seedForecast(localDate: string, leavingC: number, peakC: number):
   });
   const fetchedAt = toInstant(app.now());
   const forecast = { provider: "open-meteo", attribution: "TEST DATA (seeded forecast, not from Open-Meteo)", timezone, latitude: PLACE.latitude, longitude: PLACE.longitude, fetchedAt, issuedAt: null, hours, alerts: null, missingFields: ["issuedAt", "alerts"] };
-  await app.db
-    .prepare("INSERT OR REPLACE INTO weather_cache (cache_key, provider, latitude, longitude, timezone, local_date, fetched_at, issued_at, covers_from, covers_to, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-    .bind(weatherCacheKey("open-meteo", PLACE, localDate), "open-meteo", PLACE.latitude, PLACE.longitude, timezone, localDate, fetchedAt, null, hours[0]!.at, hours[23]!.at, JSON.stringify(forecast))
-    .run();
+  await seedForecastCache(app.db, { location: PLACE, localDate, forecast: forecast as Parameters<typeof seedForecastCache>[1]["forecast"] });
 }
 
 const validate = (date: string, outfit: { role: string; garmentId: string }[]) => owner.api.json("POST", "/v1/studio/validate", { mode: "explore", date, slots: outfit });
@@ -273,6 +277,45 @@ describe("Studio and the day's forecast", () => {
     const verdict = await validator.validate(app.db, reader(), direct(boardDay));
     expect(verdict.violations.map((v) => v.code)).not.toContain(BAND);
     expect(verdict.violations.map((v) => v.code)).not.toContain(UNVERIFIED);
+  });
+
+  it("keeps the record for a day that is already over, however old it is, and reads nothing", async () => {
+    const app = await testApp();
+    const boardDay = await ownerDay(owner, 2);
+    await seedForecast(boardDay, 15, 20);
+    await publishBoard(owner, { date: boardDay });
+    // TEST DATA: the forecast held for that day changes. TEST CLOCK: Studio is asked four days later, when the day is over and the record long past the freshness setting.
+    await seedForecast(boardDay, 11, 19);
+    const before = await counts([boardDay]);
+    // TEST DOUBLE counting the forecast reads around the daily service's real read.
+    let reads = 0;
+    const later = createStudioValidator(async () => ({ weather: (p, d) => (reads++, app.daily!.weather(p, d)), now: () => app.now() + 4 * 86_400_000 }));
+    const verdict = await later.validate(app.db, reader(), direct(boardDay));
+    expect(reads).toBe(0);
+    expect(verdict.violations.find((v) => v.code === BAND)?.message).toContain("15 °C");
+    expect(await counts([boardDay])).toEqual(before);
+  });
+
+  it("lets a failing database read of the recorded forecast surface as an error, without reading a forecast", async () => {
+    const app = await testApp();
+    const day = await ownerDay(owner, 18);
+    // TEST DOUBLE of the database: the validator's own read of the recorded forecast fails, as a broken database would; every other read is the real one.
+    const failing = new Proxy(app.db, {
+      get(target, key) {
+        if (key === "prepare") {
+          return (sql: string) => {
+            if (sql.includes("FROM weather_snapshots")) throw new Error("TEST: the database read failed");
+            return target.prepare(sql);
+          };
+        }
+        const value = Reflect.get(target, key);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    let reads = 0;
+    const validator = createStudioValidator(async () => ({ weather: (p, d) => (reads++, app.daily!.weather(p, d)), now: app.now }));
+    await expect(validator.validate(failing, reader(), direct(day))).rejects.toThrow("TEST: the database read failed");
+    expect(reads).toBe(0);
   });
 
   it("decides once per caller and day, decides again after the reuse time, and reads nothing for a caller who may not read", async () => {
