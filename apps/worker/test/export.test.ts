@@ -2,7 +2,7 @@ import { SELF } from "cloudflare:test";
 import { unzipSync } from "fflate";
 import { beforeAll, describe, expect, it } from "vitest";
 import { decryptPackage, isEncryptedPackage, sha256Hex } from "../src/crypto.ts";
-import { APP_ORIGIN, connectMcp, enableFakeModel, ownerDay, provisionOwner, publishBoard, testApp, uploadImage, type TestOwner } from "../src/testing/index.ts";
+import { APP_ORIGIN, connectMcp, enableFakeModel, ownerDay, provisionOwner, publishBoard, testApp, toolResult, uploadImage, type TestOwner } from "../src/testing/index.ts";
 
 /*
  * Portable export and import through the real Worker, starting from the REAL owner fixture (supplied
@@ -204,6 +204,21 @@ describe("export my wardrobe", () => {
       expect(content.includes(`u/${owner.userId}/`), `storage key in ${path}`).toBe(false);
       expect(/\bu\/usr_[A-Za-z0-9]+\//.test(content), `storage key of some owner in ${path}`).toBe(false);
     }
+  });
+
+  it("rewrites only storage-key fields: free text that happens to begin with the storage prefix is exported exactly", async () => {
+    const app = await testApp();
+    const typedText = `u/${owner.userId}/ is the folder name I wrote in my note`;
+    const legacyKey = `u/${owner.userId}/assets/ast_text/display-1-def.jpg`;
+    await app.db.prepare("INSERT INTO commands (user_id, command_id, idempotency_key, type, request_hash, payload_json, channel, actor, authorization_basis, source_json, occurred_at, recorded_at, outcome, receipt_json) VALUES (?, 'cmd_free_text_prefix', 'free-text-prefix', 'media.record_normalization', 'x', ?, 'system', 'system', 'system_schedule', '{}', ?, ?, 'noop', '{}')").bind(owner.userId, JSON.stringify({ note: typedText, renditions: [{ objectKey: legacyKey, caption: typedText }] }), new Date().toISOString(), new Date().toISOString()).run();
+    const done = await waitForExport(owner, (await owner.api.json("POST", "/v1/exports", { clientRequestId: `export-${crypto.randomUUID()}` })).exportId);
+    const unpacked = unzipSync((await download(owner, done.exportId)).bytes);
+    await app.db.prepare("DELETE FROM commands WHERE user_id = ? AND command_id = 'cmd_free_text_prefix'").bind(owner.userId).run();
+    const row = JSON.parse(decoder.decode(unpacked["records/receipts.json"]!)).tables.commands.rows.find((r: any) => r.command_id === "cmd_free_text_prefix");
+    const payload = JSON.parse(row.payload_json);
+    expect(payload.renditions[0].objectKey).toBe("assets/ast_text/display-1-def.jpg");
+    expect(payload.note).toBe(typedText);
+    expect(payload.renditions[0].caption).toBe(typedText);
   });
 
   it("downloads only with a short-lived, single-use ticket for that export", async () => {
@@ -471,11 +486,24 @@ describe("a laundry batch that was undone", () => {
     // scrubbed after a restore). The mark is set directly here, standing in for the foundation's scrub.
     await app.db.prepare("UPDATE commands SET scrubbed_at = '2026-10-02T00:00:00Z', scrubbed_by_command_id = ? WHERE user_id = ? AND command_id = ?").bind(collected.commandId, source.userId, collected.commandId).run();
 
+    // A request the owner already decided: the decision travels, so it is not offered again after a restore.
+    const assistant = await connectMcp(source, { write: true, clientName: "Connected assistant (export test)" });
+    const asked = toolResult(await assistant.client.callTool({ name: "garderobe_command", arguments: { type: "inference.set_routing", payload: { task: "conversation", profileId: "fixture-profile", gatewayId: "fixture-gateway" }, idempotencyKey: `export-decision-${crypto.randomUUID()}` } }));
+    expect(asked.error!.code).toBe("confirmation_required");
+    const waiting = (await source.api.json("GET", "/v1/proposals")).proposals as any[];
+    expect(waiting).toHaveLength(1);
+    expect((await source.api.post(`/v1/proposals/${waiting[0].proposalId}/decision`, { decision: "reject" })).status).toBe(200);
+    await assistant.close();
+    const decisions = async (userId: string) => (await app.db.prepare("SELECT proposal_id, turn_id, command_type, decision, command_id, decided_at, channel FROM proposal_decisions WHERE user_id = ? ORDER BY proposal_id").bind(userId).all()).results;
+    const decidedBefore = await decisions(source.userId);
+    expect(decidedBefore).toEqual([expect.objectContaining({ proposal_id: waiting[0].proposalId, command_type: "inference.set_routing", decision: "rejected", command_id: null })]);
+
     const done = await waitForExport(source, (await source.api.json("POST", "/v1/exports", { clientRequestId: `export-${crypto.randomUUID()}` })).exportId);
     const { bytes } = await download(source, done.exportId);
     const unzipped = unzipSync(bytes);
     const tablesOf = (path: string) => JSON.parse(new TextDecoder().decode(unzipped[path]!)).tables;
     expect(tablesOf("records/receipts.json").commands.columns).toEqual(expect.arrayContaining(["scrubbed_at", "scrubbed_by_command_id"]));
+    expect(tablesOf("records/receipts.json").proposal_decisions.rows).toEqual([expect.objectContaining({ proposal_id: waiting[0].proposalId, decision: "rejected" })]);
     expect(tablesOf("records/laundry.json").laundry_exceptions.columns).toEqual(expect.arrayContaining(["resolution", "resolved_by_command_id"]));
     // In the package itself a reader can tell: the row carries when it was withdrawn and by which command,
     // and the table's description says what that means for a row whose status still reads `collected`.
@@ -489,7 +517,12 @@ describe("a laundry batch that was undone", () => {
     expect(imported.status, await imported.clone().text()).toBe(200);
     expect(await batches(target.userId)).toEqual(before);
     expect(await app.db.prepare("SELECT scrubbed_at, scrubbed_by_command_id FROM commands WHERE user_id = ? AND command_id = ?").bind(target.userId, collected.commandId).first()).toEqual({ scrubbed_at: "2026-10-02T00:00:00Z", scrubbed_by_command_id: collected.commandId });
+    expect(await decisions(target.userId)).toEqual(decidedBefore);
     // Seen through the product: nothing is out at the laundry service for either owner.
-    expect((await target.api.json("GET", "/v1/laundry")).batches ?? []).toEqual((await source.api.json("GET", "/v1/laundry")).batches ?? []);
+    for (const who of [target, source]) {
+      const laundry = await who.api.json("GET", "/v1/laundry");
+      expect(Array.isArray(laundry.batches)).toBe(true);
+      expect(laundry.batches).toEqual([]);
+    }
   });
 });

@@ -20,6 +20,7 @@ export const LEDGER_TABLES: TableSpec[] = [
   { table: "command_entities", component: "receipts", description: "Which entities each command touched, with the resulting version." },
   { table: "action_intents", component: "receipts", description: "Registered action intents (stable identity of proposed changes)." },
   { table: "effects", component: "receipts", description: "External effect records (calendar projection, notification...). Their recorded outcome prevents any replay." },
+  { table: "proposal_decisions", component: "receipts", description: "The owner's decision on each change an assistant asked for and could not make itself: confirmed (with the command that carried it out) or rejected. It travels so that a request the owner already decided is not offered for a decision again after a restore." },
   { table: "garments", component: "inventory", description: "One row per garment or interchangeable group (quantities live in stock_balances)." },
   { table: "garment_aliases", component: "inventory", description: "Names the owner, makers and codes use for a garment." },
   { table: "garment_facts", component: "inventory", description: "Dated facts with their evidence source; corrections supersede, never erase." },
@@ -78,7 +79,7 @@ export const NEVER_EXPORTED = [
   "mcp_grants and the OAuth provider's KV records (clients, grants, token hashes)",
   "export_tickets, account_deletions",
   "outbox, command_preconditions (internal queues)",
-  "proposal_decisions, submitted_proposals (requests waiting for the owner's decision and the decisions taken; a change that was confirmed is in commands with its receipt)",
+  "submitted_proposals (requests of connected assistants that wait for the owner's decision; the decisions taken are in the receipts component, and a change that was confirmed is in commands with its receipt)",
   "browser cookies and raw model reasoning (never stored)",
 ];
 
@@ -93,6 +94,12 @@ export async function tableColumns(db: Db, table: string): Promise<string[]> {
   return rows.map((r) => r.name);
 }
 
+/**
+ * The field names under which a stored record names a storage location (the visual wardrobe's rendition and
+ * original records use `objectKey`). Only values under these names are rewritten on export.
+ */
+const STORAGE_KEY_FIELDS: ReadonlySet<string> = new Set(["objectKey", "storageKey", "originalKey", "renditionKey", "r2Key"]);
+
 /** Read every row of one owner from one allow-listed table, in stored order, paged by rowid. */
 export async function dumpTable(db: Db, spec: TableSpec, userId: string): Promise<TableDump> {
   const all_columns = await tableColumns(db, spec.table);
@@ -101,8 +108,18 @@ export async function dumpTable(db: Db, spec: TableSpec, userId: string): Promis
   const select = columns.map((c) => `"${c}"`).join(", ");
   // Where the service keeps a file is internal. A stored record that names such a location (media job
   // commands written before 2026-10-02 carried it in their payload) is exported with the owner's storage
-  // prefix removed, which leaves the same package-relative path the media records use.
+  // prefix removed, which leaves the same package-relative path the media records use. Only storage-key
+  // FIELDS are touched: a string under one of the field names below that begins with the prefix, in the
+  // command, entity and effect records that can carry one. Free text (a note, a summary, the owner's words)
+  // is exported exactly, even when it happens to begin with the prefix, as is every other column.
   const prefix = `u/${userId}/`;
+  const carriesKeys = spec.table === "commands" || spec.table === "effects" || spec.table === "command_entities";
+  const stripKeys = (value: unknown): unknown =>
+    Array.isArray(value)
+      ? value.map(stripKeys)
+      : value && typeof value === "object"
+        ? Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, STORAGE_KEY_FIELDS.has(k) && typeof v === "string" && v.startsWith(prefix) ? v.slice(prefix.length) : stripKeys(v)]))
+        : value;
   const rows: Record<string, unknown>[] = [];
   let after = 0;
   for (;;) {
@@ -110,7 +127,19 @@ export async function dumpTable(db: Db, spec: TableSpec, userId: string): Promis
     for (const row of page) {
       after = row._rowid;
       const { _rowid: _ignored, ...rest } = row;
-      for (const [column, value] of Object.entries(rest)) if (typeof value === "string" && value.includes(prefix)) rest[column] = value.split(prefix).join("");
+      if (carriesKeys) {
+        for (const [column, value] of Object.entries(rest)) {
+          if (typeof value !== "string" || !column.endsWith("_json") || !value.includes(prefix)) continue;
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(value);
+          } catch {
+            continue;
+          }
+          const stripped = JSON.stringify(stripKeys(parsed));
+          if (stripped !== JSON.stringify(parsed)) rest[column] = stripped;
+        }
+      }
       rows.push(rest);
     }
     if (page.length < 400) break;
@@ -124,16 +153,33 @@ export interface Snapshot {
   styleRevision: number;
   lastCommandRecordedAt: string | null;
   commandCount: number;
+  mediaBoundary?: string;
 }
 
 /** The version boundary of an export: unchanged between the first and the last read means one coherent state. */
 export async function readSnapshot(db: Db, userId: string, takenAt: string): Promise<Snapshot> {
   const state = await first<{ wardrobe_revision: number; style_revision: number }>(db, "SELECT wardrobe_revision, style_revision FROM owner_state WHERE user_id = ?", userId);
   const commands = await first<{ n: number; last: string | null }>(db, "SELECT COUNT(*) AS n, MAX(recorded_at) AS last FROM commands WHERE user_id = ?", userId);
-  return { takenAt, wardrobeRevision: state?.wardrobe_revision ?? 0, styleRevision: state?.style_revision ?? 0, lastCommandRecordedAt: commands?.last ?? null, commandCount: commands?.n ?? 0 };
+  const mediaTables = new Set((await all<{ name: string }>(db, "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('media_assets', 'media_renditions')")).map((r) => r.name));
+  let mediaBoundary = "0";
+  if (mediaTables.has("media_assets")) {
+    const assets = await all<{ asset_id: string; status: string; original_purged_at: string | null }>(db, "SELECT asset_id, status, original_purged_at FROM media_assets WHERE user_id = ? ORDER BY asset_id", userId);
+    const renditions = mediaTables.has("media_renditions")
+      ? await all<{ rendition_id: string; status: string; version: number; sha256: string }>(db, "SELECT rendition_id, status, version, sha256 FROM media_renditions WHERE user_id = ? ORDER BY rendition_id", userId)
+      : [];
+    mediaBoundary = JSON.stringify([assets, renditions]);
+  }
+  return { takenAt, wardrobeRevision: state?.wardrobe_revision ?? 0, styleRevision: state?.style_revision ?? 0, lastCommandRecordedAt: commands?.last ?? null, commandCount: commands?.n ?? 0, mediaBoundary };
 }
 
-export const sameBoundary = (a: Snapshot, b: Snapshot): boolean => a.wardrobeRevision === b.wardrobeRevision && a.styleRevision === b.styleRevision && a.commandCount === b.commandCount && a.lastCommandRecordedAt === b.lastCommandRecordedAt;
+export const sameBoundary = (a: Snapshot, b: Snapshot): boolean =>
+  a.wardrobeRevision === b.wardrobeRevision &&
+  a.styleRevision === b.styleRevision &&
+  a.commandCount === b.commandCount &&
+  a.lastCommandRecordedAt === b.lastCommandRecordedAt &&
+  a.mediaBoundary !== undefined &&
+  b.mediaBoundary !== undefined &&
+  a.mediaBoundary === b.mediaBoundary;
 
 /* ------------------------------------------------------------------ */
 /* Readable views                                                       */

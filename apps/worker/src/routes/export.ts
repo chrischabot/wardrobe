@@ -39,7 +39,7 @@ export function exportRoutes(): RouteDef[] {
 
     owner("POST", "/v1/backups/{id}/ticket", "admin", async ({ app, session, params }) => {
       if (!params.id!.startsWith("bkp_")) throw new ApiException("not_found", "that backup was not found");
-      return json(await issueDownloadTicket(app, session, params.id!));
+      return json(await issueDownloadTicket(app, session, params.id!, "backup"));
     }),
 
     /* The owner's current deletion tombstones: restored together with an older backup so forgotten sources stay forgotten. */

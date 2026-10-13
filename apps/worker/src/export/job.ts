@@ -7,6 +7,7 @@ import { auditStatement, rateLimit, type OwnerSession } from "../auth/session.ts
 import { codeHash, randomBytes, randomToken, toBase64Url } from "../crypto.ts";
 import { ApiException } from "../errors.ts";
 import { BASE_HEADERS } from "../http.ts";
+import type { ExportOriginals } from "../ports.ts";
 import { appendRunEvent, createApiRun } from "../runs.ts";
 import { LEDGER_COMPONENTS, LEDGER_TABLES, NEVER_EXPORTED, README, csv, dumpTable, readSnapshot, sameBoundary, type Snapshot, type TableDump } from "./ledger.ts";
 import { PackageWriter, type PackageFile } from "./package.ts";
@@ -39,6 +40,7 @@ interface JobRow {
   expires_at: string | null;
   purpose: "export" | "backup";
   restore_manifest_json: string | null;
+  include_location: number;
 }
 
 /** What a backup adds to a package; supplied by the backup service so this job stays one mechanism for both. */
@@ -58,6 +60,7 @@ function toJob(row: JobRow): Job {
     state: row.state,
     complete: row.state === "completed" && components.length > 0 && components.every((c) => c.state === "complete"),
     encrypted: row.encrypted === 1,
+    includesLocation: row.include_location === 1,
     formatVersion: row.format_version,
     requestedAt: row.requested_at,
     finishedAt: row.finished_at,
@@ -72,6 +75,12 @@ function toJob(row: JobRow): Job {
 const loadJob = (app: App, userId: string, exportId: string) => first<JobRow>(app.db, "SELECT * FROM export_jobs WHERE user_id = ? AND export_id = ?", userId, exportId);
 
 const rootOf = (purpose: JobRow["purpose"]) => (purpose === "backup" ? "backups" : "exports");
+/**
+ * How supplied photographs are written: a portable export leaves the service, so its originals carry no
+ * location data unless the owner asked for them with it for that export (`includeLocation`); a backup never
+ * leaves the service and must restore the photographs exactly as stored.
+ */
+export const originalsFor = (purpose: JobRow["purpose"], includeLocation = false): ExportOriginals => (purpose === "backup" || includeLocation ? "as_supplied" : "location_removed");
 const stagingKey = (root: string, userId: string, exportId: string, name: string) => `${root}/${userId}/${exportId}/staging/${name}.json`;
 const packageKey = (root: string, userId: string, exportId: string) => `${root}/${userId}/${exportId}/package`;
 /** The restore manifest is also kept beside the package, readable without opening it. */
@@ -107,7 +116,7 @@ function countRecords(value: unknown): number {
 }
 
 /** Read every component into staging. Components already staged for the same version boundary are kept (resume). */
-async function collect(app: App, principal: Principal, exportId: string, done: Map<string, Staged>, purpose: JobRow["purpose"]): Promise<void> {
+async function collect(app: App, principal: Principal, exportId: string, done: Map<string, Staged>, purpose: JobRow["purpose"], includeLocation = false): Promise<void> {
   const userId = principal.userId;
   const root = rootOf(purpose);
   for (const component of LEDGER_COMPONENTS) {
@@ -146,7 +155,7 @@ async function collect(app: App, principal: Principal, exportId: string, done: M
   const readAssistant = async () => (assistantExport ??= await app.assistant!.exportData(principal, { operational: purpose === "backup" }));
   await lane("assistant", "Orders, returns and exchanges, lifecycle projects, research with source references, comfort feedback, remembered conclusions", app.assistant !== null, async () => (await readAssistant()).records);
   await lane("conversation", "Original conversation messages with their dates and channels", app.assistant !== null, async () => (await readAssistant()).conversation);
-  await lane("media", "Photographs and derived images with transformation provenance; saved combinations and day plans", app.media !== null, () => app.media!.exportData(principal));
+  await lane("media", "Photographs and derived images with transformation provenance; saved combinations and day plans", app.media !== null, () => app.media!.exportData(principal, { originals: originalsFor(purpose, includeLocation) }));
 
   if (!done.has("account")) {
     const user = await first<{ display_name: string; created_at: string; is_synthetic: number }>(app.db, "SELECT display_name, created_at, is_synthetic FROM users WHERE user_id = ?", userId);
@@ -298,7 +307,7 @@ export async function advanceExport(app: App, userId: string, exportId: string, 
     if (previous && sameBoundary(previous, snapshot)) snapshot = { ...snapshot, takenAt: previous.takenAt };
     let coherent = false;
     for (let attempt = 1; attempt <= BOUNDARY_ATTEMPTS; attempt++) {
-      await collect(app, principal, exportId, done, row.purpose);
+      await collect(app, principal, exportId, done, row.purpose, row.include_location === 1);
       await prepare(db, stmt("UPDATE export_jobs SET snapshot_json = ?, progress_json = json_set(progress_json, '$.staged', json(?), '$.leaseUntil', ?) WHERE user_id = ? AND export_id = ?", JSON.stringify(snapshot), JSON.stringify([...done.values()]), toInstant(app.now() + LEASE_MS), userId, exportId)).run();
       const after = await readSnapshot(db, userId, snapshot.takenAt);
       if (sameBoundary(snapshot, after)) {
@@ -344,7 +353,7 @@ export async function advanceExport(app: App, userId: string, exportId: string, 
         const missing: string[] = [];
         const used = new Set<string>();
         for (const asset of staged.assets ?? []) {
-          const bytes = await app.media.readExportAsset(principal, asset.file);
+          const bytes = await app.media.readExportAsset(principal, asset.file, { originals: originalsFor(row.purpose, row.include_location === 1) });
           if (!bytes) {
             missing.push(asset.file);
             continue;
@@ -357,6 +366,10 @@ export async function advanceExport(app: App, userId: string, exportId: string, 
         }
         await addFile("media", "records/media.json", JSON.stringify({ ...staged, files, missing }, null, 1));
         if (missing.length > 0) Object.assign(media, { state: "incomplete", note: `${missing.length} stored image file(s) could not be read and are missing from this package.` });
+        else {
+          const withheld = ((staged.records as { withheldOriginals?: unknown[] } | null)?.withheldOriginals ?? []).length;
+          if (withheld > 0) Object.assign(media, { note: `${withheld} supplied photograph(s) are not in this package because their location data could not be removed from that format; the copies derived from them are included.` });
+        }
       }
     }
 
@@ -419,23 +432,31 @@ export async function advanceExport(app: App, userId: string, exportId: string, 
   }
 }
 
-export async function requestExport(app: App, session: OwnerSession, input: { clientRequestId: string; passphrase?: string }): Promise<Job> {
+export async function requestExport(app: App, session: OwnerSession, input: { clientRequestId: string; passphrase?: string; includeLocation?: boolean }): Promise<Job> {
   const userId = session.userId;
   const nowMs = app.now();
+  const includeLocation = input.includeLocation === true;
+  // Photographs with their location data leave the service only on the signed-in owner's own request in the app or on the web.
+  if (includeLocation && (session.principal.actor !== "owner" || (session.principal.channel !== "ios" && session.principal.channel !== "web"))) {
+    throw new ApiException("forbidden", "photographs with their location data are exported only when the owner asks for it in the Garderobe app", { reason: "owner_opt_in_required" });
+  }
   const existing = await first<JobRow>(app.db, "SELECT * FROM export_jobs WHERE user_id = ? AND client_request_id = ?", userId, input.clientRequestId);
+  const sameRequest = (row: JobRow) => (row.encrypted === 1) === Boolean(input.passphrase) && (row.include_location === 1) === includeLocation;
+  // Backups have request IDs of their own (`backup:`); a portable export never resolves to one.
+  if (input.clientRequestId.startsWith("backup:") || (existing && existing.purpose !== "export")) throw new ApiException("idempotency_key_reuse", "that request ID is not available for an export request");
   let exportId: string;
   if (existing) {
-    if ((existing.encrypted === 1) !== Boolean(input.passphrase)) throw new ApiException("idempotency_key_reuse", "that request ID was already used for a different export request");
+    if (!sameRequest(existing)) throw new ApiException("idempotency_key_reuse", "that request ID was already used for a different export request");
     exportId = existing.export_id;
   } else {
     await rateLimit(app.db, `export:${userId}`, 12, 3600, nowMs);
-    const run = await createApiRun(app.db, { userId, kind: "export", clientRequestId: input.clientRequestId, request: { encrypted: Boolean(input.passphrase) }, channel: session.principal.channel, nowMs });
+    const run = await createApiRun(app.db, { userId, kind: "export", clientRequestId: input.clientRequestId, request: { encrypted: Boolean(input.passphrase), includeLocation }, channel: session.principal.channel, nowMs });
     exportId = `exp_${toBase64Url(randomBytes(12))}`;
-    const audit = await auditStatement({ userId, kind: "export.requested", outcome: "ok", identity: session.identity, channel: session.principal.channel, detail: { exportId, encrypted: Boolean(input.passphrase) }, nowMs });
+    const audit = await auditStatement({ userId, kind: "export.requested", outcome: "ok", identity: session.identity, channel: session.principal.channel, detail: { exportId, encrypted: Boolean(input.passphrase), includeLocation }, nowMs });
     await app.db.batch(
       [
         stmt(
-          "INSERT INTO export_jobs (user_id, export_id, run_id, client_request_id, state, encrypted, format_version, requested_at) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?) ON CONFLICT (user_id, client_request_id) DO NOTHING",
+          "INSERT INTO export_jobs (user_id, export_id, run_id, client_request_id, state, encrypted, format_version, requested_at, include_location) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?) ON CONFLICT (user_id, client_request_id) DO NOTHING",
           userId,
           exportId,
           run.runId,
@@ -443,11 +464,14 @@ export async function requestExport(app: App, session: OwnerSession, input: { cl
           input.passphrase ? 1 : 0,
           EXPORT_FORMAT_VERSION,
           toInstant(nowMs),
+          includeLocation ? 1 : 0,
         ),
         audit.statement,
       ].map((s) => prepare(app.db, s)),
     );
-    exportId = (await first<{ export_id: string }>(app.db, "SELECT export_id FROM export_jobs WHERE user_id = ? AND client_request_id = ?", userId, input.clientRequestId))!.export_id;
+    const winner = (await first<JobRow>(app.db, "SELECT * FROM export_jobs WHERE user_id = ? AND client_request_id = ?", userId, input.clientRequestId))!;
+    if (winner.purpose !== "export" || !sameRequest(winner)) throw new ApiException("idempotency_key_reuse", "that request ID was already used for a different export request");
+    exportId = winner.export_id;
   }
   await advanceExport(app, userId, exportId, input.passphrase);
   return toJob((await loadJob(app, userId, exportId))!);
@@ -473,9 +497,9 @@ function fileName(row: JobRow): string {
 }
 
 /** A short-lived, single-use download ticket for a finished package. Only its hash is stored. */
-export async function issueDownloadTicket(app: App, session: OwnerSession, exportId: string): Promise<{ url: string; expiresAt: string; fileName: string }> {
+export async function issueDownloadTicket(app: App, session: OwnerSession, exportId: string, purpose: "export" | "backup" = "export"): Promise<{ url: string; expiresAt: string; fileName: string }> {
   const row = await loadJob(app, session.userId, exportId);
-  if (!row) throw new ApiException("not_found", "that export was not found");
+  if (!row || row.purpose !== purpose) throw new ApiException("not_found", purpose === "backup" ? "that backup was not found" : "that export was not found");
   if (row.state !== "completed" && row.state !== "completed_incomplete") throw new ApiException("precondition_failed", "this export has no package to download", { state: row.state });
   const nowMs = app.now();
   if (row.expires_at && Date.parse(row.expires_at) <= nowMs) throw new ApiException("expired", "this export has expired; request a new one");
