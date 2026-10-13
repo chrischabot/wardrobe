@@ -24,7 +24,9 @@ export { createCompositionModel, parseCandidates, type CompositionRequest, type 
 
 export { assembleMandatoryContext, ASSISTANT_POLICY, ASSISTANT_PROMPT_VERSION, estimateTokens, type MandatoryContext } from "./context/mandatory.ts";
 export { ownerAuthoredText, isDirectReport } from "./policy/voice.ts";
-export { classifyChange, mayCommitFromConversation, OBSERVATION_TYPES, type ChangeClass } from "./policy/classes.ts";
+export { classifyChange, forbiddenForConnectedAssistant, isConsequential, isUnboundedChange, mayCommitFromConversation, OBSERVATION_TYPES, OUTSIDE_REACH_JOB_KINDS, RESTRICTION_LIFT_TYPES, SECTION3_CONFIRM_TYPES, targetIdsOf, grantCoversTargets, indirectReach, type ChangeClass } from "./policy/classes.ts";
+export { ownerRequests, type IntentInput, type IntentResult, type RecordContext } from "./policy/intent.ts";
+export { endedCovers, statesConditionEnded, type EndedStatement } from "./policy/ended.ts";
 export { CHANGE_LABELS, changeLabel, describeChange, expectedVersionsFor, MAX_SHOWN_VALUE, MAX_SUMMARY } from "./policy/describe.ts";
 export { REPORT_WINDOW_DAYS, withinReportWindow, reportsIn, reportDateOf, type OwnerReport } from "./policy/report.ts";
 export { redactSecrets, redactDeep, SECRET_PLACEHOLDER } from "./policy/secrets.ts";
@@ -33,6 +35,7 @@ export { resolveDateRange } from "./recall/temporal.ts";
 export { runSearchProjection, buildSearchDocument, SEARCH_TOPICS, type SearchProjectionResult } from "./recall/projection.ts";
 export { AiSearchIndex, provisionSearchInstance, eraseSearchInstance, instanceNameFor, splitDocument, SEARCH_METADATA_FIELDS, type SearchIndexPort, type SearchDocument } from "./recall/ai-search.ts";
 export type { AssistantPorts, TurnRuntime } from "./tools/runtime.ts";
+export { MAX_APPLIED_CHANGES_PER_TURN, MAX_PROPOSALS_PER_TURN } from "./tools/runtime.ts";
 export * as research from "./research/index.ts";
 export { McpHttpClient, ConnectionError, searchProviderFor, extractBackendFor, argsFromSchema, type ConnectionRuntime, type McpClientOptions } from "./connections/mcp.ts";
 export { runAssistantMaintenance, type MaintenanceDeps, type MaintenanceResult } from "./maintenance.ts";
