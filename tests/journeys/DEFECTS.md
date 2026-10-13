@@ -6,16 +6,11 @@ In the default run it passes only when it fails with its recorded signature (`sr
 that starts to pass, or fails in another way, turns the default run red. "Owner" is the workstream
 whose code needs the change. Nothing here was fixed by this suite.
 
-Last re-checked on 2026-10-12 against the shared tree of `garderobe-rebuild` at `32bbeccf`, which also
-held other workers' unlanded changes (among them the API and MCP thread's change implementing the
-2026-10-05 contract for connected assistants).
+Last re-checked on 2026-10-13 against `garderobe-rebuild` at `daf52d4e`.
 
 ## Open
 
-| ID | What the owner experiences | Required by | Owner |
-| --- | --- | --- | --- |
-| D08-1 | After the return case records the full refund (GBP 120.00 of GBP 120.00), the order line it refunds still shows nothing refunded | §17 L1098: returns with "partial refunds, and exchanges retain correct stock and monetary states"; §6 L240 keeps refunds on orders and order lines | assistant (`packages/assistant/src/commands/returns.ts`) |
-| D14-3 | A correction in the owner's words relayed through `garderobe_ask` by a write connection is kept as a request for him to confirm instead of applying with a receipt and Undo | Owner decision of 2026-10-05 (contract "Changes apply at once with undo on every surface", sections 1 and 5: relayed words run under the same policy as the app; `proposals[]` only for section 3, read-only connections and wordless turns) | assistant (`classifyChange` and the turn's change classification in `packages/assistant`; the API thread's relayed-turn guard refuses rather than proposes, so the proposal comes from the assistant) |
+None.
 
 ## Under watch
 
@@ -28,9 +23,6 @@ held other workers' unlanded changes (among them the API and MCP thread's change
 Each is the body of the test of the same ID; in short:
 
 - **D06-2** Publish boards for the scripted week and count sheet colours per outfit; it was seen on the 2/6 °C and 5/24 °C days.
-- **D08-1** Open a return on a delivered order line with a GBP 120.00 refund expected; record GBP 50.00 and then GBP 70.00 on the case; read the order line's `refundedMinor`.
-- **D14-2** From a read connection call `garderobe_inventory {view: "items", limit: 40}` and follow `nextCursor` to the page where it is null; read that page's text content.
-- **D14-3** From a write connection call `garderobe_ask` with "The <shirt> has a loose button now" while the model calls `correct_garment` for that shirt; read the turn's `receipts` and `proposals`.
 
 ## Fixed, and now ordinary tests
 
@@ -63,6 +55,8 @@ Each was re-run here on a clean copy of the branch after its fix (`5db4fd87`, `2
 | D11-2 | The request to confirm a new garment showed a role code and a message identifier | assistant, `486b1311` and `a6795a3d` | 11 |
 | D12-1 | For a day no board had been asked for yet, Studio said "the forecast is unavailable" and blocked a jacket over an oxford, although the forecast could be fetched | visual-wardrobe, `e94af8fb` | 12 |
 | D14-2 | The text a connected assistant read beside the last page of the item list said more pages follow and to pass a cursor, although there was none | api-mcp-identity, `4c49f582` | 14 |
+| D08-1 | After the return case recorded the full refund (GBP 120.00 of GBP 120.00), the order line it refunds still showed nothing refunded | assistant, `fa8b0908` and `daf52d4e` | 08 |
+| D14-3 | A correction relayed through `garderobe_ask` was asserted to apply at once. Re-judged by the owner's allow-list decision: only the short list of fully understood sentence forms applies at once, and a garment correction is a one-tap request he confirms in the app, with undo. The test now asserts that: a pending request, nothing changed until he confirms, the connected assistant cannot confirm it, and his confirmation commits it as his own with a working undo | owner decision on the allow-list (no product change) | 14 |
 | D14-1 | The confirmation for an assistant's typed command gave identifiers or raw payload | api-mcp-identity, `5db4fd87` | 14 (see below) |
 
 ## Changed by the owner decision of 2026-10-05

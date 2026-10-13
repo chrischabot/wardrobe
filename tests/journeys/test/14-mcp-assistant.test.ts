@@ -27,7 +27,6 @@
 import { SELF } from "cloudflare:test";
 import { beforeAll, describe, expect, it } from "vitest";
 import { APP_ORIGIN, MCP_ORIGIN, connectMcp, enableFakeModel, publishBoard, toolResult, type FakeModel, type McpConnection, type TestOwner } from "@garderobe/worker/testing";
-import { defect } from "../src/defect.ts";
 import { internalCodesIn, mcpCommand, realOwnerAt, settleRun, wholeWardrobe, type JourneyOwner, type McpCommandOutcome, type WardrobeItem } from "../src/world.ts";
 
 let j: JourneyOwner;
@@ -399,26 +398,43 @@ describe("journey 14: a connected assistant reads, reports, asks and is disconne
     expect((await dayRecord(j.today)).map((g) => g.garmentId).sort()).toEqual([shoe.garmentId, secondTop.garmentId].sort());
   });
 
-  defect("D14-3", "a correction relayed through garderobe_ask by a write connection applies at once with a receipt and undo", { signature: /expected \[ \{ type: 'garment\.correct'.* to deeply equal \[\]/s }, async () => {
-    // Owner decision of 2026-10-05 (contract sections 1 and 5): words a connected assistant relays
-    // (`garderobe_ask`) run under the same policy as the app, so an ordinary correction in the owner's
-    // words applies at once; the turn result carries `receipts[]`, and `proposals[]` only for section 3,
-    // read-only connections and wordless turns. Seen: the correction is kept as a proposal instead.
+  it("a correction relayed through garderobe_ask is a one-tap request the owner confirms in the app; the assistant cannot confirm it", async () => {
+    // Owner decision on the allow-list (dec_q84451128ec13537): only the short list of fully understood
+    // sentence forms applies at once; anything else, here a garment correction, becomes a one-tap proposal
+    // the owner confirms in the app, with undo. A connected assistant never confirms its own request.
     correction = `The ${secondTop.name} has a loose button now`;
-    model.script({ toolCalls: [{ toolName: "correct_garment", input: { garmentId: secondTop.garmentId, changes: { condition: "loose button (journey test)" } } }] }, { text: "SCRIPTED FAKE MODEL REPLY: noted the loose button." });
+    const revisionBefore = (await owner.api.json("GET", "/v1/wardrobe")).wardrobeRevision;
+    model.script({ toolCalls: [{ toolName: "correct_garment", input: { garmentId: secondTop.garmentId, changes: { condition: "loose button (journey test)" } } }] }, { text: "SCRIPTED FAKE MODEL REPLY: that is waiting for you in the app." });
     const asked = await call(writer, "garderobe_ask", { message: correction, clientTurnId: `ask-${crypto.randomUUID()}`, mode: "wait" });
     expect(asked.ok, JSON.stringify(asked.error)).toBe(true);
-    expect(asked.data.proposals).toEqual([]);
-    expect(asked.data.receipts.map((r: any) => r.type)).toEqual(["garment.correct"]);
-    const corrected = asked.data.receipts[0];
-    expect(corrected.summary).toContain(secondTop.name);
-    expect(internalCodesIn(corrected.summary)).toEqual([]);
-    expect(await owner.api.json("GET", `/v1/commands/${corrected.commandId}`)).toMatchObject({ type: "garment.correct", outcome: "committed", channel: "mcp", actor: "assistant", undo: { available: true } });
+    expect(asked.data.receipts).toEqual([]);
+    expect(asked.data.proposals.map((p: any) => p.type)).toEqual(["garment.correct"]);
+
+    // Nothing changed before the owner confirms.
+    expect((await owner.api.json("GET", "/v1/wardrobe")).wardrobeRevision).toBe(revisionBefore);
+    expect((await owner.api.json("GET", `/v1/items/${secondTop.garmentId}`)).detail.garment.condition).toBe(secondTop.condition);
+    const proposal = (await pending()).find((p) => p.turnId === asked.data.runId)!;
+    expect(proposal).toMatchObject({ type: "garment.correct", state: "pending", decidedAt: null, commandId: null, source: { channel: "mcp", assistantName: WRITER_NAME }, payload: { garmentId: secondTop.garmentId } });
+    expect(proposal.summary).toContain(secondTop.name);
+    expect(internalCodesIn(proposal.summary)).toEqual([]);
+
+    // The assistant cannot confirm it: no confirm tool, and its token opens neither the list nor the decision.
+    expect((await writer.client.listTools()).tools.some((t) => /proposal|confirm|approve/i.test(t.name))).toBe(false);
+    const token = writer.oauth.snapshot().accessToken;
+    for (const origin of [APP_ORIGIN, MCP_ORIGIN]) {
+      const decided = await SELF.fetch(`${origin}/v1/proposals/${proposal.proposalId}/decision`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ decision: "confirm" }) });
+      expect(decided.status, origin).toBe(401);
+    }
+    expect((await pending()).find((p) => p.proposalId === proposal.proposalId)).toMatchObject({ state: "pending", commandId: null });
+    expect((await owner.api.json("GET", `/v1/items/${secondTop.garmentId}`)).detail.garment.condition).toBe(secondTop.condition);
+
+    // One tap by the owner in the app carries it out as the owner's own, with a working undo.
+    const decision = await owner.api.json("POST", `/v1/proposals/${proposal.proposalId}/decision`, { decision: "confirm" });
+    expect(decision).toMatchObject({ proposal: { state: "confirmed" }, receipt: { type: "garment.correct", outcome: "committed", actor: "owner" } });
     expect((await owner.api.json("GET", `/v1/items/${secondTop.garmentId}`)).detail.garment.condition).toBe("loose button (journey test)");
-    expect(await pending()).toEqual([]);
-    // The owner takes it back in the app: the record is as it was.
-    const undone = (await (await owner.api.command("command.undo", { commandId: corrected.commandId })).json()) as any;
-    expect(undone).toMatchObject({ outcome: "committed", result: { undoneCommandId: corrected.commandId } });
+    expect((await pending()).some((p) => p.proposalId === proposal.proposalId)).toBe(false);
+    const undone = (await (await owner.api.command("command.undo", { commandId: decision.receipt.commandId })).json()) as any;
+    expect(undone).toMatchObject({ outcome: "committed", result: { undoneCommandId: decision.receipt.commandId } });
     expect((await owner.api.json("GET", `/v1/items/${secondTop.garmentId}`)).detail.garment.condition).toBe(secondTop.condition);
   });
 
