@@ -91,7 +91,7 @@ pub fn consent_form_mac(owner_token: &str, issued: u64, client_id: &str, redirec
     let key = hmac_sha256(owner_token.as_bytes(), b"wardrobe/oauth/consent-form-key/v1");
     crate::sha256::hex(&hmac_sha256(&key, format!("wardrobe/oauth/consent-form/v1\n{issued}\n{client_id}\n{redirect_uri}\n{challenge}").as_bytes()))
 }
-const ATTEMPTS: u32 = 6;
+pub(crate) const ATTEMPTS: u32 = 6;
 const CLIENTS_KEY: &[u8] = b"o/clients";
 
 /// The secrets one request mints (codes, access and refresh tokens).
@@ -586,7 +586,7 @@ fn free_slot(index: &[(String, u64)], max: usize) -> Option<usize> {
 /// free slot and write it" one atomic step across all slots.
 pub const GRANTS_EPOCH_KEY: &[u8] = b"o/grants/epoch";
 
-async fn read_epoch<S: Store>(store: &mut S) -> Result<Option<Vec<u8>>, Fault> {
+pub(crate) async fn read_epoch<S: Store>(store: &mut S) -> Result<Option<Vec<u8>>, Fault> {
     store.get(GRANTS_EPOCH_KEY).await.map_err(|_| Fault::Unavailable)
 }
 
@@ -600,7 +600,7 @@ fn next_epoch(old: Option<&[u8]>) -> Result<Vec<u8>, Fault> {
 
 /// Commit `entries` (grant slot records) if the grant store's version is
 /// still `epoch`, advancing it. `Ok(false)` = some slot changed meanwhile.
-async fn commit_grants<S: Store>(store: &mut S, epoch: &Option<Vec<u8>>, entries: &[(&[u8], &[u8])]) -> Result<bool, Fault> {
+pub(crate) async fn commit_grants<S: Store>(store: &mut S, epoch: &Option<Vec<u8>>, entries: &[(&[u8], &[u8])]) -> Result<bool, Fault> {
     let next = next_epoch(epoch.as_deref())?;
     let mut all: Vec<(&[u8], &[u8])> = vec![(GRANTS_EPOCH_KEY, &next)];
     all.extend_from_slice(entries);
@@ -950,7 +950,7 @@ fn consent_page(status: u16, origin: &str, r: &AuthRequest, error: Option<&str>,
     let error = error.map(|e| format!("<p class=\"error\">{}</p>", html_escape(e))).unwrap_or_default();
     if r.app {
         let body = format!(
-            "<h1>Sign in to Garderobe</h1><p>The Garderobe app (returning to {host}) asks to sign in as you, with everything you can do in the app.</p>{error}<form method=\"post\" action=\"{origin}/oauth/authorize\">{fields}<label>Owner token<input type=\"password\" name=\"owner_token\" autocomplete=\"current-password\"></label><button type=\"submit\" name=\"decision\" value=\"allow\">Sign in</button><button type=\"submit\" name=\"decision\" value=\"deny\">Cancel</button></form><p class=\"muted\">Sign out everywhere, in the app's settings, ends every sign-in of the app. Connected assistants are managed separately.</p>",
+            "<h1>Sign in to Garderobe</h1><p>The Garderobe app (returning to {host}) asks to sign in as you, with everything you can do in the app.</p>{error}<form method=\"post\" action=\"{origin}/oauth/authorize\">{fields}<label>Owner token<input type=\"password\" name=\"owner_token\" autocomplete=\"current-password\"></label><label>Or, without the owner token, a recovery code<input type=\"password\" name=\"recovery_code\" autocomplete=\"off\"></label><button type=\"submit\" name=\"decision\" value=\"allow\">Sign in</button><button type=\"submit\" name=\"decision\" value=\"deny\">Cancel</button></form><p class=\"muted\">A recovery code works once. Signing in with it ends every other sign-in of the app and disconnects every connected assistant; issue a new recovery kit in Settings afterwards. Sign out everywhere, in the app's settings, ends every sign-in of the app. Connected assistants are managed separately.</p>",
             host = html_escape(host),
             origin = html_escape(origin),
         );
@@ -988,6 +988,10 @@ pub async fn authorize_decision<S: Store>(store: &mut S, origin: &str, app: Opti
         _ => return consent_page(400, origin, &r, Some("Choose Allow or Deny."), owner_token, now),
     }
     let presented = field("owner_token").unwrap_or("");
+    // The app's sign-in page also takes a recovery code in place of the owner token
+    // (src/recovery.rs). A connected assistant's page has no such field, and one sent anyway is
+    // ignored.
+    let recovery = if r.app && presented.is_empty() { field("recovery_code").filter(|c| !c.trim().is_empty()) } else { None };
     let Some(owner) = owner_token.filter(|t| !t.is_empty()) else { return message_page(500, "Garderobe is not configured", "The server has no owner token, so nobody can sign in.") };
     // The form must be one this server served for this flow, within its
     // lifetime. That bounds how late a consent (or a queue redelivery of
@@ -1003,13 +1007,14 @@ pub async fn authorize_decision<S: Store>(store: &mut S, origin: &str, app: Opti
     if !fresh {
         return consent_page(400, origin, &r, Some("This page expired. Nothing was granted; sign in and choose again."), owner_token, now);
     }
-    if presented.is_empty() || !constant_time_eq(presented.as_bytes(), owner.as_bytes()) {
+    if recovery.is_none() && (presented.is_empty() || !constant_time_eq(presented.as_bytes(), owner.as_bytes())) {
         return consent_page(401, origin, &r, Some("That owner token is not valid. Nothing was granted."), owner_token, now);
     }
     let scopes: Vec<String> = if r.app || field("write") == Some("on") { r.scopes.clone() } else { vec![READ.to_string()] };
-    let code = match create_grant(store, now, &r, scopes, mint).await {
+    let code = match create_grant(store, now, &r, scopes, mint, recovery).await {
         Ok(code) => code,
         Err(GrantRefusal::Full) => return message_page(409, "Too many connected assistants", "Disconnect an assistant you no longer use, then connect this one again."),
+        Err(GrantRefusal::RecoveryRefused) => return consent_page(401, origin, &r, Some("That recovery code is not valid, or it was already used. Nothing was granted."), owner_token, now),
         Err(GrantRefusal::Fault(f)) => return auth_error_reply(origin, AuthError::Fault(f)),
     };
     let mut pairs = vec![("code", code.as_str())];
@@ -1022,6 +1027,8 @@ pub async fn authorize_decision<S: Store>(store: &mut S, origin: &str, app: Opti
 
 enum GrantRefusal {
     Full,
+    /// The recovery code is not the current kit's, or the kit was used.
+    RecoveryRefused,
     Fault(Fault),
 }
 
@@ -1043,17 +1050,37 @@ async fn read_grant_slots<S: Store>(store: &mut S) -> Result<(Option<Vec<u8>>, V
     Ok((epoch, out))
 }
 
-async fn create_grant<S: Store>(store: &mut S, now: u64, r: &AuthRequest, scopes: Vec<String>, mint: &Mint) -> Result<String, GrantRefusal> {
+/// Create the grant a consent allows. With `recovery` (the app's sign-in by recovery code), the
+/// code must be the current kit's and unused; the same commit spends the kit and ends every other
+/// grant, the app's sign-ins and connected assistants alike.
+async fn create_grant<S: Store>(store: &mut S, now: u64, r: &AuthRequest, scopes: Vec<String>, mint: &Mint, recovery: Option<&str>) -> Result<String, GrantRefusal> {
     for _ in 0..ATTEMPTS {
         let (epoch, slots) = read_grant_slots(store).await.map_err(GrantRefusal::Fault)?;
         // A redelivery of a consent that already committed gets its code again.
         if let Some(g) = slots.iter().filter_map(|(_, g)| g.as_ref()).find(|g| mint.is(g.created_by.as_deref())) {
             return Ok(mint.code(&g.id));
         }
-        // The app keeps at most MAX_APP_SESSIONS sign-ins: the oldest live ones are signed out in
-        // the same commit as the new one.
+        // Read after the grant store's version, so the commit below (guarded on it) sees the kit
+        // exactly as it is now.
+        let spent = match recovery {
+            None => None,
+            Some(code) => match crate::recovery::read(store).await.map_err(GrantRefusal::Fault)? {
+                Some(kit) if crate::recovery::accepts(&kit, code) => Some(kit.spent(now)),
+                _ => return Err(GrantRefusal::RecoveryRefused),
+            },
+        };
         let mut evicted: Vec<Grant> = Vec::new();
-        if r.app {
+        if spent.is_some() {
+            // Recovery: whoever holds the lost credential's sign-ins or assistants loses them.
+            for g in slots.iter().filter_map(|(_, g)| g.as_ref()).filter(|g| g.active || g.refresh.is_some() || !g.access.is_empty()) {
+                let mut g = g.clone();
+                g.revoke(now, "account_recovery");
+                g.version += 1;
+                evicted.push(g);
+            }
+        } else if r.app {
+            // The app keeps at most MAX_APP_SESSIONS sign-ins: the oldest live ones are signed out in
+            // the same commit as the new one.
             let mut sessions: Vec<&Grant> = slots.iter().filter_map(|(_, g)| g.as_ref()).filter(|g| g.is_app() && g.live(now)).collect();
             sessions.sort_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.id.cmp(&b.id)));
             let excess = (sessions.len() + 1).saturating_sub(MAX_APP_SESSIONS);
@@ -1070,9 +1097,16 @@ async fn create_grant<S: Store>(store: &mut S, now: u64, r: &AuthRequest, scopes
         // late redelivery of that consent still finds its grant here and is
         // answered from it, and can never create a grant again.
         let reusable = |g: &Grant| !g.live(now) && now > g.created_at + CONSENT_FORM_TTL_MS + CLOCK_SKEW_MS;
-        let Some(slot) = slots.into_iter().find(|(_, g)| g.as_ref().map_or(true, reusable)).map(|(s, _)| s) else {
+        let free = slots.iter().find(|(_, g)| g.as_ref().map_or(true, reusable)).map(|(s, _)| *s);
+        // A recovery ends every grant in this commit, so with no free slot it takes the oldest
+        // grant's: that grant ends by being overwritten, as the others end by revocation.
+        let oldest = || slots.iter().filter_map(|(s, g)| g.as_ref().map(|g| (g.created_at, *s))).min().map(|(_, s)| s);
+        let Some(slot) = free.or_else(|| spent.as_ref().and_then(|_| oldest())) else {
             return Err(GrantRefusal::Full);
         };
+        // The new grant replaces whatever its slot held; a revocation of that record would
+        // overwrite the new grant in this same commit.
+        evicted.retain(|g| slot_of(&g.id) != Some(slot));
         let id = format!("grt_{slot:04x}{}", token(14));
         let code = mint.code(&id);
         let grant = Grant {
@@ -1097,6 +1131,9 @@ async fn create_grant<S: Store>(store: &mut S, now: u64, r: &AuthRequest, scopes
         for g in &evicted {
             let Some(k) = grant_key(&g.id) else { return Err(GrantRefusal::Fault(Fault::Corrupt)) };
             records.push((k, g.to_json().to_string().into_bytes()));
+        }
+        if let Some(kit) = &spent {
+            records.push((crate::recovery::KIT_KEY.to_vec(), kit.to_json().to_string().into_bytes()));
         }
         let entries: Vec<(&[u8], &[u8])> = records.iter().map(|(k, v)| (k.as_slice(), v.as_slice())).collect();
         // Guarded on the grant store's version read with the slots: written
@@ -1474,6 +1511,11 @@ pub async fn authenticate<S: Store>(store: &mut S, header: Option<&str>, now: u6
         return Err(BearerError::Invalid("the access token carries no wardrobe scope"));
     }
     Ok(Caller { grant_id: grant.id, client_id: grant.client_id, scopes })
+}
+
+/// The grant an app access token names (`wat.<grant>.<secret>`), not yet verified.
+pub fn app_grant_of_token(t: &str) -> Option<&str> {
+    grant_of_token(t, "wat")
 }
 
 /// The owner's app sign-in behind a `/v1` bearer token (`wat.…`): an active sign-in of the configured

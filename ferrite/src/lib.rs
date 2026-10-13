@@ -21,6 +21,7 @@ pub mod oauth;
 pub mod packing;
 pub mod random;
 pub mod recommend;
+pub mod recovery;
 pub mod returns;
 pub mod runs;
 pub mod seed;

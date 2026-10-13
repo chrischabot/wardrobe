@@ -104,9 +104,10 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `POST /v1/studio/compose` | `Composition`: the deterministic layout of the outfit's garments (`buildManifest`) and its hash, with every garment a labelled text tile (no media) and the preview `none` |
 | `GET /v1/studio/compositions/{hash}[/preview]` | 404 `not_found`: a composition is kept only when a preview is requested, which this server does not do |
 | `GET /v1/service` | `ServiceState`: never paused (pause and resume are not ported) |
-| `GET /v1/me` | `MeResponse` for the one owner this port serves (`userId: "owner"`), with the caller's channel (`ios` for the owner token and the app's sign-in) and scopes (`read`, `write`, `admin` for the owner; `read`, `write` for the assistant token); no linked identities and no recovery kit (identity, linking and recovery are not ported) |
+| `GET /v1/me` | `MeResponse` for the one owner this port serves (`userId: "owner"`), with the caller's channel (`ios` for the owner token and the app's sign-in) and scopes (`read`, `write`, `admin` for the owner; `read`, `write` for the assistant token); no linked identities (no identity provider). `recoveryKit` says whether an unused recovery kit exists and when it was issued; `issuedRecoveryKit` is always null (no claim) |
 | `POST /v1/sessions/revoke` (owner only) | `SignOutEverywhereResponse`: sign out everywhere. Every sign-in of the owner's app ends now (its access and refresh tokens stop working); connected assistants and the owner token are untouched. `sessionsRevokedBefore` is the moment of the request |
-| `POST /auth/claim`, `/auth/link/complete`, `/auth/recovery/start`, `/auth/recovery/complete`, `POST /v1/identities/link`, `/v1/identities/unlink`, `/v1/recovery-kit`, `/v1/account/delete` | 501 `module_unavailable` with `details.module: "identity"`: they need an identity provider (Cloudflare Access in the TypeScript Worker), which this port does not have. The `/auth/` ones answer before any sign-in; the `/v1/` ones after it. Nothing is written |
+| `POST /v1/recovery-kit` (owner only) | `RecoveryKitIssued`: a new recovery kit, shown once (`kit` with the code, storage instruction and a plain-text download), `replacedKitId` (the unused kit it replaces, which stops working in the same commit, or null) and a `receiptId`. The assistant token is refused (403). See "Recovery kit" |
+| `POST /auth/claim`, `/auth/link/complete`, `/auth/recovery/start`, `/auth/recovery/complete`, `POST /v1/identities/link`, `/v1/identities/unlink`, `/v1/account/delete` | 501 `module_unavailable` with `details.module: "identity"` and `details.reason`: `no_identity_provider` for claims and linked identities (they need an identity provider, Cloudflare Access in the TypeScript Worker); `recovery_on_sign_in_page` for the recovery transaction (the code is used on the app's sign-in page instead); `erasure_unavailable` for account deletion (the storage binding has no delete and no key listing, so it cannot erase every record). The `/auth/` ones answer before any sign-in; the `/v1/` ones after it. Nothing is written |
 | `GET /v1/recovery` | `RecoveryStatus`: the last published home board for the owner's day (ID, date, revision, publication time) and its Calendar projection, `actions: ["open_today"]` when there is one, and diagnostics (`environment: "ferrite"`, the daily and assistant modules present and media absent, and why there is no board, or the board read's error in at most 200 characters). `pending` is always zero and `connectionIssues` always empty, see Known limits. Nothing is written |
 | `GET /v1/wardrobe/temperature-preview?temperatureC=` | `TemperaturePreview` as `temperaturePreview`: for a temperature from -40 to 50 °C, each owned garment in a top, mid-layer, bottom, outerwear or socks role that its thermal range would exclude, the active hard fabric-class rules that exclude a fabric there, and the outerwear ceiling. It reads the real seed's thermal ranges and rules and writes nothing; a missing or unreadable temperature is `invalid_command` |
 | `GET /v1/style[?date=]` | `StyleContext` as `getStyleContext`: the owner's profile verbatim (document `owner-profile` version 1, its SHA-256 and byte length), the profile's machine rules ordered by key with the passages they quote, his body measurements ordered by key, his size experiences by maker, the contract's precedence statement and `styleRevision` 0. Amendments, standing directions, day briefs and fact conflicts are always empty (no style command is ported). A malformed `date` is `invalid_command`. The owner and a connected assistant read it; nothing is written |
@@ -908,6 +909,39 @@ both, the app's client ID is an unregistered client.
 
 `tests/identity.rs` covers the flow end to end over the in-memory store.
 
+### Recovery kit
+
+`issueRecoveryKit` and recovery from apps/worker/src/identity/service.ts, in
+`src/recovery.rs`. The TypeScript Worker's recovery binds a new Google sign-in
+to the account inside a recovery transaction; this port has no identity
+provider, and the app's only login is its sign-in page, so the code is used
+there, in place of the owner token.
+
+- `POST /v1/recovery-kit` (the owner token or the app's sign-in) issues a
+  kit: `GRD1-<kit ID>-<256 random bits in base32, in groups of four>`, shown
+  once with a storage instruction and a plain-text download. Issuing again
+  replaces the kit; the old code stops working in the same commit. Only an
+  HMAC-SHA-256 verifier under a random salt is stored, in `o/recovery-kit`.
+- The app's sign-in page has a recovery code field beside the owner token.
+  With the owner token left empty, a code that is the current kit's and
+  unused signs the app in. In one commit with the new sign-in, the kit is
+  spent and every other grant ends: every earlier sign-in of the app and
+  every connected assistant. The owner token is unchanged. `GET /v1/me` then
+  reports no kit, and the owner issues a new one in Settings.
+- A wrong, malformed, replaced or used code is refused on the page (401) and
+  writes nothing. A connected assistant's consent page has no such field, and
+  a code sent to it anyway is ignored (the owner token is still required).
+- The kit record is written only in commits guarded on the grant store's
+  version, so issuing a kit, spending it and creating sign-ins are
+  serialised. An app sign-in that issues a kit is read with that version, so
+  one that a recovery or sign-out ended before the commit is refused (401).
+  With every grant slot live, a recovery sign-in takes the oldest grant's
+  slot. A queue redelivery of a recovery sign-in that already committed
+  is answered with the same authorization code and writes nothing.
+
+`tests/identity.rs` covers issuing, replacing, signing in by code, the
+refusals and the redelivery.
+
 The inventory is `src/seed/owner-inventory.json`, written by
 `scripts/build-seed.mjs`, which runs the TypeScript importer itself on
 `requirements/wardrobe_inventory_clean.csv` (127 garments, 144 units, CSV
@@ -1117,8 +1151,18 @@ milestone, and outside the lines of the milestone in hand:
   - Pause is not ported, so Today is never `paused` or `preparing`; an
     evening scope is refused.
 - **Identity and sign-in.**
-  - There is no identity provider, so claiming, linking identities, recovery
-    kits and recovery, and account deletion answer 501.
+  - There is no identity provider, so claiming and linking identities answer
+    501. Account deletion answers 501 too: the storage binding has no delete
+    and no key listing, so an erasure could not reach every record.
+  - Recovery has no transaction (`/auth/recovery/start` and `/complete`
+    answer 501): the code is entered on the app's sign-in page. The iOS
+    client's recovery screen calls the transaction routes, so until it sends
+    the owner to the sign-in page instead, recovery works only from that page.
+  - A recovery sign-in is not rate limited: each attempt costs one hash and
+    one comparison, and the code holds 256 random bits. It reports no counts
+    of the sign-ins and assistants it ended (the page redirects to the app),
+    and its `receiptId` and the kit's name no stored audit record (the
+    account audit is not ported).
   - The recovery status (`GET /v1/recovery`) always reports no pending
     effects, no runs waiting for input and no connection issues: effects,
     owner-added connections and run input are not ported, so there is
@@ -1326,8 +1370,8 @@ small change of its own, and passes `ferrite check`, `ferrite test` and
    retire), wear amendments, the
    weekly laundry reset, restrictions, owner settings, the availability
    estimator, and multi-owner storage with a compacted, sharded journal.
-   Sign-in with `packages/auth`, account recovery, and portable export and
-   import in parts.
+   Sign-in with `packages/auth`, portable export and import in parts. Done:
+   the recovery kit and recovery sign-in.
 3. **Queues and schedules.** Effects and outbox on Ferrite queues;
    cron work (daily sweep, backups, maintenance) as self-rescheduling delayed
    messages (`publish_at`), since Ferrite has no cron trigger; Calendar
@@ -1338,7 +1382,13 @@ small change of its own, and passes `ferrite check`, `ferrite test` and
 5. **Media.** Private photos in blob storage, uploads in parts, HEIC cleaning
    and composites in Rust. Cloudflare Images, AI Search and the Cache API have
    no Ferrite equivalent; search over the wardrobe becomes an index the app
-   keeps in its own store.
+   keeps in its own store. Parked: the media core (chunked uploads, the
+   finalize command, item images, renditions, signed links and photographs
+   in the export) failed four exact-patch reviews and is not in this tree.
+   It is kept as `wardrobe/.fabric-parked/ferrite-7b.patch`, outside this
+   directory, with the last review's finding (a still WebP must hold exactly
+   one `VP8 `/`VP8L` chunk) fixed in the patch but unreviewed. Until it
+   lands, photographs are not served.
 6. **Parity and acceptance.** The journey, adversarial and simulation suites
    pointed at this app, and the live deploy.
 

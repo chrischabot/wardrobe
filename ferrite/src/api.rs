@@ -209,14 +209,49 @@ async fn authenticate<S: Store>(store: &mut S, req: &IngressRequest, tokens: &To
     Err(CmdError::new("unauthenticated", "that token is not valid for this wardrobe"))
 }
 
-/// The identity routes that need an identity provider (Cloudflare Access in the TypeScript Worker):
-/// invitation claims, linked identities, recovery kits and recovery, and account deletion.
-fn identity_unavailable() -> CmdError {
-    CmdError::with(
-        "module_unavailable",
-        "linked identities, invitation claims, recovery kits and account deletion are not ported: this server has one owner, who signs in with the owner token (the app through /oauth/authorize); a lost owner token is replaced with `ferrite secrets set` and a deploy",
-        json!({"module": "identity"}),
-    )
+/// The identity routes this port does not serve, each with its reason: claims and linked identities
+/// need an identity provider (Cloudflare Access in the TypeScript Worker); recovery happens on the
+/// app's sign-in page instead of a recovery transaction; and account deletion needs an erasure the
+/// storage binding cannot do.
+fn identity_unavailable(path: &str) -> CmdError {
+    let (reason, message) = match path {
+        "/auth/recovery/start" | "/auth/recovery/complete" => (
+            "recovery_on_sign_in_page",
+            "recovery has no transaction on this server: enter the recovery code on the app's sign-in page in place of the owner token (issue a kit first with POST /v1/recovery-kit)",
+        ),
+        "/v1/account/delete" => (
+            "erasure_unavailable",
+            "account deletion is not ported: this server's storage binding has no delete and no key listing, so it cannot erase every stored record; nothing was changed",
+        ),
+        _ => (
+            "no_identity_provider",
+            "invitation claims and linked identities are not ported: this server has one owner, who signs in with the owner token or a recovery code (the app through /oauth/authorize); a lost owner token is replaced with `ferrite secrets set` and a deploy",
+        ),
+    };
+    CmdError::with("module_unavailable", message, json!({"module": "identity", "reason": reason}))
+}
+
+/// `POST /v1/recovery-kit` (`RecoveryKitIssued`): the owner's alone (the owner token or the app's
+/// sign-in), never the assistant token's. An app sign-in is checked again under the commit's guard;
+/// the owner token (whatever its spelling) is not a sign-in and is not.
+async fn issue_recovery_kit<S: Store>(store: &mut S, req: &IngressRequest, tokens: &Tokens, principal: Principal, now_ms: u64) -> Result<Value, CmdError> {
+    if principal != OWNER {
+        return Err(CmdError::new("forbidden", "only the owner issues a recovery kit"));
+    }
+    let presented = header(req, "authorization").and_then(crate::oauth::bearer_credentials).unwrap_or("");
+    let owner_token = tokens.owner.as_deref().filter(|t| !t.is_empty()).map_or(false, |t| constant_time_eq(presented.as_bytes(), t.as_bytes()));
+    let session = if owner_token {
+        None
+    } else {
+        // `authenticate` accepted it as the owner, and it is not the owner token: an app sign-in.
+        Some(crate::oauth::app_grant_of_token(presented).ok_or_else(|| CmdError::new("unauthenticated", "that token is not valid for this wardrobe"))?)
+    };
+    match crate::recovery::issue(store, now_ms, session).await {
+        Ok(Some(issued)) => Ok(issued),
+        Ok(None) => Err(CmdError::new("unauthenticated", "this sign-in has ended; sign in again")),
+        Err(oauth::Fault::Unavailable) => Err(internal("the recovery kit could not be written just now; nothing was issued; try again")),
+        Err(oauth::Fault::Corrupt) => Err(CmdError::with("internal", "a stored sign-in record is unreadable; nothing was issued", json!({"retryable": false}))),
+    }
 }
 
 /// `POST /v1/sessions/revoke` (`SessionsRevoked`): sign out everywhere. Every sign-in of the app ends
@@ -256,9 +291,9 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
         return ok(json!({"status": "ok", "service": "wardrobe", "host": "ferrite", "contractVersion": CONTRACT_VERSION}));
     }
     let app = oauth::AppClient::from_config(tokens.app_client_id.as_deref(), tokens.app_redirect_uri.as_deref());
-    // Claim, link and recovery need an identity provider, which this server does not have.
+    // Claim, link and recovery transactions are not served (see `identity_unavailable`).
     if req.method == "POST" && matches!(path, "/auth/claim" | "/auth/link/complete" | "/auth/recovery/start" | "/auth/recovery/complete") {
-        return error_reply(identity_unavailable());
+        return error_reply(identity_unavailable(path));
     }
     // OAuth and MCP authenticate themselves (an MCP access token, the owner
     // token on the consent form) and need the public origin.
@@ -336,7 +371,7 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
         }
         ("GET", "/v1/meta") => crate::app_routes::meta(tokens.public_origin.as_deref().filter(|o| oauth::valid_origin(o)), now_ms),
         ("GET", "/v1/command-types") => crate::command_types::list(),
-        ("GET", "/v1/me") => Ok(crate::app_routes::me(principal)),
+        ("GET", "/v1/me") => crate::app_routes::me(store, principal).await,
         ("GET", "/v1/service") => Ok(crate::app_routes::service()),
         ("GET", "/v1/settings") => Ok(crate::app_routes::settings(now_ms)),
         ("GET", "/v1/recovery") => Ok(crate::app_routes::recovery(store, now_ms).await),
@@ -350,7 +385,8 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
             crate::style::conflicts(q("status"), q("documentId"))
         }
         ("POST", "/v1/sessions/revoke") => sign_out_everywhere(store, principal, now_ms).await,
-        ("POST", "/v1/identities/link" | "/v1/identities/unlink" | "/v1/recovery-kit" | "/v1/account/delete") => Err(identity_unavailable()),
+        ("POST", "/v1/recovery-kit") => issue_recovery_kit(store, req, tokens, principal, now_ms).await,
+        ("POST", p @ ("/v1/identities/link" | "/v1/identities/unlink" | "/v1/account/delete")) => Err(identity_unavailable(p)),
         ("GET", "/v1/laundry") => crate::app_routes::laundry(store, now_ms).await,
         ("GET", "/v1/feedback") => read_feedback(store, query.iter().find(|(k, _)| k == "garmentId").map(|(_, v)| v.as_str())).await,
         ("GET", "/v1/trips") => read_trips(store).await,

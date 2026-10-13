@@ -3,7 +3,9 @@
 //! `WARDROBE_APP_REDIRECT_URI`) discovers the authorization server, signs in on the consent page
 //! with the owner token (PKCE S256, resource = the API origin), and its tokens act as the owner on
 //! `/v1` and nowhere else. Sign out everywhere ends every app sign-in and no connected assistant.
-//! Claims, linked identities, recovery kits and account deletion answer `module_unavailable`.
+//! A recovery kit's code signs the app in once in place of the owner token, ending every other
+//! sign-in and assistant. Claims, linked identities, recovery transactions and account deletion
+//! answer `module_unavailable`, each with its reason.
 //!
 //! The store is an in-memory test double of the APE binding (the same guarded-commit semantics).
 
@@ -13,7 +15,7 @@ use std::io;
 use ferrite_app::serde_json::{self, json, Value};
 use ferrite_app::IngressRequest;
 use wardrobe::api::{self, Store, Tokens};
-use wardrobe::oauth::{b64url, consent_form_mac, pct_encode, AppClient, ACCESS_TTL_MS, MAX_APP_SESSIONS};
+use wardrobe::oauth::{b64url, consent_form_mac, pct_encode, AppClient, Grant, Refresh, ACCESS_TTL_MS, MAX_APP_SESSIONS, MAX_GRANTS};
 use wardrobe::sha256::digest;
 
 const ORIGIN: &str = "http://127.0.0.1:8787";
@@ -126,7 +128,12 @@ async fn sign_in_code(store: &mut MemStore, now: u64) -> String {
 /// A full sign-in of the app: (access token, refresh token).
 async fn sign_in(store: &mut MemStore, now: u64) -> (String, String) {
     let code = sign_in_code(store, now).await;
-    let r = send(store, now, "POST", "/oauth/token", None, form(&[("grant_type", "authorization_code"), ("code", &code), ("redirect_uri", APP_REDIRECT), ("client_id", APP_ID), ("code_verifier", VERIFIER), ("resource", ORIGIN)])).await;
+    exchange(store, now, &code).await
+}
+
+/// The token exchange the app makes with a sign-in's code: (access token, refresh token).
+async fn exchange(store: &mut MemStore, now: u64, code: &str) -> (String, String) {
+    let r = send(store, now, "POST", "/oauth/token", None, form(&[("grant_type", "authorization_code"), ("code", code), ("redirect_uri", APP_REDIRECT), ("client_id", APP_ID), ("code_verifier", VERIFIER), ("resource", ORIGIN)])).await;
     assert_eq!(r.status, 200, "{}", r.text);
     assert_eq!((r.json["scope"].clone(), r.json["token_type"].clone(), r.json["expires_in"].clone()), (json!("wardrobe.owner"), json!("Bearer"), json!(ACCESS_TTL_MS / 1000)));
     (r.json["access_token"].as_str().unwrap().to_string(), r.json["refresh_token"].as_str().unwrap().to_string())
@@ -308,13 +315,229 @@ async fn without_or_after_changing_the_app_configuration_its_sign_ins_do_not_wor
 }
 
 #[tokio::test]
-async fn identity_routes_that_need_an_identity_provider_say_so() {
+async fn identity_routes_this_server_does_not_serve_say_why() {
     let mut store = MemStore::default();
-    for (path, auth) in [("/auth/claim", None), ("/auth/link/complete", None), ("/auth/recovery/start", None), ("/auth/recovery/complete", None), ("/v1/identities/link", Some(OWNER)), ("/v1/identities/unlink", Some(OWNER)), ("/v1/recovery-kit", Some(OWNER)), ("/v1/account/delete", Some(OWNER))] {
+    for (path, auth, reason) in [
+        ("/auth/claim", None, "no_identity_provider"),
+        ("/auth/link/complete", None, "no_identity_provider"),
+        ("/auth/recovery/start", None, "recovery_on_sign_in_page"),
+        ("/auth/recovery/complete", None, "recovery_on_sign_in_page"),
+        ("/v1/identities/link", Some(OWNER), "no_identity_provider"),
+        ("/v1/identities/unlink", Some(OWNER), "no_identity_provider"),
+        ("/v1/account/delete", Some(OWNER), "erasure_unavailable"),
+    ] {
         let r = send(&mut store, T0, "POST", path, auth, b"{}".to_vec()).await;
-        assert_eq!((r.status, r.json["error"]["code"].clone(), r.json["error"]["details"]["module"].clone()), (501, json!("module_unavailable"), json!("identity")), "{path}: {}", r.text);
+        let e = &r.json["error"];
+        assert_eq!((r.status, e["code"].clone(), e["details"]["module"].clone(), e["details"]["reason"].clone()), (501, json!("module_unavailable"), json!("identity"), json!(reason)), "{path}: {}", r.text);
     }
     // The /v1 ones still need a sign-in first.
+    assert_eq!(send(&mut store, T0, "POST", "/v1/account/delete", None, vec![]).await.status, 401);
     assert_eq!(send(&mut store, T0, "POST", "/v1/recovery-kit", None, vec![]).await.status, 401);
     assert!(store.data.is_empty(), "nothing was written");
+}
+
+/// The app's sign-in page submitted with a recovery code instead of the owner token, under the
+/// given correlation ID (a queue redelivery repeats it).
+async fn recover(store: &mut MemStore, now: u64, code: &str, correlation: &str) -> Answer {
+    let ch = challenge();
+    let ap = app_params(&ch);
+    let mut params = borrowed(&ap);
+    let mac = consent_form_mac(OWNER, now, APP_ID, APP_REDIRECT, &ch);
+    let issued = now.to_string();
+    params.extend([("recovery_code", code), ("decision", "allow"), ("issued", issued.as_str()), ("form_mac", mac.as_str())]);
+    let mut req = IngressRequest::new("POST", "/oauth/authorize", form(&params));
+    req.correlation_id = correlation.to_string();
+    let reply = api::handle(store, &tokens(Some(APP_ID)), now, &req).await;
+    let (_, bytes) = reply.content();
+    Answer { status: reply.status, json: Value::Null, text: String::from_utf8_lossy(&bytes).into_owned(), headers: reply.headers }
+}
+
+fn redirect_code(r: &Answer) -> String {
+    assert_eq!(r.status, 302, "{}", r.text);
+    let location = r.headers.iter().find(|(k, _)| k == "location").unwrap().1.clone();
+    assert!(location.starts_with(&format!("{APP_REDIRECT}?code=wac.")), "{location}");
+    location.split("code=").nth(1).unwrap().split('&').next().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn the_owner_issues_and_replaces_a_recovery_kit_shown_once() {
+    let mut store = MemStore::default();
+    let me = send(&mut store, T0, "GET", "/v1/me", Some(OWNER), vec![]).await;
+    assert_eq!(me.json["recoveryKit"], json!({"present": false, "issuedAt": null}));
+    // The assistant token may not issue one.
+    let r = send(&mut store, T0, "POST", "/v1/recovery-kit", Some(ASSISTANT), vec![]).await;
+    assert_eq!((r.status, r.json["error"]["code"].clone()), (403, json!("forbidden")), "{}", r.text);
+    assert!(store.data.is_empty());
+
+    let (app, _) = sign_in(&mut store, T0).await;
+    let first = send(&mut store, T0 + 1_000, "POST", "/v1/recovery-kit", Some(&app), vec![]).await;
+    assert_eq!(first.status, 200, "{}", first.text);
+    let kit = &first.json["kit"];
+    let code = kit["recoveryCode"].as_str().unwrap().to_string();
+    let kit_id = kit["kitId"].as_str().unwrap().to_string();
+    assert!(code.starts_with(&format!("GRD1-{kit_id}-")) && code.len() > 60, "{code}");
+    assert_eq!((first.json["replacedKitId"].clone(), kit["issuedAt"].clone()), (Value::Null, json!("2026-09-10T00:26:41Z")));
+    assert!(first.json["receiptId"].as_str().unwrap().starts_with("aud_"));
+    assert!(kit["downloadText"].as_str().unwrap().contains(&code) && kit["downloadFileName"] == json!(format!("garderobe-recovery-kit-{kit_id}.txt")));
+    // Only a verifier is stored; /v1/me reports the kit and never shows it.
+    let stored: String = store.data.values().map(|v| String::from_utf8_lossy(v).into_owned()).collect();
+    assert!(!stored.contains(&code[code.len() - 20..]), "the code is not stored");
+    let me = send(&mut store, T0 + 2_000, "GET", "/v1/me", Some(&app), vec![]).await;
+    assert_eq!((me.json["recoveryKit"].clone(), me.json["issuedRecoveryKit"].clone()), (json!({"present": true, "issuedAt": "2026-09-10T00:26:41Z"}), Value::Null));
+    assert!(!me.text.contains(&code));
+
+    // Issuing again replaces it: the first code no longer signs in, the second does. The app's own
+    // sign-in survives the rotation.
+    let second = send(&mut store, T0 + 3_000, "POST", "/v1/recovery-kit", Some(OWNER), vec![]).await;
+    assert_eq!(second.json["replacedKitId"], json!(kit_id));
+    let code2 = second.json["kit"]["recoveryCode"].as_str().unwrap().to_string();
+    assert_ne!(code, code2);
+    assert_eq!(send(&mut store, T0 + 4_000, "GET", "/v1/me", Some(&app), vec![]).await.status, 200);
+    assert_eq!(recover(&mut store, T0 + 4_000, &code, "rotated-1").await.status, 401);
+    assert_eq!(recover(&mut store, T0 + 4_000, &code2, "rotated-2").await.status, 302);
+}
+
+#[tokio::test]
+async fn a_recovery_code_signs_the_app_in_once_and_ends_every_other_sign_in_and_assistant() {
+    let mut store = MemStore::default();
+    let (lost_phone, lost_refresh) = sign_in(&mut store, T0).await;
+    let assistant = connect_assistant(&mut store).await;
+    let issued = send(&mut store, T0 + 1_000, "POST", "/v1/recovery-kit", Some(OWNER), vec![]).await;
+    let code = issued.json["kit"]["recoveryCode"].as_str().unwrap().to_string();
+
+    // The sign-in page offers the recovery code beside the owner token.
+    let ch = challenge();
+    let page = send(&mut store, T0 + 2_000, "GET", &format!("/oauth/authorize?{}", query(&borrowed(&app_params(&ch)))), None, vec![]).await;
+    assert!(page.text.contains("name=\"recovery_code\"") && page.text.contains("name=\"owner_token\""), "{}", page.text);
+
+    // A wrong or malformed code is refused and changes nothing.
+    let mut wrong = code.clone();
+    let last = wrong.pop().unwrap();
+    wrong.push(if last == 'A' { 'B' } else { 'A' });
+    let before = store.data.clone();
+    for bad in [wrong.as_str(), "GRD1-not-a-code", ""] {
+        let r = recover(&mut store, T0 + 2_000, bad, &format!("bad-{bad}")).await;
+        assert_eq!(r.status, 401, "{bad}: {}", r.text);
+    }
+    assert!(store.data == before, "a refused code writes nothing");
+    assert!(recover(&mut store, T0 + 2_000, &wrong, "bad-again").await.text.contains("recovery code is not valid"));
+
+    // The right code (in any spelling) signs the app in.
+    let r = recover(&mut store, T0 + 3_000, &code.to_lowercase(), "recover-1").await;
+    let auth_code = redirect_code(&r);
+    // A redelivery of the same request is answered with the same code; nothing else changes.
+    let after = store.data.clone();
+    let again = recover(&mut store, T0 + 3_100, &code, "recover-1").await;
+    assert_eq!(redirect_code(&again), auth_code);
+    assert!(store.data == after, "the redelivery wrote nothing");
+    let (recovered, _) = exchange(&mut store, T0 + 3_200, &auth_code).await;
+    let me = send(&mut store, T0 + 4_000, "GET", "/v1/me", Some(&recovered), vec![]).await;
+    assert_eq!((me.status, me.json["recoveryKit"].clone()), (200, json!({"present": false, "issuedAt": null})), "{}", me.text);
+
+    // Every earlier sign-in of the app and every connected assistant has ended; the owner token is unchanged.
+    assert_eq!(send(&mut store, T0 + 4_000, "GET", "/v1/me", Some(&lost_phone), vec![]).await.status, 401);
+    let r = send(&mut store, T0 + 4_000, "POST", "/oauth/token", None, form(&[("grant_type", "refresh_token"), ("refresh_token", &lost_refresh), ("client_id", APP_ID)])).await;
+    assert_eq!((r.status, r.json["error"].clone()), (400, json!("invalid_grant")));
+    assert_eq!(mcp_status(&mut store, T0 + 4_000, &assistant).await, 401);
+    assert_eq!(send(&mut store, T0 + 4_000, "GET", "/v1/me", Some(OWNER), vec![]).await.status, 200);
+
+    // The code works once (a new request, not a redelivery).
+    let r = recover(&mut store, T0 + 5_000, &code, "recover-2").await;
+    assert_eq!(r.status, 401, "{}", r.text);
+    assert_eq!(send(&mut store, T0 + 5_000, "GET", "/v1/me", Some(&recovered), vec![]).await.status, 200, "a refused reuse ends nothing");
+    // A new kit can be issued from the recovered sign-in.
+    let fresh = send(&mut store, T0 + 6_000, "POST", "/v1/recovery-kit", Some(&recovered), vec![]).await;
+    assert_eq!((fresh.status, fresh.json["replacedKitId"].clone()), (200, Value::Null), "{}", fresh.text);
+}
+
+#[tokio::test]
+async fn a_recovery_code_signs_in_even_when_every_grant_slot_is_live() {
+    let mut store = MemStore::default();
+    // Every slot holds a live assistant grant (written directly; consenting a hundred times adds nothing).
+    for slot in 0..MAX_GRANTS {
+        let grant = Grant {
+            id: format!("grt_{slot:04x}{}", "0".repeat(28)),
+            client_id: format!("cli_{slot:04x}{}", "0".repeat(28)),
+            client_name: format!("Assistant {slot}"),
+            redirect_uri: "http://127.0.0.1:5000/cb".into(),
+            scopes: vec!["wardrobe.read".into()],
+            active: true,
+            created_at: T0 + slot as u64,
+            revoked_at: None,
+            revoked_reason: None,
+            created_by: None,
+            code: None,
+            refresh: Some(Refresh { current: vec!["a".repeat(64)], previous: None, previous_until: None, retired: vec![], last_used_at: T0 }),
+            access: vec![],
+            version: 1,
+        };
+        store.data.insert(format!("o/grant/{slot}").into_bytes(), grant.to_json().to_string().into_bytes());
+    }
+    let issued = send(&mut store, T0 + 1_000, "POST", "/v1/recovery-kit", Some(OWNER), vec![]).await;
+    let code = issued.json["kit"]["recoveryCode"].as_str().unwrap().to_string();
+    // An ordinary sign-in finds no room.
+    let ch = challenge();
+    let ap = app_params(&ch);
+    let mut params = borrowed(&ap);
+    let mac = consent_form_mac(OWNER, T0 + 2_000, APP_ID, APP_REDIRECT, &ch);
+    let at = (T0 + 2_000).to_string();
+    params.extend([("owner_token", OWNER), ("decision", "allow"), ("issued", at.as_str()), ("form_mac", mac.as_str())]);
+    assert_eq!(send(&mut store, T0 + 2_000, "POST", "/oauth/authorize", None, form(&params)).await.status, 409);
+    // The recovery takes the oldest grant's slot and ends every other grant.
+    let r = recover(&mut store, T0 + 3_000, &code, "recover-full").await;
+    let auth_code = redirect_code(&r);
+    assert!(auth_code.starts_with("wac.grt_0000"), "{auth_code}");
+    let (recovered, _) = exchange(&mut store, T0 + 3_100, &auth_code).await;
+    assert_eq!(send(&mut store, T0 + 3_200, "GET", "/v1/me", Some(&recovered), vec![]).await.status, 200);
+    let list = send(&mut store, T0 + 3_200, "GET", "/v1/assistants", Some(OWNER), vec![]).await;
+    let grants = list.json["grants"].as_array().unwrap();
+    assert!(grants.len() == MAX_GRANTS - 1 && grants.iter().all(|g| g["status"] == "revoked"), "{}", list.text);
+}
+
+#[tokio::test]
+async fn a_sign_in_that_has_ended_cannot_issue_a_kit() {
+    let mut store = MemStore::default();
+    let (app, _) = sign_in(&mut store, T0).await;
+    let grant = wardrobe::oauth::app_grant_of_token(&app).unwrap().to_string();
+    // A live sign-in can.
+    assert!(wardrobe::recovery::issue(&mut store, T0 + 1_000, Some(&grant)).await.unwrap().is_some());
+    // Once it has ended (here by sign out everywhere; a recovery ends it the same way), the issuance
+    // it began is refused at the commit and nothing is written, even though its request was
+    // authenticated before the sign-in ended.
+    assert_eq!(send(&mut store, T0 + 2_000, "POST", "/v1/sessions/revoke", Some(OWNER), vec![]).await.status, 200);
+    let before = store.data.clone();
+    assert_eq!(wardrobe::recovery::issue(&mut store, T0 + 3_000, Some(&grant)).await.unwrap(), None);
+    assert!(store.data == before);
+    let r = send(&mut store, T0 + 3_000, "POST", "/v1/recovery-kit", Some(&app), vec![]).await;
+    assert_eq!(r.status, 401, "{}", r.text);
+}
+
+#[tokio::test]
+async fn an_owner_token_spelled_like_an_app_token_still_issues_a_kit() {
+    let mut store = MemStore::default();
+    let owner = format!("wat.grt_0000{}.{}", "0".repeat(28), "a".repeat(64));
+    let t = Tokens { owner: Some(owner.clone()), ..tokens(Some(APP_ID)) };
+    let r = send_with(&mut store, &t, T0, "POST", "/v1/recovery-kit", Some(&owner), vec![]).await;
+    assert_eq!(r.status, 200, "{}", r.text);
+    assert!(r.json["kit"]["recoveryCode"].as_str().unwrap().starts_with("GRD1-"));
+}
+
+#[tokio::test]
+async fn a_recovery_code_does_not_connect_an_assistant() {
+    let mut store = MemStore::default();
+    let issued = send(&mut store, T0, "POST", "/v1/recovery-kit", Some(OWNER), vec![]).await;
+    let code = issued.json["kit"]["recoveryCode"].as_str().unwrap().to_string();
+    let redirect = "http://127.0.0.1:43123/callback";
+    let reg = send(&mut store, T0, "POST", "/oauth/register", None, json!({"redirect_uris": [redirect], "client_name": "Codex"}).to_string().into_bytes()).await;
+    let client = reg.json["client_id"].as_str().unwrap().to_string();
+    let ch = challenge();
+    let page = send(&mut store, T0, "GET", &format!("/oauth/authorize?{}", query(&[("response_type", "code"), ("client_id", client.as_str()), ("redirect_uri", redirect), ("code_challenge", ch.as_str()), ("code_challenge_method", "S256"), ("scope", "wardrobe.read"), ("resource", "http://127.0.0.1:8787/mcp")])), None, vec![]).await;
+    assert!(page.status == 200 && !page.text.contains("recovery_code"), "an assistant's page offers no recovery code");
+    let mac = consent_form_mac(OWNER, T0, &client, redirect, &ch);
+    let issued_at = T0.to_string();
+    let params = [("response_type", "code"), ("client_id", client.as_str()), ("redirect_uri", redirect), ("code_challenge", ch.as_str()), ("code_challenge_method", "S256"), ("scope", "wardrobe.read"), ("resource", "http://127.0.0.1:8787/mcp"), ("recovery_code", code.as_str()), ("decision", "allow"), ("issued", issued_at.as_str()), ("form_mac", mac.as_str())];
+    let r = send(&mut store, T0, "POST", "/oauth/authorize", None, form(&params)).await;
+    assert_eq!(r.status, 401, "{}", r.text);
+    let me = send(&mut store, T0, "GET", "/v1/me", Some(OWNER), vec![]).await;
+    assert_eq!(me.json["recoveryKit"]["present"], json!(true), "the kit was not spent");
 }

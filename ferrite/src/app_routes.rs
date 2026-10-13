@@ -382,18 +382,23 @@ pub fn service() -> Value {
 
 /// `GET /v1/me` (`MeResponse`). This port serves one owner, signed in with the owner token, a sign-in
 /// of the owner's app (both the owner, with every owner scope) or the assistant token; there are no
-/// linked identities and no recovery kit (no identity provider), and it says so.
-pub fn me(principal: Principal) -> Value {
+/// linked identities (no identity provider). `recoveryKit` says whether a usable recovery kit
+/// exists (src/recovery.rs); the kit itself is shown only by `POST /v1/recovery-kit`.
+pub async fn me<S: Store>(store: &mut S, principal: Principal) -> Result<Value, CmdError> {
     let scopes = if principal == api::OWNER { json!(["read", "write", "admin"]) } else { json!(["read", "write"]) };
-    json!({
+    let kit = crate::recovery::status(store).await.map_err(|f| match f {
+        crate::oauth::Fault::Unavailable => CmdError::with("internal", "the account could not be read just now; try again", json!({"retryable": true})),
+        crate::oauth::Fault::Corrupt => CmdError::with("internal", "the stored recovery kit record is unreadable", json!({"retryable": false})),
+    })?;
+    Ok(json!({
         "userId": "owner",
         "displayName": "Owner",
         "scopes": scopes,
         "channel": principal.channel,
         "identities": [],
-        "recoveryKit": {"present": false, "issuedAt": null},
+        "recoveryKit": kit,
         "issuedRecoveryKit": null,
-    })
+    }))
 }
 
 /// `GET /v1/settings` (`SettingsResponse`): the specification's default settings
