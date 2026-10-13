@@ -22,10 +22,16 @@ const DAY: &str = "2026-09-11";
 #[derive(Default, Clone)]
 struct MemStore {
     data: BTreeMap<Vec<u8>, Vec<u8>>,
+    /// Test fault: once anything is committed, every read of the ledger fails.
+    fail_ledger_after_commit: bool,
+    committed: bool,
 }
 
 impl Store for MemStore {
     async fn get(&mut self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        if self.fail_ledger_after_commit && self.committed && key == b"ledger" {
+            return Err(io::Error::new(io::ErrorKind::Other, "injected ledger read fault"));
+        }
         Ok(self.data.get(key).cloned())
     }
     async fn commit_n_if(&mut self, guard: &[u8], expected: Option<&[u8]>, entries: &[(&[u8], &[u8])]) -> io::Result<Result<(), Option<Vec<u8>>>> {
@@ -36,6 +42,7 @@ impl Store for MemStore {
         for (k, v) in entries {
             self.data.insert(k.to_vec(), v.to_vec());
         }
+        self.committed = true;
         Ok(Ok(()))
     }
 }
@@ -138,6 +145,45 @@ async fn an_offline_replay_applies_each_command_independently_and_once() {
     }
     assert_eq!(raw(&mut store, "POST", "/v1/commands/batch", b"{not json").await.0, 400);
     assert!(store.data == before.data, "refused batches write nothing");
+}
+
+#[tokio::test]
+async fn a_batch_whose_final_read_fails_still_answers_what_it_applied() {
+    let mut store = MemStore { fail_ledger_after_commit: true, ..Default::default() };
+    let shirt = wardrobe::seed::catalogue().garments.iter().find(|g| g.care_channel == "service").unwrap().id.clone();
+    let queued = json!({"commands": [command("care.mark_dirty", json!({"items": [{"garmentId": shirt}]}), "offline-fault-01")]});
+    let (status, out) = send(&mut store, OWNER, "POST", "/v1/commands/batch", queued).await;
+    assert_eq!(status, 200, "{out}");
+    let receipt = &out["results"][0]["receipt"];
+    assert_eq!((receipt["outcome"].clone(), receipt["wardrobeRevision"].clone()), (json!("committed"), json!(1)));
+    // The revision is the highest this request saw, never an error that hides the receipt.
+    assert_eq!(out["wardrobeRevision"], 1);
+}
+
+#[tokio::test]
+async fn the_owner_and_an_assistant_never_meet_on_one_request_id() {
+    let mut store = MemStore::default();
+    let (status, mine) = send(&mut store, OWNER, "POST", "/v1/recommendations", json!({"clientRequestId": "compose-shared1", "date": DAY, "count": 2, "mode": "board"})).await;
+    assert_eq!(status, 200, "{mine}");
+    // The same request ID from a connected assistant, for the next day: its own publication, not a
+    // key reused with another body.
+    let (status, theirs) = send(&mut store, ASSISTANT, "POST", "/v1/recommendations", json!({"clientRequestId": "compose-shared1", "date": "2026-09-12", "count": 2, "mode": "board"})).await;
+    assert_eq!(status, 200, "{theirs}");
+    assert_eq!(theirs["board"]["localDate"], "2026-09-12");
+    assert_ne!(theirs["board"]["boardId"], mine["board"]["boardId"]);
+    let (_, receipts) = send(&mut store, OWNER, "GET", "/v1/commands", Value::Null).await;
+    let actors: Vec<Value> = receipts["receipts"].as_array().unwrap().iter().map(|r| r["actor"].clone()).collect();
+    assert_eq!(actors.len(), 2);
+    assert!(actors.contains(&json!("owner")) && actors.contains(&json!("assistant")), "{actors:?}");
+
+    // Swaps keep their callers apart in the same way.
+    let board_id = mine["board"]["boardId"].as_str().unwrap().to_string();
+    let option_id = mine["board"]["options"][0]["optionId"].clone();
+    let (status, a) = send(&mut store, OWNER, "POST", &format!("/v1/boards/{board_id}/swap"), json!({"clientRequestId": "swap-shared-01", "optionId": option_id, "role": "top"})).await;
+    assert_eq!(status, 200, "{a}");
+    let (status, b) = send(&mut store, ASSISTANT, "POST", &format!("/v1/boards/{board_id}/swap"), json!({"clientRequestId": "swap-shared-01", "optionId": option_id, "role": "top"})).await;
+    assert_eq!(status, 200, "{b}");
+    assert_eq!((b["receipt"]["replayed"].clone(), b["board"]["revision"].clone()), (json!(false), json!(3)));
 }
 
 #[tokio::test]

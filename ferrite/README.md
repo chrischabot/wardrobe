@@ -85,9 +85,9 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `POST /mcp` (OAuth) | the MCP server of `apps/worker/src/mcp`, see below |
 | `GET /v1/meta` | `MetaResponse`: API and contract versions, mounted modules (media is reported as not mounted), server time, the MCP endpoint and its protocol versions. Without a valid `WARDROBE_PUBLIC_ORIGIN` it is refused by that secret's name |
 | `GET /v1/command-types` | `CommandTypeList`, as `describeCommandTypes`: the seventeen command types this port executes, each with the class, required scope and payload JSON Schema the TypeScript registry gives it (`src/seed/command-types.json`, written by `scripts/build-command-types.mjs`), narrowed to this port: only the payload fields its handler accepts, with `additionalProperties: false` (so `board.publish` has no `requestFingerprint`), only the `owner_tap` and `owner_statement` authorizations (a publication by schedule is not ported), and `consequential` from the port's own connected-assistant rule, under which none of the seventeen waits for the owner. A field whose other values the port always refuses is published as the value it accepts: `wear.record` `tripId` null only; `board.publish` `scope` `"home"`, `brief` the default day brief, `weatherSnapshotId` and `calendarSnapshotId` null only; `board.swap_slot` `weatherSnapshotId` is left out (no value is accepted); `return.open_case` `orderId` and `lineId` null only, `garmentId` a garment ID (never null) and `timezone` `Europe/London` or `UTC`. Size bounds (list and text lengths) are not restated; the command names them when it refuses |
-| `POST /v1/commands/batch` | the phone's offline replay (`CommandBatchResponse`): 1 to 50 envelopes in order, each run as `POST /v1/commands` runs it, independent of the others, with `retryable` from the error code as `isRetryable` decides it |
-| `POST /v1/recommendations` | `RecommendResponse`. `preview` (default): the recommender's validated options, nothing published. `board`: those options published as the day's home board through `board.publish` under the key `board-compose:{clientRequestId}`, answered with the board. A retransmission answers from the saved run and the publication's receipt. `date` is required (no owner timezone); `lockedGarmentIds` and `occasionOnly: true` are refused as not ported |
-| `POST /v1/boards/{id}/swap` | `SwapSlotResponse`: `board.swap_slot` under the key `board-swap:{clientRequestId}`, `expectedRevision` sent as the board's expected version, answered with the receipt and the board as it now stands. No fresher forecast is fetched first (weather is not ported) |
+| `POST /v1/commands/batch` | the phone's offline replay (`CommandBatchResponse`): 1 to 50 envelopes in order, each run as `POST /v1/commands` runs it, independent of the others, with `retryable` from the error code as `isRetryable` decides it. Once commands have run, a failed final read still answers their results |
+| `POST /v1/recommendations` | `RecommendResponse`. `preview` (default): the recommender's validated options, nothing published. `board`: those options published as the day's home board through `board.publish` under the key `board-compose:{caller}:{clientRequestId}` (the caller is `owner` or `assistant`, so the two never meet on one publication), answered with the board. A retransmission answers from the saved run and the publication's receipt. `date` is required (no owner timezone); `lockedGarmentIds` and `occasionOnly: true` are refused as not ported |
+| `POST /v1/boards/{id}/swap` | `SwapSlotResponse`: `board.swap_slot` under the key `board-swap:{caller}:{clientRequestId}`, `expectedRevision` sent as the board's expected version, answered with the receipt and the board as it now stands. No fresher forecast is fetched first (weather is not ported) |
 | `GET /v1/laundry` | `LaundryStateResponse` as `getLaundryState`: the hamper by care channel (service, hand wash), sorted by name, and the newest 12 laundry bags not withdrawn, newest first. `returnBasis` is null; `exceptions` and `cycles` are empty (laundry exceptions and weekly cycles are not ported) |
 | `GET /v1/feedback[?garmentId=]` | `FeedbackList` as `listComfortFeedback`: the comfort notes still active, newest first, or those naming one garment, see "Comfort feedback" |
 | `GET /v1/trips`, `GET /v1/trips/{id}` | `TripList` and `Trip` as `listTrips` and `getTrip`: every trip by departure date then ID, each with its latest packing proposal (or null) and `packed` always empty, see "Trips" |
@@ -927,12 +927,15 @@ milestone, and outside the lines of the milestone in hand:
     unreachable while the gateway secret is unset.
   - Applying owner changes from conversation (`garderobe_ask`) stays parked
     until the owner answers the assistant decision.
-- **Recommendations route.**
-  - The board-mode publication key `board-compose:{clientRequestId}` is not
-    namespaced by caller (the run is), so the owner and a connected assistant
-    sending the same request ID could meet on one publication.
-  - In `POST /v1/commands/batch`, a failure of the final ledger read discards
-    the results already collected instead of answering them.
+- **Recommendations route and offline replay.**
+  - The publication and swap keys carry the caller
+    (`board-compose:{caller}:{clientRequestId}`,
+    `board-swap:{caller}:{clientRequestId}`), unlike the TypeScript daily
+    service's `board-swap:{clientRequestId}`, so a key read back from the
+    receipts names the caller as well.
+  - If the final ledger read of `POST /v1/commands/batch` fails after its
+    commands ran, `wardrobeRevision` is the highest revision the request saw
+    (a lower bound of the current one), not a fresh read.
 - **Daily reads.**
   - The owner's timezone is fixed at the default setting, Europe/London, with
     the British Summer Time rule written into the port (no timezone

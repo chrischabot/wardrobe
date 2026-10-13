@@ -128,16 +128,28 @@ pub async fn batch<S: Store>(store: &mut S, principal: Principal, now_ms: u64, b
         _ => return Err(invalid(format!("commands: expected 1 to {MAX_BATCH_COMMANDS} command envelopes"))),
     };
     let mut results = Vec::with_capacity(commands.len());
+    // The revision before anything runs: with the receipts' own revisions it bounds the answer's
+    // revision if the final read fails, so the results already collected are never discarded.
+    let (_, before) = api::read_ledger(store).await?;
+    let mut seen = before.revision;
     for command in commands {
         let key = command.get("idempotencyKey").and_then(Value::as_str).unwrap_or("").to_string();
         let outcome = if command.is_object() { api::execute(store, principal, now_ms, command).await } else { Err(invalid("the command envelope is invalid: expected a JSON object")) };
         results.push(match outcome {
-            Ok(receipt) => json!({"status": "receipt", "idempotencyKey": key, "receipt": receipt}),
+            Ok(receipt) => {
+                seen = seen.max(receipt["wardrobeRevision"].as_u64().unwrap_or(0));
+                json!({"status": "receipt", "idempotencyKey": key, "receipt": receipt})
+            }
             Err(e) => json!({"status": "error", "idempotencyKey": key, "error": {"code": e.code, "message": e.message, "details": e.details}, "retryable": retryable(e.code)}),
         });
     }
-    let (_, ledger) = api::read_ledger(store).await?;
-    Ok(json!({"results": results, "wardrobeRevision": ledger.revision}))
+    // Once commands have run, a failed final read answers the results with the highest revision
+    // this request saw (a lower bound of the current one) rather than an error that would hide them.
+    let revision = match api::read_ledger(store).await {
+        Ok((_, ledger)) => ledger.revision.max(seen),
+        Err(_) => seen,
+    };
+    Ok(json!({"results": results, "wardrobeRevision": revision}))
 }
 
 /// The parsed `RecommendRequest`, and whether it asks for a published board.
@@ -199,7 +211,9 @@ pub async fn recommendations<S: Store>(store: &mut S, principal: Principal, now_
     let envelope = json!({
         "type": "board.publish",
         "payload": {"localDate": input.date, "requestedCount": requested, "options": options.iter().map(publish_option).collect::<Vec<_>>()},
-        "idempotencyKey": format!("board-compose:{}", input.client_request_id),
+        // The request ID belongs to its caller, as the saved run does: the owner and a connected
+        // assistant sending the same ID never meet on one publication.
+        "idempotencyKey": format!("board-compose:{}:{}", principal.actor, input.client_request_id),
         "authorization": authorization(principal),
         "source": {"channel": principal.channel},
     });
@@ -219,7 +233,8 @@ pub fn swap_target(path: &str) -> Option<&str> {
 }
 
 /// `POST /v1/boards/{id}/swap` (`SwapSlotResponse`): `board.swap_slot` under the idempotency key
-/// `board-swap:{clientRequestId}` (as the daily service sends it), with the board revision the owner
+/// `board-swap:{caller}:{clientRequestId}` (the daily service sends `board-swap:{clientRequestId}`;
+/// the caller keeps the owner's and an assistant's request IDs apart), with the board revision the owner
 /// was looking at as its expected version, answered with the receipt and the board as it now stands.
 /// No forecast is read in this port, so no fresher forecast is fetched first.
 pub async fn swap<S: Store>(store: &mut S, principal: Principal, now_ms: u64, board_id: &str, body: &[u8]) -> Result<Value, CmdError> {
@@ -246,7 +261,7 @@ pub async fn swap<S: Store>(store: &mut S, principal: Principal, now_ms: u64, bo
     let mut envelope = json!({
         "type": "board.swap_slot",
         "payload": payload,
-        "idempotencyKey": format!("board-swap:{client}"),
+        "idempotencyKey": format!("board-swap:{}:{client}", principal.actor),
         "authorization": authorization(principal),
         "source": {"channel": principal.channel},
     });
