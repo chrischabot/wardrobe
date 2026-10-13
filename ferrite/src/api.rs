@@ -420,6 +420,8 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
             Err(_) => Err(CmdError::new("invalid_command", "the request body is not valid JSON")),
         },
         // Settings › Connected assistants, Connections and Notifications: the owner's alone.
+        ("GET", "/v1/proposals") => crate::proposals::list(principal, query.iter().find(|(k, _)| k == "state").map(|(_, v)| v.as_str()), now_ms),
+        ("POST", p) if crate::proposals::decision_target(p).is_some() => crate::proposals::decide(principal, crate::proposals::decision_target(p).unwrap_or_default(), &req.body),
         ("GET" | "POST", p) if owner_settings(p) && principal != OWNER => Err(CmdError::new("forbidden", "only the owner manages connected assistants, connections and notification devices")),
         ("GET", "/v1/assistants") => oauth::list_assistants(store, now_ms).await.map_err(fault_error),
         ("POST", p) if disconnect_target(p).is_some() => {
