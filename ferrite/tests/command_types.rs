@@ -109,9 +109,10 @@ async fn the_list_names_exactly_the_ported_commands_as_the_typescript_registry_d
     assert_eq!(wear["payloadSchema"]["properties"]["tripId"], json!({"default": null, "type": ["string", "null"]}));
     assert_eq!(type_of(&list, "stock.pack")["payloadSchema"]["required"], json!(["tripId", "items"]));
     assert_eq!(type_of(&list, "stock.unpack")["payloadSchema"]["required"], json!(["tripId"]));
-    // What the port categorically refuses is narrowed: the home board or a trip's day board (no evening
-    // boards), the default brief, no weather or Calendar snapshot.
-    assert_eq!(publish["payloadSchema"]["properties"]["scope"]["anyOf"], json!([{"const": "home"}, {"pattern": "^trip:[^:]+$", "maxLength": 133}]));
+    // What the port categorically refuses is narrowed: the home board, a trip's day board or the evening
+    // board of either, the default brief, no weather or Calendar snapshot.
+    assert_eq!(publish["payloadSchema"]["properties"]["scope"]["anyOf"], json!([{"const": "home"}, {"const": "home:evening"}, {"pattern": "^trip:[^:]+(:evening)?$", "maxLength": 141}]));
+    assert_eq!(publish["payloadSchema"]["properties"]["brief"]["properties"]["segment"], json!({"enum": ["day", "evening"]}));
     assert_eq!(publish["payloadSchema"]["properties"]["weatherSnapshotId"]["type"], "null");
     assert!(type_of(&list, "board.swap_slot")["payloadSchema"]["properties"].get("weatherSnapshotId").is_none());
     // No orders: a return names a garment; a deadline is computed in London time or UTC only.
@@ -285,17 +286,16 @@ async fn payloads_the_published_schemas_accept_run_and_the_values_they_refuse_ar
         "composedAgainst": {"wardrobeRevision": 0, "styleRevision": 0}, "expectedBoardRevision": 0,
     });
     for (key, value, says) in [
-        ("scope", json!(7), "scope: expected home or trip:<tripId>"),
-        ("brief", json!({"segment": "evening"}), "send the default brief"),
+        ("scope", json!(7), "scope: expected home, home:evening, trip:<tripId> or trip:<tripId>:evening"),
+        ("brief", json!({"text": "dinner"}), "send the default brief"),
         ("weatherSnapshotId", json!("wx_1"), "unknown weather snapshot"),
         ("calendarSnapshotId", json!("cal_1"), "unknown calendar snapshot"),
         ("requestFingerprint", json!("0123456789abcdef"), "requestFingerprint: not a field of this command"),
     ] {
         run.refused("board.publish", with(&publish, key, value), says).await;
     }
-    // A trip scope the schema admits is still refused for a trip that is not planned, and an evening
-    // board (a trip ID with a ':' segment, which the schema's pattern excludes) is not ported.
-    for (scope, says) in [("trip:trp_1", "no active trip 'trp_1'"), ("trip:trp_1:evening", "evening boards are not ported")] {
+    // A trip scope the schema admits, day or evening, is still refused for a trip that is not planned.
+    for (scope, says) in [("trip:trp_1", "no active trip 'trp_1'"), ("trip:trp_1:evening", "no active trip 'trp_1'")] {
         let (status, body) = run.post("board.publish", &with(&publish, "scope", json!(scope))).await;
         assert_ne!(status, 200, "{scope}: {body}");
         assert!(body.to_string().contains(says), "{scope}: expected '{says}' in {body}");

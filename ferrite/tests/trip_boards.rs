@@ -175,8 +175,8 @@ async fn a_trip_board_needs_a_planned_trip_and_a_day_inside_it() {
         ("trip:trp_nowhere", "2026-10-21", 404, "not_found", "no active trip 'trp_nowhere'"),
         (TRIP, "2026-10-24", 400, "invalid_command", "that date is outside the trip"),
         (TRIP, "2026-10-19", 400, "invalid_command", "that date is outside the trip"),
-        ("trip:trp_lisbon:evening", "2026-10-21", 400, "invalid_command", "evening boards are not ported"),
-        ("trip:", "2026-10-21", 400, "invalid_command", "expected home or trip:<tripId>"),
+        ("trip:trp_lisbon:night", "2026-10-21", 400, "invalid_command", "expected home, home:evening"),
+        ("trip:", "2026-10-21", 400, "invalid_command", "expected home, home:evening"),
     ]
     .into_iter()
     .enumerate()

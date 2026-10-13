@@ -241,7 +241,7 @@ async fn publication_refusals() {
         ({ let mut p = base(); p["weatherSnapshotId"] = json!("wsn_x"); p }, "not_found"),
         ({ let mut p = base(); p["brief"] = json!({"include": [OXFORD_BLUE]}); p }, "invalid_command"),
         ({ let mut p = base(); p["scope"] = json!("trip:t1"); p }, "not_found"),
-        ({ let mut p = base(); p["scope"] = json!("home:evening"); p }, "invalid_command"),
+        ({ let mut p = base(); p["brief"] = json!({"segment": "evening"}); p }, "invalid_command"),
         ({ let mut p = base(); p["requestedCount"] = json!(9); p }, "invalid_command"),
         ({ let mut p = base(); p["expectedBoardRevision"] = json!(3); p }, "precondition_failed"),
         ({ let mut p = base(); p["options"] = json!([outfit(OXFORD_BLUE, AKITA_CREAM, SOCK_BISCUIT, NB_GREY, BELT_BROWN), outfit(OXFORD_BLUE, GREY_CHINO, SOCK_GREY, NB_OLIVE, BELT_BLACK)]); p["requestedCount"] = json!(2); p }, "ok-one"),

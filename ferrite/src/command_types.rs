@@ -55,17 +55,18 @@ pub fn accepted_fields(kind: &str) -> Option<&'static [&'static str]> {
 fn narrowed_field(kind: &str, field: &str) -> Option<Option<Value>> {
     let null_only = || Some(json!({"type": "null", "default": null}));
     match (kind, field) {
-        // board.rs `publish_input`: the home board or a trip's day board (no evening boards), the default
-        // day brief, and no snapshot (weather and Calendar are not read, so a named snapshot is never found).
+        // board.rs `publish_input`: the home board, a trip's day board or the evening board of either, the
+        // default brief (its segment evening only for an evening scope), and no snapshot (weather and
+        // Calendar are not read, so a named snapshot is never found).
         ("board.publish", "scope") => Some(Some(json!({
             "type": "string", "default": "home",
-            "anyOf": [{"const": "home"}, {"pattern": "^trip:[^:]+$", "maxLength": 5 + crate::packing::MAX_TRIP_ID}],
+            "anyOf": [{"const": "home"}, {"const": "home:evening"}, {"pattern": "^trip:[^:]+(:evening)?$", "maxLength": 13 + crate::packing::MAX_TRIP_ID}],
         }))),
         ("board.publish", "brief") => Some(Some(json!({
             "type": "object",
             "properties": {
                 "text": {"const": null}, "requestedCount": {"const": null}, "include": {"const": []}, "exclude": {"const": []},
-                "occasionOnly": {"const": false}, "allowRepeat": {"const": false}, "segment": {"const": "day"},
+                "occasionOnly": {"const": false}, "allowRepeat": {"const": false}, "segment": {"enum": ["day", "evening"]},
             },
             "additionalProperties": false,
         }))),

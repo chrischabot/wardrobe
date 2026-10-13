@@ -81,7 +81,7 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `POST /v1/wardrobe/selection` | `GarmentSelection` for a `GarmentSelector` (`garmentIds`, `category`, `search`, `maker`, `colour`, `fabric`, `careChannel`, `planningPolicy`, `acquisition`; at least one, every one set must match, unknown keys ignored): the garments a bulk correction would touch, by category, name and ID, with their versions and the wardrobe revision. An unknown garment ID is `not_found` naming it. Writes nothing; the bulk correction itself is not ported |
 | `GET /v1/availability[?date=]` | `AvailabilitySnapshot` as `getAvailability` (estimator `availability-estimator/1.0.0`): every garment's probability of a clean unit for a fresh wear on the day (the owner's day now without one), its status, reasons, balances and inferred unreported wear, see "Availability" |
 | `POST /v1/commands` | the command envelope of `packages/contracts` (`type`, `payload`, `idempotencyKey`, `authorization`, `source.channel`, optional `occurredAt`, `expectedVersions`) |
-| `GET /v1/today[?date=YYYY-MM-DD][&scope=home\|trip:<tripId>]` | `TodayResponse` as `readToday`: the board of the scope (the home board, or a trip's day board, see "Trip-day boards") for the day, or none, with the garments recorded worn that day. Without a date it is the owner's day now in his timezone (Europe/London, the default setting, with British Summer Time), whatever the scope. `status` is `ready` or `none`; the source freshness list gives the board and wardrobe revisions, style, and then weather as `unavailable` and Calendar as `not_connected`; `runId` is null (nothing composes in the background) and `wardrobeRevision` is the current revision. An evening scope (`home:evening`, `trip:<tripId>:evening`) is refused, since evening boards are not ported |
+| `GET /v1/today[?date=YYYY-MM-DD][&scope=home\|home:evening\|trip:<tripId>\|trip:<tripId>:evening]` | `TodayResponse` as `readToday`: the board of the scope (the home board, a trip's day board, see "Trip-day boards", or the evening board of either, see "Evening boards") for the day, or none, with the garments recorded worn that day. Without a date it is the owner's day now in his timezone (Europe/London, the default setting, with British Summer Time), whatever the scope. `status` is `ready` or `none`; the source freshness list gives the board and wardrobe revisions, style, and then weather as `unavailable` and Calendar as `not_connected`; `runId` is null (nothing composes in the background) and `wardrobeRevision` is the current revision. Any other scope is `invalid_command` |
 | `GET /v1/weather[?date=YYYY-MM-DD]` | `WeatherSnapshot`, for the owner's day now when no date is named: what the TypeScript service answers for an owner with no home city (no settings command is ported, so `homeLocation` is null). There is no forecast: `freshness` is `unavailable`, every window and condition value is null (never zero, dry or calm), the line is "Weather unavailable" and the limitation is "No home city is set, so no forecast was requested." The snapshot is answered and not recorded (`weather.record_snapshot` is not ported) |
 | `GET /v1/days/{date}` (owner only) | the day's recorded wear (`DailyRecord`, as `getDailyRecord`): counted garments and every report with its status. Choosing an outfit never changes it |
 | `GET /v1/commands[?limit=]`, `GET /v1/commands/{id}` | receipts, newest first; an undo already used is no longer offered |
@@ -92,7 +92,7 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | `GET /v1/exports/{id}/download?ticket=` (the ticket alone) | The package (`application/zip`), for a ticket the owner was just given: each ticket works once, for 5 minutes, and is spent before a byte is sent; the sign-in is neither needed nor read |
 | `POST /mcp` (OAuth) | the MCP server of `apps/worker/src/mcp`, see below |
 | `GET /v1/meta` | `MetaResponse`: API and contract versions, mounted modules (media is reported as not mounted), server time, the MCP endpoint and its protocol versions. Without a valid `WARDROBE_PUBLIC_ORIGIN` it is refused by that secret's name |
-| `GET /v1/command-types` | `CommandTypeList`, as `describeCommandTypes`: the nineteen command types this port executes, each with the class, required scope and payload JSON Schema the TypeScript registry gives it (`src/seed/command-types.json`, written by `scripts/build-command-types.mjs`), narrowed to this port: only the payload fields its handler accepts, with `additionalProperties: false` (so `board.publish` has no `requestFingerprint`), only the `owner_tap` and `owner_statement` authorizations (a publication by schedule is not ported), and `consequential` from the port's own connected-assistant rule, under which none of the nineteen waits for the owner. A field whose other values the port always refuses is published as the value it accepts: `board.publish` `scope` `"home"` or `trip:<tripId>` (no evening boards), `brief` the default day brief, `weatherSnapshotId` and `calendarSnapshotId` null only; `board.swap_slot` `weatherSnapshotId` is left out (no value is accepted); `return.open_case` `orderId` and `lineId` null only, `garmentId` a garment ID (never null) and `timezone` `Europe/London` or `UTC`. Size bounds (list and text lengths) are not restated; the command names them when it refuses |
+| `GET /v1/command-types` | `CommandTypeList`, as `describeCommandTypes`: the nineteen command types this port executes, each with the class, required scope and payload JSON Schema the TypeScript registry gives it (`src/seed/command-types.json`, written by `scripts/build-command-types.mjs`), narrowed to this port: only the payload fields its handler accepts, with `additionalProperties: false` (so `board.publish` has no `requestFingerprint`), only the `owner_tap` and `owner_statement` authorizations (a publication by schedule is not ported), and `consequential` from the port's own connected-assistant rule, under which none of the nineteen waits for the owner. A field whose other values the port always refuses is published as the value it accepts: `board.publish` `scope` `"home"`, `"home:evening"`, `trip:<tripId>` or `trip:<tripId>:evening`, `brief` the default brief (its `segment` `day` or `evening`), `weatherSnapshotId` and `calendarSnapshotId` null only; `board.swap_slot` `weatherSnapshotId` is left out (no value is accepted); `return.open_case` `orderId` and `lineId` null only, `garmentId` a garment ID (never null) and `timezone` `Europe/London` or `UTC`. Size bounds (list and text lengths) are not restated; the command names them when it refuses |
 | `POST /v1/commands/batch` | the phone's offline replay (`CommandBatchResponse`): 1 to 50 envelopes in order, each run as `POST /v1/commands` runs it, independent of the others, with `retryable` from the error code as `isRetryable` decides it. Once commands have run, a failed final read still answers their results |
 | `POST /v1/recommendations` | `RecommendResponse`. `preview` (default): the recommender's validated options, nothing published. `board`: those options published through `board.publish` as the day's home board, or, for a day of a planned trip with something packed, as that trip's day board (`trip:<tripId>`, composed from the suitcase; see "Trip-day boards"), under the key `board-compose:{caller}:{clientRequestId}` (the caller is `owner` or `assistant`, so the two never meet on one publication), answered with the board. A retransmission answers from the saved run and the publication's receipt. `date` is required (no owner timezone); `lockedGarmentIds` and `occasionOnly: true` are refused as not ported |
 | `POST /v1/boards/{id}/swap` | `SwapSlotResponse`: `board.swap_slot` under the key `board-swap:{caller}:{clientRequestId}`, `expectedRevision` sent as the board's expected version, answered with the receipt and the board as it now stands. No fresher forecast is fetched first (weather is not ported) |
@@ -216,9 +216,23 @@ briefs, which are not ported (test
 `trousers_worn_inside_the_seven_day_horizon_are_not_offered_and_a_choice_of_them_is_refused`).
 
 Not ported yet: weather and Calendar (the board's `timezone` is the owner's
-default, Europe/London), freshness (`unavailable`), and evening boards. A
+default, Europe/London) and freshness (`unavailable`). A
 board's validity is therefore reported as limited or degraded, never as fully
 checked.
+
+### Evening boards
+
+An evening board (`home:evening`, or `trip:<tripId>:evening` for a day of a
+planned trip, drawn from its suitcase) is published with `board.publish` and a
+`scope`, chosen from with `board.select` and swapped with `board.swap_slot`,
+exactly as the day's board, each with its receipt and undo, and read with
+`GET /v1/today?scope=`. It is a board of its own beside the day's: a choice or
+swap on one never touches the other. As in `packages/daily`, its brief is the
+evening one (`segment: "evening"`; a day scope refuses an evening brief), and
+its options are never an exposure (`writeExposure: !evening`), so they do not
+lower availability. Without a forecast the evening's temperature window is not
+read either, and the composer (`POST /v1/recommendations`, whose brief is plain
+text) composes only day boards.
 
 ## Recommendations
 
@@ -1248,8 +1262,10 @@ milestone, and outside the lines of the milestone in hand:
     database); another timezone needs the settings command.
   - The weather snapshot is never a forecast (no home city, no provider
     egress) and is not recorded, so its `snapshotId` names nothing kept.
-  - Pause is not ported, so Today is never `paused` or `preparing`; an
-    evening scope is refused.
+  - Pause is not ported, so Today is never `paused` or `preparing`.
+  - The published `board.publish` schema admits `brief.segment` `evening` with
+    any scope (a per-field schema cannot tie it to the scope); the handler
+    refuses it unless the scope is an evening one.
 - **Identity and sign-in.**
   - There is no identity provider, so claiming and linking identities answer
     501. Account deletion answers 501 too: the storage binding has no delete
@@ -1332,7 +1348,7 @@ milestone, and outside the lines of the milestone in hand:
   - A withdrawn note's record stays, marked `retracted`; forgetting
     (`conversation.forget_source`) is not ported.
 - **Trips.**
-  - Not ported on trip-day boards: evening trip boards, the destination's
+  - Not ported on trip-day boards: the destination's
     weather and the trip's occasions, the destination's timezone (a trip
     board's `timezone`, and Today's default day, are the owner's
     Europe/London), and a `tripId` on Studio and `studio/validate`.

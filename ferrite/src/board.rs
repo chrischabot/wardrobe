@@ -16,10 +16,11 @@
 //!   `variety.repeat_horizon` for the board's own date; no repeat exception
 //!   exists yet on the home board (only the default brief is ported); a trip
 //!   board checks no horizon (validate.ts: the trip is its own exception);
-//! - the home board and trip-day boards (`trip:<tripId>`, drawn only from
-//!   what is packed for that trip), the default day brief only (no evening
-//!   boards), no pause, suppression, exposure sets, Calendar projection or
-//!   repair;
+//! - the home board, trip-day boards (`trip:<tripId>`, drawn only from what
+//!   is packed for that trip) and the evening board of either
+//!   (`home:evening`, `trip:<tripId>:evening`: the evening brief, never an
+//!   exposure), the default brief only, no pause, suppression, Calendar
+//!   projection or repair;
 //! - the sneaker and welted pair is dormant while the healing restriction
 //!   holds, and nothing in this port can lift that restriction;
 //! - the "same neutral three times" advisory and the composer's ranking are
@@ -395,16 +396,39 @@ pub struct Day<'a> {
     pub trip: Option<String>,
 }
 
-/// The trip a board scope names (`trip:<tripId>`, `parseScope` in model.ts), or `None` for the home
-/// board and anything that is not a trip scope.
-pub fn scope_trip(scope: &str) -> Option<&str> {
-    scope.strip_prefix("trip:").filter(|id| !id.is_empty() && !id.contains(':') && id.chars().count() <= crate::packing::MAX_TRIP_ID)
+/// `parseScope` (packages/daily/src/model.ts): the trip a board scope names (none for the home
+/// board) and whether it is that place's evening board: `home`, `home:evening`, `trip:<tripId>` or
+/// `trip:<tripId>:evening`. `None` for anything else.
+pub fn parse_scope(scope: &str) -> Option<(Option<&str>, bool)> {
+    match scope {
+        "home" => Some((None, false)),
+        "home:evening" => Some((None, true)),
+        _ => {
+            let rest = scope.strip_prefix("trip:")?;
+            let (id, evening) = match rest.strip_suffix(":evening") {
+                Some(id) => (id, true),
+                None => (rest, false),
+            };
+            (!id.is_empty() && !id.contains(':') && id.chars().count() <= crate::packing::MAX_TRIP_ID).then_some((Some(id), evening))
+        }
+    }
 }
 
-/// Whether this port publishes boards of `scope`: the home board and a trip's day board (evening
-/// boards are not ported).
+/// The trip a board scope names (`trip:<tripId>`, or its evening `trip:<tripId>:evening`), or `None`
+/// for the home boards and anything that is not a trip scope.
+pub fn scope_trip(scope: &str) -> Option<&str> {
+    parse_scope(scope).and_then(|(trip, _)| trip)
+}
+
+/// Whether a scope is an evening board's (`home:evening`, `trip:<tripId>:evening`).
+pub fn scope_evening(scope: &str) -> bool {
+    parse_scope(scope).map_or(false, |(_, evening)| evening)
+}
+
+/// Whether this port publishes boards of `scope`: the home board, a trip's day board, and the evening
+/// board of either.
 pub fn scope_ok(scope: &str) -> bool {
-    scope == "home" || scope_trip(scope).is_some()
+    parse_scope(scope).is_some()
 }
 
 /// Roles the packing proposal may reuse deliberately across days (`PLANNED_REUSE_ROLES` in
@@ -1040,8 +1064,7 @@ pub fn publish_input(p: &Value) -> Result<PublishInput, CmdError> {
     let scope = match p.get("scope") {
         None => "home".to_string(),
         Some(Value::String(x)) if scope_ok(x) => x.clone(),
-        Some(Value::String(x)) if x.ends_with(":evening") => return Err(invalid(T, "scope: evening boards are not ported yet; publish the day's board")),
-        Some(_) => return Err(invalid(T, "scope: expected home or trip:<tripId>")),
+        Some(_) => return Err(invalid(T, "scope: expected home, home:evening, trip:<tripId> or trip:<tripId>:evening")),
     };
     let list = |key: &str, required: bool| -> Result<Vec<Opt>, CmdError> {
         match p.get(key) {
@@ -1052,13 +1075,18 @@ pub fn publish_input(p: &Value) -> Result<PublishInput, CmdError> {
     };
     let options = list("options", true)?;
     let reserves = list("reserves", false)?;
-    // Only the default day brief: included and excluded pieces, occasions, repeat exceptions and
-    // evening boards are not ported yet, so a brief that asks for one is refused, never ignored.
+    // Only the default brief: included and excluded pieces, occasions and repeat exceptions are not
+    // ported yet, so a brief that asks for one is refused, never ignored. Its segment is the scope's: an
+    // evening board's brief is the evening one (`assembleContext` sets it), and only an evening scope
+    // takes an evening brief.
+    let evening = scope_evening(&scope);
     if let Some(brief) = p.get("brief") {
-        let defaults = json!({"text": null, "requestedCount": null, "include": [], "exclude": [], "occasionOnly": false, "allowRepeat": false, "segment": "day"});
-        let ok = brief.as_object().map_or(false, |b| b.iter().all(|(k, v)| defaults.get(k) == Some(v)));
+        let defaults = json!({"text": null, "requestedCount": null, "include": [], "exclude": [], "occasionOnly": false, "allowRepeat": false});
+        let ok = brief.as_object().map_or(false, |b| {
+            b.iter().all(|(k, v)| if k == "segment" { v == "day" || (evening && v == "evening") } else { defaults.get(k) == Some(v) })
+        });
         if !ok {
-            return Err(invalid(T, "brief: day briefs (named or excluded pieces, occasions, repeat exceptions, evenings) are not ported yet; send the default brief"));
+            return Err(invalid(T, "brief: day briefs (named or excluded pieces, occasions, repeat exceptions) are not ported yet; send the default brief, with segment evening only for an evening scope"));
         }
     }
     let requested_count = match p.get("requestedCount").and_then(crate::canonical::whole) {
@@ -1744,7 +1772,7 @@ pub fn document(day: &Day<'_>, board: &Board, wardrobe_revision: u64) -> Value {
         "options": options,
         "selection": selection,
         "changes": r.changes,
-        "brief": {"text": null, "requestedCount": null, "include": [], "exclude": [], "occasionOnly": false, "allowRepeat": false, "segment": "day"},
+        "brief": {"text": null, "requestedCount": null, "include": [], "exclude": [], "occasionOnly": false, "allowRepeat": false, "segment": if scope_evening(&board.scope) { "evening" } else { "day" }},
         "freshness": {
             "weather": "unavailable", "weatherSnapshotId": null, "weatherFetchedAt": null,
             "calendar": "not_connected", "calendarSnapshotId": null, "calendarReadAt": null,

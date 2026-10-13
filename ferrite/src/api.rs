@@ -340,8 +340,7 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
             match query.iter().find(|(k, _)| k == "scope").map(|(_, v)| v.as_str()) {
                 None => read_today(store, now_ms, date).await,
                 Some(s) if board::scope_ok(s) => read_today_scoped(store, now_ms, date, s).await,
-                Some(s) if s.ends_with(":evening") => Err(CmdError::new("invalid_command", "scope: evening boards are not ported to this server yet; read the day's board")),
-                Some(_) => Err(CmdError::new("invalid_command", "scope: expected home or trip:<tripId>")),
+                Some(_) => Err(CmdError::new("invalid_command", "scope: expected home, home:evening, trip:<tripId> or trip:<tripId>:evening")),
             }
         }
         ("GET", "/v1/weather") => read_weather(now_ms, query.iter().find(|(k, _)| k == "date").map(|(_, v)| v.as_str())),
