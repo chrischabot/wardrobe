@@ -85,6 +85,30 @@ export function configureAssistant(config: AssistantConfiguration): void {
 
 const FORGOTTEN_TEXT = "[forgotten at the owner's request]";
 const MAX_ATTACHMENT_CHARS = 60_000;
+/** Maximum serialized size of a tool-call input kept in session history; anything larger is replaced with a marker so one oversized model output cannot permanently overflow the conversation window. */
+const MAX_STORED_TOOL_INPUT_CHARS = 8_000;
+
+function boundToolInputs(parts: unknown[]): { parts: unknown[]; changed: boolean } {
+  let changed = false;
+  const out = parts.map((part) => {
+    if (!part || typeof part !== "object") return part;
+    const p = part as Record<string, unknown>;
+    if (!("input" in p)) return part;
+    let over = false;
+    let chars = 0;
+    try {
+      const serialized = JSON.stringify(p["input"]);
+      chars = serialized?.length ?? 0;
+      over = chars > MAX_STORED_TOOL_INPUT_CHARS;
+    } catch {
+      over = true;
+    }
+    if (!over) return part;
+    changed = true;
+    return { ...p, input: { _truncated: true, chars } };
+  });
+  return { parts: out, changed };
+}
 /** Flat input allowance charged per attached image when counting a turn against a model's window. */
 const IMAGE_TOKEN_ALLOWANCE = 1_600;
 const PHOTO_ROLE_LABEL: Record<string, string> = {
@@ -531,14 +555,49 @@ export abstract class GarderobeAssistantBase extends Think<any> {
 
   override onChatError(error: unknown): unknown {
     const turnId = this.activeTurnId;
-    if (turnId) this.turnFailures.set(turnId, this.describeFailure(error));
+    if (turnId) {
+      const next = this.describeFailure(error);
+      const prev = this.turnFailures.get(turnId);
+      // Keep the typed failure recorded by modelFor.onFailure when Think later passes a stringified stream error.
+      if (!prev || (!prev.resumable && next.resumable) || (prev.code === "turn_failed" && next.code !== "turn_failed")) {
+        this.turnFailures.set(turnId, next);
+      }
+    }
     return error;
+  }
+
+  /**
+   * Queued submissions (`submitTurn`) that fail before producing an assistant message (or after reactive context-overflow
+   * compaction gives up) do not fire `onChatResponse`; Think reports their terminal state here.
+   */
+  override async onSubmissionStatus(submission: { submissionId: string; status: string; error?: string; metadata?: Record<string, unknown> }): Promise<void> {
+    const turnId = typeof submission.metadata?.["turnId"] === "string" ? submission.metadata["turnId"] : submission.submissionId;
+    if (!turnId) return;
+    if (submission.status === "error") {
+      await this.finalizeTurn(turnId, this.describeFailure(submission.error ?? "the turn did not complete"));
+      await this.rebuildSanitizedSession().catch(() => undefined);
+    } else if (submission.status === "completed") {
+      await this.finalizeTurn(turnId, null);
+      await this.rebuildSanitizedSession().catch(() => undefined);
+    }
   }
 
   /** A failure that keeps the request for later (budget, no verified profile, provider outage) is resumable, never a silent drop or a loop. */
   private describeFailure(error: unknown): { code: string; message: string; resumable: boolean } {
-    const resumable = error instanceof BudgetExceededError || error instanceof NoSelectableProfileError || error instanceof InferenceFailedError;
-    return { code: (error as { code?: string })?.code ?? "turn_failed", message: redactSecrets(String((error as Error)?.message ?? error)).text.slice(0, 500), resumable };
+    const rawMsg = typeof error === "string" ? error : String((error as Error)?.message ?? error);
+    const msg = redactSecrets(rawMsg).text.slice(0, 500);
+    const explicitCode = typeof error === "object" && error !== null ? (error as { code?: string }).code : undefined;
+    if (error instanceof BudgetExceededError || explicitCode === "budget_exceeded" || /budget is used up/i.test(rawMsg)) {
+      return { code: "budget_exceeded", message: msg, resumable: true };
+    }
+    if (error instanceof NoSelectableProfileError || explicitCode === "no_selectable_profile" || /no model profile is available/i.test(rawMsg)) {
+      return { code: "no_selectable_profile", message: msg, resumable: true };
+    }
+    if (error instanceof InferenceFailedError || explicitCode === "inference_failed" || /the model could not answer/i.test(rawMsg)) {
+      return { code: "inference_failed", message: msg, resumable: true };
+    }
+    const explicitResumable = typeof error === "object" && error !== null && (error as { resumable?: boolean }).resumable === true;
+    return { code: explicitCode ?? "turn_failed", message: msg, resumable: explicitResumable };
   }
 
   private async failTurn(turnId: string, failure: { code: string; message: string; resumable: boolean }): Promise<void> {
@@ -550,15 +609,11 @@ export abstract class GarderobeAssistantBase extends Think<any> {
     if (row.kind === "research") await this.settleResearch(turnId);
   }
 
-  private async finalizeTurn(turnId: string, failure: { code: string; message: string } | null): Promise<void> {
+  private async finalizeTurn(turnId: string, failure: { code: string; message: string; resumable?: boolean } | null): Promise<void> {
     const row = await findTurn(this.db, this.userId, turnId);
     if (!row || ["completed", "cancelled", "needs_input", "resumable", "failed"].includes(row.status)) return;
     const seen = this.turnFailures.get(turnId);
     this.turnFailures.delete(turnId);
-    if (seen || failure) {
-      await this.failTurn(turnId, seen ?? { ...failure!, resumable: false });
-      return;
-    }
     const nowMs = this.now();
     const messages = this.messages;
     const at = messages.findIndex((m) => m.id === row.user_message_id);
@@ -566,6 +621,25 @@ export abstract class GarderobeAssistantBase extends Think<any> {
     // owns (a turn resumed later, after other turns ran, must not take their replies or result cards as its own).
     const owned = new Map(this.ledgerRows().map((r) => [r.message_id, r.turn_id]));
     const replies = at === -1 ? [] : messages.slice(at + 1).filter((m) => m.role === "assistant" && (!owned.has(m.id) || owned.get(m.id) === turnId));
+    let sessionUpdated = false;
+    for (const m of replies) {
+      const bounded = boundToolInputs(m.parts as unknown[]);
+      if (bounded.changed) {
+        const stored = await this.session.getMessage(m.id);
+        if (stored) {
+          await this.session.updateMessage({ ...stored, parts: bounded.parts as never });
+          sessionUpdated = true;
+        }
+      }
+    }
+    if (sessionUpdated) {
+      await (this as unknown as { syncMessagesFromStorage(): Promise<unknown> }).syncMessagesFromStorage();
+    }
+    if (seen || failure) {
+      const resolved = seen ?? (failure!.resumable !== undefined ? { code: failure!.code, message: failure!.message, resumable: failure!.resumable } : this.describeFailure(failure!.message));
+      await this.failTurn(turnId, resolved);
+      return;
+    }
     const reply = replies[replies.length - 1];
     const replyText = redactSecrets(replies.map((m) => textOf(m.parts as { type: string; text?: string }[])).filter(Boolean).join("\n")).text;
     for (const m of replies) this.ledger(m.id, "assistant", turnId, row.channel, "reply", toInstant(nowMs));
@@ -873,6 +947,7 @@ export abstract class GarderobeAssistantBase extends Think<any> {
     this.turnsInFlight++;
     try {
       if (onEvent) {
+        let streamError: string | null = null;
         await this.runTurn({
           mode: "stream",
           input: [message],
@@ -883,9 +958,12 @@ export abstract class GarderobeAssistantBase extends Think<any> {
               if (!/"type"\s*:\s*"reasoning/.test(chunk)) await onEvent(chunk);
             },
             onDone: () => {},
-            onError: () => {},
+            onError: (err: string) => {
+              streamError = err || "the turn did not complete";
+            },
           },
         } as never);
+        if (streamError) await this.finalizeTurn(turnId, this.describeFailure(streamError));
       } else {
         const result = await this.runTurn({ input: [message] });
         if (result.status !== "completed") await this.finalizeTurn(turnId, { code: `turn_${result.status}`, message: result.error ?? `the turn was ${result.status}` });

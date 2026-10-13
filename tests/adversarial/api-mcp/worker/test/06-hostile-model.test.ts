@@ -557,18 +557,17 @@ describe("conversation model: failures, budgets and output that is too large", (
       await oversizedVictim();
     });
 
-    defect("I06-4", "after one oversized tool-call argument, the run of the owner's next message never settles: it stays 'running' with no error instead of failing or becoming resumable", async () => {
-      // The oversized argument is kept in the conversation history, so no model profile can hold the context
-      // any more ("its context window cannot hold the complete profile and context"). Runs must end in an
-      // honest state: failed or resumable, never running for ever.
+    it("[fixed I06-4] after one oversized tool-call argument, the run of the owner's next message settles cleanly", async () => {
+      // The oversized argument is truncated in session history, and any submission that fails before streaming
+      // settles through onSubmissionStatus rather than staying 'running' forever.
       const { victim, fake } = await oversizedVictim();
       const run = await say(victim, fake, "Hello?", [reply()], 100, true);
       expect(["completed", "failed", "needs_input"]).toContain(run.state);
     });
 
-    defect("I06-5", "after one oversized tool-call argument the conversation is unusable from then on: even after the stuck run is cancelled, a new message is never answered", async () => {
+    it("[fixed I06-5] after one oversized tool-call argument the conversation remains usable and answers the next message", async () => {
       const { victim, fake } = await oversizedVictim();
-      // Its own run to cancel: the owner's next message after the oversized argument (the run I06-4 shows stuck).
+      // Its own run to cancel: the owner's next message after the oversized argument (the run I06-4 showed stuck).
       const stuck = await say(victim, fake, "Hello?", [reply()], 100, true);
       expect(stuck.runId ?? "").not.toBe("");
       expect((await victim.api.json<Run>("GET", `/v1/runs/${stuck.runId}`)).runId).toBe(stuck.runId);

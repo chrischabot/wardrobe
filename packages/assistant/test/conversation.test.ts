@@ -114,4 +114,36 @@ describe("conversation in the Durable Object (real Think session, real D1, real 
     const restrictions = await listRestrictions(w.h.db, w.owner.principal(), { status: "active" });
     expect(restrictions.some((r) => r.kind === "healing")).toBe(true);
   });
+
+  it("truncates an oversized tool-call argument in session history and settles a failed queued submission (adversarial I06-4, I06-5)", async () => {
+    const fresh = await createWorld({ real: false });
+    fresh.model.script(
+      { toolCalls: [{ toolName: "add_garment", input: { name: `SYNTHETIC ${"x".repeat(500_000)}`, category: "shirt", state: "owned" } }] },
+      { text: "That value was too long." },
+    );
+    const first = await fresh.client.runTurn({ submissionId: submission("oversized"), text: "Add my new shirt." });
+    expect(first.status).toBe("completed");
+    expect(first.refusals.map((r) => r.code)).toEqual(["too_long_to_confirm"]);
+    // Next queued submission (submitTurn) runs and completes because the 500k tool input was truncated in session history.
+    fresh.model.script({ text: "Still here." });
+    const submitted = await fresh.client.submitTurn({ submissionId: submission("after-oversized"), text: "Hello?" });
+    let settled = submitted;
+    for (let i = 0; i < 100 && ["accepted", "running"].includes(settled.status); i++) {
+      await new Promise((r) => setTimeout(r, 25));
+      settled = (await fresh.client.getTurn(submitted.turnId))!;
+    }
+    expect(settled.status).toBe("completed");
+    expect(settled.reply?.text).toBe("Still here.");
+
+    // A queued submission that fails on a provider transport outage settles as resumable (not failed or stuck running).
+    fresh.model.script({ error: new Error("fetch failed: connection reset") }, { error: new Error("fetch failed: connection reset") });
+    const queued = await fresh.client.submitTurn({ submissionId: submission("outage-submit"), text: "Hello again?" });
+    let queuedSettled = queued;
+    for (let i = 0; i < 100 && ["accepted", "running"].includes(queuedSettled.status); i++) {
+      await new Promise((r) => setTimeout(r, 25));
+      queuedSettled = (await fresh.client.getTurn(queued.turnId))!;
+    }
+    expect(queuedSettled.status).toBe("resumable");
+    expect(queuedSettled.failure).toMatchObject({ code: "inference_failed", resumable: true });
+  });
 });
