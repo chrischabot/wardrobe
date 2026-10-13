@@ -331,10 +331,10 @@ pub async fn handle_with<S: Store, T: crate::inference::Transport>(store: &mut S
         Err(e) => return error_reply(e),
     };
     let result = match (req.method.as_str(), path) {
-        ("GET", "/v1/wardrobe") => {
-            let category = query.iter().find(|(k, _)| k == "category").map(|(_, v)| v.as_str());
-            read_wardrobe(store, now_ms, category).await
-        }
+        ("GET", "/v1/wardrobe") => match crate::inventory::parse_query(req.path.split_once('?').map_or("", |(_, q)| q)) {
+            Ok(q) => crate::inventory::page(store, now_ms, &q).await,
+            Err(e) => Err(e),
+        },
         ("GET", "/v1/today") => {
             let date = query.iter().find(|(k, _)| k == "date").map(|(_, v)| v.as_str());
             match query.iter().find(|(k, _)| k == "scope").map(|(_, v)| v.as_str()) {

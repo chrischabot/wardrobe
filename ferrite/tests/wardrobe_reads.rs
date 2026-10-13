@@ -227,7 +227,7 @@ async fn a_selector_shows_exactly_the_garments_a_bulk_edit_would_touch() {
     run(&mut store, OWNER, T0, "care.mark_dirty", json!({"items": [{"garmentId": OXFORD_BLUE}]}), "dirty-0001").await;
     let (_, s) = select(&mut store, json!({"garmentIds": [OXFORD_BLUE]})).await;
     let (_, w) = get(&mut store, "/v1/wardrobe?category=shirt").await;
-    let listed = w["items"].as_array().unwrap().iter().find(|i| i["garmentId"] == OXFORD_BLUE).unwrap()["version"].clone();
+    let listed = w["items"].as_array().unwrap().iter().find(|i| i["garment"]["garmentId"] == OXFORD_BLUE).unwrap()["garment"]["version"].clone();
     assert_eq!((s["garments"][0]["version"].clone(), s["wardrobeRevision"].clone()), (listed, json!(1)));
 }
 

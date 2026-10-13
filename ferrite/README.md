@@ -75,7 +75,7 @@ curl -s -H 'Authorization: Bearer local-dev-assistant-token' -H 'content-type: a
 | Route | As in the TypeScript API |
 |---|---|
 | `GET /health` (public) | service status |
-| `GET /v1/wardrobe[?category=]` | the inventory: every imported garment with its balances (clean, dirty, at the laundry service, packed for trips) and version. A subset of `listInventory`: no availability estimate, aliases, colours or wear counts yet |
+| `GET /v1/wardrobe[?search=&category=&acquisition=&availability=&colour=&location=&includeDisposed=&limit=&cursor=&forDate=]` | `InventoryPage` as `listInventory`: every garment with its record (as the item page gives it), aliases, balances, owned units, the estimator's availability for `forDate` (else the owner's day now) and recorded wears, in category, name and ID order. Filters as TypeScript reads them: `category`, `acquisition`, `availability` (the estimator's status), `colour` (a normalized substring of the recorded colour), `location` (`home` for clean or hamper units, `service`, `trip`; `storage` and `tailor` match nothing here) and `search` (every word of the normalized phrase in the name, maker, product, colour, fabric or an alias). Without `limit` the complete snapshot (`complete: true`, the cursor ignored); with `limit` (1 to 500) a page from `cursor` (a non-negative whole number), with `total`, `complete` and `nextCursor` explicit. `counts` describe the whole wardrobe (`available`: owned pieces `available` or `estimated`; every garment is owned, so `incoming` and `retired` are 0). A malformed query is `invalid_command`; unknown keys are ignored; nothing is written |
 | `GET /v1/items/{garmentId}` | `ItemResponse` as `readItem`: the item page, see "Item page". An unknown garment is `not_found` ("no garment '<id>' in this wardrobe"); nothing is written |
 | `GET /v1/wardrobe/resolve?phrase=` | `PhraseResolution` as `resolveAlias`: the garments a phrase names, exact alias matches first, otherwise every garment holding all of the phrase's words, each with the alias it matched on and what distinguishes it; more than one is `ambiguous`, never picked. Aliases are the import's (the garment's name first, then the importer's), normalized as `normalizePhrase` does. The phrase is 1 to 200 characters, `+` read as a space; nothing is written |
 | `POST /v1/wardrobe/selection` | `GarmentSelection` for a `GarmentSelector` (`garmentIds`, `category`, `search`, `maker`, `colour`, `fabric`, `careChannel`, `planningPolicy`, `acquisition`; at least one, every one set must match, unknown keys ignored): the garments a bulk correction would touch, by category, name and ID, with their versions and the wardrobe revision. An unknown garment ID is `not_found` naming it. Writes nothing; the bulk correction itself is not ported |
@@ -688,8 +688,10 @@ revision is answered with 2025-11-25.
 Tools, with the TypeScript server's names, arguments and results:
 
 - `garderobe_today`: the board for `{date}`, as `/v1/today`; without a date, the owner's day now in Europe/London.
-- `garderobe_inventory`: views `items` (paged, `limit` and `nextCursor`),
-  `snapshot` (complete), `availability` (optional `date`, as
+- `garderobe_inventory`: views `items` (paged, `limit` and `nextCursor`) and
+  `snapshot` (complete), each garment with its clean, dirty, service and trip
+  units and version (this port's own shape; `GET /v1/wardrobe` serves the
+  contract's `InventoryPage`), `availability` (optional `date`, as
   `/v1/availability`), `resolve` (`phrase`, as `/v1/wardrobe/resolve`, with
   the TypeScript server's summary: ask which one when it is ambiguous, never
   create an item to make a phrase match), `selection` (`selector`, as
@@ -1176,22 +1178,15 @@ the lines of the milestone it was found in.
     earlier offers; a report that the garment went in the wash first does.
   - Studio, the board and the recommender do not weigh unreported offers.
 
-Milestone C's first half, the Wardrobe tab in the contract shape (`GET /v1/wardrobe` as
-`InventoryPage`), is parked unlanded; the item page landed on its own ("Item page").
-Its open findings:
+The Wardrobe tab in the contract shape (`GET /v1/wardrobe` as `InventoryPage`) was parked after three
+review rounds and has since landed, written afresh with the estimator's availability (its first open
+finding). Its other finding stays open, outside the lines of that change:
 
-- `availability` would be `null`, with availability filters refused, instead
-  of the probabilistic availability estimate. The estimator has since been
-  ported for `GET /v1/availability`; milestone C stays parked and does not
-  use it.
 - The batch's initial ledger read aborts before the existing-receipt
   recovery path, so a retried batch whose first read fails is not recovered
   from its receipts.
-
-What was tried: three exact-patch review rounds fixed cursor overflow, a
-cursor sent without a limit, and decomposed accents in search; later reviews
-raised the two findings above. The last prepared commit, 81ce6e91, is kept
-unlanded, and `/v1/wardrobe` keeps the subset shape above.
+- The MCP `items` and `snapshot` views keep this port's earlier shape (balances
+  as clean, dirty, service and trip counts), not `InventoryPage`.
 
 Milestone 2 (resolve, selection and the availability estimator) was parked
 after four review rounds and has since landed from its library patch, brought

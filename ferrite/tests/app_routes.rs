@@ -106,7 +106,7 @@ async fn meta_names_versions_modules_and_the_mcp_endpoint() {
 async fn an_offline_replay_applies_each_command_independently_and_once() {
     let mut store = MemStore::default();
     let (_, page) = send(&mut store, OWNER, "GET", "/v1/wardrobe", Value::Null).await;
-    let shirt = page["items"].as_array().unwrap().iter().find(|i| i["careChannel"] == "service" && i["quantity"] == 1).unwrap()["garmentId"].as_str().unwrap().to_string();
+    let shirt = page["items"].as_array().unwrap().iter().find(|i| i["garment"]["careChannel"] == "service" && i["totalOwnedUnits"] == 1).unwrap()["garment"]["garmentId"].as_str().unwrap().to_string();
     let queued = json!({"commands": [
         command("care.mark_dirty", json!({"items": [{"garmentId": shirt}]}), "offline-0001"),
         command("care.mark_dirty", json!({"items": [{"garmentId": "gmt_not_a_garment"}]}), "offline-0002"),
@@ -265,7 +265,7 @@ async fn laundry_shows_the_hamper_by_channel_and_the_bags_as_the_ledger_has_them
 
     let (_, page) = send(&mut store, OWNER, "GET", "/v1/wardrobe", Value::Null).await;
     let items = page["items"].as_array().unwrap();
-    let pick = |channel: &str| items.iter().find(|i| i["careChannel"] == channel && i["quantity"].as_u64().unwrap() >= 2).unwrap()["garmentId"].as_str().unwrap().to_string();
+    let pick = |channel: &str| items.iter().find(|i| i["garment"]["careChannel"] == channel && i["totalOwnedUnits"].as_u64().unwrap() >= 2).unwrap()["garment"]["garmentId"].as_str().unwrap().to_string();
     let (shirt, sock) = (pick("service"), pick("handwash"));
     send(&mut store, OWNER, "POST", "/v1/commands", command("care.mark_dirty", json!({"items": [{"garmentId": shirt, "quantity": 2}, {"garmentId": sock}]}), "dirty-0001")).await;
     let (_, l) = send(&mut store, OWNER, "GET", "/v1/laundry", Value::Null).await;

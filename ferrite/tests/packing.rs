@@ -86,8 +86,7 @@ async fn packed(store: &mut MemStore) -> Value {
 }
 
 async fn balances(store: &mut MemStore, id: &str) -> Value {
-    let (status, page) = send(store, BEFORE, OWNER, "GET", "/v1/wardrobe", Value::Null).await;
-    assert_eq!(status, 200, "{page}");
+    let page = api::read_wardrobe(store, parse_instant(BEFORE).unwrap(), None).await.unwrap();
     page["items"].as_array().unwrap().iter().find(|i| i["garmentId"] == id).unwrap()["balances"].clone()
 }
 

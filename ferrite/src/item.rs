@@ -109,9 +109,11 @@ fn journal_kind(kind: &str) -> &str {
     }
 }
 
-fn detail(ledger: &Ledger, stock: &Replay, g: &Garment, rows: Vec<(&'static str, String, u32)>) -> Value {
+/// The garment's record (`Garment` in packages/contracts), as the import planned it, at its current
+/// version. Shared by the item page and the inventory page.
+pub(crate) fn garment_json(ledger: &Ledger, g: &Garment) -> Value {
     let imported = imported_at();
-    let garment = json!({
+    json!({
         "userId": "owner",
         "garmentId": g.id,
         "version": ledger.garment_version(&g.id),
@@ -137,7 +139,12 @@ fn detail(ledger: &Ledger, stock: &Replay, g: &Garment, rows: Vec<(&'static str,
         "wearLoggingSince": null,
         "createdAt": imported,
         "updatedAt": imported,
-    });
+    })
+}
+
+fn detail(ledger: &Ledger, stock: &Replay, g: &Garment, rows: Vec<(&'static str, String, u32)>) -> Value {
+    let imported = imported_at();
+    let garment = garment_json(ledger, g);
     let aliases: Vec<Value> = g.aliases.iter().map(|a| json!({"aliasId": a.alias_id, "garmentId": g.id, "phrase": a.phrase, "kind": a.kind})).collect();
     let facts: Vec<Value> = g
         .facts

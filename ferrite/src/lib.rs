@@ -9,6 +9,7 @@ pub mod assistant;
 pub mod availability;
 pub mod board;
 pub mod inference;
+pub mod inventory;
 pub mod item;
 pub mod laundry;
 pub mod canonical;

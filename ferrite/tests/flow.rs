@@ -31,7 +31,7 @@ fn command(kind: &str, payload: Value, key: &str, authorization: &str, channel: 
 }
 
 fn item<'a>(page: &'a Value, id: &str) -> &'a Value {
-    page["items"].as_array().unwrap().iter().find(|i| i["garmentId"] == id).expect(id)
+    page["items"].as_array().unwrap().iter().find(|i| i["garment"]["garmentId"] == id).expect(id)
 }
 
 /// Two single-unit garments that are laundered, from the owner's inventory.
@@ -40,8 +40,8 @@ fn two_shirts(page: &Value) -> (String, String) {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|i| i["careChannel"] == "service" && i["quantity"] == 1)
-        .map(|i| i["garmentId"].as_str().unwrap().to_string())
+        .filter(|i| i["garment"]["careChannel"] == "service" && i["totalOwnedUnits"] == 1)
+        .map(|i| i["garment"]["garmentId"].as_str().unwrap().to_string())
         .take(2)
         .collect();
     (ids[0].clone(), ids[1].clone())
@@ -55,11 +55,12 @@ async fn inventory_receipt_replay_and_undo() {
     let (status, page) = call(&env, OWNER, "GET", "/v1/wardrobe", None).await;
     assert_eq!(status, 200, "{page}");
     assert_eq!(page["items"].as_array().unwrap().len(), 127);
-    assert_eq!(page["counts"]["ownedUnits"], 144);
-    assert_eq!(page["source"]["sha256"], "ca9a5e06edbb2646ad91f102cb242a81b1776bd39e86e99300c0eb387254c946");
+    assert_eq!((page["total"].clone(), page["complete"].clone(), page["nextCursor"].clone()), (json!(127), json!(true), Value::Null));
+    assert_eq!(page["counts"], json!({"owned": 127, "available": page["counts"]["available"], "incoming": 0, "retired": 0}));
+    assert_eq!(page["items"].as_array().unwrap().iter().map(|i| i["totalOwnedUnits"].as_u64().unwrap()).sum::<u64>(), 144);
     assert_eq!(page["wardrobeRevision"], 0);
     let (a, b) = two_shirts(&page);
-    assert_eq!(item(&page, &a)["balances"], json!({"clean": 1, "dirty": 0, "service": 0, "trip": 0}));
+    assert_eq!(item(&page, &a)["balances"], json!([{"bucket": "clean", "ref": "", "quantity": 1}]));
 
     // "Both are in the wash", relayed by the connected assistant: applied at once.
     let dirty = command("care.mark_dirty", json!({"items": [{"garmentId": a}, {"garmentId": b}]}), "mcp-dirty-0001", "owner_statement", "mcp");
@@ -82,8 +83,8 @@ async fn inventory_receipt_replay_and_undo() {
     assert_eq!((status, reuse["error"]["code"].clone()), (409, json!("idempotency_key_reuse")));
 
     let (_, page) = call(&env, OWNER, "GET", "/v1/wardrobe", None).await;
-    assert_eq!(item(&page, &a)["balances"], json!({"clean": 0, "dirty": 1, "service": 0, "trip": 0}));
-    assert_eq!(item(&page, &a)["version"], 2);
+    assert_eq!(item(&page, &a)["balances"], json!([{"bucket": "dirty", "ref": "", "quantity": 1}]));
+    assert_eq!(item(&page, &a)["garment"]["version"], 2);
     assert_eq!(page["wardrobeRevision"], 1);
 
     // The assistant cannot claim a tap, which only the owner's own app makes.
@@ -100,8 +101,8 @@ async fn inventory_receipt_replay_and_undo() {
     assert_eq!(undone["result"]["undoneCommandId"], dirty_id.as_str());
 
     let (_, page) = call(&env, OWNER, "GET", "/v1/wardrobe", None).await;
-    assert_eq!(item(&page, &a)["balances"], json!({"clean": 1, "dirty": 0, "service": 0, "trip": 0}));
-    assert_eq!(item(&page, &b)["balances"], json!({"clean": 1, "dirty": 0, "service": 0, "trip": 0}));
+    assert_eq!(item(&page, &a)["balances"], json!([{"bucket": "clean", "ref": "", "quantity": 1}]));
+    assert_eq!(item(&page, &b)["balances"], json!([{"bucket": "clean", "ref": "", "quantity": 1}]));
 
     // The original receipt now says its undo was used, and a second undo is refused.
     let (status, original) = call(&env, OWNER, "GET", &format!("/v1/commands/{dirty_id}"), None).await;
@@ -121,7 +122,7 @@ async fn inventory_receipt_replay_and_undo() {
 async fn refusals_write_nothing() {
     let env = start().await;
     let (_, page) = call(&env, OWNER, "GET", "/v1/wardrobe", None).await;
-    let shoe = page["items"].as_array().unwrap().iter().find(|i| i["careChannel"] == "none").unwrap()["garmentId"].as_str().unwrap().to_string();
+    let shoe = page["items"].as_array().unwrap().iter().find(|i| i["garment"]["careChannel"] == "none").unwrap()["garment"]["garmentId"].as_str().unwrap().to_string();
     let (a, _) = two_shirts(&page);
 
     let never = command("care.mark_dirty", json!({"items": [{"garmentId": shoe}]}), "app-dirty-shoe", "owner_tap", "ios");
