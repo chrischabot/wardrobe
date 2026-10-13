@@ -13,6 +13,9 @@ use std::io;
 use ferrite_app::serde_json::{self, json, Value};
 use ferrite_app::IngressRequest;
 use wardrobe::api::{self, Store, Tokens};
+use wardrobe::board::{Day, TripPlan};
+use wardrobe::ledger::{Ledger, Stock};
+use wardrobe::seed::catalogue;
 use wardrobe::time::parse_instant;
 
 const OWNER: &str = "owner-token-for-tests";
@@ -233,6 +236,73 @@ async fn recommendations_for_a_day_of_a_packed_trip_compose_from_the_suitcase_an
     let (_, after) = send(&mut store, BEFORE, OWNER, "POST", "/v1/recommendations", json!({"clientRequestId": "rec-home-0002", "date": "2026-10-24", "count": 5})).await;
     let after_ids: Vec<String> = after["options"].as_array().unwrap().iter().flat_map(ids_of).collect();
     assert!(!after_ids.is_empty() && !after_ids.iter().any(|id| id == OXFORD_BLUE || id == OXFORD_PINK), "{after}");
+}
+
+#[tokio::test]
+async fn a_piece_the_packing_proposal_plans_again_is_offered_again_within_its_planned_days() {
+    let mut store = MemStore::default();
+    ok(&mut store, BEFORE, "trip-0001", "trip.create", lisbon()).await;
+    let item = |id: &str, role: &str, quantity: u32| json!({"garmentId": id, "name": "", "role": role, "quantity": quantity});
+    let day = |date: &str, top: &str| json!({"localDate": date, "segment": "day", "occasion": null, "slots": outfit(top, AKITA_CREAM, SOCK_GREY, NB_GREY)["slots"], "reason": ""});
+    let items = json!([item(OXFORD_BLUE, "top", 1), item(OXFORD_PINK, "top", 1), item(AKITA_CREAM, "bottom", 1), item(SOCK_GREY, "socks", 3), item(NB_GREY, "footwear", 1)]);
+    // The proposal he packs to plans the chinos for two days and each shirt for one.
+    ok(&mut store, "2026-10-12T09:30:00Z", "proposal-0001", "trip.record_packing_proposal", json!({"tripId": "trp_lisbon", "items": items, "days": [day("2026-10-20", OXFORD_PINK), day("2026-10-21", OXFORD_BLUE)], "weather": []})).await;
+    let packed: Vec<Value> = [OXFORD_BLUE, OXFORD_PINK, AKITA_CREAM, SOCK_GREY, NB_GREY].iter().map(|id| if *id == SOCK_GREY { json!({"garmentId": id, "quantity": 3}) } else { json!({"garmentId": id}) }).collect();
+    ok(&mut store, "2026-10-12T10:00:00Z", "pack-0001", "stock.pack", json!({"tripId": "trp_lisbon", "items": packed})).await;
+    // A proposal recorded after packing plans the pink shirt on every day; he did not pack to it.
+    ok(&mut store, "2026-10-12T11:00:00Z", "proposal-0002", "trip.record_packing_proposal", json!({"tripId": "trp_lisbon", "items": items, "days": [day("2026-10-20", OXFORD_PINK), day("2026-10-21", OXFORD_PINK), day("2026-10-22", OXFORD_PINK)], "weather": []})).await;
+
+    ok(&mut store, "2026-10-20T20:00:00Z", "wear-trip-1", "wear.record", json!({"wearingDate": "2026-10-20", "garmentIds": [OXFORD_PINK, AKITA_CREAM, SOCK_GREY, NB_GREY], "tripId": "trp_lisbon"})).await;
+
+    // The chinos worn on the first day are still in the suitcase and planned for a second: offered
+    // again. The pink shirt is a shirt planned once (and only the ignored proposal plans it again).
+    let r = ok(&mut store, "2026-10-20T21:00:00Z", "publish-trip-1", "board.publish", json!({"localDate": "2026-10-21", "scope": TRIP, "requestedCount": 2, "options": [
+        outfit(OXFORD_BLUE, AKITA_CREAM, SOCK_GREY, NB_GREY),
+        outfit(OXFORD_PINK, AKITA_CREAM, SOCK_GREY, NB_GREY),
+    ]})).await;
+    assert_eq!(r["result"]["offered"], 1, "{}", r["result"]);
+    let dropped = violations(&r["result"]);
+    assert!(dropped.contains("already worn on this trip") && dropped.contains("oxford — pink") && !dropped.contains("Akita"), "{dropped}");
+    // Today checks the board against the same stock, so the chinos option still reads as offered.
+    let (_, today) = send(&mut store, "2026-10-20T21:00:00Z", OWNER, "GET", "/v1/today?date=2026-10-21&scope=trip:trp_lisbon", Value::Null).await;
+    assert_eq!(ids_of(&today["board"]["options"][0]), vec![OXFORD_BLUE, AKITA_CREAM, SOCK_GREY, NB_GREY], "{today}");
+    assert!(!today.to_string().contains("already worn on this trip"), "{today}");
+
+    // Reported dirty after packing, the chinos are not offered again whatever the plan says.
+    let mut dirty = store.clone();
+    ok(&mut dirty, "2026-10-20T22:00:00Z", "dirty-0001", "care.mark_dirty", json!({"items": [{"garmentId": AKITA_CREAM}]})).await;
+    let (status, e) = command(&mut dirty, "2026-10-20T22:30:00Z", "publish-trip-dirty", "board.publish", json!({"localDate": "2026-10-21", "scope": TRIP, "requestedCount": 1, "options": [outfit(OXFORD_BLUE, AKITA_CREAM, SOCK_GREY, NB_GREY)]})).await;
+    assert_eq!((status, e["error"]["code"].clone()), (409, json!("precondition_failed")), "{e}");
+    assert!(e["error"]["details"]["dropped"].to_string().contains("Akita slub 5-pocket — cream is not available"), "{e}");
+
+    // Worn on both planned days, the chinos have no budget left on the third.
+    ok(&mut store, "2026-10-21T20:00:00Z", "wear-trip-2", "wear.record", json!({"wearingDate": "2026-10-21", "garmentIds": [AKITA_CREAM, SOCK_GREY, NB_GREY], "tripId": "trp_lisbon"})).await;
+    let (status, e) = command(&mut store, "2026-10-21T21:00:00Z", "publish-trip-3", "board.publish", json!({"localDate": "2026-10-22", "scope": TRIP, "requestedCount": 1, "options": [outfit(OXFORD_BLUE, AKITA_CREAM, SOCK_GREY, NB_GREY)]})).await;
+    assert_eq!((status, e["error"]["code"].clone()), (409, json!("precondition_failed")), "{e}");
+    let dropped = e["error"]["details"]["dropped"].to_string();
+    assert!(dropped.contains("Akita slub 5-pocket — cream is not available: already worn on this trip") && !dropped.contains("oxford"), "{dropped}");
+}
+
+#[tokio::test]
+async fn planned_reuse_never_offers_more_units_than_the_proposal_packs() {
+    const WALNUT: &str = "gmt_ff25dfaf5876e58a551fe11d"; // two units
+    let mut store = MemStore::default();
+    ok(&mut store, BEFORE, "trip-0001", "trip.create", lisbon()).await;
+    ok(&mut store, BEFORE, "pack-0001", "stock.pack", json!({"tripId": "trp_lisbon", "items": [{"garmentId": WALNUT, "quantity": 2}]})).await;
+    ok(&mut store, "2026-10-20T20:00:00Z", "wear-trip-1", "wear.record", json!({"wearingDate": "2026-10-20", "garmentIds": [WALNUT], "tripId": "trp_lisbon"})).await;
+    let ledger = Ledger::from_json(&serde_json::from_slice(&store.data[b"ledger".as_slice()]).unwrap()).unwrap();
+    let packed_seq = ledger.events.iter().find(|e| e.kind == "pack").unwrap().seq;
+    let plan = |quantity: u32| {
+        let day = |date: &str| json!({"localDate": date, "slots": [{"role": "bottom", "garmentId": WALNUT}]});
+        let proposal = json!({"items": [{"garmentId": WALNUT, "quantity": quantity}], "days": [day("2026-10-20"), day("2026-10-21")]});
+        TripPlan::from_proposal("2026-10-20", Some(&proposal), packed_seq)
+    };
+    let on_the_21st = |plan: &TripPlan| Day::for_trip(catalogue(), &ledger, "trp_lisbon", "2026-10-21", Some(plan)).stock.of(WALNUT);
+    // One unit clean and one worn: a proposal that packs one unit re-offers none of the worn ones, one
+    // that packs two re-offers the worn unit, and without a plan the worn unit stays worn.
+    assert_eq!(on_the_21st(&plan(1)), Stock { clean: 1, dirty: 1 });
+    assert_eq!(on_the_21st(&plan(2)), Stock { clean: 2, dirty: 0 });
+    assert_eq!(Day::for_trip(catalogue(), &ledger, "trp_lisbon", "2026-10-21", None).stock.of(WALNUT), Stock { clean: 1, dirty: 1 });
 }
 
 #[tokio::test]

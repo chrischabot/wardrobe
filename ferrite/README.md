@@ -484,6 +484,19 @@ against what is packed for that trip alone: a piece left at home is "not
 packed for this trip", a unit already worn on the trip is "already worn on
 this trip" (a never-laundered piece, such as the sneakers, stays wearable),
 and no repeat horizon applies, since reuse on a trip is its own exception.
+The one exception to "already worn" is the reuse the packing proposal
+planned (`plannedReuse` in `trip-day.ts`): the proposal read is the newest
+one recorded no later than the newest packing report for the trip (compared as
+instants; one recorded after packing changes nothing), and a piece it plans in
+a top, bottom, outer, footwear or belt slot on several days is wearable again
+from the suitcase after a wear on the trip while the days it was worn before
+the board's day are fewer than the days planned, up to the units the proposal
+packs, unless the owner reported it dirty after packing. A wear counts when
+its stock event names the trip. Socks are never reused this way. A clean unit
+still in the suitcase counts against the proposal's units, so a worn unit is
+re-offered only while clean and re-offered units together stay within them (a
+deliberate difference: TypeScript adds up to the proposal's units on top of
+the clean ones, which can offer more units than the proposal allows).
 The owner's other rules hold as on the home board. Choosing and swapping work
 as on the home board, and a swap draws only on the suitcase. `GET
 /v1/today?scope=trip:<tripId>` reads the trip's board; the home board of the
@@ -1100,16 +1113,15 @@ milestone, and outside the lines of the milestone in hand:
   - A withdrawn note's record stays, marked `retracted`; forgetting
     (`conversation.forget_source`) is not ported.
 - **Trips.**
-  - Trip-day boards are ported without the packing proposal's planned reuse
-    (`plannedReuse`: a piece the proposal plans for several days stays
-    wearable after its first wear on the trip, within that budget), so every
-    laundered piece worn on the trip is out until it is unpacked. Also not
-    ported: evening trip boards, the destination's weather and the trip's
-    occasions, the destination's timezone (a trip board's `timezone`, and
-    Today's default day, are the owner's Europe/London), and a `tripId` on
-    Studio and `studio/validate`. A wash on the trip (`care.washed` with a
-    `tripId`, and the hotel laundry it stands for) is not ported either, so a
-    piece worn on the trip stays worn in the suitcase until it is unpacked.
+  - Not ported on trip-day boards: evening trip boards, the destination's
+    weather and the trip's occasions, the destination's timezone (a trip
+    board's `timezone`, and Today's default day, are the owner's
+    Europe/London), and a `tripId` on Studio and `studio/validate`.
+  - A wash on the trip has nothing to port: TypeScript's replay reads a
+    `tripId` on a wash event (`replay.ts`), but no command records one
+    (`care.washed` takes only `items` and `allOfChannel`, and neither wash
+    emitter sets a trip), so in both a piece worn on the trip stays worn in the
+    suitcase until it is unpacked or the proposal's planned reuse allows it.
   - A packing or wear `tripId` is bounded at 128 characters; TypeScript sets no
     bound. A pack that names more units than exist anywhere packs what there
     is and says nothing of the rest, as TypeScript's replay does.

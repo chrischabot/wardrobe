@@ -528,6 +528,36 @@ async fn trip_with_proposal<S: Store>(store: &mut S, trip: Trip) -> Result<(Trip
     Ok((trip, Some(proposal)))
 }
 
+/// The planned reuse a board of `scope` is checked with (`plannedReuse` in trip-day.ts): `None` for
+/// the home board and a trip that does not exist; no reuse until something is packed. The proposal is
+/// the newest one recorded no later than the newest packing report for the trip, compared as instants;
+/// a proposal recorded after the last packing report changes nothing.
+pub(crate) async fn trip_plan<S: Store>(store: &mut S, l: &Ledger, scope: &str) -> Result<Option<board::TripPlan>, CmdError> {
+    let Some(trip_id) = board::scope_trip(scope) else { return Ok(None) };
+    let Some(trip) = load_trip(store, trip_id).await? else { return Ok(None) };
+    let pack = l.events.iter().filter(|e| e.kind == "pack" && e.voided_by.is_none() && e.trip_id.as_deref() == Some(trip_id)).max_by_key(|e| e.seq);
+    let Some(pack) = pack else {
+        return Ok(Some(board::TripPlan::from_proposal(&trip.departs_on, None, 0)));
+    };
+    // The journal lists only commands committed with their record, so an absent record is corrupt.
+    let record = load_command(store, &pack.command_id).await?.ok_or_else(|| corrupt_record(&pack.command_id))?;
+    let packed_at = record.value["receipt"]["recordedAt"].as_str().and_then(parse_instant).ok_or_else(|| corrupt_record(&pack.command_id))?;
+    let unreadable = || CmdError::with("internal", "the trip's packing proposal is unreadable", json!({"retryable": false, "tripId": trip_id}));
+    let mut proposal = None;
+    for revision in (1..=trip.proposal_revision).rev() {
+        let bytes = store.get(&trips::proposal_key(trip_id, revision)).await.map_err(|_| internal("the packing proposal could not be read just now; try again"))?;
+        let p = bytes
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+            .and_then(|v| trips::proposal_from_json(&v, trip_id, revision))
+            .ok_or_else(unreadable)?;
+        if p["createdAt"].as_str().and_then(parse_instant).map_or(false, |at| at <= packed_at) {
+            proposal = Some(p);
+            break;
+        }
+    }
+    Ok(Some(board::TripPlan::from_proposal(&trip.departs_on, proposal.as_ref(), pack.seq)))
+}
+
 /// `GET /v1/trips` (`TripList`): every trip, by departure date then ID, each with what is packed for it.
 pub async fn read_trips<S: Store>(store: &mut S) -> Result<Value, CmdError> {
     let (_, l) = read_ledger(store).await?;
@@ -1097,12 +1127,13 @@ pub async fn read_today_scoped<S: Store>(store: &mut S, now_ms: u64, date: Optio
     for _ in 0..3 {
         let (before, l) = read_ledger(store).await?;
         let board = indexed_board(store, l.board_for(scope, date)).await?;
+        let plan = trip_plan(store, &l, scope).await?;
         let (after, _) = read_ledger(store).await?;
         if before != after {
             continue;
         }
         let cat = catalogue();
-        let day = board::Day::for_board(cat, &l, scope, date);
+        let day = board::Day::for_board(cat, &l, scope, date, plan.as_ref());
         return Ok(board::today(&day, date, board.as_ref(), wear::day_record(cat, &l, date), l.revision, now_ms));
     }
     Err(CmdError::with("conflict", "the wardrobe kept changing while the board was read; try again", json!({"retryable": true})))
@@ -1126,11 +1157,12 @@ pub(crate) async fn board_view<S: Store>(store: &mut S, board_id: &str) -> Resul
         let Some(board) = load_board(store, board_id).await? else {
             return Err(CmdError::new("not_found", "that board was not found"));
         };
+        let plan = trip_plan(store, &l, &board.scope).await?;
         let (after, _) = read_ledger(store).await?;
         if before != after {
             continue;
         }
-        let day = board::Day::for_board(catalogue(), &l, &board.scope, &board.local_date);
+        let day = board::Day::for_board(catalogue(), &l, &board.scope, &board.local_date, plan.as_ref());
         return Ok(board::document(&day, &board, l.revision));
     }
     Err(CmdError::with("conflict", "the wardrobe kept changing while the board was read; try again", json!({"retryable": true})))
@@ -1365,6 +1397,19 @@ impl Planned {
     }
 }
 
+/// The day a board is validated against: a trip's day board against what is packed for the trip (with
+/// the reuse its packing proposal planned), the home board against home stock with the repeat horizon
+/// looking back from its day. No board is validated against undated home stock.
+async fn board_day<'c, S: Store>(store: &mut S, cat: &'c Catalogue, current: &Ledger, b: Option<&board::Board>) -> Result<board::Day<'c>, CmdError> {
+    match b {
+        None => Ok(board::Day::of(cat, current, "")),
+        Some(b) => {
+            let plan = trip_plan(store, current, &b.scope).await?;
+            Ok(board::Day::for_board(cat, current, &b.scope, &b.local_date, plan.as_ref()))
+        }
+    }
+}
+
 /// Plan one command against `current`, writing ledger changes into `next`.
 async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envelope, ctx: &Ctx<'_>, current: &Ledger, next: &mut Ledger, undo_target: Option<&str>) -> Result<Planned, CmdError> {
     let boards = if OBSERVATIONS.contains(&env.kind.as_str()) {
@@ -1379,7 +1424,6 @@ async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envel
     check_expected_versions(env, current, &boards)?;
     // A board is validated for its own scope and date: a trip's day board against what is packed for
     // the trip, the home board against home stock with the repeat horizon looking back from its day.
-    let board_day = |b: Option<&board::Board>| b.map_or_else(|| board::Day::of(ctx.cat, current, ""), |b| board::Day::for_board(ctx.cat, current, &b.scope, &b.local_date));
     match (env.kind.as_str(), undo_target) {
         ("care.mark_dirty", _) => Ok(Planned::stock(ledger::mark_dirty(ctx, next, &env.payload)?)),
         ("care.washed", _) => Ok(Planned::stock(ledger::washed(ctx, next, &env.payload)?)),
@@ -1461,18 +1505,21 @@ async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envel
                 }
             }
             let existing = indexed_board(store, current.board_for(&input.scope, &input.local_date)).await?;
-            let day = board::Day::for_board(ctx.cat, current, &input.scope, &input.local_date);
+            let plan = trip_plan(store, current, &input.scope).await?;
+            let day = board::Day::for_board(ctx.cat, current, &input.scope, &input.local_date, plan.as_ref());
             Ok(Planned::board(board::publish(ctx, &day, existing.as_ref(), input)?))
         }
         ("board.select", _) => {
             let id = board::named_board(&env.kind, &env.payload)?;
             let b = load_board(store, &id).await?;
-            Ok(Planned::board(board::select(ctx, &board_day(b.as_ref()), b.as_ref(), &env.payload)?))
+            let day = board_day(store, ctx.cat, current, b.as_ref()).await?;
+            Ok(Planned::board(board::select(ctx, &day, b.as_ref(), &env.payload)?))
         }
         ("board.swap_slot", _) => {
             let id = board::named_board(&env.kind, &env.payload)?;
             let b = load_board(store, &id).await?;
-            Ok(Planned::board(board::swap(ctx, &board_day(b.as_ref()), b.as_ref(), &env.payload)?))
+            let day = board_day(store, ctx.cat, current, b.as_ref()).await?;
+            Ok(Planned::board(board::swap(ctx, &day, b.as_ref(), &env.payload)?))
         }
         ("command.undo", Some(target)) => {
             let record = load_command(store, target).await?;
@@ -1515,7 +1562,8 @@ async fn plan_command<S: Store>(store: &mut S, principal: Principal, env: &Envel
                     Planned::board(if kind == "board.select" {
                         board::undo_select(ctx, b.as_ref(), &data, &summary, target)?
                     } else {
-                        board::undo_swap(ctx, &board_day(b.as_ref()), b.as_ref(), &data, &summary, target)?
+                        let day = board_day(store, ctx.cat, current, b.as_ref()).await?;
+                        board::undo_swap(ctx, &day, b.as_ref(), &data, &summary, target)?
                     })
                 }
                 other => return Err(CmdError::with("not_undoable", "this action has no automatic undo", json!({"commandId": target, "type": other}))),

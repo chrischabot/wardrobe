@@ -710,7 +710,8 @@ pub async fn recommend_scoped<S: Store>(store: &mut S, connection: &str, now_ms:
         Some(trip) => format!("trip:{}", trip.trip_id),
         None => "home".to_string(),
     };
-    let day = Day::for_board(cat, &ledger, &scope, &input.date);
+    let plan = crate::api::trip_plan(store, &ledger, &scope).await?;
+    let day = Day::for_board(cat, &ledger, &scope, &input.date, plan.as_ref());
     let requested = input.count.unwrap_or_else(|| default_count(cat)) as usize;
     // Preview mode keeps no reserves (service.ts).
     let composed = compose(&day, &input.date, requested, 0);

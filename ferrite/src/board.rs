@@ -397,6 +397,49 @@ pub fn scope_ok(scope: &str) -> bool {
     scope == "home" || scope_trip(scope).is_some()
 }
 
+/// Roles the packing proposal may reuse deliberately across days (`PLANNED_REUSE_ROLES` in
+/// packages/daily/src/trip-day.ts, which lists the top as well): socks and everything else are worn
+/// for one day.
+pub const PLANNED_REUSE_ROLES: [&str; 5] = ["top", "bottom", "outer", "footwear", "belt"];
+
+/// The deliberate reuse of the packing proposal the owner packed to (`plannedReuse` in trip-day.ts):
+/// the newest proposal recorded no later than the newest packing report for the trip.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TripPlan {
+    /// The trip's departure date; wears before it are not on the trip.
+    pub departs_on: String,
+    /// For each piece the proposal plans in a reusable role, the dates it plans it on (its wear budget
+    /// for the trip) and the units the proposal packs of it (at least one).
+    pub reuse: BTreeMap<String, (BTreeSet<String>, u32)>,
+    /// The journal position of that packing report; a dirty report after it counts against re-wearing.
+    pub packed_seq: u64,
+}
+
+impl TripPlan {
+    /// The reuse `proposal` (a stored packing proposal) plans, or none without one.
+    pub fn from_proposal(departs_on: &str, proposal: Option<&Value>, packed_seq: u64) -> TripPlan {
+        let mut reuse: BTreeMap<String, (BTreeSet<String>, u32)> = BTreeMap::new();
+        let Some(p) = proposal else {
+            return TripPlan { departs_on: departs_on.to_string(), reuse, packed_seq };
+        };
+        for day in p["days"].as_array().into_iter().flatten() {
+            let Some(date) = day["localDate"].as_str() else { continue };
+            for slot in day["slots"].as_array().into_iter().flatten() {
+                let (Some(role), Some(id)) = (slot["role"].as_str(), slot["garmentId"].as_str()) else { continue };
+                if PLANNED_REUSE_ROLES.contains(&role) {
+                    reuse.entry(id.to_string()).or_default().0.insert(date.to_string());
+                }
+            }
+        }
+        let items = p["items"].as_array();
+        for (id, (_, units)) in reuse.iter_mut() {
+            let quantity = items.and_then(|l| l.iter().find(|i| i["garmentId"] == id.as_str())).and_then(|i| i["quantity"].as_u64()).unwrap_or(1);
+            *units = quantity.clamp(1, u64::from(u32::MAX)) as u32;
+        }
+        TripPlan { departs_on: departs_on.to_string(), reuse, packed_seq }
+    }
+}
+
 fn counted_wears(ledger: &Ledger) -> BTreeMap<String, Vec<i64>> {
     let mut worn: BTreeMap<String, Vec<i64>> = BTreeMap::new();
     for w in ledger.wears.iter().filter(|w| w.active) {
@@ -416,19 +459,58 @@ impl<'a> Day<'a> {
     /// A trip-day board's day (`assembleContext` with a trip scope): only what is packed for the trip
     /// is stock, a unit already worn on the trip counts as awaiting care, home stock and the laundry
     /// cannot leak in, and no repeat horizon is checked (validate.ts: a trip's reuse is its exception).
-    pub fn for_trip(cat: &'a Catalogue, ledger: &Ledger, trip_id: &str) -> Day<'a> {
+    ///
+    /// The one exception is the reuse the packing proposal planned (`plan`): a piece worn on this trip
+    /// is wearable again on `local_date` while the days it was worn before that day are fewer than the
+    /// days the proposal plans it on, up to the units the proposal packs (clean units in the suitcase
+    /// count against that allowance), unless the owner reported it dirty after packing. The planned
+    /// days are a budget, not fixed dates.
+    pub fn for_trip(cat: &'a Catalogue, ledger: &Ledger, trip_id: &str, local_date: &str, plan: Option<&TripPlan>) -> Day<'a> {
         let all = replay(cat, &ledger.events);
         let mut stock = Replay::default();
         for g in &cat.garments {
             stock.stock.insert(g.id.clone(), all.in_trip(&g.id, trip_id));
         }
+        if let Some(plan) = plan.filter(|p| !p.reuse.is_empty() && !p.departs_on.is_empty()) {
+            // A wear counts when its stock event names this trip; a wear whose event is not in the
+            // journal is taken by its date (the LEFT JOIN in context.ts).
+            let trip_of: BTreeMap<&str, Option<&str>> = ledger.events.iter().map(|e| (e.id.as_str(), e.trip_id.as_deref())).collect();
+            let mut worn_on_trip: BTreeSet<&str> = BTreeSet::new();
+            let mut days_before: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+            for w in ledger.wears.iter().filter(|w| w.active && w.wearing_date.as_str() >= plan.departs_on.as_str() && w.wearing_date.as_str() <= local_date) {
+                match trip_of.get(w.stock_event_id.as_str()) {
+                    None => {}
+                    Some(Some(t)) if *t == trip_id => {}
+                    Some(_) => continue,
+                }
+                worn_on_trip.insert(w.garment_id.as_str());
+                if w.wearing_date.as_str() < local_date {
+                    days_before.entry(w.garment_id.as_str()).or_default().insert(w.wearing_date.as_str());
+                }
+            }
+            let reported_dirty: BTreeSet<&str> = ledger.events.iter().filter(|e| e.kind == "dirty" && e.voided_by.is_none() && e.seq > plan.packed_seq).map(|e| e.garment_id.as_str()).collect();
+            for (id, (dates, units)) in &plan.reuse {
+                let budget_left = dates.len().saturating_sub(days_before.get(id.as_str()).map_or(0, BTreeSet::len));
+                if budget_left == 0 || !worn_on_trip.contains(id.as_str()) || reported_dirty.contains(id.as_str()) {
+                    continue;
+                }
+                if let Some(st) = stock.stock.get_mut(id) {
+                    // The proposal's units are the allowance for the piece on the trip, clean units
+                    // still in the suitcase included: a worn unit is re-offered only up to it.
+                    let rewearable = st.dirty.min(units.saturating_sub(st.clean));
+                    st.clean += rewearable;
+                    st.dirty -= rewearable;
+                }
+            }
+        }
         Day { cat, stock, local_date: None, worn: counted_wears(ledger), trip: Some(trip_id.to_string()) }
     }
 
-    /// The day a board of `scope` for `local_date` is validated against.
-    pub fn for_board(cat: &'a Catalogue, ledger: &Ledger, scope: &str, local_date: &str) -> Day<'a> {
+    /// The day a board of `scope` for `local_date` is validated against; `plan` is the trip's planned
+    /// reuse (`crate::api::trip_plan`), read for a trip scope only.
+    pub fn for_board(cat: &'a Catalogue, ledger: &Ledger, scope: &str, local_date: &str, plan: Option<&TripPlan>) -> Day<'a> {
         match scope_trip(scope) {
-            Some(trip) => Day::for_trip(cat, ledger, trip),
+            Some(trip) => Day::for_trip(cat, ledger, trip, local_date, plan),
             None => Day::of(cat, ledger, local_date),
         }
     }
