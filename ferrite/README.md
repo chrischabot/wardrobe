@@ -702,7 +702,9 @@ Tools, with the TypeScript server's names, arguments and results:
 - `garderobe_inventory`: views `items` (paged, `limit` and `nextCursor`) and
   `snapshot` (complete), each garment with its clean, dirty, service and trip
   units and version (this port's own shape; `GET /v1/wardrobe` serves the
-  contract's `InventoryPage`), `availability` (optional `date`, as
+  contract's `InventoryPage`), `item` (`garmentId`: the item page exactly as
+  `GET /v1/items/{id}` serves it, with the TypeScript server's summary; any
+  media asset loses `hadLocationMetadata`, as there), `availability` (optional `date`, as
   `/v1/availability`), `resolve` (`phrase`, as `/v1/wardrobe/resolve`, with
   the TypeScript server's summary: ask which one when it is ambiguous, never
   create an item to make a phrase match), `selection` (`selector`, as
@@ -712,9 +714,8 @@ Tools, with the TypeScript server's names, arguments and results:
   `/v1/style`, `/v1/command-types`, `/v1/trips`, `/v1/returns` and
   `/v1/orders` serve, with the TypeScript server's summaries. `phrase` and
   `selector` belong to their views only, and `date` to `history`,
-  `availability` and `style`. The response says whether it is the whole
-  result (`complete`, `total`). The TypeScript server's `item` view answers
-  `invalid_command` (the item page is served at `/v1/items/{id}`).
+  `availability` and `style`, and `garmentId` to `item` and `history`. The
+  response says whether it is the whole result (`complete`, `total`).
 - `garderobe_recommend`: validated outfit options for `{date, count?,
   brief?, clientRequestId}` (see "Recommendations"). It is a read, so a
   read-only grant is offered it.
@@ -1099,7 +1100,9 @@ as TypeScript's `staleVersions: "conflict"` does.
 The media core of `packages/media` and `routes/media.ts` (`src/media.rs`,
 `src/image.rs`): the owner's photographs are stored in the app's own private
 storage and read back through the owner's routes, a short-lived signed link
-or the owner's portable export.
+or the owner's portable export. It landed as three reviewed parts from a
+parked patch that was only ever a working-tree file (never committed to
+the branch); that file has since been removed.
 
 - **Uploads in pieces.** Ferrite refuses a request body above 256 KiB, so the
   content route takes a photograph in pieces of at most 256 KiB, each at

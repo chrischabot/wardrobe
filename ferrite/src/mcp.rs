@@ -47,14 +47,13 @@ use crate::time::{instant, parse_local_date};
 // this endpoint refuses (2025-06-18 removed them).
 pub const PROTOCOL_VERSIONS: [&str; 2] = ["2025-11-25", "2025-06-18"];
 
-/// The `garderobe_inventory` views this server answers. The TypeScript server's `item`,
-/// `availability`, `resolve` and `selection` wait on reads that are not ported.
-pub const VIEWS: [&str; 13] = ["items", "snapshot", "availability", "resolve", "selection", "receipts", "history", "laundry", "style", "command_types", "trips", "returns", "orders"];
+/// The `garderobe_inventory` views this server answers (the TypeScript server's, in its order).
+pub const VIEWS: [&str; 14] = ["items", "snapshot", "item", "availability", "resolve", "selection", "receipts", "history", "laundry", "style", "command_types", "trips", "returns", "orders"];
 
 const GUIDE: &str = "Garderobe: the connected owner's private wardrobe. The owner is fixed by this connection; no tool takes an owner or user. \
 garderobe_today reads the day's outfit board for a named date (YYYY-MM-DD): its options, their pieces and the owner's choice. \
 garderobe_recommend returns validated outfit options for a named date and count; never invent garments: only the options returned there exist, and nothing is published. \
-garderobe_inventory reads the wardrobe (views items, snapshot, receipts, history, laundry, style, command_types, trips, returns, orders); check `complete` and `nextCursor` before saying how many things exist. \
+garderobe_inventory reads the wardrobe (views items, snapshot, item, receipts, history, laundry, style, command_types, trips, returns, orders); check `complete` and `nextCursor` before saying how many things exist. \
 garderobe_run reads a saved run by its runId, or cancels what remains of it. \
 garderobe_ask sends an open request to Garderobe's own assistant, which reads the wardrobe and answers; it changes nothing. \
 garderobe_research asks it for a verdict, a summary and a comparison; it has no web access, so its answer is not a checked price, stock or review. \
@@ -245,7 +244,7 @@ pub fn tools(caller: &Caller) -> Vec<Value> {
         json!({
         "name": "garderobe_inventory",
         "title": "Read the wardrobe",
-        "description": "Read the owner's garments with their clean and dirty balances (view items, paged; or snapshot, complete), every garment's availability for a fresh wear on a date, estimated from the outfits offered and not reported since (view availability, optional date; the parameters are hypotheses, not measurements), the garments an owner phrase names (view resolve, with phrase; more than one match is ambiguous: ask which one, never pick), the garments a selector covers (view selection, with selector), the newest command receipts (view receipts), recorded wear (view history: what was worn on a date, or the counted wears from..to, optionally of one garmentId; a day without a record is unknown, not unworn), the laundry (view laundry: what awaits the service and hand-wash, and the recent bags), the style profile with its rules, measurements and size experiences (view style, optionally for a date), the command types and their payload schemas (view command_types), the owner's trips with what is packed for each (view trips), return and exchange cases (view returns) or orders (view orders). `complete` and `nextCursor` say whether the data is the whole result.",
+        "description": "Read the owner's garments with their clean and dirty balances (view items, paged; or snapshot, complete), one garment's whole record with its balances, movements, restrictions, recorded wears and availability (view item, with garmentId), every garment's availability for a fresh wear on a date, estimated from the outfits offered and not reported since (view availability, optional date; the parameters are hypotheses, not measurements), the garments an owner phrase names (view resolve, with phrase; more than one match is ambiguous: ask which one, never pick), the garments a selector covers (view selection, with selector), the newest command receipts (view receipts), recorded wear (view history: what was worn on a date, or the counted wears from..to, optionally of one garmentId; a day without a record is unknown, not unworn), the laundry (view laundry: what awaits the service and hand-wash, and the recent bags), the style profile with its rules, measurements and size experiences (view style, optionally for a date), the command types and their payload schemas (view command_types), the owner's trips with what is packed for each (view trips), return and exchange cases (view returns) or orders (view orders). `complete` and `nextCursor` say whether the data is the whole result.",
         "inputSchema": {
             "type": "object",
             "additionalProperties": false,
@@ -257,7 +256,7 @@ pub fn tools(caller: &Caller) -> Vec<Value> {
                 "date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "history: the wearing date to read; availability: the day (default the owner's today); style: the day the context is for"},
                 "from": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "history: first date of a range (with to, at most 366 days)"},
                 "to": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$", "description": "history: last date of a range"},
-                "garmentId": {"type": "string", "description": "history with a range: only this garment"},
+                "garmentId": {"type": "string", "description": "item: the garment to read; history with a range: only this garment"},
                 "phrase": {"type": "string", "minLength": 1, "maxLength": 200, "description": "resolve: an owner phrase to resolve to garments"},
                 "selector": {
                     "type": "object",
@@ -445,6 +444,9 @@ async fn inventory_inner<S: Store>(store: &mut S, now_ms: u64, args: &Map<String
     if view != "selection" && args.contains_key("selector") {
         return Err(invalid("selector belongs to view 'selection'"));
     }
+    if view == "item" {
+        return item_view(store, now_ms, args).await;
+    }
     if matches!(view, "laundry" | "style" | "command_types" | "trips" | "returns" | "orders") {
         return other_view(store, now_ms, view, args).await;
     }
@@ -600,6 +602,44 @@ async fn inventory_inner<S: Store>(store: &mut S, now_ms: u64, args: &Map<String
             Ok(tool_ok(envelope(page, complete, Some(total), next_out, &revision), summary))
         }
     }
+}
+
+/// View `item`: the item page (`GET /v1/items/{garmentId}`, `ItemResponse`) with the TypeScript
+/// server's summary. As there, a connected assistant is not told which photographs carried location
+/// (`hadLocationMetadata` is removed from any media asset). The wardrobe revision named is the one the
+/// page was read at.
+async fn item_view<S: Store>(store: &mut S, now_ms: u64, args: &Map<String, Value>) -> Result<Value, CmdError> {
+    if let Some(k) = args.keys().find(|k| !matches!(k.as_str(), "view" | "garmentId")) {
+        return Err(invalid(format!("view 'item' takes only garmentId, not '{k}'")));
+    }
+    let garment_id = match args.get("garmentId") {
+        Some(Value::String(g)) if !g.is_empty() => g.as_str(),
+        _ => return Err(invalid("view 'item' needs 'garmentId'")),
+    };
+    for _ in 0..3 {
+        let (before, ledger) = api::read_ledger(store).await?;
+        let mut item = crate::item::read(store, now_ms, garment_id).await?;
+        let (after, _) = api::read_ledger(store).await?;
+        if before != after {
+            continue;
+        }
+        if let Some(assets) = item.get_mut("media").and_then(|m| m.get_mut("assets")).and_then(Value::as_array_mut) {
+            for asset in assets.iter_mut().filter_map(Value::as_object_mut) {
+                asset.remove("hadLocationMetadata");
+            }
+        }
+        let d = &item["detail"];
+        let summary = format!(
+            "{}: {} owned unit(s); {} recorded wear(s). {}",
+            d["garment"]["name"].as_str().unwrap_or_default(),
+            d["totalOwnedUnits"],
+            d["recordedWearCount"],
+            d["wearCountCaveat"].as_str().unwrap_or_default()
+        );
+        let envelope = json!({"view": "item", "complete": true, "total": null, "nextCursor": null, "wardrobeRevision": ledger.revision, "readAt": instant(now_ms), "data": item});
+        return Ok(tool_ok(envelope, summary));
+    }
+    Err(CmdError::with("conflict", "the wardrobe kept changing while the view was read; try again", json!({"retryable": true})))
 }
 
 /// The views that are one landed REST read each (`laundry` `/v1/laundry`, `style` `/v1/style`,

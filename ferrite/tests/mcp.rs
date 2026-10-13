@@ -358,8 +358,26 @@ async fn the_codex_flow_reads_writes_with_a_receipt_and_undoes() {
     assert_eq!((socks["structuredContent"]["total"].clone(), socks["structuredContent"]["data"]["count"].clone()), (json!(15), json!(15)));
     let stray = call(&mut store, &access, "garderobe_inventory", json!({"view": "items", "phrase": "blue"})).await;
     assert_eq!(error_of(&stray)["code"], "invalid_command");
-    let unported = call(&mut store, &access, "garderobe_inventory", json!({"view": "item"})).await;
-    assert_eq!(error_of(&unported)["code"], "invalid_command");
+    let missing = call(&mut store, &access, "garderobe_inventory", json!({"view": "item"})).await;
+    assert_eq!(error_of(&missing)["code"], "invalid_command");
+    // View `item`: the item page, as `GET /v1/items/{id}` serves it, with the TypeScript summary.
+    let oxford = "gmt_3894b6a6295908d5e687af4f";
+    let item = call(&mut store, &access, "garderobe_inventory", json!({"view": "item", "garmentId": oxford})).await;
+    let i = &item["structuredContent"];
+    assert_eq!((i["view"].clone(), i["complete"].clone(), i["total"].clone(), i["nextCursor"].clone()), (json!("item"), json!(true), Value::Null, Value::Null), "{item}");
+    assert_eq!(i["wardrobeRevision"], s["wardrobeRevision"]);
+    let page = send(&mut store, T0, "GET", &format!("/v1/items/{oxford}"), Some(&format!("Bearer {OWNER}")), vec![]).await;
+    let mut rest = page.json.clone();
+    let mut view = i["data"].clone();
+    rest.as_object_mut().unwrap().remove("readAt");
+    view.as_object_mut().unwrap().remove("readAt");
+    assert_eq!(view, rest, "the same record as the item page");
+    let text = item["content"][0]["text"].as_str().unwrap();
+    assert!(text.starts_with("Lightweight oxford — blue: 1 owned unit(s); 0 recorded wear(s). Recorded wears start when reliable logging began"), "{text}");
+    let unknown = call(&mut store, &access, "garderobe_inventory", json!({"view": "item", "garmentId": "gmt_000000000000000000000000"})).await;
+    assert_eq!(error_of(&unknown)["code"], "not_found");
+    let stray = call(&mut store, &access, "garderobe_inventory", json!({"view": "item", "garmentId": oxford, "date": "2026-10-13"})).await;
+    assert_eq!(error_of(&stray)["code"], "invalid_command");
 
     // A restriction lift is refused before anything is looked up, and nothing is written.
     let lift = call(&mut store, &access, "garderobe_command", json!({"type": "restriction.resolve", "payload": {"restrictionId": "rst_not_a_restriction"}, "idempotencyKey": "codex-lift-0001"})).await;
